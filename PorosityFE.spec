@@ -1,8 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Porosity FE Analysis Mac App
-
-import sys
-import os
+# PyInstaller spec for Porosity FE Analysis Mac App (PyQt6)
 
 block_cipher = None
 
@@ -22,18 +19,17 @@ a = Analysis(
         'matplotlib',
         'matplotlib.pyplot',
         'matplotlib.backends.backend_agg',
+        'matplotlib.backends.backend_qtagg',
         'mpl_toolkits.mplot3d',
         'mpl_toolkits.mplot3d.art3d',
+        'PyQt6',
+        'PyQt6.QtWidgets',
+        'PyQt6.QtCore',
+        'PyQt6.QtGui',
+        'PyQt6.sip',
         'json',
         'dataclasses',
-        'http.server',
-        'webbrowser',
         'porosity_fe_analysis',
-        'appdirs',
-        'packaging',
-        'packaging.version',
-        'packaging.specifiers',
-        'packaging.requirements',
     ],
     hookspath=[],
     hooksconfig={},
@@ -45,9 +41,9 @@ a = Analysis(
         'pytest',
         'sphinx',
         'docutils',
-        'pkg_resources',
         'tkinter',
         '_tkinter',
+        'pkg_resources',
     ],
     noarchive=False,
 )
@@ -64,7 +60,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

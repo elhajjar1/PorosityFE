@@ -1,383 +1,1020 @@
 #!/usr/bin/env python3
-"""
-Porosity FE Analysis - Web-Based GUI
-======================================
-Launches a local web server and opens a browser-based configuration GUI.
-User defines the problem, clicks Run, and results are generated.
-No tkinter/Qt dependencies — uses Python stdlib http.server + browser.
+"""Porosity FE Analysis — PyQt6 GUI.
+
+Provides a standalone desktop application for configuring and running
+porosity defect analysis on composite laminates. Layout mirrors the
+WrinkleFE GUI (left sidebar + central plots + bottom text output).
+
+Usage
+-----
+>>> from porosity_gui import launch
+>>> launch()  # Opens the GUI application
 """
 
-import sys
-import os
+from __future__ import annotations
+
+import dataclasses
 import json
-import threading
-import webbrowser
-import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs
+import sys
+import traceback
+from typing import Optional
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+try:
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QTabWidget, QGroupBox, QLabel, QLineEdit, QComboBox, QPushButton,
+        QSpinBox, QDoubleSpinBox, QTextEdit, QSplitter,
+        QStatusBar, QMenuBar, QMenu, QMessageBox, QFileDialog,
+        QProgressBar, QFormLayout, QScrollArea, QSizePolicy,
+    )
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QElapsedTimer
+    from PyQt6.QtGui import QAction
+    HAS_PYQT6 = True
+except ImportError:
+    HAS_PYQT6 = False
 
-from porosity_fe_analysis import (
-    MATERIALS, POROSITY_CONFIGS, VOID_SHAPES, PorosityField, CompositeMesh,
-    EmpiricalSolver, MoriTanakaSolver, FEVisualizer,
-    compare_configurations, save_results_to_json
-)
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    HAS_MPL_QT = True
+except ImportError:
+    HAS_MPL_QT = False
 
-# Global state for progress reporting
-progress_log = []
-analysis_running = False
-analysis_done = False
-
-# Default output location — sibling to wherever the app lives
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUTPUT = os.path.join(os.path.dirname(_SCRIPT_DIR), 'Porosity_Results')
-
-
-def get_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
+import numpy as np
 
 
-HTML_PAGE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Porosity FE Analysis</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         background: #f5f5f7; color: #1d1d1f; padding: 20px; }
-  .container { max-width: 800px; margin: 0 auto; }
-  h1 { font-size: 28px; font-weight: 600; margin-bottom: 5px; }
-  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 25px; }
-  .card { background: white; border-radius: 12px; padding: 24px;
-          margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-  .card h2 { font-size: 18px; font-weight: 600; margin-bottom: 16px;
-             padding-bottom: 8px; border-bottom: 1px solid #e5e5e7; }
-  .form-row { display: flex; align-items: center; margin-bottom: 14px; gap: 12px; }
-  .form-row label.field-label { width: 160px; font-weight: 500; font-size: 14px; flex-shrink: 0; }
-  select, input[type="text"] {
-    flex: 1; padding: 8px 12px; border: 1px solid #d2d2d7; border-radius: 8px;
-    font-size: 14px; background: #fafafa; outline: none; }
-  select:focus, input:focus { border-color: #0071e3; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
-  .checkbox-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; flex: 1; }
-  .checkbox-grid label { width: auto; font-weight: 400; font-size: 13px;
-                          display: flex; align-items: center; gap: 6px; cursor: pointer; }
-  .checkbox-grid input[type="checkbox"] { width: 16px; height: 16px; accent-color: #0071e3; }
-  .btn { display: inline-block; padding: 12px 32px; border-radius: 10px;
-         font-size: 16px; font-weight: 600; cursor: pointer; border: none;
-         transition: all 0.2s; }
-  .btn-primary { background: #0071e3; color: white; }
-  .btn-primary:hover { background: #0077ED; transform: scale(1.02); }
-  .btn-primary:disabled { background: #86868b; cursor: not-allowed; transform: none; }
-  .btn-row { text-align: center; margin-top: 20px; }
-  #log-card { display: none; }
-  #log { background: #1d1d1f; color: #33ff33; border-radius: 8px;
-         padding: 16px; font-family: 'Menlo', monospace; font-size: 12px;
-         height: 260px; overflow-y: auto; white-space: pre-wrap; }
-  #status { text-align: center; margin: 16px 0; font-size: 15px; font-weight: 500; }
-  .status-ready { color: #34c759; }
-  .status-running { color: #ff9f0a; }
-  .status-done { color: #30d158; }
-  .status-error { color: #ff3b30; }
-  .info { font-size: 12px; color: #86868b; margin-top: 4px; }
-</style>
-</head>
-<body>
-<div class="container">
-  <h1>Porosity FE Analysis</h1>
-  <p class="subtitle">Composite laminate porosity defect assessment tool</p>
-
-  <div class="card">
-    <h2>Material</h2>
-    <div class="form-row">
-      <label class="field-label">Material system:</label>
-      <select id="material">
-        <option value="T800_epoxy" selected>T800/Epoxy (CYCOM X850)</option>
-        <option value="T700_epoxy">T700/Epoxy (Toray 2510)</option>
-        <option value="glass_epoxy">E-Glass/Epoxy</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Porosity Parameters</h2>
-    <div class="form-row">
-      <label class="field-label">Porosity levels (%):</label>
-      <input type="text" id="porosity_levels" value="1, 3, 5">
-    </div>
-    <p class="info" style="margin-left:172px;">Comma-separated values between 0.5 and 15</p>
-
-    <div class="form-row" style="margin-top:16px; align-items: flex-start;">
-      <label class="field-label">Configurations:</label>
-      <div class="checkbox-grid">
-        <label><input type="checkbox" name="config" value="uniform_spherical" checked> Uniform Spherical</label>
-        <label><input type="checkbox" name="config" value="uniform_cylindrical" checked> Uniform Cylindrical</label>
-        <label><input type="checkbox" name="config" value="clustered_midplane" checked> Clustered Midplane</label>
-        <label><input type="checkbox" name="config" value="clustered_surface"> Clustered Surface</label>
-        <label><input type="checkbox" name="config" value="interface_penny" checked> Interface Penny</label>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Mesh &amp; Output</h2>
-    <div class="form-row">
-      <label class="field-label">Mesh resolution:</label>
-      <select id="mesh">
-        <option value="20,8,8">Coarse (20 x 8 x 8) &mdash; fast</option>
-        <option value="30,10,12" selected>Medium (30 x 10 x 12)</option>
-        <option value="50,20,24">Fine (50 x 20 x 24) &mdash; slow</option>
-      </select>
-    </div>
-    <div class="form-row">
-      <label class="field-label">Output folder:</label>
-      <input type="text" id="output_dir" value="__OUTPUT__">
-    </div>
-  </div>
-
-  <div class="btn-row">
-    <button class="btn btn-primary" id="runBtn" onclick="runAnalysis()">Run Analysis</button>
-  </div>
-
-  <div id="status" class="status-ready">Configure your analysis above, then click Run.</div>
-
-  <div class="card" id="log-card">
-    <h2>Progress</h2>
-    <div id="log"></div>
-  </div>
-</div>
-
-<script>
-let pollInterval = null;
-
-function runAnalysis() {
-  const btn = document.getElementById('runBtn');
-  const logCard = document.getElementById('log-card');
-  const log = document.getElementById('log');
-  const status = document.getElementById('status');
-
-  const configs = Array.from(document.querySelectorAll('input[name="config"]:checked'))
-                       .map(c => c.value);
-  if (configs.length === 0) {
-    status.textContent = 'Select at least one configuration.';
-    status.className = 'status-error';
-    return;
-  }
-
-  btn.disabled = true;
-  logCard.style.display = 'block';
-  log.textContent = '';
-  status.textContent = 'Running analysis...';
-  status.className = 'status-running';
-
-  const data = {
-    material: document.getElementById('material').value,
-    porosity_levels: document.getElementById('porosity_levels').value,
-    configs: configs.join(','),
-    mesh: document.getElementById('mesh').value,
-    output_dir: document.getElementById('output_dir').value
-  };
-
-  fetch('/run', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(data)
-  });
-
-  pollInterval = setInterval(async () => {
-    try {
-      const resp = await fetch('/progress');
-      const result = await resp.json();
-      log.textContent = result.log.join('\n');
-      log.scrollTop = log.scrollHeight;
-      if (result.done) {
-        clearInterval(pollInterval);
-        status.textContent = 'Analysis complete! Results folder opened.';
-        status.className = 'status-done';
-        btn.disabled = false;
-      }
-    } catch(e) {}
-  }, 500);
-}
-</script>
-</body>
-</html>"""
+def _check_pyqt6() -> None:
+    """Raise ImportError with helpful message if PyQt6 is missing."""
+    if not HAS_PYQT6:
+        raise ImportError(
+            "Porosity FE GUI requires PyQt6. Install with:\n"
+            "  pip install PyQt6\n"
+            "Or run the analysis script directly: python porosity_fe_analysis.py"
+        )
 
 
-class GUIHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+# ======================================================================
+# Analysis worker thread
+# ======================================================================
 
-    def do_GET(self):
-        if self.path == '/':
-            page = HTML_PAGE.replace('__OUTPUT__', DEFAULT_OUTPUT)
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
-            self.end_headers()
-            self.wfile.write(page.encode())
-        elif self.path == '/progress':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                'log': progress_log[-300:],
-                'done': analysis_done,
-                'running': analysis_running,
-            }).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
+if HAS_PYQT6:
 
-    def do_POST(self):
-        global analysis_running, analysis_done
-        if self.path == '/run' and not analysis_running:
-            length = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(length))
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"status":"started"}')
-            threading.Thread(target=run_analysis_task, args=(body,), daemon=True).start()
-        else:
-            self.send_response(409)
-            self.end_headers()
+    class AnalysisWorker(QThread):
+        """Background thread for running porosity analysis."""
 
+        finished = pyqtSignal(object)  # results dict
+        error = pyqtSignal(str)
+        progress = pyqtSignal(str)
 
-def log_msg(msg):
-    progress_log.append(msg)
-    print(msg)
+        def __init__(self, config: dict) -> None:
+            super().__init__()
+            self.config = config
+            self._stop_requested = False
 
+        def request_stop(self) -> None:
+            self._stop_requested = True
 
-def run_analysis_task(params):
-    global analysis_running, analysis_done
-    analysis_running = True
-    analysis_done = False
-    progress_log.clear()
+        def run(self) -> None:
+            try:
+                from porosity_fe_analysis import (
+                    MATERIALS, PorosityField, CompositeMesh,
+                    EmpiricalSolver, MoriTanakaSolver,
+                )
 
-    try:
-        material_name = params['material']
-        porosity_levels = [float(x.strip()) / 100.0
-                           for x in params['porosity_levels'].split(',')]
-        config_names = params['configs'].split(',')
-        mesh_parts = [int(x) for x in params['mesh'].split(',')]
-        nx, ny, nz = mesh_parts
-        output_dir = params['output_dir']
+                cfg = self.config
 
-        selected_configs = {k: POROSITY_CONFIGS[k] for k in config_names
-                            if k in POROSITY_CONFIGS}
-        os.makedirs(output_dir, exist_ok=True)
+                # --- Material ---
+                self.progress.emit("Setting up material and laminate...")
+                material = MATERIALS[cfg["material_name"]]
+                material = dataclasses.replace(
+                    material,
+                    t_ply=cfg["t_ply"],
+                    n_plies=cfg["n_plies"],
+                )
 
-        log_msg("=" * 55)
-        log_msg("POROSITY FE ANALYSIS")
-        log_msg("=" * 55)
-        log_msg(f"Material:       {material_name}")
-        log_msg(f"Porosity:       {[f'{v*100:.0f}%' for v in porosity_levels]}")
-        log_msg(f"Configurations: {list(selected_configs.keys())}")
-        log_msg(f"Mesh:           {nx} x {ny} x {nz}")
-        log_msg(f"Output:         {output_dir}")
-        log_msg("")
+                if self._stop_requested:
+                    return
 
-        all_results = {}
-        total = len(porosity_levels)
+                # --- Porosity field ---
+                self.progress.emit("Creating porosity field...")
+                pf_kwargs = {
+                    "distribution": cfg["distribution"],
+                    "void_shape": cfg["void_shape"],
+                }
+                if cfg["distribution"] == "clustered":
+                    pf_kwargs["cluster_location"] = cfg["cluster_location"]
 
-        for idx, Vp in enumerate(porosity_levels):
-            Vp_label = f"{int(Vp * 100)}pct"
-            log_msg(f"[{idx+1}/{total}] Vp = {Vp*100:.0f}%")
+                porosity_field = PorosityField(
+                    material,
+                    cfg["Vp"] / 100.0,  # convert % to fraction
+                    **pf_kwargs,
+                )
 
-            material = MATERIALS[material_name]
-            results = {}
+                if self._stop_requested:
+                    return
 
-            for name, config in selected_configs.items():
-                log_msg(f"  {name}")
-                pf = PorosityField(material, Vp, **config)
-                mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz)
-                emp = EmpiricalSolver(mesh, material)
-                mt = MoriTanakaSolver(mesh, material)
+                # --- Mesh ---
+                self.progress.emit("Generating mesh...")
+                mesh = CompositeMesh(
+                    porosity_field, material,
+                    nx=cfg["nx"], ny=cfg["ny"], nz=cfg["nz"],
+                )
 
-                results[name] = {
-                    'config': config,
-                    'mesh': mesh,
-                    'porosity_field': pf,
-                    'empirical_solver': emp,
-                    'mori_tanaka_solver': mt,
-                    'empirical': emp.get_all_failure_loads(),
-                    'mori_tanaka': mt.get_all_failure_loads(),
+                if self._stop_requested:
+                    return
+
+                # --- Solvers ---
+                self.progress.emit("Running empirical solver (Judd-Wright, Power Law, Linear)...")
+                empirical = EmpiricalSolver(mesh, material)
+                emp_results = empirical.get_all_failure_loads()
+
+                if self._stop_requested:
+                    return
+
+                self.progress.emit("Running Mori-Tanaka micromechanics solver...")
+                mori_tanaka = MoriTanakaSolver(mesh, material)
+                mt_results = mori_tanaka.get_all_failure_loads()
+
+                if self._stop_requested:
+                    return
+
+                self.progress.emit("Analysis complete.")
+
+                results = {
+                    "config": cfg,
+                    "material": material,
+                    "porosity_field": porosity_field,
+                    "mesh": mesh,
+                    "empirical_solver": empirical,
+                    "mori_tanaka_solver": mori_tanaka,
+                    "empirical": emp_results,
+                    "mori_tanaka": mt_results,
                 }
 
-                ckd = results[name]['empirical']['compression']['judd_wright']['knockdown']
-                ikd = results[name]['empirical']['ilss']['judd_wright']['knockdown']
-                log_msg(f"    Comp KD: {ckd:.3f}  ILSS KD: {ikd:.3f}")
+                self.finished.emit(results)
 
-            all_results[Vp_label] = results
-
-            log_msg(f"  Saving plots...")
-            for name in results:
-                FEVisualizer.plot_porosity_field(
-                    results[name]['porosity_field'],
-                    save_path=os.path.join(output_dir, f"porosity_profile_{name}_{Vp_label}.png"))
-                plt.close('all')
-                FEVisualizer.plot_mesh_detail(
-                    results[name]['mesh'],
-                    save_path=os.path.join(output_dir, f"porosity_mesh_detail_{name}_{Vp_label}.png"))
-                plt.close('all')
-                FEVisualizer.plot_damage_contour(
-                    results[name]['mesh'],
-                    results[name]['empirical_solver'],
-                    save_path=os.path.join(output_dir, f"porosity_damage_{name}_{Vp_label}.png"))
-                plt.close('all')
-
-            FEVisualizer.plot_model_comparison(
-                results,
-                save_path=os.path.join(output_dir, f"porosity_comparison_{Vp_label}.png"))
-            plt.close('all')
-
-            save_results_to_json(
-                results,
-                os.path.join(output_dir, f"porosity_analysis_results_{Vp_label}.json"))
-
-        if len(porosity_levels) > 1:
-            FEVisualizer.plot_knockdown_curves(
-                all_results,
-                save_path=os.path.join(output_dir, "porosity_knockdown_curves.png"))
-            plt.close('all')
-
-        pngs = len([f for f in os.listdir(output_dir) if f.endswith('.png')])
-        jsons = len([f for f in os.listdir(output_dir) if f.endswith('.json')])
-        log_msg("")
-        log_msg("=" * 55)
-        log_msg(f"COMPLETE: {pngs} plots, {jsons} JSON files")
-        log_msg(f"Results: {output_dir}")
-        log_msg("=" * 55)
-
-        os.system(f'open "{output_dir}"')
-
-    except Exception as e:
-        log_msg(f"\nERROR: {e}")
-        import traceback
-        log_msg(traceback.format_exc())
-    finally:
-        analysis_running = False
-        analysis_done = True
+            except Exception as e:
+                self.error.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
 
 
-def main():
-    port = get_free_port()
-    server = HTTPServer(('127.0.0.1', port), GUIHandler)
-    url = f'http://127.0.0.1:{port}'
-    print(f"Porosity FE Analysis GUI: {url}")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    webbrowser.open(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
+# ======================================================================
+# Main Window
+# ======================================================================
+
+if HAS_PYQT6:
+
+    class PorosityFEMainWindow(QMainWindow):
+        """Main application window for Porosity FE Analysis.
+
+        Layout
+        ------
+        +----------------------------------+---------------------------+
+        |  Left Sidebar (350px)            |  Central Area             |
+        |  - Material & Laminate           |  - Plot tabs              |
+        |  - Porosity Parameters           |    (Profile, Mesh,        |
+        |  - Mesh                          |     Results)              |
+        |  - Analysis Controls             |                           |
+        |                                  +---------------------------+
+        |                                  |  Bottom: Text Output      |
+        +----------------------------------+---------------------------+
+        """
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.setWindowTitle("PorosityFE - Composite Laminate Porosity Analysis")
+            self.setMinimumSize(1200, 800)
+
+            self._result = None
+            self._worker = None
+
+            self._setup_menu_bar()
+            self._setup_central_widget()
+            self._setup_status_bar()
+
+        # ----------------------------------------------------------
+        # Menu bar
+        # ----------------------------------------------------------
+
+        def _setup_menu_bar(self) -> None:
+            menubar = self.menuBar()
+
+            # File menu
+            file_menu = menubar.addMenu("&File")
+
+            new_action = QAction("&New Analysis", self)
+            new_action.triggered.connect(self._on_new)
+            file_menu.addAction(new_action)
+
+            export_action = QAction("&Export Results...", self)
+            export_action.triggered.connect(self._on_export)
+            file_menu.addAction(export_action)
+
+            file_menu.addSeparator()
+
+            quit_action = QAction("&Quit", self)
+            quit_action.triggered.connect(self.close)
+            file_menu.addAction(quit_action)
+
+            # Help menu
+            help_menu = menubar.addMenu("&Help")
+            about_action = QAction("&About", self)
+            about_action.triggered.connect(self._on_about)
+            help_menu.addAction(about_action)
+
+        # ----------------------------------------------------------
+        # Central widget
+        # ----------------------------------------------------------
+
+        def _setup_central_widget(self) -> None:
+            central = QWidget()
+            self.setCentralWidget(central)
+
+            main_layout = QHBoxLayout(central)
+
+            # Left sidebar: configuration panels
+            left_panel = QWidget()
+            left_layout = QVBoxLayout(left_panel)
+            left_panel.setMaximumWidth(350)
+
+            left_layout.addWidget(self._create_material_group())
+            left_layout.addWidget(self._create_porosity_group())
+            left_layout.addWidget(self._create_mesh_group())
+            left_layout.addWidget(self._create_analysis_group())
+            left_layout.addStretch()
+
+            # Right area: splitter with plots on top, text on bottom
+            right_splitter = QSplitter(Qt.Orientation.Vertical)
+
+            # Plot tabs with matplotlib canvases
+            self.plot_tabs = QTabWidget()
+
+            if HAS_MPL_QT:
+                self.profile_canvas = FigureCanvas(Figure(figsize=(8, 5)))
+                self.mesh_canvas = FigureCanvas(Figure(figsize=(8, 5)))
+                self.results_canvas = FigureCanvas(Figure(figsize=(8, 5)))
+
+                for canvas in (self.profile_canvas, self.mesh_canvas,
+                               self.results_canvas):
+                    canvas.setSizePolicy(
+                        QSizePolicy.Policy.Expanding,
+                        QSizePolicy.Policy.Expanding,
+                    )
+
+                self.plot_tabs.addTab(self.profile_canvas, "Profile")
+                self.plot_tabs.addTab(self.mesh_canvas, "Mesh")
+                self.plot_tabs.addTab(self.results_canvas, "Results")
+
+                # Draw placeholder text on each canvas
+                for canvas, msg in [
+                    (self.profile_canvas, "Run an analysis to see porosity profile plots."),
+                    (self.mesh_canvas, "Run an analysis to see mesh visualization."),
+                    (self.results_canvas, "Run an analysis to see knockdown results."),
+                ]:
+                    ax = canvas.figure.add_subplot(111)
+                    ax.text(0.5, 0.5, msg, transform=ax.transAxes,
+                            ha="center", va="center", fontsize=12, color="0.5")
+                    ax.set_axis_off()
+                    canvas.draw()
+            else:
+                self.profile_canvas = None
+                self.mesh_canvas = None
+                self.results_canvas = None
+                self.plot_tabs.addTab(
+                    QLabel("Run an analysis to see porosity profile plots."), "Profile")
+                self.plot_tabs.addTab(
+                    QLabel("Run an analysis to see mesh visualization."), "Mesh")
+                self.plot_tabs.addTab(
+                    QLabel("Run an analysis to see knockdown results."), "Results")
+
+            right_splitter.addWidget(self.plot_tabs)
+
+            # Text output
+            self.output_text = QTextEdit()
+            self.output_text.setReadOnly(True)
+            self.output_text.setMinimumHeight(150)
+            self.output_text.setPlaceholderText(
+                "Analysis results will appear here.\n"
+                "Configure parameters on the left and click 'Run Analysis'."
+            )
+            right_splitter.addWidget(self.output_text)
+            right_splitter.setSizes([500, 200])
+
+            main_layout.addWidget(left_panel)
+            main_layout.addWidget(right_splitter, stretch=1)
+
+        # ----------------------------------------------------------
+        # Configuration groups
+        # ----------------------------------------------------------
+
+        def _create_material_group(self) -> QGroupBox:
+            group = QGroupBox("Material && Laminate")
+            layout = QFormLayout(group)
+
+            self.material_combo = QComboBox()
+            self.material_combo.addItems([
+                "T800_epoxy", "T700_epoxy", "glass_epoxy",
+            ])
+            layout.addRow("Material:", self.material_combo)
+
+            self.layup_edit = QLineEdit("[0/45/-45/90]_3s")
+            self.layup_edit.setToolTip(
+                "Enter ply angles separated by /. Use _Ns for N repeats, "
+                "s for symmetric.\n"
+                "Examples: [0/45/-45/90]_3s, [0/90]_6s, 0/0/0/90/90/90"
+            )
+            layout.addRow("Layup:", self.layup_edit)
+
+            self.ply_thickness_spin = QDoubleSpinBox()
+            self.ply_thickness_spin.setRange(0.05, 0.50)
+            self.ply_thickness_spin.setValue(0.183)
+            self.ply_thickness_spin.setSingleStep(0.01)
+            self.ply_thickness_spin.setSuffix(" mm")
+            layout.addRow("Ply thickness:", self.ply_thickness_spin)
+
+            return group
+
+        def _create_porosity_group(self) -> QGroupBox:
+            group = QGroupBox("Porosity Parameters")
+            layout = QFormLayout(group)
+
+            self.vp_spin = QDoubleSpinBox()
+            self.vp_spin.setRange(0.1, 15.0)
+            self.vp_spin.setValue(3.0)
+            self.vp_spin.setSingleStep(0.5)
+            self.vp_spin.setDecimals(1)
+            self.vp_spin.setSuffix(" %")
+            self.vp_spin.setToolTip(
+                "Void volume fraction (Vp) as a percentage.\n"
+                "Typical range: 0.5-5% for autoclave, 2-10% for OOA."
+            )
+            layout.addRow("Void volume fraction:", self.vp_spin)
+
+            self.distribution_combo = QComboBox()
+            self.distribution_combo.addItems([
+                "uniform",
+                "clustered (midplane)",
+                "clustered (surface)",
+                "interface",
+            ])
+            self.distribution_combo.setToolTip(
+                "Through-thickness distribution of porosity.\n"
+                "uniform: constant porosity throughout.\n"
+                "clustered (midplane): Gaussian peak at midplane.\n"
+                "clustered (surface): Gaussian peak at surface.\n"
+                "interface: concentrated at ply interfaces."
+            )
+            layout.addRow("Distribution:", self.distribution_combo)
+
+            self.void_shape_combo = QComboBox()
+            self.void_shape_combo.addItems([
+                "spherical", "cylindrical", "penny",
+            ])
+            self.void_shape_combo.setToolTip(
+                "Void morphology (aspect ratio).\n"
+                "spherical: equiaxed (AR=1)\n"
+                "cylindrical: prolate (AR=3)\n"
+                "penny: oblate disc (AR=10)"
+            )
+            layout.addRow("Void shape:", self.void_shape_combo)
+
+            self.loading_combo = QComboBox()
+            self.loading_combo.addItems([
+                "compression", "tension", "shear", "ilss",
+            ])
+            self.loading_combo.setToolTip(
+                "Primary loading mode for failure prediction.\n"
+                "All four modes are computed; this selects the\n"
+                "primary mode for the results bar chart."
+            )
+            layout.addRow("Loading mode:", self.loading_combo)
+
+            return group
+
+        def _create_mesh_group(self) -> QGroupBox:
+            group = QGroupBox("Mesh")
+            layout = QFormLayout(group)
+
+            self.nx_spin = QSpinBox()
+            self.nx_spin.setRange(2, 200)
+            self.nx_spin.setValue(30)
+            layout.addRow("nx:", self.nx_spin)
+
+            self.ny_spin = QSpinBox()
+            self.ny_spin.setRange(2, 100)
+            self.ny_spin.setValue(10)
+            layout.addRow("ny:", self.ny_spin)
+
+            self.nz_spin = QSpinBox()
+            self.nz_spin.setRange(2, 100)
+            self.nz_spin.setValue(12)
+            layout.addRow("nz:", self.nz_spin)
+
+            return group
+
+        def _create_analysis_group(self) -> QGroupBox:
+            group = QGroupBox("Analysis")
+            layout = QVBoxLayout(group)
+
+            self.progress_bar = QProgressBar()
+            self.progress_bar.setRange(0, 0)  # indeterminate
+            self.progress_bar.setVisible(False)
+            layout.addWidget(self.progress_bar)
+
+            self.timer_label = QLabel("")
+            self.timer_label.setStyleSheet("QLabel { color: #555; font-size: 11px; }")
+            self.timer_label.setVisible(False)
+            layout.addWidget(self.timer_label)
+
+            # Elapsed time tracking
+            self._elapsed_timer = QElapsedTimer()
+            self._tick_timer = QTimer(self)
+            self._tick_timer.setInterval(1000)
+            self._tick_timer.timeout.connect(self._tick_elapsed)
+
+            btn_layout = QHBoxLayout()
+
+            self.run_btn = QPushButton("Run Analysis")
+            self.run_btn.setStyleSheet(
+                "QPushButton { background-color: #2196F3; color: white; "
+                "font-weight: bold; padding: 8px; }"
+            )
+            self.run_btn.clicked.connect(self._on_run)
+            btn_layout.addWidget(self.run_btn)
+
+            self.stop_btn = QPushButton("Stop")
+            self.stop_btn.setStyleSheet(
+                "QPushButton { background-color: #F44336; color: white; "
+                "font-weight: bold; padding: 8px; }"
+            )
+            self.stop_btn.clicked.connect(self._on_stop)
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setVisible(False)
+            btn_layout.addWidget(self.stop_btn)
+
+            layout.addLayout(btn_layout)
+
+            return group
+
+        # ----------------------------------------------------------
+        # Status bar
+        # ----------------------------------------------------------
+
+        def _setup_status_bar(self) -> None:
+            self.statusBar().showMessage("Ready")
+
+        # ----------------------------------------------------------
+        # Build config from GUI
+        # ----------------------------------------------------------
+
+        def _build_config(self) -> dict:
+            """Build a config dict from the current GUI state."""
+            angles = self._parse_layup(self.layup_edit.text())
+            n_plies = len(angles)
+            t_ply = self.ply_thickness_spin.value()
+
+            # Parse distribution combo
+            dist_text = self.distribution_combo.currentText()
+            if dist_text == "uniform":
+                distribution = "uniform"
+                cluster_location = "midplane"
+            elif dist_text == "clustered (midplane)":
+                distribution = "clustered"
+                cluster_location = "midplane"
+            elif dist_text == "clustered (surface)":
+                distribution = "clustered"
+                cluster_location = "surface"
+            elif dist_text == "interface":
+                distribution = "interface"
+                cluster_location = "midplane"
+            else:
+                distribution = "uniform"
+                cluster_location = "midplane"
+
+            return {
+                "material_name": self.material_combo.currentText(),
+                "angles": angles,
+                "n_plies": n_plies,
+                "t_ply": t_ply,
+                "Vp": self.vp_spin.value(),
+                "distribution": distribution,
+                "cluster_location": cluster_location,
+                "void_shape": self.void_shape_combo.currentText(),
+                "loading_mode": self.loading_combo.currentText(),
+                "nx": self.nx_spin.value(),
+                "ny": self.ny_spin.value(),
+                "nz": self.nz_spin.value(),
+            }
+
+        @staticmethod
+        def _parse_layup(text: str) -> list:
+            """Parse a layup string like '[0/45/-45/90]_3s' to angle list."""
+            text = text.strip()
+            cleaned = text.replace("[", "").replace("]", "")
+
+            symmetric = cleaned.endswith("s")
+            if symmetric:
+                cleaned = cleaned[:-1]
+
+            repeat = 1
+            if "_" in cleaned:
+                parts = cleaned.rsplit("_", 1)
+                cleaned = parts[0]
+                try:
+                    repeat = int(parts[1])
+                except ValueError:
+                    repeat = 1
+
+            sep = "/" if "/" in cleaned else ","
+            try:
+                angles = [float(a.strip()) for a in cleaned.split(sep) if a.strip()]
+            except ValueError:
+                angles = [0, 45, -45, 90]
+                repeat = 3
+                symmetric = True
+
+            angles = angles * repeat
+            if symmetric:
+                angles = angles + list(reversed(angles))
+
+            return angles
+
+        # ----------------------------------------------------------
+        # Actions
+        # ----------------------------------------------------------
+
+        def _on_run(self) -> None:
+            """Run the porosity analysis in a background thread."""
+            try:
+                config = self._build_config()
+            except Exception as e:
+                QMessageBox.critical(self, "Configuration Error", str(e))
+                return
+
+            self.run_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setVisible(True)
+            self.statusBar().showMessage("Running analysis...")
+            self.output_text.clear()
+
+            # Show progress bar and timer
+            self.progress_bar.setRange(0, 0)  # indeterminate
+            self.progress_bar.setVisible(True)
+            self.timer_label.setVisible(True)
+            self._elapsed_timer.start()
+            self._update_timer_display()
+            self._tick_timer.start()
+
+            self._worker = AnalysisWorker(config)
+            self._worker.finished.connect(self._on_analysis_done)
+            self._worker.error.connect(self._on_analysis_error)
+            self._worker.progress.connect(self._on_progress)
+            self._worker.start()
+
+        def _tick_elapsed(self) -> None:
+            """Update elapsed time display every second."""
+            self._update_timer_display()
+
+        def _update_timer_display(self) -> None:
+            """Refresh the timer label."""
+            elapsed_s = self._elapsed_timer.elapsed() / 1000.0
+            elapsed_str = self._format_time(elapsed_s)
+            self.timer_label.setText(f"Elapsed: {elapsed_str}")
+
+        @staticmethod
+        def _format_time(seconds: float) -> str:
+            """Format seconds as M:SS or H:MM:SS."""
+            seconds = int(seconds)
+            if seconds < 60:
+                return f"{seconds}s"
+            elif seconds < 3600:
+                m, s = divmod(seconds, 60)
+                return f"{m}:{s:02d}"
+            else:
+                h, rem = divmod(seconds, 3600)
+                m, s = divmod(rem, 60)
+                return f"{h}:{m:02d}:{s:02d}"
+
+        def _stop_progress(self) -> None:
+            """Stop the progress bar and timer."""
+            self._tick_timer.stop()
+            self.progress_bar.setVisible(False)
+            self.timer_label.setVisible(False)
+
+        def _on_analysis_done(self, result: dict) -> None:
+            """Handle completed analysis."""
+            actual_s = self._elapsed_timer.elapsed() / 1000.0
+            self._stop_progress()
+
+            self._result = result
+            self.run_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setVisible(False)
+
+            # Build summary text
+            summary = self._format_results_text(result)
+            self.output_text.setPlainText(summary)
+
+            # Update plots
+            self._update_plots(result)
+
+            # Status bar
+            mode = result["config"]["loading_mode"]
+            jw_kd = result["empirical"][mode]["judd_wright"]["knockdown"]
+            self.statusBar().showMessage(
+                f"Analysis complete in {actual_s:.1f}s. "
+                f"Judd-Wright {mode} knockdown = {jw_kd:.3f}"
+            )
+
+        def _on_analysis_error(self, msg: str) -> None:
+            """Handle analysis error."""
+            self._stop_progress()
+            self.run_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setVisible(False)
+            self.output_text.setPlainText(f"ERROR:\n{msg}")
+            self.statusBar().showMessage("Analysis failed.")
+            QMessageBox.critical(self, "Analysis Error", msg[:500])
+
+        def _on_stop(self) -> None:
+            """Stop the running analysis."""
+            self._stop_progress()
+
+            if self._worker is not None:
+                self._worker.request_stop()
+                if self._worker.isRunning():
+                    self._worker.terminate()
+                    self._worker.wait(2000)
+                self._worker = None
+
+            self.run_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setVisible(False)
+            self.statusBar().showMessage("Analysis stopped by user.")
+            self.output_text.setPlainText("Analysis was stopped by user.")
+
+        def _on_progress(self, msg: str) -> None:
+            """Update status bar with progress message."""
+            self.statusBar().showMessage(msg)
+
+        # ----------------------------------------------------------
+        # Results formatting
+        # ----------------------------------------------------------
+
+        def _format_results_text(self, result: dict) -> str:
+            """Format analysis results into a readable text summary."""
+            cfg = result["config"]
+            material = result["material"]
+            emp = result["empirical"]
+            mt = result["mori_tanaka"]
+            mesh = result["mesh"]
+
+            lines = []
+            lines.append("=" * 70)
+            lines.append("POROSITY ANALYSIS RESULTS")
+            lines.append("=" * 70)
+            lines.append(f"Material:       {cfg['material_name']}")
+            lines.append(f"Layup:          {cfg['n_plies']} plies, t_ply = {cfg['t_ply']:.3f} mm")
+            lines.append(f"Vp:             {cfg['Vp']:.1f}%")
+            lines.append(f"Distribution:   {cfg['distribution']}")
+            lines.append(f"Void shape:     {cfg['void_shape']}")
+            lines.append(f"Mesh:           {cfg['nx']}x{cfg['ny']}x{cfg['nz']} "
+                         f"({len(mesh.nodes)} nodes, {len(mesh.elements)} elements)")
+            lines.append("")
+
+            modes = ["compression", "tension", "shear", "ilss"]
+            models = ["judd_wright", "power_law", "linear"]
+
+            lines.append("-" * 70)
+            lines.append("EMPIRICAL MODEL KNOCKDOWN FACTORS")
+            lines.append("-" * 70)
+            header = f"{'Mode':<15}"
+            for m in models:
+                header += f"{m.replace('_', ' ').title():>18}"
+            lines.append(header)
+            lines.append("-" * 70)
+            for mode in modes:
+                row = f"{mode:<15}"
+                for model in models:
+                    kd = emp[mode][model]["knockdown"]
+                    fs = emp[mode][model]["failure_stress"]
+                    row += f"  {kd:.3f} ({fs:.0f} MPa)"
+                lines.append(row)
+
+            lines.append("")
+            lines.append("-" * 70)
+            lines.append("MORI-TANAKA MICROMECHANICS KNOCKDOWN FACTORS")
+            lines.append("-" * 70)
+            for mode in modes:
+                kd = mt[mode]["knockdown"]
+                fs = mt[mode]["failure_stress"]
+                lines.append(f"  {mode:<15} {kd:.3f}  ({fs:.0f} MPa)")
+
+            lines.append("")
+            lines.append("-" * 70)
+            lines.append("RANKINGS (compression, Judd-Wright)")
+            lines.append("-" * 70)
+            # Single config, so just show the knockdown
+            comp_kd = emp["compression"]["judd_wright"]["knockdown"]
+            comp_fs = emp["compression"]["judd_wright"]["failure_stress"]
+            lines.append(f"  Knockdown = {comp_kd:.3f}, Failure stress = {comp_fs:.0f} MPa")
+
+            return "\n".join(lines)
+
+        # ----------------------------------------------------------
+        # Plot updates
+        # ----------------------------------------------------------
+
+        def _update_plots(self, result: dict) -> None:
+            """Update all plot tabs with analysis results."""
+            if not HAS_MPL_QT or self.profile_canvas is None:
+                return
+
+            import matplotlib.pyplot as plt
+
+            self._plot_profile(result)
+            self._plot_mesh(result)
+            self._plot_results(result)
+
+            plt.close("all")
+
+        def _plot_profile(self, result: dict) -> None:
+            """Draw porosity profile on Profile tab (2-panel)."""
+            fig = self.profile_canvas.figure
+            fig.clear()
+
+            try:
+                pf = result["porosity_field"]
+                material = result["material"]
+
+                # Left: through-thickness profile
+                ax1 = fig.add_subplot(121)
+                z, Vp = pf.effective_porosity_profile(nz=200)
+                ax1.plot(Vp * 100, z, "b-", linewidth=2)
+                ax1.set_xlabel("Porosity (%)", fontsize=11)
+                ax1.set_ylabel("z (mm)", fontsize=11)
+                ax1.set_title("Through-Thickness Porosity Profile",
+                              fontsize=12, fontweight="bold")
+                ax1.grid(True, alpha=0.3)
+                ax1.set_xlim(left=0)
+
+                # Right: plan-view contour at midplane
+                ax2 = fig.add_subplot(122)
+                Lz = pf.Lz
+                x = np.linspace(0, 50, 100)
+                y = np.linspace(0, 20, 50)
+                X, Y = np.meshgrid(x, y)
+                Z_mid = np.full_like(X, Lz / 2)
+                Vp_map = pf.local_porosity(X.ravel(), Y.ravel(), Z_mid.ravel())
+                Vp_map = Vp_map.reshape(X.shape)
+                im = ax2.contourf(X, Y, Vp_map * 100, levels=20, cmap="YlOrRd")
+                fig.colorbar(im, ax=ax2, label="Porosity (%)")
+                ax2.set_xlabel("x (mm)", fontsize=11)
+                ax2.set_ylabel("y (mm)", fontsize=11)
+                ax2.set_title("Porosity at Midplane",
+                              fontsize=12, fontweight="bold")
+
+                fig.tight_layout()
+            except Exception as e:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"Profile plot error:\n{e}",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=10, color="red")
+                ax.set_axis_off()
+
+            self.profile_canvas.draw()
+
+        def _plot_mesh(self, result: dict) -> None:
+            """Draw 2D mesh cross-section with porosity contour on Mesh tab."""
+            fig = self.mesh_canvas.figure
+            fig.clear()
+
+            try:
+                mesh = result["mesh"]
+                nx1 = mesh.nx + 1
+                ny1 = mesh.ny + 1
+                ny_mid = mesh.ny // 2
+
+                # Gather cross-section nodes at mid-y
+                indices = []
+                for k in range(mesh.nz + 1):
+                    for i in range(mesh.nx + 1):
+                        idx = k * ny1 * nx1 + ny_mid * nx1 + i
+                        indices.append(idx)
+                indices = np.array(indices)
+
+                X = mesh.nodes[indices, 0].reshape(mesh.nz + 1, mesh.nx + 1)
+                Z = mesh.nodes[indices, 2].reshape(mesh.nz + 1, mesh.nx + 1)
+                P = mesh.porosity[indices].reshape(mesh.nz + 1, mesh.nx + 1)
+
+                ax = fig.add_subplot(111)
+                im = ax.contourf(X, Z, P * 100, levels=20, cmap="YlOrRd")
+                fig.colorbar(im, ax=ax, label="Porosity (%)")
+                ax.set_xlabel("x (mm)", fontsize=11)
+                ax.set_ylabel("z (mm)", fontsize=11)
+                ax.set_title(
+                    f"Cross-Section Porosity  |  "
+                    f"{len(mesh.nodes):,} nodes, {len(mesh.elements):,} elements",
+                    fontsize=12, fontweight="bold",
+                )
+                ax.set_aspect("equal")
+
+                fig.tight_layout()
+            except Exception as e:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"Mesh plot error:\n{e}",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=10, color="red")
+                ax.set_axis_off()
+
+            self.mesh_canvas.draw()
+
+        def _plot_results(self, result: dict) -> None:
+            """Draw knockdown bar chart on Results tab."""
+            fig = self.results_canvas.figure
+            fig.clear()
+
+            try:
+                emp = result["empirical"]
+                mt = result["mori_tanaka"]
+                cfg = result["config"]
+
+                modes = ["compression", "tension", "shear", "ilss"]
+                models = ["judd_wright", "power_law", "linear", "mori_tanaka"]
+                model_labels = ["Judd-Wright", "Power Law", "Linear", "Mori-Tanaka"]
+                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#333333"]
+
+                x = np.arange(len(modes))
+                width = 0.18
+
+                ax = fig.add_subplot(111)
+
+                for i, (model_key, label, color) in enumerate(
+                    zip(models, model_labels, colors)
+                ):
+                    vals = []
+                    for mode in modes:
+                        if model_key == "mori_tanaka":
+                            vals.append(mt[mode]["knockdown"])
+                        else:
+                            vals.append(emp[mode][model_key]["knockdown"])
+                    ax.bar(x + i * width, vals, width, label=label, color=color)
+
+                ax.set_xticks(x + 1.5 * width)
+                ax.set_xticklabels([m.upper() for m in modes], fontsize=10)
+                ax.set_ylabel("Knockdown Factor", fontsize=11)
+                ax.set_title(
+                    f"Strength Knockdown by Loading Mode  |  "
+                    f"Vp = {cfg['Vp']:.1f}%, {cfg['void_shape']}, "
+                    f"{cfg['distribution']}",
+                    fontsize=12, fontweight="bold",
+                )
+                ax.set_ylim(0, 1.1)
+                ax.legend(fontsize=9, loc="lower left")
+                ax.grid(True, alpha=0.3, axis="y")
+
+                fig.tight_layout()
+            except Exception as e:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"Results plot error:\n{e}",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=10, color="red")
+                ax.set_axis_off()
+
+            self.results_canvas.draw()
+
+        # ----------------------------------------------------------
+        # Menu actions
+        # ----------------------------------------------------------
+
+        def _on_new(self) -> None:
+            """Reset to defaults."""
+            self.material_combo.setCurrentIndex(0)
+            self.layup_edit.setText("[0/45/-45/90]_3s")
+            self.ply_thickness_spin.setValue(0.183)
+            self.vp_spin.setValue(3.0)
+            self.distribution_combo.setCurrentIndex(0)
+            self.void_shape_combo.setCurrentIndex(0)
+            self.loading_combo.setCurrentIndex(0)
+            self.nx_spin.setValue(30)
+            self.ny_spin.setValue(10)
+            self.nz_spin.setValue(12)
+            self.output_text.clear()
+            self._result = None
+            self.statusBar().showMessage("Ready")
+
+            # Clear plots
+            if HAS_MPL_QT and self.profile_canvas is not None:
+                for canvas, msg in [
+                    (self.profile_canvas, "Run an analysis to see porosity profile plots."),
+                    (self.mesh_canvas, "Run an analysis to see mesh visualization."),
+                    (self.results_canvas, "Run an analysis to see knockdown results."),
+                ]:
+                    canvas.figure.clear()
+                    ax = canvas.figure.add_subplot(111)
+                    ax.text(0.5, 0.5, msg, transform=ax.transAxes,
+                            ha="center", va="center", fontsize=12, color="0.5")
+                    ax.set_axis_off()
+                    canvas.draw()
+
+        def _on_export(self) -> None:
+            """Export results to JSON."""
+            if self._result is None:
+                QMessageBox.information(
+                    self, "No Results",
+                    "Run an analysis first before exporting."
+                )
+                return
+
+            filepath, _ = QFileDialog.getSaveFileName(
+                self, "Export Results", "porosity_results.json",
+                "JSON Files (*.json);;All Files (*)"
+            )
+            if filepath:
+                try:
+                    result = self._result
+                    cfg = result["config"]
+                    emp = result["empirical"]
+                    mt = result["mori_tanaka"]
+
+                    output = {
+                        "config": {
+                            "material": cfg["material_name"],
+                            "n_plies": cfg["n_plies"],
+                            "t_ply": cfg["t_ply"],
+                            "Vp_percent": cfg["Vp"],
+                            "distribution": cfg["distribution"],
+                            "void_shape": cfg["void_shape"],
+                            "mesh": f"{cfg['nx']}x{cfg['ny']}x{cfg['nz']}",
+                        },
+                        "empirical": {},
+                        "mori_tanaka": {},
+                    }
+                    for mode in emp:
+                        output["empirical"][mode] = {}
+                        for model in emp[mode]:
+                            r = emp[mode][model]
+                            output["empirical"][mode][model] = {
+                                "failure_stress_MPa": r["failure_stress"],
+                                "knockdown": r["knockdown"],
+                            }
+                    for mode in mt:
+                        r = mt[mode]
+                        output["mori_tanaka"][mode] = {
+                            "failure_stress_MPa": r["failure_stress"],
+                            "knockdown": r["knockdown"],
+                        }
+
+                    with open(filepath, "w") as f:
+                        json.dump(output, f, indent=2)
+
+                    self.statusBar().showMessage(f"Results exported to {filepath}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Export Error", str(e))
+
+        def _on_about(self) -> None:
+            """Show about dialog."""
+            QMessageBox.about(
+                self, "About PorosityFE",
+                "<h3>PorosityFE v1.0.0</h3>"
+                "<p>Porosity defect analysis for composite laminates.</p>"
+                "<p>Evaluates strength knockdown from distributed porosity "
+                "using empirical models (Judd-Wright, Power Law, Linear) "
+                "and Mori-Tanaka micromechanics homogenization.</p>"
+                "<p><b>References:</b></p>"
+                "<ul>"
+                "<li>Judd & Wright - Empirical porosity-strength relations</li>"
+                "<li>Mori & Tanaka (1973) - Mean-field micromechanics</li>"
+                "<li>Eshelby (1957) - Inclusion theory</li>"
+                "<li>Tsai-Wu - 3D failure criterion</li>"
+                "</ul>"
+            )
+
+
+# ======================================================================
+# Launch function
+# ======================================================================
+
+def launch() -> None:
+    """Launch the PorosityFE GUI application.
+
+    Raises
+    ------
+    ImportError
+        If PyQt6 is not installed.
+    """
+    _check_pyqt6()
+
+    app = QApplication.instance()
+    standalone = app is None
+    if standalone:
+        app = QApplication(sys.argv)
+
+    window = PorosityFEMainWindow()
+    window.show()
+
+    if standalone:
+        sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    main()
+    launch()
