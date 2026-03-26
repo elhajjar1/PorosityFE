@@ -79,6 +79,7 @@ if HAS_PYQT6:
                 from porosity_fe_analysis import (
                     MATERIALS, PorosityField, CompositeMesh,
                     EmpiricalSolver, MoriTanakaSolver,
+                    FESolver, FieldResults,
                 )
 
                 cfg = self.config
@@ -138,6 +139,30 @@ if HAS_PYQT6:
                 if self._stop_requested:
                     return
 
+                # --- FE Solver ---
+                loading_mode = cfg["loading_mode"]
+                # ilss not supported by FESolver BCs; fall back to compression
+                fe_loading = loading_mode if loading_mode in ("compression", "tension", "shear") else "compression"
+                applied_strain = -0.01 if fe_loading == "compression" else 0.01
+
+                self.progress.emit("Assembling stiffness matrix (FE)...")
+                fe_solver = FESolver(mesh, material, porosity_field, ply_angles=cfg["angles"])
+
+                if self._stop_requested:
+                    return
+
+                self.progress.emit("Solving FE system...")
+                fe_field: FieldResults = fe_solver.solve(
+                    loading=fe_loading,
+                    applied_strain=applied_strain,
+                    verbose=False,
+                )
+
+                if self._stop_requested:
+                    return
+
+                self.progress.emit("Recovering FE stresses...")
+
                 self.progress.emit("Analysis complete.")
 
                 results = {
@@ -149,6 +174,9 @@ if HAS_PYQT6:
                     "mori_tanaka_solver": mori_tanaka,
                     "empirical": emp_results,
                     "mori_tanaka": mt_results,
+                    "fe_solver": fe_solver,
+                    "fe_field": fe_field,
+                    "fe_loading": fe_loading,
                 }
 
                 self.finished.emit(results)
@@ -252,9 +280,10 @@ if HAS_PYQT6:
                 self.profile_canvas = FigureCanvas(Figure(figsize=(8, 5)))
                 self.mesh_canvas = FigureCanvas(Figure(figsize=(8, 5)))
                 self.results_canvas = FigureCanvas(Figure(figsize=(8, 5)))
+                self.stress_canvas = FigureCanvas(Figure(figsize=(8, 5)))
 
                 for canvas in (self.profile_canvas, self.mesh_canvas,
-                               self.results_canvas):
+                               self.results_canvas, self.stress_canvas):
                     canvas.setSizePolicy(
                         QSizePolicy.Policy.Expanding,
                         QSizePolicy.Policy.Expanding,
@@ -264,11 +293,34 @@ if HAS_PYQT6:
                 self.plot_tabs.addTab(self.mesh_canvas, "Mesh")
                 self.plot_tabs.addTab(self.results_canvas, "Results")
 
+                # Stress tab: wrap canvas + dropdown in a container widget
+                stress_container = QWidget()
+                stress_layout = QVBoxLayout(stress_container)
+                stress_layout.setContentsMargins(4, 4, 4, 4)
+
+                stress_ctrl_layout = QHBoxLayout()
+                stress_ctrl_layout.addWidget(QLabel("Stress component:"))
+                self.stress_component_combo = QComboBox()
+                self.stress_component_combo.addItems([
+                    "sigma_11", "sigma_22", "sigma_33",
+                    "tau_23", "tau_13", "tau_12", "Von Mises",
+                ])
+                self.stress_component_combo.currentIndexChanged.connect(
+                    self._on_stress_component_changed
+                )
+                stress_ctrl_layout.addWidget(self.stress_component_combo)
+                stress_ctrl_layout.addStretch()
+                stress_layout.addLayout(stress_ctrl_layout)
+                stress_layout.addWidget(self.stress_canvas)
+
+                self.plot_tabs.addTab(stress_container, "Stress")
+
                 # Draw placeholder text on each canvas
                 for canvas, msg in [
                     (self.profile_canvas, "Run an analysis to see porosity profile plots."),
                     (self.mesh_canvas, "Run an analysis to see mesh visualization."),
                     (self.results_canvas, "Run an analysis to see knockdown results."),
+                    (self.stress_canvas, "Run an analysis to see FE stress contours."),
                 ]:
                     ax = canvas.figure.add_subplot(111)
                     ax.text(0.5, 0.5, msg, transform=ax.transAxes,
@@ -279,12 +331,16 @@ if HAS_PYQT6:
                 self.profile_canvas = None
                 self.mesh_canvas = None
                 self.results_canvas = None
+                self.stress_canvas = None
+                self.stress_component_combo = None
                 self.plot_tabs.addTab(
                     QLabel("Run an analysis to see porosity profile plots."), "Profile")
                 self.plot_tabs.addTab(
                     QLabel("Run an analysis to see mesh visualization."), "Mesh")
                 self.plot_tabs.addTab(
                     QLabel("Run an analysis to see knockdown results."), "Results")
+                self.plot_tabs.addTab(
+                    QLabel("Run an analysis to see FE stress contours."), "Stress")
 
             right_splitter.addWidget(self.plot_tabs)
 
@@ -620,9 +676,11 @@ if HAS_PYQT6:
             # Status bar
             mode = result["config"]["loading_mode"]
             jw_kd = result["empirical"][mode]["judd_wright"]["knockdown"]
+            fe_field = result.get("fe_field")
+            fe_str = f"  |  FE knockdown = {fe_field.knockdown:.3f}" if fe_field is not None else ""
             self.statusBar().showMessage(
                 f"Analysis complete in {actual_s:.1f}s. "
-                f"Judd-Wright {mode} knockdown = {jw_kd:.3f}"
+                f"Judd-Wright {mode} knockdown = {jw_kd:.3f}{fe_str}"
             )
 
         def _on_analysis_error(self, msg: str) -> None:
@@ -667,6 +725,8 @@ if HAS_PYQT6:
             emp = result["empirical"]
             mt = result["mori_tanaka"]
             mesh = result["mesh"]
+            fe_field = result.get("fe_field")
+            fe_loading = result.get("fe_loading", "compression")
 
             lines = []
             lines.append("=" * 70)
@@ -718,6 +778,35 @@ if HAS_PYQT6:
             comp_fs = emp["compression"]["judd_wright"]["failure_stress"]
             lines.append(f"  Knockdown = {comp_kd:.3f}, Failure stress = {comp_fs:.0f} MPa")
 
+            if fe_field is not None:
+                lines.append("")
+                lines.append("-" * 70)
+                lines.append("FINITE ELEMENT ANALYSIS RESULTS")
+                lines.append(f"  Loading mode:     {fe_loading}")
+                lines.append(f"  FE Knockdown:     {fe_field.knockdown:.4f}")
+                lines.append(f"  Max Tsai-Wu FI:   {fe_field.max_failure_index:.4f}")
+
+                disp = fe_field.displacement  # (n_nodes, 3)
+                max_disp = float(np.linalg.norm(disp, axis=1).max())
+                lines.append(f"  Max displacement: {max_disp:.4e} mm")
+
+                sg = fe_field.stress_global  # (n_elem, n_gp, 6)
+                s_avg = sg.mean(axis=1)  # (n_elem, 6)
+                comp_names = ["sigma_11", "sigma_22", "sigma_33", "tau_23", "tau_13", "tau_12"]
+                lines.append("  Stress range (MPa):")
+                for ci, cname in enumerate(comp_names):
+                    sv = s_avg[:, ci]
+                    lines.append(f"    {cname:<12}  min={sv.min():10.2f}  max={sv.max():10.2f}")
+
+                # Von Mises
+                s1, s2, s3 = s_avg[:, 0], s_avg[:, 1], s_avg[:, 2]
+                s4, s5, s6 = s_avg[:, 3], s_avg[:, 4], s_avg[:, 5]
+                vm = np.sqrt(0.5 * (
+                    (s1 - s2)**2 + (s2 - s3)**2 + (s3 - s1)**2
+                    + 6.0 * (s4**2 + s5**2 + s6**2)
+                ))
+                lines.append(f"    {'von_mises':<12}  min={vm.min():10.2f}  max={vm.max():10.2f}")
+
             return "\n".join(lines)
 
         # ----------------------------------------------------------
@@ -734,6 +823,7 @@ if HAS_PYQT6:
             self._plot_profile(result)
             self._plot_mesh(result)
             self._plot_results(result)
+            self._plot_stress(result)
 
             plt.close("all")
 
@@ -784,7 +874,7 @@ if HAS_PYQT6:
             self.profile_canvas.draw()
 
         def _plot_mesh(self, result: dict) -> None:
-            """Draw 2D mesh cross-section with porosity contour on Mesh tab."""
+            """Draw 2D mesh cross-section colored by stiffness reduction on Mesh tab."""
             fig = self.mesh_canvas.figure
             fig.clear()
 
@@ -804,15 +894,53 @@ if HAS_PYQT6:
 
                 X = mesh.nodes[indices, 0].reshape(mesh.nz + 1, mesh.nx + 1)
                 Z = mesh.nodes[indices, 2].reshape(mesh.nz + 1, mesh.nx + 1)
-                P = mesh.porosity[indices].reshape(mesh.nz + 1, mesh.nx + 1)
+                # Stiffness retention = 1 - porosity
+                Sr = mesh.stiffness_reduction[indices].reshape(mesh.nz + 1, mesh.nx + 1)
 
                 ax = fig.add_subplot(111)
-                im = ax.contourf(X, Z, P * 100, levels=20, cmap="YlOrRd")
-                fig.colorbar(im, ax=ax, label="Porosity (%)")
+                im = ax.contourf(X, Z, Sr * 100, levels=20, cmap="RdYlGn",
+                                 vmin=max(0, Sr.min() * 100 - 1), vmax=100)
+                cb = fig.colorbar(im, ax=ax, label="Stiffness Retention (%)")
+
+                # Overlay element boundaries for a FE-mesh look (sampled)
+                step_x = max(1, mesh.nx // 20)
+                step_z = max(1, mesh.nz // 20)
+                for k in range(0, mesh.nz + 1, step_z):
+                    row_x = mesh.nodes[
+                        [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 0
+                    ]
+                    row_z = mesh.nodes[
+                        [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 2
+                    ]
+                    ax.plot(row_x, row_z, "k-", linewidth=0.3, alpha=0.4)
+                for i in range(0, mesh.nx + 1, step_x):
+                    col_x = mesh.nodes[
+                        [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 0
+                    ]
+                    col_z = mesh.nodes[
+                        [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 2
+                    ]
+                    ax.plot(col_x, col_z, "k-", linewidth=0.3, alpha=0.4)
+
+                # Mark void elements (cross-section at mid-y)
+                void_elems = mesh.void_elements
+                if len(void_elems) > 0:
+                    # Compute element centroids in the mid-y cross-section
+                    elem_x = []
+                    elem_z = []
+                    for eidx in void_elems:
+                        elem_nodes = mesh.nodes[mesh.elements[eidx]]
+                        cx, cz = float(elem_nodes[:, 0].mean()), float(elem_nodes[:, 2].mean())
+                        elem_x.append(cx)
+                        elem_z.append(cz)
+                    ax.scatter(elem_x, elem_z, color="red", s=6, alpha=0.6,
+                               zorder=5, label=f"Void elements ({len(void_elems)})")
+                    ax.legend(fontsize=8, loc="upper right")
+
                 ax.set_xlabel("x (mm)", fontsize=11)
                 ax.set_ylabel("z (mm)", fontsize=11)
                 ax.set_title(
-                    f"Cross-Section Porosity  |  "
+                    f"FE Mesh — Stiffness Retention  |  "
                     f"{len(mesh.nodes):,} nodes, {len(mesh.elements):,} elements",
                     fontsize=12, fontweight="bold",
                 )
@@ -836,15 +964,25 @@ if HAS_PYQT6:
             try:
                 emp = result["empirical"]
                 mt = result["mori_tanaka"]
+                fe_field = result.get("fe_field")
+                fe_loading = result.get("fe_loading", "compression")
                 cfg = result["config"]
 
                 modes = ["compression", "tension", "shear", "ilss"]
                 models = ["judd_wright", "power_law", "linear", "mori_tanaka"]
                 model_labels = ["Judd-Wright", "Power Law", "Linear", "Mori-Tanaka"]
-                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#333333"]
+                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#555555"]
 
+                # Add FE bar if available
+                has_fe = fe_field is not None
+                if has_fe:
+                    models.append("fe")
+                    model_labels.append(f"FE ({fe_loading})")
+                    colors.append("#d62728")
+
+                n_models = len(models)
                 x = np.arange(len(modes))
-                width = 0.18
+                width = 0.8 / n_models
 
                 ax = fig.add_subplot(111)
 
@@ -855,11 +993,23 @@ if HAS_PYQT6:
                     for mode in modes:
                         if model_key == "mori_tanaka":
                             vals.append(mt[mode]["knockdown"])
+                        elif model_key == "fe":
+                            # FE was run for fe_loading only; show same value for
+                            # the matching mode, NaN for others
+                            if mode == fe_loading:
+                                vals.append(fe_field.knockdown)
+                            else:
+                                vals.append(float("nan"))
                         else:
                             vals.append(emp[mode][model_key]["knockdown"])
-                    ax.bar(x + i * width, vals, width, label=label, color=color)
+                    # Plot bars, skip NaN
+                    bar_x = x + i * width - (n_models - 1) * width / 2
+                    for bx, bv in zip(bar_x, vals):
+                        if not np.isnan(bv):
+                            ax.bar(bx, bv, width, color=color,
+                                   label=label if bx == bar_x[0] else "")
 
-                ax.set_xticks(x + 1.5 * width)
+                ax.set_xticks(x)
                 ax.set_xticklabels([m.upper() for m in modes], fontsize=10)
                 ax.set_ylabel("Knockdown Factor", fontsize=11)
                 ax.set_title(
@@ -881,6 +1031,106 @@ if HAS_PYQT6:
                 ax.set_axis_off()
 
             self.results_canvas.draw()
+
+        def _on_stress_component_changed(self, _index: int) -> None:
+            """Re-draw the stress contour when the component dropdown changes."""
+            if self._result is not None and "fe_field" in self._result:
+                import matplotlib.pyplot as plt
+                self._plot_stress(self._result)
+                plt.close("all")
+
+        def _plot_stress(self, result: dict) -> None:
+            """Draw FE stress contour at mid-y cross-section on Stress tab."""
+            if not HAS_MPL_QT or self.stress_canvas is None:
+                return
+
+            fig = self.stress_canvas.figure
+            fig.clear()
+
+            fe_field = result.get("fe_field")
+            if fe_field is None:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, "No FE results available.",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=12, color="0.5")
+                ax.set_axis_off()
+                self.stress_canvas.draw()
+                return
+
+            try:
+                mesh = result["mesh"]
+                stress_global = fe_field.stress_global  # (n_elem, n_gp, 6)
+
+                # Determine component index
+                component_map = {
+                    "sigma_11": 0, "sigma_22": 1, "sigma_33": 2,
+                    "tau_23": 3, "tau_13": 4, "tau_12": 5, "Von Mises": -1,
+                }
+                comp_name = "sigma_11"
+                if self.stress_component_combo is not None:
+                    comp_name = self.stress_component_combo.currentText()
+                comp_idx = component_map.get(comp_name, 0)
+
+                # Average GP stresses to element centres
+                # stress_global shape: (n_elem, n_gp, 6)
+                if comp_idx == -1:
+                    # Von Mises
+                    s = stress_global.mean(axis=1)  # (n_elem, 6)
+                    s1, s2, s3 = s[:, 0], s[:, 1], s[:, 2]
+                    s4, s5, s6 = s[:, 3], s[:, 4], s[:, 5]
+                    elem_stress = np.sqrt(0.5 * (
+                        (s1 - s2)**2 + (s2 - s3)**2 + (s3 - s1)**2
+                        + 6.0 * (s4**2 + s5**2 + s6**2)
+                    ))
+                    label = "Von Mises Stress (MPa)"
+                else:
+                    elem_stress = stress_global.mean(axis=1)[:, comp_idx]  # (n_elem,)
+                    labels_map = {
+                        "sigma_11": r"$\sigma_{11}$ (MPa)",
+                        "sigma_22": r"$\sigma_{22}$ (MPa)",
+                        "sigma_33": r"$\sigma_{33}$ (MPa)",
+                        "tau_23": r"$\tau_{23}$ (MPa)",
+                        "tau_13": r"$\tau_{13}$ (MPa)",
+                        "tau_12": r"$\tau_{12}$ (MPa)",
+                    }
+                    label = labels_map.get(comp_name, comp_name + " (MPa)")
+
+                # Extract elements at mid-y slice (j = ny // 2)
+                ny_mid = mesh.ny // 2
+                mid_elem_indices = []
+                for k in range(mesh.nz):
+                    for i in range(mesh.nx):
+                        e_idx = k * mesh.ny * mesh.nx + ny_mid * mesh.nx + i
+                        mid_elem_indices.append(e_idx)
+                mid_elem_indices = np.array(mid_elem_indices)
+
+                # Element centre coordinates for mid-y elements
+                elem_nodes_coords = mesh.nodes[mesh.elements[mid_elem_indices]]  # (n_mid, 8, 3)
+                cx = elem_nodes_coords[:, :, 0].mean(axis=1)
+                cz = elem_nodes_coords[:, :, 2].mean(axis=1)
+                sv = elem_stress[mid_elem_indices]
+
+                ax = fig.add_subplot(111)
+                # tricontourf needs at least 3 unique points
+                tcf = ax.tricontourf(cx, cz, sv, levels=20, cmap="RdBu_r")
+                fig.colorbar(tcf, ax=ax, label=label)
+                ax.set_xlabel("x (mm)", fontsize=11)
+                ax.set_ylabel("z (mm)", fontsize=11)
+                ax.set_title(
+                    f"FE Stress: {comp_name}  |  mid-y cross-section",
+                    fontsize=12, fontweight="bold",
+                )
+                ax.set_aspect("equal")
+                fig.tight_layout()
+
+            except Exception as e:
+                ax = fig.add_subplot(111)
+                ax.text(0.5, 0.5, f"Stress plot error:\n{e}",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=10, color="red")
+                ax.set_axis_off()
+
+            self.stress_canvas.draw()
 
         # ----------------------------------------------------------
         # Menu actions
@@ -908,6 +1158,7 @@ if HAS_PYQT6:
                     (self.profile_canvas, "Run an analysis to see porosity profile plots."),
                     (self.mesh_canvas, "Run an analysis to see mesh visualization."),
                     (self.results_canvas, "Run an analysis to see knockdown results."),
+                    (self.stress_canvas, "Run an analysis to see FE stress contours."),
                 ]:
                     canvas.figure.clear()
                     ax = canvas.figure.add_subplot(111)
