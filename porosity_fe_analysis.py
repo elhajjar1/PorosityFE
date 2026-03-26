@@ -1783,6 +1783,9 @@ class GlobalAssembler:
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
         self._void_shape = porosity_field.void_shape_radii
+        self._ke_cache: Dict[tuple, np.ndarray] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def create_element(self, elem_idx: int) -> Hex8Element:
         """Create a Hex8Element for the given element index.
@@ -1807,6 +1810,48 @@ class GlobalAssembler:
             is_void=is_void,
         )
 
+    def _element_cache_key(self, elem_idx: int) -> Optional[tuple]:
+        """Return a cache key if this element can reuse a cached Ke.
+
+        Elements can share stiffness matrices when they have:
+        - Same ply angle
+        - Same uniform porosity at all 8 nodes
+        - Same element geometry (same node_coords shape via dx, dy, dz)
+        - Same void status
+        """
+        node_ids = self.mesh.elements[elem_idx]
+        node_porosities = self.mesh.porosity[node_ids]
+        # Only cache if all nodes have the same porosity
+        if not np.allclose(node_porosities, node_porosities[0], atol=1e-12):
+            return None
+        is_void = elem_idx in self.mesh.void_element_set
+        ply_angle = float(self.mesh.ply_angles[elem_idx])
+        porosity_val = round(float(node_porosities[0]), 10)
+        # For structured meshes, all elements have the same shape.
+        # Use element edge lengths as a geometry fingerprint.
+        coords = self.mesh.nodes[node_ids]
+        dx = round(float(coords[1, 0] - coords[0, 0]), 8)
+        dy = round(float(coords[3, 1] - coords[0, 1]), 8)
+        dz = round(float(coords[4, 2] - coords[0, 2]), 8)
+        return (ply_angle, porosity_val, is_void, dx, dy, dz)
+
+    def _cache_uniform_elements(self) -> None:
+        """Pre-compute stiffness matrices for elements that share properties.
+
+        For uniform porosity distributions on structured meshes, many elements
+        differ only in ply angle. This method identifies unique element types
+        and caches their stiffness matrices.
+        """
+        self._ke_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+        for e in range(self.mesh.n_elements):
+            key = self._element_cache_key(e)
+            if key is not None and key not in self._ke_cache:
+                elem = self.create_element(e)
+                self._ke_cache[key] = elem.stiffness_matrix()
+
     def element_dof_indices(self, elem_idx: int) -> np.ndarray:
         """Global DOF indices (24,) for an element's 8 nodes."""
         node_ids = self.mesh.elements[elem_idx]
@@ -1822,7 +1867,12 @@ class GlobalAssembler:
         """Assemble global stiffness matrix K in CSC format.
 
         Uses COO pre-allocation: n_elem * 576 entries.
+        Elements with identical properties (same ply angle, porosity, geometry)
+        reuse cached stiffness matrices for faster assembly.
         """
+        # Pre-compute cache for uniform elements
+        self._cache_uniform_elements()
+
         n_elem = self.mesh.n_elements
         n_dof = self.mesh.n_dof
         entries_per_elem = 24 * 24  # 576
@@ -1840,8 +1890,16 @@ class GlobalAssembler:
             if verbose and e % 500 == 0:
                 print(f"  Assembling element {e}/{n_elem} ({100.0 * e / n_elem:.1f}%)")
 
-            elem = self.create_element(e)
-            Ke = elem.stiffness_matrix()
+            # Try cache first
+            key = self._element_cache_key(e)
+            if key is not None and key in self._ke_cache:
+                Ke = self._ke_cache[key]
+                self._cache_hits += 1
+            else:
+                elem = self.create_element(e)
+                Ke = elem.stiffness_matrix()
+                self._cache_misses += 1
+
             dofs = self.element_dof_indices(e)
 
             offset = e * entries_per_elem
@@ -1853,6 +1911,8 @@ class GlobalAssembler:
             n_void = len(self.mesh.void_elements)
             print(f"  Assembling element {n_elem}/{n_elem} (100.0%) -- done.")
             print(f"  Void inclusion elements: {n_void} (E ~ {Hex8Element.VOID_MODULUS} MPa)")
+            print(f"  Ke cache: {len(self._ke_cache)} unique, "
+                  f"{self._cache_hits} hits, {self._cache_misses} misses")
             print(f"  Building sparse matrix: {n_dof} DOFs, {total_entries} COO entries")
 
         K_coo = scipy.sparse.coo_matrix(
