@@ -1520,7 +1520,12 @@ class Hex8Element:
             C_bar = self._degraded_stiffness(xi, eta, zeta)
             J = self.jacobian(xi, eta, zeta)
             detJ = np.linalg.det(J)
-            Ke += (B.T @ C_bar @ B) * detJ * w
+            with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+                Ke_contrib = (B.T @ C_bar @ B) * detJ * w
+            # Protect against overflow in void elements
+            if np.any(~np.isfinite(Ke_contrib)):
+                Ke_contrib = np.where(np.isfinite(Ke_contrib), Ke_contrib, 0.0)
+            Ke += Ke_contrib
         return Ke
 
     def stress_at_gauss_points(self, u_elem: np.ndarray) -> np.ndarray:
@@ -1835,6 +1840,9 @@ class BoundaryHandler:
         if not constrained_dofs:
             return K, F
 
+        # Ensure K is in a sparse format that supports conversion to LIL
+        if not scipy.sparse.issparse(K):
+            K = scipy.sparse.csc_matrix(K)
         K_lil = K.tolil()
         F_mod = F.copy()
 
@@ -2010,10 +2018,36 @@ class FESolver:
         # 6. Evaluate Tsai-Wu at each GP
         max_fi = self._evaluate_tsai_wu(stress_local)
 
-        # 7. Compute knockdown
-        # Compare with pristine: solve same problem with Vp=0 analytically
-        # Use the max failure index to estimate knockdown
-        knockdown = 1.0 / max(max_fi, 1e-12) if max_fi > 0 else 1.0
+        # 7. Compute knockdown as average-stress ratio (porous / pristine)
+        # For displacement-controlled loading, the knockdown is the ratio of
+        # the volume-averaged axial stress to the pristine expected stress.
+
+        # Average axial stress (sigma_xx) across all elements and Gauss points
+        avg_sigma_xx = np.mean(stress_global[:, :, 0])
+
+        # Pristine expected stress: E_eff * applied_strain
+        # Compute E_eff from CLT: weighted average of rotated C11 across plies
+        C_pristine = self.material.get_stiffness_matrix()
+        # Use per-element ply angles (weighted by element count, equal-volume elements)
+        unique_angles, angle_counts = np.unique(self.mesh.ply_angles,
+                                                return_counts=True)
+        C11_avg = 0.0
+        total_count = angle_counts.sum()
+        for angle, count in zip(unique_angles, angle_counts):
+            angle_rad = np.radians(float(angle))
+            if abs(angle_rad) > 1e-15:
+                C_rot = rotate_stiffness_3d(C_pristine, angle_rad, axis='z')
+            else:
+                C_rot = C_pristine
+            C11_avg += C_rot[0, 0] * count
+        E_eff = C11_avg / total_count
+
+        pristine_sigma_xx = E_eff * applied_strain  # same sign as applied
+
+        if abs(pristine_sigma_xx) > 1e-12:
+            knockdown = abs(avg_sigma_xx) / abs(pristine_sigma_xx)
+        else:
+            knockdown = 1.0
         knockdown = min(knockdown, 1.0)
 
         displacement = u.reshape(-1, 3)
@@ -2038,6 +2072,10 @@ class FESolver:
     def _evaluate_tsai_wu(self, stress_local: np.ndarray) -> float:
         """Evaluate Tsai-Wu failure index at all Gauss points.
 
+        Strengths are degraded per-element based on the element's average
+        porosity using the Mori-Tanaka stiffness ratio approach.  Void
+        elements (porosity > 0.95) are skipped (FI = 0, they carry no load).
+
         Parameters
         ----------
         stress_local : np.ndarray
@@ -2049,31 +2087,49 @@ class FESolver:
             Maximum Tsai-Wu failure index.
         """
         mat = self.material
-        # Strength values
-        Xt = mat.sigma_1t
-        Xc = mat.sigma_1c
-        Yt = mat.sigma_2t
-        Yc = mat.sigma_2c
-        S12 = mat.tau_12
-        S23 = mat.tau_ilss
-
-        # Tsai-Wu coefficients
-        F1 = 1.0 / Xt - 1.0 / Xc
-        F2 = 1.0 / Yt - 1.0 / Yc
-        F3 = F2  # transverse isotropy
-        F11 = 1.0 / (Xt * Xc)
-        F22 = 1.0 / (Yt * Yc)
-        F33 = F22
-        F44 = 1.0 / S23**2
-        F55 = 1.0 / S12**2
-        F66 = 1.0 / S12**2
-        F12 = -0.5 * np.sqrt(F11 * F22)
-        F13 = F12
-        F23 = -0.5 * np.sqrt(F22 * F33)
+        C_m_pristine = mat.get_isotropic_matrix_stiffness()
 
         max_fi = 0.0
         n_elem, n_gp, _ = stress_local.shape
         for e in range(n_elem):
+            # Compute per-element porosity-degraded strengths
+            elem_Vp = float(np.mean(self.mesh.porosity[self.mesh.elements[e]]))
+
+            # Skip void elements (carry no meaningful load)
+            if elem_Vp > 0.95:
+                continue
+
+            if elem_Vp > 1e-12:
+                C_eff = _mt_effective_stiffness(
+                    C_m_pristine, elem_Vp,
+                    self.porosity_field.void_shape_radii,
+                    mat.matrix_poisson)
+                ratio = np.sqrt(max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0))
+            else:
+                ratio = 1.0
+
+            # Degrade strengths
+            Xt = mat.sigma_1t * ratio
+            Xc = mat.sigma_1c * ratio
+            Yt = mat.sigma_2t * ratio
+            Yc = mat.sigma_2c * ratio
+            S12 = mat.tau_12 * ratio
+            S23 = mat.tau_ilss * ratio
+
+            # Tsai-Wu coefficients (recomputed per element)
+            F1 = 1.0 / Xt - 1.0 / Xc
+            F2 = 1.0 / Yt - 1.0 / Yc
+            F3 = F2  # transverse isotropy
+            F11 = 1.0 / (Xt * Xc)
+            F22 = 1.0 / (Yt * Yc)
+            F33 = F22
+            F44 = 1.0 / S23**2
+            F55 = 1.0 / S12**2
+            F66 = 1.0 / S12**2
+            F12 = -0.5 * np.sqrt(F11 * F22)
+            F13 = F12
+            F23 = -0.5 * np.sqrt(F22 * F33)
+
             for g in range(n_gp):
                 s = stress_local[e, g]
                 fi = (F1 * s[0] + F2 * s[1] + F3 * s[2] +
