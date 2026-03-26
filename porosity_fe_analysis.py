@@ -104,6 +104,13 @@ class MaterialProperties:
         C_m[3, 3] = C_m[4, 4] = C_m[5, 5] = mu
         return C_m
 
+    def __repr__(self) -> str:
+        return (f"MaterialProperties(E11={self.E11}, E22={self.E22}, "
+                f"G12={self.G12}, nu12={self.nu12}, "
+                f"sigma_1c={self.sigma_1c}, sigma_1t={self.sigma_1t}, "
+                f"n_plies={self.n_plies}, t_ply={self.t_ply}, "
+                f"Vf={self.fiber_volume_fraction})")
+
 
 MATERIALS = {
     'T800_epoxy': MaterialProperties(
@@ -207,6 +214,12 @@ class VoidGeometry:
     @property
     def aspect_ratio(self) -> float:
         return float(np.max(self.radii) / np.min(self.radii))
+
+    def __repr__(self) -> str:
+        return (f"VoidGeometry(center={self.center.tolist()}, "
+                f"radii={self.radii.tolist()}, "
+                f"orientation={self.orientation:.3f}, "
+                f"aspect_ratio={self.aspect_ratio:.2f})")
 
 # ============================================================
 # SECTION 3: POROSITY FIELD MODEL
@@ -333,6 +346,12 @@ class PorosityField:
         y_mid = np.full(nz, 10.0)
         Vp_vals = self.local_porosity(x_mid, y_mid, z_coords)
         return z_coords, Vp_vals
+
+    def __repr__(self) -> str:
+        return (f"PorosityField(Vp={self.Vp:.4f}, "
+                f"distribution='{self.distribution}', "
+                f"void_shape={self.void_shape_radii}, "
+                f"n_discrete_voids={len(self.discrete_voids)})")
 
 # ============================================================
 # SECTION 4: MESH GENERATION
@@ -485,6 +504,12 @@ class CompositeMesh:
             return np.where(np.abs(coords[:, 2] - coords[:, 2].max()) < tol)[0]
         else:
             raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
+
+    def __repr__(self) -> str:
+        return (f"CompositeMesh(nx={self.nx}, ny={self.ny}, nz={self.nz}, "
+                f"n_nodes={self.n_nodes}, n_elements={self.n_elements}, "
+                f"domain={self.L_x:.1f}x{self.L_y:.1f}x{self.L_z:.2f}mm, "
+                f"void_elements={len(self.void_elements)})")
 
 
 def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
@@ -2033,6 +2058,13 @@ class FieldResults:
     strain_local: np.ndarray
     max_failure_index: float
     knockdown: float
+
+    def __repr__(self) -> str:
+        n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
+        n_elem = self.stress_global.shape[0] if self.stress_global is not None else 0
+        return (f"FieldResults(n_nodes={n_nodes}, n_elements={n_elem}, "
+                f"max_FI={self.max_failure_index:.4f}, "
+                f"knockdown={self.knockdown:.4f})")
 
 
 class FESolver:

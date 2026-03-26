@@ -1169,6 +1169,45 @@ class TestFEExportResults:
         assert data['failure']['knockdown_factor'] > 0
 
 
+class TestReprMethods:
+    def test_material_repr(self):
+        mat = MATERIALS['T800_epoxy']
+        r = repr(mat)
+        assert 'MaterialProperties' in r
+        assert 'E11=161000' in r
+
+    def test_void_geometry_repr(self):
+        void = VoidGeometry(center=(1, 2, 3), radii=(1, 1, 1))
+        r = repr(void)
+        assert 'VoidGeometry' in r
+        assert 'aspect_ratio=1.00' in r
+
+    def test_porosity_field_repr(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='uniform')
+        r = repr(pf)
+        assert 'PorosityField' in r
+        assert '0.0300' in r
+
+    def test_composite_mesh_repr(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, mat, nx=3, ny=2, nz=2)
+        r = repr(mesh)
+        assert 'CompositeMesh' in r
+        assert 'nx=3' in r
+
+    def test_field_results_repr(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, mat, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, mat, pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        r = repr(results)
+        assert 'FieldResults' in r
+        assert 'knockdown=' in r
+
+
 class TestVoidInclusions:
     """Tests that discrete voids are modeled as near-zero stiffness inclusions."""
 
