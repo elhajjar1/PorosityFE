@@ -26,6 +26,8 @@ a = Analysis(
         'mpl_toolkits.mplot3d.art3d',
         'json',
         'dataclasses',
+        'http.server',
+        'webbrowser',
         'porosity_fe_analysis',
         'appdirs',
         'packaging',
