@@ -2,6 +2,7 @@
 """Tests for porosity_fe_analysis.py"""
 
 import numpy as np
+import scipy.sparse
 import pytest
 import sys
 import os
@@ -17,7 +18,12 @@ import json
 from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, VOID_SHAPES,
                                    PorosityField, POROSITY_CONFIGS, CompositeMesh,
                                    EmpiricalSolver, MoriTanakaSolver, FEVisualizer,
-                                   compare_configurations, save_results_to_json)
+                                   compare_configurations, save_results_to_json,
+                                   rotation_matrix_3d, stress_transformation_3d,
+                                   strain_transformation_3d, rotate_stiffness_3d,
+                                   gauss_points_1d, gauss_points_hex,
+                                   Hex8Element, _mt_effective_stiffness,
+                                   GlobalAssembler, BoundaryHandler, FESolver, FieldResults)
 
 
 class TestMaterialProperties:
@@ -581,3 +587,493 @@ class TestIntegration:
             assert 'uniform_spherical' in results
             kd = results['uniform_spherical']['empirical']['compression']['judd_wright']['knockdown']
             assert 0 < kd < 1.0
+
+
+# ============================================================
+# FE SOLVER TESTS
+# ============================================================
+
+class TestCoordinateTransforms:
+    def test_rotation_matrix_identity_for_zero_angle(self):
+        R = rotation_matrix_3d(0.0, axis='z')
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-15)
+
+    def test_rotation_matrix_orthogonal(self):
+        R = rotation_matrix_3d(np.pi / 4, axis='z')
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-14)
+
+    def test_rotation_matrix_y_axis(self):
+        R = rotation_matrix_3d(np.pi / 2, axis='y')
+        # After 90-deg rotation about y: x->-z, z->x
+        expected = np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], dtype=float)
+        np.testing.assert_allclose(R, expected, atol=1e-14)
+
+    def test_rotation_matrix_invalid_axis(self):
+        with pytest.raises(ValueError):
+            rotation_matrix_3d(0.0, axis='x')
+
+    def test_stress_transform_identity_at_zero(self):
+        T = stress_transformation_3d(0.0, axis='z')
+        np.testing.assert_allclose(T, np.eye(6), atol=1e-15)
+
+    def test_strain_transform_identity_at_zero(self):
+        T = strain_transformation_3d(0.0, axis='z')
+        np.testing.assert_allclose(T, np.eye(6), atol=1e-15)
+
+    def test_rotate_stiffness_identity_at_zero(self):
+        mat = MATERIALS['T800_epoxy']
+        C = mat.get_stiffness_matrix()
+        C_rot = rotate_stiffness_3d(C, 0.0, axis='z')
+        np.testing.assert_allclose(C_rot, C, atol=1e-6)
+
+    def test_rotate_stiffness_180_returns_same(self):
+        """180-degree rotation about z should return same stiffness for orthotropic."""
+        mat = MATERIALS['T800_epoxy']
+        C = mat.get_stiffness_matrix()
+        C_rot = rotate_stiffness_3d(C, np.pi, axis='z')
+        np.testing.assert_allclose(C_rot, C, atol=1e-6)
+
+    def test_rotate_stiffness_symmetric(self):
+        mat = MATERIALS['T800_epoxy']
+        C = mat.get_stiffness_matrix()
+        C_rot = rotate_stiffness_3d(C, np.pi / 4, axis='z')
+        np.testing.assert_allclose(C_rot, C_rot.T, atol=1e-6)
+
+    def test_rotate_stiffness_wrong_shape(self):
+        with pytest.raises(ValueError):
+            rotate_stiffness_3d(np.eye(3), 0.0)
+
+
+class TestGaussQuadrature:
+    def test_gauss_1d_order2(self):
+        pts, wts = gauss_points_1d(2)
+        assert len(pts) == 2
+        assert len(wts) == 2
+        np.testing.assert_allclose(wts.sum(), 2.0)
+
+    def test_gauss_1d_order3(self):
+        pts, wts = gauss_points_1d(3)
+        assert len(pts) == 3
+        np.testing.assert_allclose(wts.sum(), 2.0)
+
+    def test_gauss_1d_invalid_order(self):
+        with pytest.raises(ValueError):
+            gauss_points_1d(4)
+
+    def test_gauss_hex_shape(self):
+        pts, wts = gauss_points_hex(order=2)
+        assert pts.shape == (8, 3)
+        assert wts.shape == (8,)
+
+    def test_gauss_hex_weight_sum(self):
+        """Weights should sum to 8 (volume of [-1,1]^3)."""
+        pts, wts = gauss_points_hex(order=2)
+        np.testing.assert_allclose(wts.sum(), 8.0)
+
+    def test_gauss_hex_order3(self):
+        pts, wts = gauss_points_hex(order=3)
+        assert pts.shape == (27, 3)
+        np.testing.assert_allclose(wts.sum(), 8.0)
+
+
+class TestMTEffectiveStiffness:
+    def setup_method(self):
+        self.mat = MATERIALS['T800_epoxy']
+        self.C_m = self.mat.get_isotropic_matrix_stiffness()
+
+    def test_zero_porosity_returns_matrix(self):
+        C_eff = _mt_effective_stiffness(self.C_m, 0.0, (1, 1, 1), 0.35)
+        np.testing.assert_allclose(C_eff, self.C_m, atol=1e-6)
+
+    def test_high_porosity_near_zero(self):
+        C_eff = _mt_effective_stiffness(self.C_m, 0.99, (1, 1, 1), 0.35)
+        assert C_eff[0, 0] < self.C_m[0, 0] * 0.1
+
+    def test_decreasing_stiffness(self):
+        C1 = _mt_effective_stiffness(self.C_m, 0.01, (1, 1, 1), 0.35)
+        C5 = _mt_effective_stiffness(self.C_m, 0.05, (1, 1, 1), 0.35)
+        assert C1[0, 0] > C5[0, 0]
+
+    def test_positive_definite(self):
+        C_eff = _mt_effective_stiffness(self.C_m, 0.05, (1, 1, 1), 0.35)
+        eigenvalues = np.linalg.eigvalsh(C_eff)
+        assert np.all(eigenvalues > 0)
+
+    def test_prolate_void_shape(self):
+        C_eff = _mt_effective_stiffness(self.C_m, 0.03, (3, 1, 1), 0.35)
+        assert C_eff.shape == (6, 6)
+        assert C_eff[0, 0] < self.C_m[0, 0]
+
+    def test_oblate_void_shape(self):
+        C_eff = _mt_effective_stiffness(self.C_m, 0.03, (3, 3, 0.3), 0.35)
+        assert C_eff.shape == (6, 6)
+        assert C_eff[0, 0] < self.C_m[0, 0]
+
+
+class TestHex8Element:
+    def setup_method(self):
+        # Create a simple unit cube element
+        self.node_coords = np.array([
+            [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+            [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+        ], dtype=float)
+        mat = MATERIALS['T800_epoxy']
+        self.C_base = mat.get_stiffness_matrix()
+        self.C_m = mat.get_isotropic_matrix_stiffness()
+        self.elem = Hex8Element(
+            node_coords=self.node_coords,
+            C_base=self.C_base,
+            ply_angle_deg=0.0,
+            node_porosities=np.full(8, 0.03),
+            void_shape_radii=(1, 1, 1),
+            nu_m=0.35,
+            C_m=self.C_m,
+        )
+
+    def test_shape_functions_partition_of_unity(self):
+        """Shape functions should sum to 1 at any point."""
+        N = Hex8Element.shape_functions(0.3, -0.2, 0.5)
+        np.testing.assert_allclose(N.sum(), 1.0, atol=1e-14)
+
+    def test_shape_functions_at_nodes(self):
+        """N_i should be 1 at node i and 0 at other nodes."""
+        from porosity_fe_analysis import _NODE_COORDS_REF
+        for i in range(8):
+            xi, eta, zeta = _NODE_COORDS_REF[i]
+            N = Hex8Element.shape_functions(xi, eta, zeta)
+            for j in range(8):
+                expected = 1.0 if i == j else 0.0
+                assert abs(N[j] - expected) < 1e-14
+
+    def test_shape_derivatives_shape(self):
+        dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
+        assert dN.shape == (3, 8)
+
+    def test_jacobian_unit_cube(self):
+        """Jacobian of unit cube should be 0.5 * I (mapping [-1,1] to [0,1])."""
+        J = self.elem.jacobian(0.0, 0.0, 0.0)
+        assert J.shape == (3, 3)
+        np.testing.assert_allclose(J, 0.5 * np.eye(3), atol=1e-14)
+
+    def test_B_matrix_shape(self):
+        B = self.elem.B_matrix(0.0, 0.0, 0.0)
+        assert B.shape == (6, 24)
+
+    def test_stiffness_matrix_shape(self):
+        Ke = self.elem.stiffness_matrix()
+        assert Ke.shape == (24, 24)
+
+    def test_stiffness_matrix_symmetric(self):
+        Ke = self.elem.stiffness_matrix()
+        np.testing.assert_allclose(Ke, Ke.T, atol=1e-4)
+
+    def test_stiffness_matrix_positive_semidefinite(self):
+        Ke = self.elem.stiffness_matrix()
+        eigenvalues = np.linalg.eigvalsh(Ke)
+        # Should have 6 zero eigenvalues (rigid body modes) and 18 positive
+        assert np.sum(eigenvalues > 1e-6) >= 12  # At least 12 positive
+
+    def test_volume_unit_cube(self):
+        assert abs(self.elem.volume - 1.0) < 1e-12
+
+    def test_stress_at_gauss_points_shape(self):
+        u_elem = np.zeros(24)
+        sig = self.elem.stress_at_gauss_points(u_elem)
+        assert sig.shape == (8, 6)
+
+    def test_strain_at_gauss_points_shape(self):
+        u_elem = np.zeros(24)
+        eps = self.elem.strain_at_gauss_points(u_elem)
+        assert eps.shape == (8, 6)
+
+    def test_zero_displacement_zero_stress(self):
+        u_elem = np.zeros(24)
+        sig = self.elem.stress_at_gauss_points(u_elem)
+        np.testing.assert_allclose(sig, 0.0, atol=1e-12)
+
+    def test_uniform_strain_produces_uniform_stress(self):
+        """Uniform x-displacement gradient should produce constant sigma_11."""
+        # Prescribe u_x = eps_x * x at each node, with eps_x = 0.001
+        eps_x = 0.001
+        u_elem = np.zeros(24)
+        for i in range(8):
+            u_elem[3 * i] = eps_x * self.node_coords[i, 0]
+        sig = self.elem.stress_at_gauss_points(u_elem)
+        # All GP should have approximately the same sigma_11
+        sigma_11_vals = sig[:, 0]
+        assert np.std(sigma_11_vals) / (np.mean(np.abs(sigma_11_vals)) + 1e-12) < 0.01
+
+    def test_porosity_reduces_stiffness(self):
+        """Higher porosity should produce lower element stiffness."""
+        elem_low = Hex8Element(self.node_coords, self.C_base, 0.0,
+                               np.full(8, 0.01), (1, 1, 1), 0.35, self.C_m)
+        elem_high = Hex8Element(self.node_coords, self.C_base, 0.0,
+                                np.full(8, 0.10), (1, 1, 1), 0.35, self.C_m)
+        Ke_low = elem_low.stiffness_matrix()
+        Ke_high = elem_high.stiffness_matrix()
+        # Trace of stiffness should be lower for higher porosity
+        assert np.trace(Ke_high) < np.trace(Ke_low)
+
+    def test_wrong_node_coords_shape(self):
+        with pytest.raises(ValueError):
+            Hex8Element(np.zeros((4, 3)), self.C_base, 0.0,
+                       np.full(8, 0.03), (1, 1, 1), 0.35, self.C_m)
+
+    def test_wrong_porosity_shape(self):
+        with pytest.raises(ValueError):
+            Hex8Element(self.node_coords, self.C_base, 0.0,
+                       np.full(4, 0.03), (1, 1, 1), 0.35, self.C_m)
+
+
+class TestCompositeMeshFE:
+    """Tests for the FE-related additions to CompositeMesh."""
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+
+    def test_nodes_on_face_x_min(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        nodes = mesh.nodes_on_face('x_min')
+        assert len(nodes) > 0
+        np.testing.assert_allclose(mesh.nodes[nodes, 0], 0.0, atol=1e-10)
+
+    def test_nodes_on_face_x_max(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        nodes = mesh.nodes_on_face('x_max')
+        assert len(nodes) > 0
+        np.testing.assert_allclose(mesh.nodes[nodes, 0], mesh.L_x, atol=1e-10)
+
+    def test_nodes_on_face_count(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        # x_min face should have (ny+1)*(nz+1) nodes
+        nodes = mesh.nodes_on_face('x_min')
+        assert len(nodes) == (3 + 1) * (4 + 1)
+
+    def test_nodes_on_face_invalid(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        with pytest.raises(ValueError):
+            mesh.nodes_on_face('invalid')
+
+    def test_n_dof(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        assert mesh.n_dof == mesh.n_nodes * 3
+
+    def test_domain_size(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        Lx, Ly, Lz = mesh.domain_size
+        assert abs(Lx - 50.0) < 1e-10
+        assert abs(Ly - 20.0) < 1e-10
+
+    def test_ply_angles_default_zero(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        np.testing.assert_allclose(mesh.ply_angles, 0.0)
+
+    def test_ply_angles_custom(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4,
+                            ply_angles=[0, 45, 90, -45])
+        # Should have angles from the layup
+        unique_angles = np.unique(mesh.ply_angles)
+        assert len(unique_angles) > 1
+
+    def test_elem_ply_ids(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        assert hasattr(mesh, 'elem_ply_ids')
+        assert len(mesh.elem_ply_ids) == mesh.n_elements
+
+
+class TestGlobalAssembler:
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+
+    def test_create_element(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        elem = assembler.create_element(0)
+        assert isinstance(elem, Hex8Element)
+
+    def test_element_dof_indices_shape(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        dofs = assembler.element_dof_indices(0)
+        assert dofs.shape == (24,)
+
+    def test_element_dof_indices_range(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        dofs = assembler.element_dof_indices(0)
+        assert np.all(dofs >= 0)
+        assert np.all(dofs < self.mesh.n_dof)
+
+    def test_assemble_stiffness_shape(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        assert K.shape == (self.mesh.n_dof, self.mesh.n_dof)
+
+    def test_assemble_stiffness_symmetric(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        K_dense = K.toarray()
+        np.testing.assert_allclose(K_dense, K_dense.T, atol=1e-2)
+
+    def test_assemble_stiffness_sparse(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        assert scipy.sparse.issparse(K)
+
+
+class TestBoundaryHandler:
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+        self.handler = BoundaryHandler(self.mesh)
+
+    def test_compression_bcs_returns_tuple(self):
+        constrained, F = self.handler.compression_bcs()
+        assert isinstance(constrained, dict)
+        assert isinstance(F, np.ndarray)
+        assert len(F) == self.mesh.n_dof
+
+    def test_compression_bcs_constrained_dofs(self):
+        constrained, F = self.handler.compression_bcs()
+        assert len(constrained) > 0
+        # Should constrain ux on x_min and x_max
+        xmin_nodes = self.mesh.nodes_on_face('x_min')
+        for nid in xmin_nodes:
+            assert 3 * int(nid) in constrained
+            assert constrained[3 * int(nid)] == 0.0
+
+    def test_compression_bcs_prescribed_displacement(self):
+        strain = -0.01
+        constrained, F = self.handler.compression_bcs(applied_strain=strain)
+        xmax_nodes = self.mesh.nodes_on_face('x_max')
+        expected_disp = strain * self.mesh.L_x
+        for nid in xmax_nodes:
+            assert abs(constrained[3 * int(nid)] - expected_disp) < 1e-10
+
+    def test_tension_bcs(self):
+        constrained, F = self.handler.tension_bcs(applied_strain=0.01)
+        assert len(constrained) > 0
+
+    def test_shear_bcs(self):
+        constrained, F = self.handler.shear_bcs(applied_strain=0.01)
+        assert len(constrained) > 0
+
+    def test_apply_penalty(self):
+        import scipy.sparse
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        constrained, F = self.handler.compression_bcs()
+        K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
+        assert K_mod.shape == K.shape
+        assert len(F_mod) == len(F)
+
+    def test_penalty_increases_diagonal(self):
+        import scipy.sparse
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        constrained, F = self.handler.compression_bcs()
+        K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
+        # Constrained DOF diagonals should be much larger
+        for dof in list(constrained.keys())[:5]:
+            assert K_mod[dof, dof] > K[dof, dof]
+
+
+class TestFESolver:
+    """Integration tests for the full FE solver pipeline."""
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        # Very coarse mesh for speed
+        self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+
+    def test_solve_returns_field_results(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert isinstance(results, FieldResults)
+
+    def test_solve_displacement_shape(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert results.displacement.shape == (self.mesh.n_nodes, 3)
+
+    def test_solve_stress_shape(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert results.stress_global.shape == (self.mesh.n_elements, 8, 6)
+        assert results.stress_local.shape == (self.mesh.n_elements, 8, 6)
+
+    def test_solve_strain_shape(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert results.strain_global.shape == (self.mesh.n_elements, 8, 6)
+
+    def test_solve_knockdown_range(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert 0 < results.knockdown <= 1.0
+
+    def test_solve_failure_index_positive(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert results.max_failure_index >= 0
+
+    def test_solve_nonzero_displacement(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        assert np.max(np.abs(results.displacement)) > 0
+
+    def test_solve_tension(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='tension', applied_strain=0.001)
+        assert isinstance(results, FieldResults)
+
+    def test_solve_shear(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='shear', applied_strain=0.001)
+        assert isinstance(results, FieldResults)
+
+    def test_solve_invalid_loading(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        with pytest.raises(ValueError):
+            solver.solve(loading='invalid')
+
+    def test_higher_porosity_softer_response(self):
+        """Higher porosity should produce softer material (lower stresses
+        for the same applied displacement)."""
+        pf_low = PorosityField(self.material, 0.01, distribution='uniform')
+        mesh_low = CompositeMesh(pf_low, self.material, nx=3, ny=2, nz=2)
+        solver_low = FESolver(mesh_low, self.material, pf_low)
+        result_low = solver_low.solve(loading='compression', applied_strain=-0.001)
+
+        pf_high = PorosityField(self.material, 0.08, distribution='uniform')
+        mesh_high = CompositeMesh(pf_high, self.material, nx=3, ny=2, nz=2)
+        solver_high = FESolver(mesh_high, self.material, pf_high)
+        result_high = solver_high.solve(loading='compression', applied_strain=-0.001)
+
+        # Higher porosity -> softer -> lower stresses for same displacement
+        max_stress_low = np.max(np.abs(result_low.stress_global[:, :, 0]))
+        max_stress_high = np.max(np.abs(result_high.stress_global[:, :, 0]))
+        assert max_stress_high < max_stress_low
+
+    def test_solve_verbose(self):
+        """Verbose mode should not crash."""
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001, verbose=True)
+        assert isinstance(results, FieldResults)
+
+    def test_displacement_boundary_conditions_applied(self):
+        """Check that BCs are approximately satisfied."""
+        solver = FESolver(self.mesh, self.material, self.pf)
+        strain = -0.001
+        results = solver.solve(loading='compression', applied_strain=strain)
+
+        # x_min nodes should have ~0 x-displacement
+        xmin_nodes = self.mesh.nodes_on_face('x_min')
+        np.testing.assert_allclose(results.displacement[xmin_nodes, 0], 0.0, atol=1e-8)
+
+        # x_max nodes should have ~strain*Lx displacement
+        xmax_nodes = self.mesh.nodes_on_face('x_max')
+        expected = strain * self.mesh.L_x
+        np.testing.assert_allclose(results.displacement[xmax_nodes, 0], expected, atol=1e-6)

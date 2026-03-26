@@ -22,11 +22,13 @@ Dependencies:
 """
 
 import numpy as np
+import scipy.sparse
+import scipy.sparse.linalg
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple, Dict, List, Optional, Union
 import json
 
@@ -333,7 +335,8 @@ class CompositeMesh:
     """3D structured hex mesh with porosity."""
 
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
-                 nx: int = 50, ny: int = 20, nz: int = 24):
+                 nx: int = 50, ny: int = 20, nz: int = 24,
+                 ply_angles: Optional[List[float]] = None):
         self.porosity_field = porosity_field
         self.material = material
         self.nx = nx
@@ -349,8 +352,10 @@ class CompositeMesh:
         self.porosity = None
         self.stiffness_reduction = None
         self.ply_ids = None
+        self.ply_angles = None  # Per-element ply orientation angles (degrees)
         self.void_elements = None
 
+        self._input_ply_angles = ply_angles
         self.generate_mesh()
 
     def generate_mesh(self):
@@ -399,9 +404,73 @@ class CompositeMesh:
         elem_porosity = np.mean(self.porosity[self.elements], axis=1)
         self.void_elements = np.where(elem_porosity > 0.95)[0]
 
+        # Assign per-element ply angles (degrees)
+        # Element ply_id is determined by the centroid z-coordinate
+        elem_centroids_z = np.mean(self.nodes[self.elements][:, :, 2], axis=1)
+        elem_ply_ids = np.clip(
+            (elem_centroids_z / self.L_z * self.material.n_plies).astype(int),
+            0, self.material.n_plies - 1)
+        self.elem_ply_ids = elem_ply_ids
+
+        if self._input_ply_angles is not None:
+            angle_list = list(self._input_ply_angles)
+            if len(angle_list) < self.material.n_plies:
+                # Repeat to fill all plies
+                angle_list = (angle_list * (self.material.n_plies // len(angle_list) + 1))[:self.material.n_plies]
+            self.ply_angles = np.array([angle_list[pid] for pid in elem_ply_ids], dtype=float)
+        else:
+            # Default: all 0-degree plies
+            self.ply_angles = np.zeros(len(self.elements), dtype=float)
+
         print(f"Mesh generated: {len(self.nodes)} nodes, {len(self.elements)} elements")
         print(f"  Domain: {self.L_x:.1f} x {self.L_y:.1f} x {self.L_z:.2f} mm")
         print(f"  Void elements: {len(self.void_elements)}")
+
+    @property
+    def n_nodes(self) -> int:
+        return len(self.nodes)
+
+    @property
+    def n_elements(self) -> int:
+        return len(self.elements)
+
+    @property
+    def n_dof(self) -> int:
+        return self.n_nodes * 3
+
+    @property
+    def domain_size(self) -> Tuple[float, float, float]:
+        return (self.L_x, self.L_y, self.L_z)
+
+    def nodes_on_face(self, face: str) -> np.ndarray:
+        """Return node indices on the specified face.
+
+        Parameters
+        ----------
+        face : str
+            One of 'x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max'.
+
+        Returns
+        -------
+        np.ndarray
+            1-D array of node indices on that face.
+        """
+        tol = 1e-8
+        coords = self.nodes
+        if face == 'x_min':
+            return np.where(np.abs(coords[:, 0] - coords[:, 0].min()) < tol)[0]
+        elif face == 'x_max':
+            return np.where(np.abs(coords[:, 0] - coords[:, 0].max()) < tol)[0]
+        elif face == 'y_min':
+            return np.where(np.abs(coords[:, 1] - coords[:, 1].min()) < tol)[0]
+        elif face == 'y_max':
+            return np.where(np.abs(coords[:, 1] - coords[:, 1].max()) < tol)[0]
+        elif face == 'z_min':
+            return np.where(np.abs(coords[:, 2] - coords[:, 2].min()) < tol)[0]
+        elif face == 'z_max':
+            return np.where(np.abs(coords[:, 2] - coords[:, 2].max()) < tol)[0]
+        else:
+            raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
 
 # ============================================================
 # SECTION 5: EMPIRICAL SOLVER
@@ -960,6 +1029,1038 @@ class FEVisualizer:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             print(f"Saved: {save_path}")
         return fig
+
+
+# ============================================================
+# SECTION 7b: COORDINATE TRANSFORMS
+# ============================================================
+
+def rotation_matrix_3d(angle_rad: float, axis: str = 'z') -> np.ndarray:
+    """3x3 rotation matrix for rotation about a principal axis.
+
+    Parameters
+    ----------
+    angle_rad : float
+        Rotation angle in radians.
+    axis : str
+        'z' for ply orientation, 'y' for wrinkle/waviness misalignment.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (3, 3) rotation matrix.
+    """
+    c = np.cos(angle_rad)
+    s = np.sin(angle_rad)
+    if axis == 'z':
+        return np.array([
+            [ c, s, 0.0],
+            [-s, c, 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+    elif axis == 'y':
+        return np.array([
+            [c, 0.0, -s],
+            [0.0, 1.0, 0.0],
+            [s, 0.0,  c],
+        ])
+    else:
+        raise ValueError(f"Unsupported axis '{axis}'. Use 'z' or 'y'.")
+
+
+def stress_transformation_3d(angle_rad: float, axis: str = 'z') -> np.ndarray:
+    """6x6 stress transformation matrix in Voigt notation.
+
+    Voigt ordering: [sigma_11, sigma_22, sigma_33, tau_23, tau_13, tau_12]
+
+    Parameters
+    ----------
+    angle_rad : float
+        Rotation angle in radians.
+    axis : str
+        'z' or 'y'.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) stress transformation matrix.
+    """
+    c = np.cos(angle_rad)
+    s = np.sin(angle_rad)
+    c2 = c * c
+    s2 = s * s
+    sc = s * c
+
+    if axis == 'z':
+        return np.array([
+            [ c2,   s2,  0.0,  0.0,  0.0,  2.0 * sc],
+            [ s2,   c2,  0.0,  0.0,  0.0, -2.0 * sc],
+            [0.0,  0.0,  1.0,  0.0,  0.0,  0.0],
+            [0.0,  0.0,  0.0,    c,   -s,  0.0],
+            [0.0,  0.0,  0.0,    s,    c,  0.0],
+            [-sc,   sc,  0.0,  0.0,  0.0,  c2 - s2],
+        ])
+    elif axis == 'y':
+        return np.array([
+            [ c2,  0.0,  s2,  0.0, -2.0 * sc, 0.0],
+            [0.0,  1.0, 0.0,  0.0,  0.0,      0.0],
+            [ s2,  0.0,  c2,  0.0,  2.0 * sc,  0.0],
+            [0.0,  0.0, 0.0,    c,  0.0,         s],
+            [ sc,  0.0, -sc,  0.0,  c2 - s2,   0.0],
+            [0.0,  0.0, 0.0,   -s,  0.0,         c],
+        ])
+    else:
+        raise ValueError(f"Unsupported axis '{axis}'. Use 'z' or 'y'.")
+
+
+def strain_transformation_3d(angle_rad: float, axis: str = 'z') -> np.ndarray:
+    """6x6 engineering strain transformation matrix.
+
+    Related to stress transformation via the Reuter matrix:
+        T_epsilon = R @ T_sigma @ R_inv
+
+    Parameters
+    ----------
+    angle_rad : float
+        Rotation angle in radians.
+    axis : str
+        'z' or 'y'.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) strain transformation matrix.
+    """
+    T_sigma = stress_transformation_3d(angle_rad, axis=axis)
+    R = np.diag([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
+    R_inv = np.diag([1.0, 1.0, 1.0, 0.5, 0.5, 0.5])
+    return R @ T_sigma @ R_inv
+
+
+def rotate_stiffness_3d(C: np.ndarray, angle_rad: float, axis: str = 'z') -> np.ndarray:
+    """Rotate a 6x6 stiffness matrix to a new coordinate system.
+
+    C_bar = T_sigma_inv @ C @ T_epsilon
+
+    Parameters
+    ----------
+    C : np.ndarray
+        Shape (6, 6) stiffness matrix in material coordinates.
+    angle_rad : float
+        Rotation angle in radians.
+    axis : str
+        'z' or 'y'.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) rotated stiffness matrix.
+    """
+    C = np.asarray(C, dtype=float)
+    if C.shape != (6, 6):
+        raise ValueError(f"Stiffness matrix must be 6x6, got {C.shape}.")
+    T_sigma = stress_transformation_3d(angle_rad, axis=axis)
+    T_epsilon = strain_transformation_3d(angle_rad, axis=axis)
+    T_sigma_inv = np.linalg.inv(T_sigma)
+    return T_sigma_inv @ C @ T_epsilon
+
+
+# ============================================================
+# SECTION 7c: GAUSS QUADRATURE
+# ============================================================
+
+def gauss_points_1d(n: int) -> Tuple[np.ndarray, np.ndarray]:
+    """1D Gauss-Legendre points and weights on [-1, 1].
+
+    Parameters
+    ----------
+    n : int
+        Number of points (1, 2, or 3).
+
+    Returns
+    -------
+    points : np.ndarray, shape (n,)
+    weights : np.ndarray, shape (n,)
+    """
+    if n == 1:
+        return np.array([0.0]), np.array([2.0])
+    elif n == 2:
+        g = 1.0 / np.sqrt(3.0)
+        return np.array([-g, g]), np.array([1.0, 1.0])
+    elif n == 3:
+        g = np.sqrt(3.0 / 5.0)
+        return np.array([-g, 0.0, g]), np.array([5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0])
+    else:
+        raise ValueError(f"Only n=1, 2, 3 supported, got n={n}.")
+
+
+def gauss_points_hex(order: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+    """3D Gauss-Legendre quadrature for a hexahedron [-1,1]^3.
+
+    Parameters
+    ----------
+    order : int
+        Points per axis (default 2 for 2x2x2 = 8 points).
+
+    Returns
+    -------
+    points : np.ndarray, shape (n_points, 3)
+    weights : np.ndarray, shape (n_points,)
+    """
+    pts_1d, wts_1d = gauss_points_1d(order)
+    xi, eta, zeta = np.meshgrid(pts_1d, pts_1d, pts_1d, indexing='ij')
+    wi, wj, wk = np.meshgrid(wts_1d, wts_1d, wts_1d, indexing='ij')
+    points = np.column_stack([xi.ravel(), eta.ravel(), zeta.ravel()])
+    weights = (wi * wj * wk).ravel()
+    return points, weights
+
+
+# ============================================================
+# SECTION 7d: HEX8 ELEMENT WITH POROSITY DEGRADATION
+# ============================================================
+
+# Natural coordinates of 8 hex nodes
+_NODE_COORDS_REF = np.array([
+    [-1.0, -1.0, -1.0],  # 0
+    [+1.0, -1.0, -1.0],  # 1
+    [+1.0, +1.0, -1.0],  # 2
+    [-1.0, +1.0, -1.0],  # 3
+    [-1.0, -1.0, +1.0],  # 4
+    [+1.0, -1.0, +1.0],  # 5
+    [+1.0, +1.0, +1.0],  # 6
+    [-1.0, +1.0, +1.0],  # 7
+], dtype=float)
+
+
+def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
+                            void_shape_radii: Tuple,
+                            nu_m: float) -> np.ndarray:
+    """Mori-Tanaka effective stiffness for void inclusions (C_inclusion = 0).
+
+    Standalone function reusing the Eshelby tensor logic from MoriTanakaSolver
+    for use inside Hex8Element.
+
+    Parameters
+    ----------
+    C_m : np.ndarray
+        Shape (6, 6) isotropic matrix stiffness.
+    Vp : float
+        Void volume fraction (0 to 1).
+    void_shape_radii : tuple
+        (a1, a2, a3) radii defining void shape for Eshelby tensor.
+    nu_m : float
+        Matrix Poisson's ratio.
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) effective stiffness matrix.
+    """
+    if Vp < 1e-12:
+        return C_m.copy()
+    if Vp > 0.99:
+        return np.zeros((6, 6))
+
+    ar = max(void_shape_radii) / min(void_shape_radii)
+    nu = nu_m
+
+    # Build Eshelby tensor
+    S = np.zeros((6, 6))
+    if abs(ar - 1.0) < 0.01:  # Sphere
+        S[0, 0] = S[1, 1] = S[2, 2] = (7 - 5 * nu) / (15 * (1 - nu))
+        S[0, 1] = S[0, 2] = S[1, 0] = S[1, 2] = S[2, 0] = S[2, 1] = \
+            (5 * nu - 1) / (15 * (1 - nu))
+        S[3, 3] = S[4, 4] = S[5, 5] = (4 - 5 * nu) / (15 * (1 - nu))
+    elif ar > 1.0:  # Prolate
+        g = ar / (ar**2 - 1)**1.5 * (ar * np.sqrt(ar**2 - 1) - np.arccosh(ar))
+        a2 = ar**2
+        S[0, 0] = (1.0 / (2 * (1 - nu))) * (
+            1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g)
+        S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g
+        S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g
+        S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g
+        S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
+            a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g)
+        S[3, 3] = (1.0 / (4 * (1 - nu))) * (
+            a2 / (2 * (a2 - 1)) + (1 - 2 * nu - 3.0 / (4 * (a2 - 1))) * g)
+        S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
+            1 - 2 * nu - (a2 + 1) / (a2 - 1) -
+            0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g)
+    else:  # Oblate
+        p = 1.0 / ar
+        g_ob = p / (p**2 - 1)**1.5 * (np.arccos(1.0 / p) - (1.0 / p) * np.sqrt(1 - 1.0 / p**2))
+        a2 = ar**2
+        S[0, 0] = (1.0 / (2 * (1 - nu))) * (
+            1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g_ob)
+        S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g_ob
+        S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g_ob
+        S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
+            (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g_ob
+        S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
+            a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g_ob)
+        S[3, 3] = (1.0 / (4 * (1 - nu))) * (
+            a2 / (2 * (a2 - 1)) + (1 - 2 * nu - 3.0 / (4 * (a2 - 1))) * g_ob)
+        S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
+            1 - 2 * nu - (a2 + 1) / (a2 - 1) -
+            0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g_ob)
+
+    I6 = np.eye(6)
+    inner = I6 - (1 - Vp) * S
+    inner_inv = np.linalg.inv(inner)
+    C_eff = C_m @ (I6 - Vp * inner_inv)
+    return C_eff
+
+
+class Hex8Element:
+    """8-node isoparametric hexahedral element with porosity degradation.
+
+    Instead of wrinkle-angle rotation (as in WrinkleFE), this element
+    degrades the stiffness matrix at each Gauss point using the local
+    porosity via Mori-Tanaka homogenization.
+
+    Parameters
+    ----------
+    node_coords : np.ndarray
+        Shape (8, 3) physical coordinates of the 8 nodes (mm).
+    C_base : np.ndarray
+        Shape (6, 6) base stiffness matrix (pristine composite).
+    ply_angle_deg : float
+        Ply orientation angle in degrees.
+    node_porosities : np.ndarray
+        Shape (8,) porosity volume fraction at each node.
+    void_shape_radii : tuple
+        (a1, a2, a3) void shape radii for Eshelby tensor.
+    nu_m : float
+        Matrix Poisson's ratio.
+    C_m : np.ndarray
+        Shape (6, 6) isotropic matrix stiffness for Mori-Tanaka.
+    """
+
+    def __init__(self, node_coords: np.ndarray, C_base: np.ndarray,
+                 ply_angle_deg: float, node_porosities: np.ndarray,
+                 void_shape_radii: Tuple, nu_m: float,
+                 C_m: np.ndarray) -> None:
+        self.node_coords = np.asarray(node_coords, dtype=float)
+        if self.node_coords.shape != (8, 3):
+            raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")
+        self.C_base = np.asarray(C_base, dtype=float)
+        self.ply_angle_deg = ply_angle_deg
+        self.node_porosities = np.asarray(node_porosities, dtype=float)
+        if self.node_porosities.shape != (8,):
+            raise ValueError(f"node_porosities must be (8,), got {self.node_porosities.shape}.")
+        self.void_shape_radii = void_shape_radii
+        self.nu_m = nu_m
+        self.C_m = np.asarray(C_m, dtype=float)
+
+        self._gauss_points, self._gauss_weights = gauss_points_hex(order=2)
+
+        # Cache: if all node porosities are the same, pre-compute C_eff once
+        self._uniform_porosity = None
+        if np.allclose(self.node_porosities, self.node_porosities[0], atol=1e-12):
+            self._uniform_porosity = float(self.node_porosities[0])
+
+    @staticmethod
+    def shape_functions(xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Evaluate 8 trilinear shape functions at natural coordinates.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (8,).
+        """
+        N = np.empty(8)
+        for i in range(8):
+            N[i] = (
+                0.125
+                * (1.0 + _NODE_COORDS_REF[i, 0] * xi)
+                * (1.0 + _NODE_COORDS_REF[i, 1] * eta)
+                * (1.0 + _NODE_COORDS_REF[i, 2] * zeta)
+            )
+        return N
+
+    @staticmethod
+    def shape_derivatives(xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Derivatives of shape functions w.r.t. natural coordinates.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (3, 8): dN[i, j] = dN_j / d(xi_i).
+        """
+        dN = np.empty((3, 8))
+        for j in range(8):
+            xi_j, eta_j, zeta_j = _NODE_COORDS_REF[j]
+            dN[0, j] = 0.125 * xi_j * (1.0 + eta_j * eta) * (1.0 + zeta_j * zeta)
+            dN[1, j] = 0.125 * (1.0 + xi_j * xi) * eta_j * (1.0 + zeta_j * zeta)
+            dN[2, j] = 0.125 * (1.0 + xi_j * xi) * (1.0 + eta_j * eta) * zeta_j
+        return dN
+
+    def jacobian(self, xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Jacobian matrix (3x3) mapping natural to physical coordinates."""
+        dN = self.shape_derivatives(xi, eta, zeta)
+        return dN @ self.node_coords
+
+    def B_matrix(self, xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Strain-displacement matrix (6x24) in Voigt notation.
+
+        Strain ordering: [eps_11, eps_22, eps_33, gamma_23, gamma_13, gamma_12]
+        DOF ordering: [u1x, u1y, u1z, u2x, u2y, u2z, ..., u8x, u8y, u8z]
+        """
+        dN_dxi = self.shape_derivatives(xi, eta, zeta)
+        J = dN_dxi @ self.node_coords
+        J_inv = np.linalg.inv(J)
+        dN_dx = J_inv @ dN_dxi  # (3, 8)
+
+        B = np.zeros((6, 24))
+        for i in range(8):
+            col = 3 * i
+            dNi_dx = dN_dx[0, i]
+            dNi_dy = dN_dx[1, i]
+            dNi_dz = dN_dx[2, i]
+            B[0, col] = dNi_dx
+            B[1, col + 1] = dNi_dy
+            B[2, col + 2] = dNi_dz
+            B[3, col + 1] = dNi_dz
+            B[3, col + 2] = dNi_dy
+            B[4, col] = dNi_dz
+            B[4, col + 2] = dNi_dx
+            B[5, col] = dNi_dy
+            B[5, col + 1] = dNi_dx
+        return B
+
+    def _degraded_stiffness(self, xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Compute porosity-degraded and ply-rotated stiffness at a point.
+
+        Steps:
+        1. Interpolate porosity at this point from nodal values.
+        2. Compute C_eff via Mori-Tanaka (void inclusions in matrix).
+        3. Scale base composite stiffness by the M-T degradation ratio.
+        4. Rotate by ply angle about z-axis.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6, 6) degraded and rotated stiffness.
+        """
+        # 1. Interpolate porosity
+        if self._uniform_porosity is not None:
+            Vp = self._uniform_porosity
+        else:
+            N = self.shape_functions(xi, eta, zeta)
+            Vp = float(N @ self.node_porosities)
+        Vp = max(0.0, min(Vp, 0.99))
+
+        # 2. Mori-Tanaka effective stiffness (matrix with voids)
+        C_eff_mt = _mt_effective_stiffness(self.C_m, Vp, self.void_shape_radii, self.nu_m)
+        C_m_pristine = self.C_m  # Pristine matrix stiffness (Vp=0)
+
+        # 3. Degradation ratio from M-T: scale composite stiffness
+        # Use diagonal ratio as degradation factor for each component
+        C_degraded = self.C_base.copy()
+        for i in range(6):
+            if abs(C_m_pristine[i, i]) > 1e-12:
+                ratio = C_eff_mt[i, i] / C_m_pristine[i, i]
+                ratio = max(0.0, min(ratio, 1.0))
+            else:
+                ratio = 1.0
+            C_degraded[i, :] *= ratio
+            C_degraded[:, i] *= ratio
+            # Undo double scaling of diagonal
+            C_degraded[i, i] /= ratio if ratio > 1e-12 else 1.0
+
+        # Simpler approach: use overall stiffness reduction factor
+        # based on the average diagonal degradation
+        diag_pristine = np.diag(C_m_pristine)
+        diag_degraded = np.diag(C_eff_mt)
+        mask = diag_pristine > 1e-12
+        if np.any(mask):
+            avg_ratio = np.mean(diag_degraded[mask] / diag_pristine[mask])
+        else:
+            avg_ratio = 1.0
+        avg_ratio = max(0.0, min(avg_ratio, 1.0))
+        C_degraded = self.C_base * avg_ratio
+
+        # 4. Rotate by ply angle
+        ply_rad = np.radians(self.ply_angle_deg)
+        if abs(ply_rad) > 1e-15:
+            C_degraded = rotate_stiffness_3d(C_degraded, ply_rad, axis='z')
+
+        return C_degraded
+
+    def stiffness_matrix(self) -> np.ndarray:
+        """Element stiffness matrix (24x24) via 2x2x2 Gauss quadrature.
+
+        Ke = sum over GPs of: B^T @ C_bar @ B * |J| * w
+        """
+        Ke = np.zeros((24, 24))
+        for gp_idx in range(len(self._gauss_weights)):
+            xi, eta, zeta = self._gauss_points[gp_idx]
+            w = self._gauss_weights[gp_idx]
+            B = self.B_matrix(xi, eta, zeta)
+            C_bar = self._degraded_stiffness(xi, eta, zeta)
+            J = self.jacobian(xi, eta, zeta)
+            detJ = np.linalg.det(J)
+            Ke += (B.T @ C_bar @ B) * detJ * w
+        return Ke
+
+    def stress_at_gauss_points(self, u_elem: np.ndarray) -> np.ndarray:
+        """Compute stress at all Gauss points.
+
+        Parameters
+        ----------
+        u_elem : np.ndarray
+            Shape (24,) element nodal displacement vector.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_gp, 6) stress in Voigt notation.
+        """
+        u_elem = np.asarray(u_elem, dtype=float)
+        n_gp = len(self._gauss_weights)
+        stresses = np.empty((n_gp, 6))
+        for gp_idx in range(n_gp):
+            xi, eta, zeta = self._gauss_points[gp_idx]
+            B = self.B_matrix(xi, eta, zeta)
+            C_bar = self._degraded_stiffness(xi, eta, zeta)
+            stresses[gp_idx] = C_bar @ (B @ u_elem)
+        return stresses
+
+    def strain_at_gauss_points(self, u_elem: np.ndarray) -> np.ndarray:
+        """Compute strain at all Gauss points.
+
+        Parameters
+        ----------
+        u_elem : np.ndarray
+            Shape (24,) element nodal displacement vector.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_gp, 6) engineering strain in Voigt notation.
+        """
+        u_elem = np.asarray(u_elem, dtype=float)
+        n_gp = len(self._gauss_weights)
+        strains = np.empty((n_gp, 6))
+        for gp_idx in range(n_gp):
+            xi, eta, zeta = self._gauss_points[gp_idx]
+            B = self.B_matrix(xi, eta, zeta)
+            strains[gp_idx] = B @ u_elem
+        return strains
+
+    @property
+    def volume(self) -> float:
+        """Element volume via Gauss quadrature."""
+        vol = 0.0
+        for gp_idx in range(len(self._gauss_weights)):
+            xi, eta, zeta = self._gauss_points[gp_idx]
+            w = self._gauss_weights[gp_idx]
+            J = self.jacobian(xi, eta, zeta)
+            vol += np.linalg.det(J) * w
+        return float(vol)
+
+
+# ============================================================
+# SECTION 7e: GLOBAL ASSEMBLER
+# ============================================================
+
+class GlobalAssembler:
+    """Assembles global stiffness matrix from Hex8Element contributions.
+
+    Uses COO format for assembly, converts to CSC for solving.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The finite element mesh.
+    material : MaterialProperties
+        Material properties.
+    porosity_field : PorosityField
+        Porosity field for degradation.
+    """
+
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+                 porosity_field: PorosityField) -> None:
+        self.mesh = mesh
+        self.material = material
+        self.porosity_field = porosity_field
+        self._C_base = material.get_stiffness_matrix()
+        self._C_m = material.get_isotropic_matrix_stiffness()
+        self._nu_m = material.matrix_poisson
+        self._void_shape = porosity_field.void_shape_radii
+
+    def create_element(self, elem_idx: int) -> Hex8Element:
+        """Create a Hex8Element for the given element index."""
+        node_ids = self.mesh.elements[elem_idx]
+        node_coords = self.mesh.nodes[node_ids]
+        ply_angle = float(self.mesh.ply_angles[elem_idx])
+        node_porosities = self.mesh.porosity[node_ids]
+        return Hex8Element(
+            node_coords=node_coords,
+            C_base=self._C_base,
+            ply_angle_deg=ply_angle,
+            node_porosities=node_porosities,
+            void_shape_radii=self._void_shape,
+            nu_m=self._nu_m,
+            C_m=self._C_m,
+        )
+
+    def element_dof_indices(self, elem_idx: int) -> np.ndarray:
+        """Global DOF indices (24,) for an element's 8 nodes."""
+        node_ids = self.mesh.elements[elem_idx]
+        dofs = np.empty(24, dtype=np.intp)
+        for i, nid in enumerate(node_ids):
+            base = 3 * nid
+            dofs[3 * i] = base
+            dofs[3 * i + 1] = base + 1
+            dofs[3 * i + 2] = base + 2
+        return dofs
+
+    def assemble_stiffness(self, verbose: bool = False) -> scipy.sparse.csc_matrix:
+        """Assemble global stiffness matrix K in CSC format.
+
+        Uses COO pre-allocation: n_elem * 576 entries.
+        """
+        n_elem = self.mesh.n_elements
+        n_dof = self.mesh.n_dof
+        entries_per_elem = 24 * 24  # 576
+
+        total_entries = n_elem * entries_per_elem
+        coo_rows = np.empty(total_entries, dtype=np.intp)
+        coo_cols = np.empty(total_entries, dtype=np.intp)
+        coo_vals = np.empty(total_entries, dtype=np.float64)
+
+        local_ii, local_jj = np.meshgrid(np.arange(24), np.arange(24), indexing='ij')
+        local_ii = local_ii.ravel()
+        local_jj = local_jj.ravel()
+
+        for e in range(n_elem):
+            if verbose and e % 500 == 0:
+                print(f"  Assembling element {e}/{n_elem} ({100.0 * e / n_elem:.1f}%)")
+
+            elem = self.create_element(e)
+            Ke = elem.stiffness_matrix()
+            dofs = self.element_dof_indices(e)
+
+            offset = e * entries_per_elem
+            coo_rows[offset:offset + entries_per_elem] = dofs[local_ii]
+            coo_cols[offset:offset + entries_per_elem] = dofs[local_jj]
+            coo_vals[offset:offset + entries_per_elem] = Ke.ravel()
+
+        if verbose:
+            print(f"  Assembling element {n_elem}/{n_elem} (100.0%) -- done.")
+            print(f"  Building sparse matrix: {n_dof} DOFs, {total_entries} COO entries")
+
+        K_coo = scipy.sparse.coo_matrix(
+            (coo_vals, (coo_rows, coo_cols)),
+            shape=(n_dof, n_dof),
+        )
+        K_csc = K_coo.tocsc()
+
+        if verbose:
+            print(f"  CSC matrix: {K_csc.nnz} stored entries ({K_csc.nnz / n_dof:.1f} per DOF)")
+
+        return K_csc
+
+
+# ============================================================
+# SECTION 7f: BOUNDARY HANDLER
+# ============================================================
+
+class BoundaryHandler:
+    """Handles boundary conditions for the porosity FE model.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The finite element mesh.
+    """
+
+    def __init__(self, mesh: CompositeMesh) -> None:
+        self.mesh = mesh
+
+    def nodes_on_face(self, face: str) -> np.ndarray:
+        """Return node indices on the specified face."""
+        return self.mesh.nodes_on_face(face)
+
+    def compression_bcs(self, applied_strain: float = -0.01
+                        ) -> Tuple[Dict[int, float], np.ndarray]:
+        """Standard uniaxial compression boundary conditions.
+
+        - x_min: ux = 0
+        - x_max: ux = applied_strain * Lx
+        - y_min: uy = 0
+        - one corner fixed in z
+
+        Parameters
+        ----------
+        applied_strain : float
+            Applied nominal strain (negative for compression).
+
+        Returns
+        -------
+        constrained_dofs : dict
+            {global_dof: prescribed_value}
+        F : np.ndarray
+            Shape (n_dof,) force vector (zeros for displacement-controlled).
+        """
+        n_dof = self.mesh.n_dof
+        Lx = self.mesh.L_x
+        prescribed_disp = applied_strain * Lx
+
+        constrained: Dict[int, float] = {}
+
+        # Fix ux on x_min
+        for nid in self.mesh.nodes_on_face('x_min'):
+            constrained[3 * int(nid)] = 0.0
+
+        # Prescribe ux on x_max
+        for nid in self.mesh.nodes_on_face('x_max'):
+            constrained[3 * int(nid)] = prescribed_disp
+
+        # Fix uy on y_min (symmetry)
+        for nid in self.mesh.nodes_on_face('y_min'):
+            constrained[3 * int(nid) + 1] = 0.0
+
+        # Fix uz on one corner node (rigid body)
+        xmin_nodes = self.mesh.nodes_on_face('x_min')
+        ymin_nodes = self.mesh.nodes_on_face('y_min')
+        zmin_nodes = self.mesh.nodes_on_face('z_min')
+        corner = np.intersect1d(np.intersect1d(xmin_nodes, ymin_nodes), zmin_nodes)
+        if corner.size > 0:
+            constrained[3 * int(corner[0]) + 2] = 0.0
+        else:
+            constrained[3 * int(xmin_nodes[0]) + 2] = 0.0
+
+        F = np.zeros(n_dof, dtype=np.float64)
+        return constrained, F
+
+    def tension_bcs(self, applied_strain: float = 0.01
+                    ) -> Tuple[Dict[int, float], np.ndarray]:
+        """Uniaxial tension boundary conditions (same structure, positive strain)."""
+        return self.compression_bcs(applied_strain=applied_strain)
+
+    def shear_bcs(self, applied_strain: float = 0.01
+                  ) -> Tuple[Dict[int, float], np.ndarray]:
+        """Simple shear boundary conditions.
+
+        - x_min: ux = uy = 0
+        - x_max: uy = applied_strain * Lx
+        - one corner fixed in z
+        """
+        n_dof = self.mesh.n_dof
+        Lx = self.mesh.L_x
+        prescribed_disp = applied_strain * Lx
+
+        constrained: Dict[int, float] = {}
+
+        # Fix ux and uy on x_min
+        for nid in self.mesh.nodes_on_face('x_min'):
+            constrained[3 * int(nid)] = 0.0
+            constrained[3 * int(nid) + 1] = 0.0
+
+        # Prescribe uy on x_max
+        for nid in self.mesh.nodes_on_face('x_max'):
+            constrained[3 * int(nid) + 1] = prescribed_disp
+
+        # Fix uz on one corner
+        xmin_nodes = self.mesh.nodes_on_face('x_min')
+        ymin_nodes = self.mesh.nodes_on_face('y_min')
+        zmin_nodes = self.mesh.nodes_on_face('z_min')
+        corner = np.intersect1d(np.intersect1d(xmin_nodes, ymin_nodes), zmin_nodes)
+        if corner.size > 0:
+            constrained[3 * int(corner[0]) + 2] = 0.0
+        else:
+            constrained[3 * int(xmin_nodes[0]) + 2] = 0.0
+
+        F = np.zeros(n_dof, dtype=np.float64)
+        return constrained, F
+
+    @staticmethod
+    def apply_penalty(K: scipy.sparse.csc_matrix, F: np.ndarray,
+                      constrained_dofs: Dict[int, float],
+                      penalty_factor: float = 1e8
+                      ) -> Tuple[scipy.sparse.csc_matrix, np.ndarray]:
+        """Apply penalty method for prescribed displacements.
+
+        For each constrained DOF i with value v:
+            K[i,i] += alpha, F[i] = alpha * v
+        where alpha = penalty_factor * max(diag(K)).
+
+        Parameters
+        ----------
+        K : scipy.sparse.csc_matrix
+            Global stiffness matrix.
+        F : np.ndarray
+            Global force vector.
+        constrained_dofs : dict
+            {dof_index: prescribed_value}.
+        penalty_factor : float
+            Multiplier for max diagonal entry.
+
+        Returns
+        -------
+        K_mod : scipy.sparse.csc_matrix
+        F_mod : np.ndarray
+        """
+        if not constrained_dofs:
+            return K, F
+
+        K_lil = K.tolil()
+        F_mod = F.copy()
+
+        diag_max = np.abs(K.diagonal()).max()
+        alpha = penalty_factor * max(diag_max, 1.0)
+
+        for dof, val in constrained_dofs.items():
+            K_lil[dof, dof] += alpha
+            F_mod[dof] = alpha * val
+
+        return K_lil.tocsc(), F_mod
+
+
+# ============================================================
+# SECTION 7g: FE SOLVER AND FIELD RESULTS
+# ============================================================
+
+@dataclass
+class FieldResults:
+    """Results from a finite element solve.
+
+    Attributes
+    ----------
+    displacement : np.ndarray
+        Shape (n_nodes, 3) nodal displacements.
+    stress_global : np.ndarray
+        Shape (n_elem, n_gp, 6) stress in global coordinates.
+    stress_local : np.ndarray
+        Shape (n_elem, n_gp, 6) stress in local (material) coordinates.
+    strain_global : np.ndarray
+        Shape (n_elem, n_gp, 6) strain in global coordinates.
+    strain_local : np.ndarray
+        Shape (n_elem, n_gp, 6) strain in local coordinates.
+    max_failure_index : float
+        Maximum Tsai-Wu failure index across all Gauss points.
+    knockdown : float
+        Strength knockdown factor (ratio of porous to pristine failure load).
+    """
+    displacement: np.ndarray
+    stress_global: np.ndarray
+    stress_local: np.ndarray
+    strain_global: np.ndarray
+    strain_local: np.ndarray
+    max_failure_index: float
+    knockdown: float
+
+
+class FESolver:
+    """Linear static FE solver for porosity-degraded composite laminates.
+
+    Workflow:
+    1. Assemble K via GlobalAssembler
+    2. Build BCs via BoundaryHandler
+    3. Apply penalty method
+    4. Solve K*u = F via spsolve
+    5. Recover stresses at Gauss points
+    6. Evaluate Tsai-Wu failure at each GP
+    7. Compute knockdown factor
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The finite element mesh.
+    material : MaterialProperties
+        Material properties.
+    porosity_field : PorosityField
+        Porosity field for stiffness degradation.
+    ply_angles : list or None
+        Optional list of ply angles (degrees). If None, uses mesh defaults.
+    """
+
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+                 porosity_field: PorosityField,
+                 ply_angles: Optional[List[float]] = None) -> None:
+        self.mesh = mesh
+        self.material = material
+        self.porosity_field = porosity_field
+        self.assembler = GlobalAssembler(mesh, material, porosity_field)
+        self.bc_handler = BoundaryHandler(mesh)
+
+    def solve(self, loading: str = 'compression',
+              applied_strain: float = -0.01,
+              verbose: bool = False) -> FieldResults:
+        """Solve the static FE problem.
+
+        Parameters
+        ----------
+        loading : str
+            'compression', 'tension', or 'shear'.
+        applied_strain : float
+            Applied nominal strain (negative for compression).
+        verbose : bool
+            Print progress information.
+
+        Returns
+        -------
+        FieldResults
+            Complete solution data.
+        """
+        import time
+        t0 = time.perf_counter()
+
+        # 1. Assemble global stiffness
+        if verbose:
+            print("Assembling global stiffness matrix...")
+        K = self.assembler.assemble_stiffness(verbose=verbose)
+
+        if verbose:
+            t1 = time.perf_counter()
+            print(f"  Assembly time: {t1 - t0:.2f} s")
+
+        # 2. Build BCs
+        if loading == 'compression':
+            constrained, F = self.bc_handler.compression_bcs(applied_strain)
+        elif loading == 'tension':
+            constrained, F = self.bc_handler.tension_bcs(applied_strain)
+        elif loading == 'shear':
+            constrained, F = self.bc_handler.shear_bcs(applied_strain)
+        else:
+            raise ValueError(f"Unknown loading '{loading}'. Use compression/tension/shear.")
+
+        if verbose:
+            print(f"  Applied {len(constrained)} displacement BCs")
+
+        # 3. Apply penalty
+        K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
+
+        # 4. Solve
+        if verbose:
+            print(f"Solving system ({self.mesh.n_dof} DOFs)...")
+        u = scipy.sparse.linalg.spsolve(K_mod, F_mod)
+
+        if verbose:
+            t2 = time.perf_counter()
+            residual = np.linalg.norm(K_mod @ u - F_mod)
+            print(f"  Solve time: {t2 - t1:.2f} s, residual: {residual:.4e}")
+            t1 = t2
+
+        # 5. Recover stresses and strains
+        if verbose:
+            print("Recovering element stresses and strains...")
+
+        n_elem = self.mesh.n_elements
+        n_gp = 8  # 2x2x2
+
+        stress_global = np.empty((n_elem, n_gp, 6))
+        stress_local = np.empty((n_elem, n_gp, 6))
+        strain_global = np.empty((n_elem, n_gp, 6))
+        strain_local = np.empty((n_elem, n_gp, 6))
+
+        for e in range(n_elem):
+            if verbose and e % 500 == 0:
+                print(f"  Post-processing element {e}/{n_elem} ({100.0 * e / n_elem:.1f}%)")
+
+            dofs = self.assembler.element_dof_indices(e)
+            u_elem = u[dofs]
+            elem = self.assembler.create_element(e)
+
+            sig_g = elem.stress_at_gauss_points(u_elem)
+            eps_g = elem.strain_at_gauss_points(u_elem)
+
+            stress_global[e] = sig_g
+            strain_global[e] = eps_g
+
+            # Transform to local coordinates
+            ply_rad = np.radians(float(self.mesh.ply_angles[e]))
+            T_ply = stress_transformation_3d(ply_rad, axis='z')
+
+            for g in range(n_gp):
+                stress_local[e, g] = T_ply @ sig_g[g]
+                strain_local[e, g] = T_ply @ eps_g[g]
+
+        # 6. Evaluate Tsai-Wu at each GP
+        max_fi = self._evaluate_tsai_wu(stress_local)
+
+        # 7. Compute knockdown
+        # Compare with pristine: solve same problem with Vp=0 analytically
+        # Use the max failure index to estimate knockdown
+        knockdown = 1.0 / max(max_fi, 1e-12) if max_fi > 0 else 1.0
+        knockdown = min(knockdown, 1.0)
+
+        displacement = u.reshape(-1, 3)
+
+        if verbose:
+            t3 = time.perf_counter()
+            print(f"  Post-processing time: {t3 - t1:.2f} s")
+            print(f"Total solve time: {t3 - t0:.2f} s")
+            print(f"  Max Tsai-Wu FI: {max_fi:.4f}")
+            print(f"  Knockdown factor: {knockdown:.4f}")
+
+        return FieldResults(
+            displacement=displacement,
+            stress_global=stress_global,
+            stress_local=stress_local,
+            strain_global=strain_global,
+            strain_local=strain_local,
+            max_failure_index=max_fi,
+            knockdown=knockdown,
+        )
+
+    def _evaluate_tsai_wu(self, stress_local: np.ndarray) -> float:
+        """Evaluate Tsai-Wu failure index at all Gauss points.
+
+        Parameters
+        ----------
+        stress_local : np.ndarray
+            Shape (n_elem, n_gp, 6) local stresses.
+
+        Returns
+        -------
+        float
+            Maximum Tsai-Wu failure index.
+        """
+        mat = self.material
+        # Strength values
+        Xt = mat.sigma_1t
+        Xc = mat.sigma_1c
+        Yt = mat.sigma_2t
+        Yc = mat.sigma_2c
+        S12 = mat.tau_12
+        S23 = mat.tau_ilss
+
+        # Tsai-Wu coefficients
+        F1 = 1.0 / Xt - 1.0 / Xc
+        F2 = 1.0 / Yt - 1.0 / Yc
+        F3 = F2  # transverse isotropy
+        F11 = 1.0 / (Xt * Xc)
+        F22 = 1.0 / (Yt * Yc)
+        F33 = F22
+        F44 = 1.0 / S23**2
+        F55 = 1.0 / S12**2
+        F66 = 1.0 / S12**2
+        F12 = -0.5 * np.sqrt(F11 * F22)
+        F13 = F12
+        F23 = -0.5 * np.sqrt(F22 * F33)
+
+        max_fi = 0.0
+        n_elem, n_gp, _ = stress_local.shape
+        for e in range(n_elem):
+            for g in range(n_gp):
+                s = stress_local[e, g]
+                fi = (F1 * s[0] + F2 * s[1] + F3 * s[2] +
+                      F11 * s[0]**2 + F22 * s[1]**2 + F33 * s[2]**2 +
+                      F44 * s[3]**2 + F55 * s[4]**2 + F66 * s[5]**2 +
+                      2 * F12 * s[0] * s[1] + 2 * F13 * s[0] * s[2] +
+                      2 * F23 * s[1] * s[2])
+                if fi > max_fi:
+                    max_fi = fi
+
+        return float(max_fi)
 
 
 # ============================================================
