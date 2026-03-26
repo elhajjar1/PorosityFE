@@ -17,11 +17,17 @@ This repository contains a **Python-based analytical and micromechanics model** 
 
 ```
 Porosity_FE/
-├── porosity_fe_analysis.py          # Main implementation (~1100 lines)
+├── porosity_fe_analysis.py          # Main implementation (~2400 lines)
+├── porosity_gui.py                  # PyQt6 GUI application
 ├── requirements.txt                 # Dependencies (numpy, scipy, matplotlib)
-├── tests/test_porosity_fe.py        # 79 tests
+├── tests/test_porosity_fe.py        # 165+ tests
+├── validation/
+│   ├── validate_elhajjar2025_porosity.py  # Validation script
+│   ├── reference_data.json          # Elhajjar (2025) experimental data
+│   └── validation_elhajjar2025_porosity.png
 ├── README.md                        # Usage guide
 ├── CLAUDE.md                        # This file
+├── PorosityFE.spec                  # PyInstaller build spec
 ├── docs/superpowers/
 │   ├── specs/                       # Design specification
 │   └── plans/                       # Implementation plan
@@ -80,9 +86,74 @@ The single file `porosity_fe_analysis.py` is organized into 8 sections:
 - 7 static plot methods: porosity_field, mesh_3d, mesh_detail, damage_contour, void_scf, knockdown_curves, model_comparison
 - Publication-quality: 300 DPI, consistent fonts, proper colorbars
 
+### Section 7b: Coordinate Transforms
+- `rotation_matrix_3d(angle_rad, axis)` - 3x3 rotation matrix (z or y axis)
+- `stress_transformation_3d(angle_rad, axis)` - 6x6 stress transformation (Voigt)
+- `strain_transformation_3d(angle_rad, axis)` - 6x6 strain transformation (Voigt)
+- `rotate_stiffness_3d(C, angle_rad, axis)` - Rotate 6x6 stiffness: C_bar = T_sigma_inv @ C @ T_epsilon
+- `compute_clt_effective_modulus(material, ply_angles)` - CLT ABD-matrix effective E_x
+
+### Section 7c: Gauss Quadrature
+- `gauss_points_1d(n)` - 1D Gauss-Legendre points and weights (n = 1, 2, or 3)
+- `gauss_points_hex(order)` - 3D tensor-product Gauss points for hexahedral elements
+
+### Section 7d: Hex8Element
+8-node isoparametric hexahedral element with porosity degradation via Mori-Tanaka.
+
+**Data flow per element:**
+```
+node_coords (8,3) + node_porosities (8,) + ply_angle + C_base
+    -> shape_functions() -> jacobian() -> B_matrix() (6x24)
+    -> _degraded_stiffness() [M-T homogenization + ply rotation]
+    -> stiffness_matrix() Ke (24x24) via 2x2x2 Gauss quadrature
+```
+
+Key methods:
+- `shape_functions(xi, eta, zeta)` - 8 trilinear shape functions
+- `shape_derivatives(xi, eta, zeta)` - dN/d(xi) (3x8)
+- `jacobian(xi, eta, zeta)` - 3x3 Jacobian matrix
+- `B_matrix(xi, eta, zeta)` - 6x24 strain-displacement matrix
+- `stiffness_matrix()` - 24x24 element stiffness via Gauss quadrature
+- `stress_at_gauss_points(u_elem)` - Stress recovery at all GPs
+- `strain_at_gauss_points(u_elem)` - Strain recovery at all GPs
+- Void elements use near-zero isotropic stiffness (~1 MPa)
+
+### Section 7e: GlobalAssembler
+Assembles global sparse stiffness matrix from Hex8Element contributions.
+- `create_element(elem_idx)` - Build Hex8Element for given element
+- `element_dof_indices(elem_idx)` - 24 global DOF indices for element
+- `assemble_stiffness(verbose)` - COO assembly -> CSC sparse matrix
+
+### Section 7f: BoundaryHandler
+Displacement-controlled boundary conditions for compression, tension, shear.
+- `compression_bcs(applied_strain)` - x_min fixed, x_max prescribed, y_min symmetry
+- `tension_bcs(applied_strain)` - Same structure with positive strain
+- `shear_bcs(applied_strain)` - x_min fixed, x_max shear displacement
+- `apply_penalty(K, F, constrained)` - Penalty method for prescribed DOFs
+
+### Section 7g: FESolver
+Linear static FE solver orchestrating the full pipeline.
+
+**Solve workflow:**
+```
+check_mesh_quality() -> assemble K -> build BCs -> apply penalty
+    -> spsolve(K, F) -> recover stresses/strains -> Tsai-Wu failure
+    -> compute knockdown (CLT E_eff reference)
+```
+
+- `solve(loading, applied_strain, verbose)` - Returns FieldResults
+- `export_results(field_results, filename)` - Save results to JSON
+- `_evaluate_tsai_wu(stress_local)` - Porosity-degraded Tsai-Wu failure index
+
+### Section 7g: FieldResults (dataclass)
+- `displacement` (n_nodes, 3), `stress_global/local` (n_elem, n_gp, 6)
+- `strain_global/local` (n_elem, n_gp, 6)
+- `max_failure_index`, `knockdown`
+
 ### Section 8: Analysis Pipeline
 - `compare_configurations()` - loops through configs, runs both solvers, prints rankings
 - `save_results_to_json()` - exports to JSON
+- `check_mesh_quality(mesh)` - element aspect ratios and Jacobian check
 - `main()` - full parametric study across porosity levels
 
 ## Key Mathematical Relationships
