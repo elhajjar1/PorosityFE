@@ -24,7 +24,7 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    gauss_points_1d, gauss_points_hex,
                                    Hex8Element, _mt_effective_stiffness,
                                    GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
-                                   compute_clt_effective_modulus)
+                                   compute_clt_effective_modulus, check_mesh_quality)
 
 
 class TestMaterialProperties:
@@ -911,6 +911,37 @@ class TestCompositeMeshFE:
         mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
         assert hasattr(mesh, 'elem_ply_ids')
         assert len(mesh.elem_ply_ids) == mesh.n_elements
+
+
+class TestMeshQuality:
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+
+    def test_returns_dict(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        result = check_mesh_quality(mesh)
+        assert isinstance(result, dict)
+        assert 'min_aspect_ratio' in result
+        assert 'max_aspect_ratio' in result
+        assert 'min_jacobian_det' in result
+        assert 'n_inverted' in result
+        assert 'n_distorted' in result
+
+    def test_structured_mesh_no_inverted(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        result = check_mesh_quality(mesh)
+        assert result['n_inverted'] == 0
+
+    def test_positive_jacobian(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=5, ny=3, nz=4)
+        result = check_mesh_quality(mesh)
+        assert result['min_jacobian_det'] > 0
+
+    def test_verbose_mode(self):
+        mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+        result = check_mesh_quality(mesh, verbose=True)
+        assert result['n_elements'] == mesh.n_elements
 
 
 class TestGlobalAssembler:

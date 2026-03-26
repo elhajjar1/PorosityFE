@@ -486,6 +486,90 @@ class CompositeMesh:
         else:
             raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
 
+
+def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
+    """Check mesh quality: element aspect ratios and Jacobian determinants.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The finite element mesh to check.
+    verbose : bool
+        Print detailed quality report.
+
+    Returns
+    -------
+    dict
+        Quality metrics: min/max aspect ratio, min Jacobian determinant,
+        number of inverted elements, number of highly distorted elements.
+
+    Raises
+    ------
+    Warning messages are printed for inverted or highly distorted elements.
+    """
+    import warnings
+
+    n_elem = mesh.n_elements
+    aspect_ratios = np.empty(n_elem)
+    min_detJ_per_elem = np.empty(n_elem)
+
+    # Gauss point at element center for Jacobian check
+    gp_points = np.array([[0, 0, 0]])  # center only for quick check
+
+    for e in range(n_elem):
+        node_ids = mesh.elements[e]
+        coords = mesh.nodes[node_ids]  # (8, 3)
+
+        # Aspect ratio: ratio of max edge length to min edge length
+        # Check all 12 edges of a hexahedron
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
+            (0, 4), (1, 5), (2, 6), (3, 7),  # vertical edges
+        ]
+        edge_lengths = np.array([np.linalg.norm(coords[a] - coords[b])
+                                  for a, b in edges])
+        min_len = edge_lengths.min()
+        max_len = edge_lengths.max()
+        aspect_ratios[e] = max_len / min_len if min_len > 1e-15 else np.inf
+
+        # Jacobian at element center
+        dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
+        J = dN @ coords
+        min_detJ_per_elem[e] = np.linalg.det(J)
+
+    n_inverted = int(np.sum(min_detJ_per_elem < 0))
+    n_distorted = int(np.sum(aspect_ratios > 20.0))
+
+    result = {
+        'min_aspect_ratio': float(np.min(aspect_ratios)),
+        'max_aspect_ratio': float(np.max(aspect_ratios)),
+        'mean_aspect_ratio': float(np.mean(aspect_ratios)),
+        'min_jacobian_det': float(np.min(min_detJ_per_elem)),
+        'n_inverted': n_inverted,
+        'n_distorted': n_distorted,
+        'n_elements': n_elem,
+    }
+
+    if verbose:
+        print(f"  Mesh quality: {n_elem} elements")
+        print(f"    Aspect ratio: min={result['min_aspect_ratio']:.2f}, "
+              f"max={result['max_aspect_ratio']:.2f}, "
+              f"mean={result['mean_aspect_ratio']:.2f}")
+        print(f"    Min Jacobian det: {result['min_jacobian_det']:.6e}")
+        if n_inverted > 0:
+            print(f"    WARNING: {n_inverted} inverted elements (negative Jacobian)!")
+        if n_distorted > 0:
+            print(f"    WARNING: {n_distorted} highly distorted elements (aspect ratio > 20)!")
+
+    if n_inverted > 0:
+        warnings.warn(f"Mesh has {n_inverted} inverted elements (negative Jacobian determinant).")
+    if n_distorted > 0:
+        warnings.warn(f"Mesh has {n_distorted} highly distorted elements (aspect ratio > 20).")
+
+    return result
+
+
 # ============================================================
 # SECTION 5: EMPIRICAL SOLVER
 # ============================================================
@@ -2006,6 +2090,9 @@ class FESolver:
         """
         import time
         t0 = time.perf_counter()
+
+        # 0. Mesh quality check
+        check_mesh_quality(self.mesh, verbose=verbose)
 
         # 1. Assemble global stiffness
         if verbose:
