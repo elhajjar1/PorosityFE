@@ -1141,6 +1141,34 @@ class TestFESolver:
         np.testing.assert_allclose(results.displacement[xmax_nodes, 0], expected, atol=1e-6)
 
 
+class TestFEExportResults:
+    def test_export_creates_file(self, tmp_path):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, material, pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        path = str(tmp_path / "fe_results.json")
+        FESolver.export_results(results, path)
+        assert os.path.exists(path)
+
+    def test_export_json_structure(self, tmp_path):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, material, pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        path = str(tmp_path / "fe_results.json")
+        FESolver.export_results(results, path)
+        with open(path) as f:
+            data = json.load(f)
+        assert 'displacement' in data
+        assert 'stress_global' in data
+        assert 'failure' in data
+        assert 'knockdown_factor' in data['failure']
+        assert data['failure']['knockdown_factor'] > 0
+
+
 class TestVoidInclusions:
     """Tests that discrete voids are modeled as near-zero stiffness inclusions."""
 

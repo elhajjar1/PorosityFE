@@ -2288,6 +2288,67 @@ class FESolver:
 
         return float(max_fi)
 
+    @staticmethod
+    def export_results(field_results: 'FieldResults', filename: str) -> None:
+        """Export FE results to a JSON file.
+
+        Saves displacement statistics, stress/strain summaries, failure data,
+        and knockdown factor. Large arrays are summarized (min/max/mean/std)
+        rather than stored in full.
+
+        Parameters
+        ----------
+        field_results : FieldResults
+            Results from FESolver.solve().
+        filename : str
+            Output JSON file path.
+        """
+        def _array_stats(arr: np.ndarray) -> dict:
+            """Compute summary statistics for an array."""
+            return {
+                'min': float(np.min(arr)),
+                'max': float(np.max(arr)),
+                'mean': float(np.mean(arr)),
+                'std': float(np.std(arr)),
+            }
+
+        output = {
+            'displacement': {
+                'n_nodes': int(field_results.displacement.shape[0]),
+                'ux': _array_stats(field_results.displacement[:, 0]),
+                'uy': _array_stats(field_results.displacement[:, 1]),
+                'uz': _array_stats(field_results.displacement[:, 2]),
+            },
+            'stress_global': {
+                'n_elements': int(field_results.stress_global.shape[0]),
+                'n_gauss_points': int(field_results.stress_global.shape[1]),
+                'sigma_11': _array_stats(field_results.stress_global[:, :, 0]),
+                'sigma_22': _array_stats(field_results.stress_global[:, :, 1]),
+                'sigma_33': _array_stats(field_results.stress_global[:, :, 2]),
+                'tau_23': _array_stats(field_results.stress_global[:, :, 3]),
+                'tau_13': _array_stats(field_results.stress_global[:, :, 4]),
+                'tau_12': _array_stats(field_results.stress_global[:, :, 5]),
+            },
+            'stress_local': {
+                'sigma_11': _array_stats(field_results.stress_local[:, :, 0]),
+                'sigma_22': _array_stats(field_results.stress_local[:, :, 1]),
+                'tau_12': _array_stats(field_results.stress_local[:, :, 5]),
+            },
+            'strain_global': {
+                'eps_11': _array_stats(field_results.strain_global[:, :, 0]),
+                'eps_22': _array_stats(field_results.strain_global[:, :, 1]),
+                'gamma_12': _array_stats(field_results.strain_global[:, :, 5]),
+            },
+            'failure': {
+                'max_tsai_wu_index': float(field_results.max_failure_index),
+                'knockdown_factor': float(field_results.knockdown),
+            },
+        }
+
+        with open(filename, 'w') as f:
+            json.dump(output, f, indent=2)
+        print(f"Saved FE results: {filename}")
+
 
 # ============================================================
 # SECTION 8: ANALYSIS PIPELINE
