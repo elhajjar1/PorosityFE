@@ -177,8 +177,15 @@ class VoidGeometry:
         x_l, y_l, z_l = self._to_local(x, y, z)
         val = np.sqrt((x_l / self.radii[0])**2 + (y_l / self.radii[1])**2 + (z_l / self.radii[2])**2)
         r_eff = np.sqrt(x_l**2 + y_l**2 + z_l**2)
-        r_eff = np.maximum(r_eff, 1e-12)
-        return r_eff * (val - 1.0) / val
+        # At the void center (r_eff ~ 0), val is also ~0 causing 0/0.
+        # Return -1.0 (clearly inside) for those points.
+        eps = 1e-12
+        at_center = r_eff < eps
+        r_eff = np.maximum(r_eff, eps)
+        val_safe = np.maximum(val, eps)
+        result = r_eff * (val - 1.0) / val_safe
+        result = np.where(at_center, -1.0, result)
+        return result
 
     def stress_concentration_factor(self) -> dict:
         ar = self.aspect_ratio
