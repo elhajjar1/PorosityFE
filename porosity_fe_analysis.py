@@ -1181,6 +1181,60 @@ def rotate_stiffness_3d(C: np.ndarray, angle_rad: float, axis: str = 'z') -> np.
     return T_sigma_inv @ C @ T_epsilon
 
 
+def compute_clt_effective_modulus(material: MaterialProperties,
+                                  ply_angles: List[float]) -> float:
+    """Compute effective laminate longitudinal modulus using CLT (ABD matrix).
+
+    Builds the full A-matrix (in-plane stiffness) from Classical Lamination
+    Theory, then computes the effective Ex from the A-matrix inverse.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Material with orthotropic ply-level properties.
+    ply_angles : list of float
+        Ply orientation angles in degrees (one per ply).
+
+    Returns
+    -------
+    float
+        Effective longitudinal modulus E_x (MPa).
+    """
+    C_base = material.get_stiffness_matrix()
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    # Build A-matrix: A_ij = sum over plies of Q_bar_ij * t_ply
+    A = np.zeros((3, 3))
+    for angle_deg in ply_angles:
+        angle_rad = np.radians(float(angle_deg))
+        if abs(angle_rad) > 1e-15:
+            C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z')
+        else:
+            C_rot = C_base
+        # Extract in-plane Q-bar (reduced stiffness) from 6x6:
+        # Q_bar = C_rot[0:3, 0:3] is the membrane portion in plane-stress
+        # For CLT, use the plane-stress reduced stiffness
+        # Q_bar_ij = C_ij - C_i3*C_j3/C_33  (i,j = 1,2,6 -> indices 0,1,5)
+        idx = [0, 1, 5]  # 11, 22, 12 in Voigt
+        Q_bar = np.zeros((3, 3))
+        for i in range(3):
+            for j in range(3):
+                ii, jj = idx[i], idx[j]
+                if abs(C_rot[2, 2]) > 1e-12:
+                    Q_bar[i, j] = C_rot[ii, jj] - C_rot[ii, 2] * C_rot[jj, 2] / C_rot[2, 2]
+                else:
+                    Q_bar[i, j] = C_rot[ii, jj]
+        A += Q_bar * t_ply
+
+    # Effective modulus: E_x = (A11*A22 - A12^2) / (A22 * h)
+    # From a_ij = A_inv, E_x = 1 / (h * a_11)
+    A_inv = np.linalg.inv(A)
+    E_x = 1.0 / (h_total * A_inv[0, 0])
+    return float(E_x)
+
+
 # ============================================================
 # SECTION 7c: GAUSS QUADRATURE
 # ============================================================
@@ -1927,6 +1981,7 @@ class FESolver:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
+        self.ply_angles = ply_angles
         self.assembler = GlobalAssembler(mesh, material, porosity_field)
         self.bc_handler = BoundaryHandler(mesh)
 
@@ -2033,21 +2088,18 @@ class FESolver:
         avg_sigma_xx = np.mean(stress_global[:, :, 0])
 
         # Pristine expected stress: E_eff * applied_strain
-        # Compute E_eff from CLT: weighted average of rotated C11 across plies
-        C_pristine = self.material.get_stiffness_matrix()
-        # Use per-element ply angles (weighted by element count, equal-volume elements)
-        unique_angles, angle_counts = np.unique(self.mesh.ply_angles,
-                                                return_counts=True)
-        C11_avg = 0.0
-        total_count = angle_counts.sum()
-        for angle, count in zip(unique_angles, angle_counts):
-            angle_rad = np.radians(float(angle))
-            if abs(angle_rad) > 1e-15:
-                C_rot = rotate_stiffness_3d(C_pristine, angle_rad, axis='z')
-            else:
-                C_rot = C_pristine
-            C11_avg += C_rot[0, 0] * count
-        E_eff = C11_avg / total_count
+        # Compute E_eff using proper CLT (ABD matrix) for accurate reference
+        if self.ply_angles is not None:
+            clt_angles = list(self.ply_angles)
+        elif self.mesh._input_ply_angles is not None:
+            clt_angles = list(self.mesh._input_ply_angles)
+            # Expand to full n_plies if needed
+            n_plies = self.material.n_plies
+            if len(clt_angles) < n_plies:
+                clt_angles = (clt_angles * (n_plies // len(clt_angles) + 1))[:n_plies]
+        else:
+            clt_angles = [0.0] * self.material.n_plies
+        E_eff = compute_clt_effective_modulus(self.material, clt_angles)
 
         pristine_sigma_xx = E_eff * applied_strain  # same sign as applied
 

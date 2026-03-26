@@ -23,7 +23,8 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    strain_transformation_3d, rotate_stiffness_3d,
                                    gauss_points_1d, gauss_points_hex,
                                    Hex8Element, _mt_effective_stiffness,
-                                   GlobalAssembler, BoundaryHandler, FESolver, FieldResults)
+                                   GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
+                                   compute_clt_effective_modulus)
 
 
 class TestMaterialProperties:
@@ -642,6 +643,36 @@ class TestCoordinateTransforms:
     def test_rotate_stiffness_wrong_shape(self):
         with pytest.raises(ValueError):
             rotate_stiffness_3d(np.eye(3), 0.0)
+
+
+class TestCLTEffectiveModulus:
+    def test_all_zero_plies_returns_E11(self):
+        """All 0-degree plies should give E_x close to E11."""
+        mat = MATERIALS['T800_epoxy']
+        E_x = compute_clt_effective_modulus(mat, [0.0] * 24)
+        # Should be close to E11 (plane-stress correction makes it slightly different)
+        assert abs(E_x - mat.E11) / mat.E11 < 0.02
+
+    def test_quasi_isotropic_lower_than_E11(self):
+        """QI layup should have E_x much lower than E11."""
+        mat = MATERIALS['T800_epoxy']
+        angles = [0, 45, 90, -45] * 6  # 24 plies QI
+        E_x = compute_clt_effective_modulus(mat, angles)
+        assert E_x < mat.E11
+        assert E_x > mat.E22  # Should still be stiffer than transverse
+
+    def test_positive_modulus(self):
+        mat = MATERIALS['T800_epoxy']
+        E_x = compute_clt_effective_modulus(mat, [0, 90, 0, 90] * 6)
+        assert E_x > 0
+
+    def test_symmetric_layup(self):
+        """Symmetric layup [0/90]_s should equal [0/90/90/0]."""
+        mat = MATERIALS['T800_epoxy']
+        E1 = compute_clt_effective_modulus(mat, [0, 90, 90, 0] * 6)
+        E2 = compute_clt_effective_modulus(mat, [0, 90] * 12)
+        # A-matrix is the same for both (same ply count per angle)
+        assert abs(E1 - E2) / E1 < 1e-10
 
 
 class TestGaussQuadrature:
