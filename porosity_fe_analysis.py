@@ -400,9 +400,16 @@ class CompositeMesh:
 
         self.elements = np.array(elements)
 
-        # Identify void elements (average porosity > 0.95)
-        elem_porosity = np.mean(self.porosity[self.elements], axis=1)
-        self.void_elements = np.where(elem_porosity > 0.95)[0]
+        # Identify void elements: check if element centroid falls inside
+        # any discrete void geometry (explicit inclusion modeling)
+        elem_centers = np.mean(self.nodes[self.elements], axis=1)  # (n_elem, 3)
+        void_mask = np.zeros(len(self.elements), dtype=bool)
+        for void in self.porosity_field.discrete_voids:
+            inside = void.contains(elem_centers[:, 0], elem_centers[:, 1], elem_centers[:, 2])
+            void_mask |= inside
+        self.void_elements = np.where(void_mask)[0]
+        # Also create a set for O(1) lookup
+        self.void_element_set = set(self.void_elements.tolist())
 
         # Assign per-element ply angles (degrees)
         # Element ply_id is determined by the centroid z-coordinate
@@ -1341,10 +1348,13 @@ class Hex8Element:
         Shape (6, 6) isotropic matrix stiffness for Mori-Tanaka.
     """
 
+    # Near-zero stiffness for void elements (Pa, not MPa — ~6 orders softer)
+    VOID_MODULUS = 1.0  # MPa (effectively zero vs composite E11 ~ 161,000 MPa)
+
     def __init__(self, node_coords: np.ndarray, C_base: np.ndarray,
                  ply_angle_deg: float, node_porosities: np.ndarray,
                  void_shape_radii: Tuple, nu_m: float,
-                 C_m: np.ndarray) -> None:
+                 C_m: np.ndarray, is_void: bool = False) -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")
@@ -1356,12 +1366,25 @@ class Hex8Element:
         self.void_shape_radii = void_shape_radii
         self.nu_m = nu_m
         self.C_m = np.asarray(C_m, dtype=float)
+        self.is_void = is_void
 
         self._gauss_points, self._gauss_weights = gauss_points_hex(order=2)
 
+        # Pre-compute void stiffness (isotropic, near-zero modulus)
+        if self.is_void:
+            E_void = self.VOID_MODULUS
+            nu_void = 0.3
+            lam = E_void * nu_void / ((1 + nu_void) * (1 - 2 * nu_void))
+            mu = E_void / (2 * (1 + nu_void))
+            self._void_C = np.zeros((6, 6))
+            self._void_C[0, 0] = self._void_C[1, 1] = self._void_C[2, 2] = lam + 2 * mu
+            self._void_C[0, 1] = self._void_C[0, 2] = self._void_C[1, 0] = lam
+            self._void_C[1, 2] = self._void_C[2, 0] = self._void_C[2, 1] = lam
+            self._void_C[3, 3] = self._void_C[4, 4] = self._void_C[5, 5] = mu
+
         # Cache: if all node porosities are the same, pre-compute C_eff once
         self._uniform_porosity = None
-        if np.allclose(self.node_porosities, self.node_porosities[0], atol=1e-12):
+        if not self.is_void and np.allclose(self.node_porosities, self.node_porosities[0], atol=1e-12):
             self._uniform_porosity = float(self.node_porosities[0])
 
     @staticmethod
@@ -1447,7 +1470,12 @@ class Hex8Element:
         np.ndarray
             Shape (6, 6) degraded and rotated stiffness.
         """
-        # 1. Interpolate porosity
+        # VOID ELEMENTS: use near-zero isotropic stiffness (explicit inclusion)
+        if self.is_void:
+            return self._void_C
+
+        # NON-VOID ELEMENTS: degrade by distributed microporosity via Mori-Tanaka
+        # 1. Interpolate porosity at this Gauss point
         if self._uniform_porosity is not None:
             Vp = self._uniform_porosity
         else:
@@ -1455,27 +1483,12 @@ class Hex8Element:
             Vp = float(N @ self.node_porosities)
         Vp = max(0.0, min(Vp, 0.99))
 
-        # 2. Mori-Tanaka effective stiffness (matrix with voids)
+        # 2. Mori-Tanaka effective stiffness for matrix with voids
         C_eff_mt = _mt_effective_stiffness(self.C_m, Vp, self.void_shape_radii, self.nu_m)
-        C_m_pristine = self.C_m  # Pristine matrix stiffness (Vp=0)
 
-        # 3. Degradation ratio from M-T: scale composite stiffness
-        # Use diagonal ratio as degradation factor for each component
-        C_degraded = self.C_base.copy()
-        for i in range(6):
-            if abs(C_m_pristine[i, i]) > 1e-12:
-                ratio = C_eff_mt[i, i] / C_m_pristine[i, i]
-                ratio = max(0.0, min(ratio, 1.0))
-            else:
-                ratio = 1.0
-            C_degraded[i, :] *= ratio
-            C_degraded[:, i] *= ratio
-            # Undo double scaling of diagonal
-            C_degraded[i, i] /= ratio if ratio > 1e-12 else 1.0
-
-        # Simpler approach: use overall stiffness reduction factor
-        # based on the average diagonal degradation
-        diag_pristine = np.diag(C_m_pristine)
+        # 3. Compute stiffness degradation ratio from M-T
+        # Scale the full composite stiffness by the average M-T degradation
+        diag_pristine = np.diag(self.C_m)
         diag_degraded = np.diag(C_eff_mt)
         mask = diag_pristine > 1e-12
         if np.any(mask):
@@ -1595,11 +1608,17 @@ class GlobalAssembler:
         self._void_shape = porosity_field.void_shape_radii
 
     def create_element(self, elem_idx: int) -> Hex8Element:
-        """Create a Hex8Element for the given element index."""
+        """Create a Hex8Element for the given element index.
+
+        Elements whose centroid falls inside a discrete void get is_void=True,
+        which sets their stiffness to near-zero (~1 MPa), creating an explicit
+        void inclusion in the mesh.
+        """
         node_ids = self.mesh.elements[elem_idx]
         node_coords = self.mesh.nodes[node_ids]
         ply_angle = float(self.mesh.ply_angles[elem_idx])
         node_porosities = self.mesh.porosity[node_ids]
+        is_void = elem_idx in self.mesh.void_element_set
         return Hex8Element(
             node_coords=node_coords,
             C_base=self._C_base,
@@ -1608,6 +1627,7 @@ class GlobalAssembler:
             void_shape_radii=self._void_shape,
             nu_m=self._nu_m,
             C_m=self._C_m,
+            is_void=is_void,
         )
 
     def element_dof_indices(self, elem_idx: int) -> np.ndarray:
@@ -1653,7 +1673,9 @@ class GlobalAssembler:
             coo_vals[offset:offset + entries_per_elem] = Ke.ravel()
 
         if verbose:
+            n_void = len(self.mesh.void_elements)
             print(f"  Assembling element {n_elem}/{n_elem} (100.0%) -- done.")
+            print(f"  Void inclusion elements: {n_void} (E ~ {Hex8Element.VOID_MODULUS} MPa)")
             print(f"  Building sparse matrix: {n_dof} DOFs, {total_entries} COO entries")
 
         K_coo = scipy.sparse.coo_matrix(

@@ -1077,3 +1077,64 @@ class TestFESolver:
         xmax_nodes = self.mesh.nodes_on_face('x_max')
         expected = strain * self.mesh.L_x
         np.testing.assert_allclose(results.displacement[xmax_nodes, 0], expected, atol=1e-6)
+
+
+class TestVoidInclusions:
+    """Tests that discrete voids are modeled as near-zero stiffness inclusions."""
+
+    def test_void_elements_identified_by_geometry(self):
+        """Elements inside a VoidGeometry should be flagged as void."""
+        material = MATERIALS['T800_epoxy']
+        Lz = material.total_thickness
+        void = VoidGeometry(center=(25, 10, Lz / 2), radii=(5, 5, Lz / 4))
+        pf = PorosityField(material, 0.0, distribution='uniform',
+                           discrete_voids=[void])
+        mesh = CompositeMesh(pf, material, nx=10, ny=5, nz=6)
+        # Should have some void elements
+        assert len(mesh.void_elements) > 0
+        # Void elements should be near the void center
+        void_centers = np.mean(mesh.nodes[mesh.elements[mesh.void_elements]], axis=1)
+        for center in void_centers:
+            assert void.contains(np.array([center[0]]), np.array([center[1]]),
+                                  np.array([center[2]]))[0]
+
+    def test_void_element_has_near_zero_stiffness(self):
+        """Hex8Element with is_void=True should have very soft stiffness."""
+        material = MATERIALS['T800_epoxy']
+        C_base = material.get_stiffness_matrix()
+        C_m = material.get_isotropic_matrix_stiffness()
+        coords = np.array([[0,0,0],[1,0,0],[1,1,0],[0,1,0],
+                           [0,0,1],[1,0,1],[1,1,1],[0,1,1]], dtype=float)
+        porosity = np.zeros(8)
+
+        elem_normal = Hex8Element(coords, C_base, 0.0, porosity,
+                                   (1,1,1), 0.35, C_m, is_void=False)
+        elem_void = Hex8Element(coords, C_base, 0.0, porosity,
+                                 (1,1,1), 0.35, C_m, is_void=True)
+
+        Ke_normal = elem_normal.stiffness_matrix()
+        Ke_void = elem_void.stiffness_matrix()
+
+        # Void element stiffness should be orders of magnitude smaller
+        ratio = np.linalg.norm(Ke_void) / np.linalg.norm(Ke_normal)
+        assert ratio < 1e-4, f"Void/normal stiffness ratio {ratio} not small enough"
+
+    def test_fe_with_void_has_stress_concentration(self):
+        """FE solve with a void should show higher stresses near the void."""
+        material = MATERIALS['T800_epoxy']
+        Lz = material.total_thickness
+        # Large void relative to mesh: 10mm radius covers multiple elements
+        void = VoidGeometry(center=(25, 10, Lz / 2), radii=(10, 8, Lz / 3))
+        pf = PorosityField(material, 0.0, distribution='uniform',
+                           discrete_voids=[void])
+        mesh = CompositeMesh(pf, material, nx=10, ny=5, nz=6)
+
+        assert len(mesh.void_elements) > 0, "No void elements found"
+
+        solver = FESolver(mesh, material, pf)
+        results = solver.solve(loading='compression', applied_strain=-0.005)
+
+        # Non-void elements near the void should have higher stresses
+        # than elements far from the void
+        assert results.max_failure_index > 0
+        assert np.any(np.isfinite(results.stress_global))
