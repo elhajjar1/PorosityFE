@@ -486,14 +486,16 @@ class CompositeMesh:
 class EmpiricalSolver:
     """Fast analytical solver using empirical porosity-strength models."""
 
+    # Calibrated against Elhajjar (2025) Sci. Rep. 15:25977, Fig. 5a
+    # T700/#2510, [0/45/90/-45/0]_s, porosity 2-10%
     JUDD_WRIGHT_ALPHA = {
-        'compression': 3.0, 'tension': 2.0, 'shear': 4.0, 'ilss': 5.5,
+        'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
     }
     POWER_LAW_N = {
-        'compression': 1.5, 'tension': 1.2, 'shear': 2.0, 'ilss': 2.5,
+        'compression': 2.8, 'tension': 1.8, 'shear': 3.5, 'ilss': 4.5,
     }
     LINEAR_BETA = {
-        'compression': 10.0, 'tension': 7.0, 'shear': 12.0, 'ilss': 15.0,
+        'compression': 5.5, 'tension': 3.5, 'shear': 7.0, 'ilss': 9.0,
     }
     PRISTINE_STRENGTH_KEY = {
         'compression': 'sigma_1c', 'tension': 'sigma_1t',
