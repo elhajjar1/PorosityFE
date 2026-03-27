@@ -885,37 +885,16 @@ class FEVisualizer:
 
     @staticmethod
     def plot_porosity_field(porosity_field: PorosityField, save_path: str = None):
-        """2-panel: through-thickness porosity profile + plan view."""
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        """Single panel: through-thickness porosity profile."""
+        fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 
-        # Left: through-thickness profile
         z, Vp = porosity_field.effective_porosity_profile(nz=200)
-        axes[0].plot(Vp * 100, z, 'b-', linewidth=2)
-        axes[0].set_xlabel('Porosity (%)', fontsize=12)
-        axes[0].set_ylabel('z (mm)', fontsize=12)
-        axes[0].set_title('Through-Thickness Porosity Profile', fontsize=14, fontweight='bold')
-        axes[0].grid(True, alpha=0.3)
-        axes[0].set_xlim(left=0)
-
-        # Right: plan view at midplane
-        Lz = porosity_field.Lz
-        x = np.linspace(0, 50, 100)
-        y = np.linspace(0, 20, 50)
-        X, Y = np.meshgrid(x, y)
-        Z_mid = np.full_like(X, Lz / 2)
-        Vp_map = porosity_field.local_porosity(X.ravel(), Y.ravel(), Z_mid.ravel())
-        Vp_map = Vp_map.reshape(X.shape)
-        im = axes[1].contourf(X, Y, Vp_map * 100, levels=20, cmap='YlOrRd')
-        plt.colorbar(im, ax=axes[1], label='Porosity (%)')
-        axes[1].set_xlabel('x (mm)', fontsize=12)
-        axes[1].set_ylabel('y (mm)', fontsize=12)
-        axes[1].set_title('Porosity at Midplane', fontsize=14, fontweight='bold')
-
-        # Mark discrete voids
-        for center, radii in porosity_field.get_void_locations():
-            circle = plt.Circle((center[0], center[1]), radii[0],
-                               fill=False, color='red', linewidth=2)
-            axes[1].add_patch(circle)
+        ax.plot(Vp * 100, z, 'b-', linewidth=2)
+        ax.set_xlabel('Porosity (%)', fontsize=12)
+        ax.set_ylabel('z (mm)', fontsize=12)
+        ax.set_title('Through-Thickness Porosity Profile', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0)
 
         plt.tight_layout()
         if save_path:
@@ -942,12 +921,20 @@ class FEVisualizer:
             Z = layer_nodes[:, 2].reshape(ny + 1, nx + 1)
             ax.plot_wireframe(X, Y, Z, alpha=0.3, color='gray', linewidth=0.5)
 
-        # Highlight void elements
+        # Highlight void elements as red wireframe hex boxes
+        hex_edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
+            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
+            (0, 4), (1, 5), (2, 6), (3, 7),  # verticals
+        ]
         if len(mesh.void_elements) > 0:
-            for eidx in mesh.void_elements[:20]:  # Limit for performance
-                elem_nodes = mesh.nodes[mesh.elements[eidx]]
-                center = elem_nodes.mean(axis=0)
-                ax.scatter(*center, color='red', s=20, alpha=0.8)
+            for eidx in mesh.void_elements[:50]:  # limit for performance
+                corners = mesh.nodes[mesh.elements[eidx]]  # (8, 3)
+                for i1, i2 in hex_edges:
+                    ax.plot3D(
+                        *zip(corners[i1], corners[i2]),
+                        color='red', linewidth=1.5, alpha=0.8, zorder=6,
+                    )
 
         ax.set_xlabel('x (mm)')
         ax.set_ylabel('y (mm)')
@@ -2109,7 +2096,7 @@ class FieldResults:
     max_failure_index : float
         Maximum Tsai-Wu failure index across all Gauss points.
     knockdown : float
-        Strength knockdown factor (ratio of porous to pristine failure load).
+        Stiffness knockdown factor (modulus ratio: E_porous/E_pristine).
     """
     displacement: np.ndarray
     stress_global: np.ndarray

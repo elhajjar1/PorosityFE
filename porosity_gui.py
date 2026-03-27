@@ -302,8 +302,13 @@ if HAS_PYQT6:
                 stress_ctrl_layout.addWidget(QLabel("Stress component:"))
                 self.stress_component_combo = QComboBox()
                 self.stress_component_combo.addItems([
-                    "sigma_11", "sigma_22", "sigma_33",
-                    "tau_23", "tau_13", "tau_12", "Von Mises",
+                    "\u03c3\u2081\u2081 (fiber)",
+                    "\u03c3\u2082\u2082 (transverse)",
+                    "\u03c3\u2083\u2083 (through-thickness)",
+                    "\u03c4\u2082\u2083 (interlaminar)",
+                    "\u03c4\u2081\u2083 (interlaminar)",
+                    "\u03c4\u2081\u2082 (in-plane shear)",
+                    "Von Mises",
                 ])
                 self.stress_component_combo.currentIndexChanged.connect(
                     self._on_stress_component_changed
@@ -828,40 +833,22 @@ if HAS_PYQT6:
             plt.close("all")
 
         def _plot_profile(self, result: dict) -> None:
-            """Draw porosity profile on Profile tab (2-panel)."""
+            """Draw through-thickness porosity profile on Profile tab (single panel)."""
             fig = self.profile_canvas.figure
             fig.clear()
 
             try:
                 pf = result["porosity_field"]
-                material = result["material"]
 
-                # Left: through-thickness profile
-                ax1 = fig.add_subplot(121)
+                ax = fig.add_subplot(111)
                 z, Vp = pf.effective_porosity_profile(nz=200)
-                ax1.plot(Vp * 100, z, "b-", linewidth=2)
-                ax1.set_xlabel("Porosity (%)", fontsize=11)
-                ax1.set_ylabel("z (mm)", fontsize=11)
-                ax1.set_title("Through-Thickness Porosity Profile",
-                              fontsize=12, fontweight="bold")
-                ax1.grid(True, alpha=0.3)
-                ax1.set_xlim(left=0)
-
-                # Right: plan-view contour at midplane
-                ax2 = fig.add_subplot(122)
-                Lz = pf.Lz
-                x = np.linspace(0, 50, 100)
-                y = np.linspace(0, 20, 50)
-                X, Y = np.meshgrid(x, y)
-                Z_mid = np.full_like(X, Lz / 2)
-                Vp_map = pf.local_porosity(X.ravel(), Y.ravel(), Z_mid.ravel())
-                Vp_map = Vp_map.reshape(X.shape)
-                im = ax2.contourf(X, Y, Vp_map * 100, levels=20, cmap="YlOrRd")
-                fig.colorbar(im, ax=ax2, label="Porosity (%)")
-                ax2.set_xlabel("x (mm)", fontsize=11)
-                ax2.set_ylabel("y (mm)", fontsize=11)
-                ax2.set_title("Porosity at Midplane",
-                              fontsize=12, fontweight="bold")
+                ax.plot(Vp * 100, z, "b-", linewidth=2)
+                ax.set_xlabel("Porosity (%)", fontsize=11)
+                ax.set_ylabel("z (mm)", fontsize=11)
+                ax.set_title("Through-Thickness Porosity Profile",
+                             fontsize=12, fontweight="bold")
+                ax.grid(True, alpha=0.3)
+                ax.set_xlim(left=0)
 
                 fig.tight_layout()
             except Exception as e:
@@ -922,20 +909,51 @@ if HAS_PYQT6:
                     ]
                     ax.plot(col_x, col_z, "k-", linewidth=0.3, alpha=0.4)
 
-                # Mark void elements (cross-section at mid-y)
+                # Mark void elements as filled polygons (element face outlines)
                 void_elems = mesh.void_elements
                 if len(void_elems) > 0:
-                    # Compute element centroids in the mid-y cross-section
-                    elem_x = []
-                    elem_z = []
-                    for eidx in void_elems:
-                        elem_nodes = mesh.nodes[mesh.elements[eidx]]
-                        cx, cz = float(elem_nodes[:, 0].mean()), float(elem_nodes[:, 2].mean())
-                        elem_x.append(cx)
-                        elem_z.append(cz)
-                    ax.scatter(elem_x, elem_z, color="red", s=6, alpha=0.6,
-                               zorder=5, label=f"Void elements ({len(void_elems)})")
-                    ax.legend(fontsize=8, loc="upper right")
+                    from matplotlib.patches import Polygon
+                    from matplotlib.collections import PatchCollection
+
+                    void_patches = []
+                    for e_idx in void_elems:
+                        # Only draw elements that lie in the mid-y slice
+                        j_e = (e_idx // mesh.nx) % mesh.ny
+                        if j_e != mesh.ny // 2:
+                            continue
+                        nodes_of_elem = mesh.elements[e_idx]
+                        node_coords = mesh.nodes[nodes_of_elem]  # (8, 3)
+                        # Extract x-z coordinates for all 8 nodes
+                        xz = node_coords[:, [0, 2]]  # (8, 2)
+                        unique_xz = np.unique(xz, axis=0)  # typically (4, 2)
+                        if len(unique_xz) < 3:
+                            continue
+                        # Order by angle from centroid to form proper polygon
+                        cx_p, cz_p = unique_xz.mean(axis=0)
+                        angles = np.arctan2(
+                            unique_xz[:, 1] - cz_p,
+                            unique_xz[:, 0] - cx_p,
+                        )
+                        order = np.argsort(angles)
+                        poly_coords = unique_xz[order]
+                        patch = Polygon(poly_coords, closed=True)
+                        void_patches.append(patch)
+
+                    if void_patches:
+                        pc = PatchCollection(
+                            void_patches,
+                            facecolor="white",
+                            edgecolor="red",
+                            linewidth=1.0,
+                            zorder=5,
+                            alpha=1.0,
+                        )
+                        ax.add_collection(pc)
+                        # Dummy artist for legend
+                        ax.plot([], [], "s", color="white", markeredgecolor="red",
+                                markeredgewidth=1.0,
+                                label=f"Voids ({len(void_patches)})")
+                        ax.legend(fontsize=8, loc="upper right")
 
                 ax.set_xlabel("x (mm)", fontsize=11)
                 ax.set_ylabel("z (mm)", fontsize=11)
@@ -977,7 +995,7 @@ if HAS_PYQT6:
                 has_fe = fe_field is not None
                 if has_fe:
                     models.append("fe")
-                    model_labels.append(f"FE ({fe_loading})")
+                    model_labels.append(f"FE Stiffness ({fe_loading})")
                     colors.append("#d62728")
 
                 n_models = len(models)
@@ -1013,7 +1031,7 @@ if HAS_PYQT6:
                 ax.set_xticklabels([m.upper() for m in modes], fontsize=10)
                 ax.set_ylabel("Knockdown Factor", fontsize=11)
                 ax.set_title(
-                    f"Strength Knockdown by Loading Mode  |  "
+                    f"Knockdown Factor by Loading Mode  |  "
                     f"Vp = {cfg['Vp']:.1f}%, {cfg['void_shape']}, "
                     f"{cfg['distribution']}",
                     fontsize=12, fontweight="bold",
@@ -1021,6 +1039,12 @@ if HAS_PYQT6:
                 ax.set_ylim(0, 1.1)
                 ax.legend(fontsize=9, loc="lower left")
                 ax.grid(True, alpha=0.3, axis="y")
+                ax.text(
+                    0.01, 0.01,
+                    "Note: FE bar = stiffness knockdown (E_porous/E_pristine)",
+                    transform=ax.transAxes,
+                    fontsize=8, color="0.5", va="bottom",
+                )
 
                 fig.tight_layout()
             except Exception as e:
@@ -1059,41 +1083,37 @@ if HAS_PYQT6:
 
             try:
                 mesh = result["mesh"]
-                stress_global = fe_field.stress_global  # (n_elem, n_gp, 6)
+                stress_local = fe_field.stress_local  # (n_elem, n_gp, 6) material frame
 
-                # Determine component index
-                component_map = {
-                    "sigma_11": 0, "sigma_22": 1, "sigma_33": 2,
-                    "tau_23": 3, "tau_13": 4, "tau_12": 5, "Von Mises": -1,
-                }
+                # Determine component index from dropdown label
                 comp_name = "sigma_11"
                 if self.stress_component_combo is not None:
                     comp_name = self.stress_component_combo.currentText()
-                comp_idx = component_map.get(comp_name, 0)
 
-                # Average GP stresses to element centres
-                # stress_global shape: (n_elem, n_gp, 6)
+                # Map display labels to component indices and colourbar labels
+                _COMP_INDEX = {
+                    "\u03c3\u2081\u2081 (fiber)": (0, r"$\sigma_{11}$ local (MPa)"),
+                    "\u03c3\u2082\u2082 (transverse)": (1, r"$\sigma_{22}$ local (MPa)"),
+                    "\u03c3\u2083\u2083 (through-thickness)": (2, r"$\sigma_{33}$ local (MPa)"),
+                    "\u03c4\u2082\u2083 (interlaminar)": (3, r"$\tau_{23}$ local (MPa)"),
+                    "\u03c4\u2081\u2083 (interlaminar)": (4, r"$\tau_{13}$ local (MPa)"),
+                    "\u03c4\u2081\u2082 (in-plane shear)": (5, r"$\tau_{12}$ local (MPa)"),
+                    "Von Mises": (-1, "Von Mises Stress (MPa)"),
+                }
+                comp_idx, label = _COMP_INDEX.get(comp_name, (0, comp_name + " (MPa)"))
+
+                # Average GP stresses to element centres using local frame
                 if comp_idx == -1:
-                    # Von Mises
-                    s = stress_global.mean(axis=1)  # (n_elem, 6)
+                    # Von Mises from local stresses
+                    s = stress_local.mean(axis=1)  # (n_elem, 6)
                     s1, s2, s3 = s[:, 0], s[:, 1], s[:, 2]
                     s4, s5, s6 = s[:, 3], s[:, 4], s[:, 5]
                     elem_stress = np.sqrt(0.5 * (
                         (s1 - s2)**2 + (s2 - s3)**2 + (s3 - s1)**2
                         + 6.0 * (s4**2 + s5**2 + s6**2)
                     ))
-                    label = "Von Mises Stress (MPa)"
                 else:
-                    elem_stress = stress_global.mean(axis=1)[:, comp_idx]  # (n_elem,)
-                    labels_map = {
-                        "sigma_11": r"$\sigma_{11}$ (MPa)",
-                        "sigma_22": r"$\sigma_{22}$ (MPa)",
-                        "sigma_33": r"$\sigma_{33}$ (MPa)",
-                        "tau_23": r"$\tau_{23}$ (MPa)",
-                        "tau_13": r"$\tau_{13}$ (MPa)",
-                        "tau_12": r"$\tau_{12}$ (MPa)",
-                    }
-                    label = labels_map.get(comp_name, comp_name + " (MPa)")
+                    elem_stress = stress_local.mean(axis=1)[:, comp_idx]  # (n_elem,)
 
                 # Extract elements at mid-y slice (j = ny // 2)
                 ny_mid = mesh.ny // 2
@@ -1108,17 +1128,37 @@ if HAS_PYQT6:
                 elem_nodes_coords = mesh.nodes[mesh.elements[mid_elem_indices]]  # (n_mid, 8, 3)
                 cx = elem_nodes_coords[:, :, 0].mean(axis=1)
                 cz = elem_nodes_coords[:, :, 2].mean(axis=1)
+
+                # Exclude boundary elements: trim 10% from each end in x
+                x_min_trim = mesh.L_x * 0.10
+                x_max_trim = mesh.L_x * 0.90
+                interior_mask = (cx > x_min_trim) & (cx < x_max_trim)
+                mid_elem_indices = mid_elem_indices[interior_mask]
+                cx = cx[interior_mask]
+                cz = cz[interior_mask]
+
                 sv = elem_stress[mid_elem_indices]
 
                 ax = fig.add_subplot(111)
                 # tricontourf needs at least 3 unique points
-                tcf = ax.tricontourf(cx, cz, sv, levels=20, cmap="RdBu_r")
-                fig.colorbar(tcf, ax=ax, label=label)
+                finite_mask = np.isfinite(sv)
+                if finite_mask.sum() >= 3:
+                    vmin = np.percentile(sv[finite_mask], 5)
+                    vmax = np.percentile(sv[finite_mask], 95)
+                    tcf = ax.tricontourf(cx[finite_mask], cz[finite_mask],
+                                        sv[finite_mask], levels=20, cmap="RdBu_r",
+                                        vmin=vmin, vmax=vmax)
+                    fig.colorbar(tcf, ax=ax, label=label)
+                else:
+                    ax.text(0.5, 0.5, "Insufficient interior data for contour plot.",
+                            transform=ax.transAxes, ha="center", va="center",
+                            fontsize=10, color="0.5")
                 ax.set_xlabel("x (mm)", fontsize=11)
                 ax.set_ylabel("z (mm)", fontsize=11)
                 ax.set_title(
-                    f"FE Stress: {comp_name}  |  mid-y cross-section",
-                    fontsize=12, fontweight="bold",
+                    f"FE Stress (local/material frame): {comp_name}  |  "
+                    f"interior, mid-y cross-section",
+                    fontsize=11, fontweight="bold",
                 )
                 ax.set_aspect("equal")
                 fig.tight_layout()
