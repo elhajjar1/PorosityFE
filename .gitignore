@@ -1,4 +1,28 @@
+# Build artifacts
 dist/
 build/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+
+# Unpublished manuscript
+JOSS/
+
+# Claude Code project files
+CLAUDE.md
+docs/superpowers/
+
+# Validation data (digitized from published figures)
+validation/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Pytest
+.pytest_cache/

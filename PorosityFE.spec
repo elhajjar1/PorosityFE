@@ -7,9 +7,7 @@ a = Analysis(
     ['porosity_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('porosity_fe_analysis.py', '.'),
-    ],
+    datas=[],
     hiddenimports=[
         'numpy',
         'scipy',

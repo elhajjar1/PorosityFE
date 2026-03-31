@@ -17,7 +17,7 @@ import json
 
 from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, VOID_SHAPES,
                                    PorosityField, POROSITY_CONFIGS, CompositeMesh,
-                                   EmpiricalSolver, MoriTanakaSolver, FEVisualizer,
+                                   EmpiricalSolver, FEVisualizer,
                                    compare_configurations, save_results_to_json,
                                    rotation_matrix_3d, stress_transformation_3d,
                                    strain_transformation_3d, rotate_stiffness_3d,
@@ -397,87 +397,6 @@ class TestEmpiricalSolver:
         assert result_with_void['knockdown'] < result_no_void['knockdown']
 
 
-class TestMoriTanakaSolver:
-    def setup_method(self):
-        self.material = MATERIALS['T800_epoxy']
-        pf = PorosityField(self.material, 0.03, distribution='uniform')
-        self.mesh = CompositeMesh(pf, self.material, nx=10, ny=5, nz=6)
-        self.solver = MoriTanakaSolver(self.mesh, self.material)
-
-    def test_eshelby_tensor_sphere_shape(self):
-        S = self.solver._eshelby_tensor(1.0, 0.35)
-        assert S.shape == (6, 6)
-
-    def test_eshelby_tensor_sphere_symmetric(self):
-        S = self.solver._eshelby_tensor(1.0, 0.35)
-        np.testing.assert_allclose(S, S.T, atol=1e-10)
-
-    def test_eshelby_tensor_sphere_known_value(self):
-        """For sphere, S_1111 = (7-5*nu) / (15*(1-nu))"""
-        nu = 0.35
-        S = self.solver._eshelby_tensor(1.0, nu)
-        expected_S11 = (7 - 5 * nu) / (15 * (1 - nu))
-        assert abs(S[0, 0] - expected_S11) < 1e-10
-
-    def test_effective_stiffness_zero_porosity(self):
-        C_eff = self.solver._effective_stiffness(0.0, (1, 1, 1))
-        C_m = self.material.get_isotropic_matrix_stiffness()
-        np.testing.assert_allclose(C_eff, C_m, atol=1e-6)
-
-    def test_effective_stiffness_decreases_with_porosity(self):
-        C_0 = self.solver._effective_stiffness(0.01, (1, 1, 1))
-        C_5 = self.solver._effective_stiffness(0.05, (1, 1, 1))
-        assert C_0[0, 0] > C_5[0, 0]
-
-    def test_effective_stiffness_positive_definite(self):
-        C_eff = self.solver._effective_stiffness(0.05, (1, 1, 1))
-        eigenvalues = np.linalg.eigvalsh(C_eff)
-        assert np.all(eigenvalues > 0)
-
-    def test_tsai_wu_no_load_below_one(self):
-        """Zero stress should give failure index 0"""
-        strengths = {
-            'sigma_1t': 2800, 'sigma_1c': 1500,
-            'sigma_2t': 80, 'sigma_2c': 250,
-            'tau_12': 100, 'tau_ilss': 90,
-        }
-        fi = self.solver._tsai_wu_failure(np.zeros(6), strengths)
-        assert abs(fi) < 1e-10
-
-    def test_tsai_wu_compression_failure(self):
-        """At pristine compression strength, should be near 1.0"""
-        strengths = {
-            'sigma_1t': 2800, 'sigma_1c': 1500,
-            'sigma_2t': 80, 'sigma_2c': 250,
-            'tau_12': 100, 'tau_ilss': 90,
-        }
-        stress = np.array([-1500, 0, 0, 0, 0, 0], dtype=float)
-        fi = self.solver._tsai_wu_failure(stress, strengths)
-        assert fi > 0.9
-
-    def test_get_failure_load_returns_dict(self):
-        result = self.solver.get_failure_load(mode='compression')
-        assert 'failure_stress' in result
-        assert 'knockdown' in result
-
-    def test_get_all_failure_loads(self):
-        results = self.solver.get_all_failure_loads()
-        for mode in ['compression', 'tension', 'shear', 'ilss']:
-            assert mode in results
-
-    def test_degraded_strengths_keys(self):
-        C_eff = self.solver._effective_stiffness(0.03, (1, 1, 1))
-        strengths = self.solver._degraded_strengths(C_eff)
-        for key in ['sigma_1t', 'sigma_1c', 'sigma_2t', 'sigma_2c', 'tau_12', 'tau_ilss']:
-            assert key in strengths
-            assert strengths[key] > 0
-
-    def test_degraded_strengths_less_than_pristine(self):
-        C_eff = self.solver._effective_stiffness(0.05, (1, 1, 1))
-        strengths = self.solver._degraded_strengths(C_eff)
-        assert strengths['sigma_1c'] < self.material.sigma_1c
-
-
 class TestFEVisualizer:
     def setup_method(self):
         self.material = MATERIALS['T800_epoxy']
@@ -526,14 +445,12 @@ class TestAnalysisPipeline:
                                           configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
         assert 'uniform_spherical' in results
 
-    def test_compare_configurations_has_both_solvers(self):
+    def test_compare_configurations_has_empirical_solver(self):
         results = compare_configurations(0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
         r = results['uniform_spherical']
         assert 'empirical' in r
-        assert 'mori_tanaka' in r
         assert 'mesh' in r
         assert 'empirical_solver' in r
-        assert 'mori_tanaka_solver' in r
 
     def test_compare_configurations_empirical_has_all_modes(self):
         results = compare_configurations(0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
@@ -564,9 +481,6 @@ class TestIntegration:
         emp_comp = r['empirical']['compression']['judd_wright']
         assert 0 < emp_comp['knockdown'] < 1.0
         assert emp_comp['failure_stress'] < MATERIALS['T800_epoxy'].sigma_1c
-
-        mt_comp = r['mori_tanaka']['compression']
-        assert 0 < mt_comp['knockdown'] < 1.0
 
         emp_ilss = r['empirical']['ilss']['judd_wright']['knockdown']
         emp_comp_kd = r['empirical']['compression']['judd_wright']['knockdown']

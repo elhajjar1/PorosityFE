@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 
 from porosity_fe_analysis import (
     MaterialProperties, MATERIALS, PorosityField, CompositeMesh,
-    EmpiricalSolver, MoriTanakaSolver, FESolver,
+    EmpiricalSolver, FESolver,
     POROSITY_CONFIGS, VoidGeometry,
 )
 import dataclasses
@@ -122,12 +122,11 @@ def create_t700_material():
 
 
 def run_analytical_predictions(porosity_pcts, material, mode='compression'):
-    """Run empirical and Mori-Tanaka predictions for a range of porosity levels."""
+    """Run empirical predictions for a range of porosity levels."""
     results = {'porosity_pct': porosity_pcts}
 
     jw_kd = []
     pl_kd = []
-    mt_kd = []
 
     for Vp_pct in porosity_pcts:
         Vp = Vp_pct / 100.0
@@ -143,14 +142,8 @@ def run_analytical_predictions(porosity_pcts, material, mode='compression'):
         jw_kd.append(jw['knockdown'])
         pl_kd.append(pl['knockdown'])
 
-        # Mori-Tanaka solver
-        mt = MoriTanakaSolver(mesh, material)
-        mt_result = mt.get_failure_load(mode=mode)
-        mt_kd.append(mt_result['knockdown'])
-
     results['judd_wright'] = np.array(jw_kd)
     results['power_law'] = np.array(pl_kd)
-    results['mori_tanaka'] = np.array(mt_kd)
     return results
 
 
@@ -204,12 +197,8 @@ def plot_validation(comp_results, tens_results, fe_comp_pcts, fe_comp_kd,
     p = comp_results['porosity_pct']
     ax.plot(p, comp_results['judd_wright'], 'r-', linewidth=2,
             label='Judd-Wright (Comp.)')
-    ax.plot(p, comp_results['mori_tanaka'], 'r--', linewidth=2,
-            label='Mori-Tanaka (Comp.)')
     ax.plot(p, tens_results['judd_wright'], 'b-', linewidth=2,
             label='Judd-Wright (Tens.)')
-    ax.plot(p, tens_results['mori_tanaka'], 'b--', linewidth=2,
-            label='Mori-Tanaka (Tens.)')
 
     # FE predictions
     if len(fe_comp_kd) > 0:
@@ -268,16 +257,16 @@ def main():
     print("=" * 70)
 
     print("\n--- Compression: Analytical vs Experimental ---")
-    print(f"{'Porosity%':>10s} {'Judd-Wright':>12s} {'Power Law':>10s} {'Mori-Tanaka':>12s}")
+    print(f"{'Porosity%':>10s} {'Judd-Wright':>12s} {'Power Law':>10s}")
     for i, Vp in enumerate(porosity_pcts):
         print(f"{Vp:10.1f} {comp_results['judd_wright'][i]:12.3f} "
-              f"{comp_results['power_law'][i]:10.3f} {comp_results['mori_tanaka'][i]:12.3f}")
+              f"{comp_results['power_law'][i]:10.3f}")
 
     print("\n--- Tension: Analytical vs Experimental ---")
-    print(f"{'Porosity%':>10s} {'Judd-Wright':>12s} {'Power Law':>10s} {'Mori-Tanaka':>12s}")
+    print(f"{'Porosity%':>10s} {'Judd-Wright':>12s} {'Power Law':>10s}")
     for i, Vp in enumerate(porosity_pcts):
         print(f"{Vp:10.1f} {tens_results['judd_wright'][i]:12.3f} "
-              f"{tens_results['power_law'][i]:10.3f} {tens_results['mori_tanaka'][i]:12.3f}")
+              f"{tens_results['power_law'][i]:10.3f}")
 
     print("\n--- FE Predictions ---")
     print(f"{'Porosity%':>10s} {'FE Comp KD':>12s} {'FE Tens KD':>12s}")

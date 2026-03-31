@@ -78,7 +78,7 @@ if HAS_PYQT6:
             try:
                 from porosity_fe_analysis import (
                     MATERIALS, PorosityField, CompositeMesh,
-                    EmpiricalSolver, MoriTanakaSolver,
+                    EmpiricalSolver,
                     FESolver, FieldResults,
                 )
 
@@ -119,6 +119,7 @@ if HAS_PYQT6:
                 mesh = CompositeMesh(
                     porosity_field, material,
                     nx=cfg["nx"], ny=cfg["ny"], nz=cfg["nz"],
+                    ply_angles=cfg["angles"],
                 )
 
                 if self._stop_requested:
@@ -126,15 +127,8 @@ if HAS_PYQT6:
 
                 # --- Solvers ---
                 self.progress.emit("Running empirical solver (Judd-Wright, Power Law, Linear)...")
-                empirical = EmpiricalSolver(mesh, material)
+                empirical = EmpiricalSolver(mesh, material, ply_angles=cfg["angles"])
                 emp_results = empirical.get_all_failure_loads()
-
-                if self._stop_requested:
-                    return
-
-                self.progress.emit("Running Mori-Tanaka micromechanics solver...")
-                mori_tanaka = MoriTanakaSolver(mesh, material)
-                mt_results = mori_tanaka.get_all_failure_loads()
 
                 if self._stop_requested:
                     return
@@ -171,12 +165,11 @@ if HAS_PYQT6:
                     "porosity_field": porosity_field,
                     "mesh": mesh,
                     "empirical_solver": empirical,
-                    "mori_tanaka_solver": mori_tanaka,
                     "empirical": emp_results,
-                    "mori_tanaka": mt_results,
                     "fe_solver": fe_solver,
                     "fe_field": fe_field,
                     "fe_loading": fe_loading,
+                    "f_md": empirical.f_md,
                 }
 
                 self.finished.emit(results)
@@ -728,17 +721,19 @@ if HAS_PYQT6:
             cfg = result["config"]
             material = result["material"]
             emp = result["empirical"]
-            mt = result["mori_tanaka"]
             mesh = result["mesh"]
             fe_field = result.get("fe_field")
             fe_loading = result.get("fe_loading", "compression")
+
+            f_md = result.get("f_md", 0.5)
 
             lines = []
             lines.append("=" * 70)
             lines.append("POROSITY ANALYSIS RESULTS")
             lines.append("=" * 70)
             lines.append(f"Material:       {cfg['material_name']}")
-            lines.append(f"Layup:          {cfg['n_plies']} plies, t_ply = {cfg['t_ply']:.3f} mm")
+            layup_str = self.layup_edit.text().strip()
+            lines.append(f"Layup:          {layup_str} ({cfg['n_plies']} plies, t_ply = {cfg['t_ply']:.3f} mm)")
             lines.append(f"Vp:             {cfg['Vp']:.1f}%")
             lines.append(f"Distribution:   {cfg['distribution']}")
             lines.append(f"Void shape:     {cfg['void_shape']}")
@@ -751,6 +746,15 @@ if HAS_PYQT6:
 
             lines.append("-" * 70)
             lines.append("EMPIRICAL MODEL KNOCKDOWN FACTORS")
+            lines.append(f"  (evaluated at mean Vp = {cfg['Vp']:.1f}%)")
+            if f_md < 0.49:
+                lines.append(f"  Layup scaling: f_md = {f_md:.2f} "
+                             f"(coefficients reduced for fiber-dominated layup)")
+            elif f_md > 0.51:
+                lines.append(f"  Layup scaling: f_md = {f_md:.2f} "
+                             f"(coefficients increased for matrix-dominated layup)")
+            else:
+                lines.append(f"  Layup scaling: f_md = {f_md:.2f} (QI reference)")
             lines.append("-" * 70)
             header = f"{'Mode':<15}"
             for m in models:
@@ -764,15 +768,6 @@ if HAS_PYQT6:
                     fs = emp[mode][model]["failure_stress"]
                     row += f"  {kd:.3f} ({fs:.0f} MPa)"
                 lines.append(row)
-
-            lines.append("")
-            lines.append("-" * 70)
-            lines.append("MORI-TANAKA MICROMECHANICS KNOCKDOWN FACTORS")
-            lines.append("-" * 70)
-            for mode in modes:
-                kd = mt[mode]["knockdown"]
-                fs = mt[mode]["failure_stress"]
-                lines.append(f"  {mode:<15} {kd:.3f}  ({fs:.0f} MPa)")
 
             lines.append("")
             lines.append("-" * 70)
@@ -981,22 +976,25 @@ if HAS_PYQT6:
 
             try:
                 emp = result["empirical"]
-                mt = result["mori_tanaka"]
                 fe_field = result.get("fe_field")
                 fe_loading = result.get("fe_loading", "compression")
                 cfg = result["config"]
+                f_md = result.get("f_md", 0.5)
 
                 modes = ["compression", "tension", "shear", "ilss"]
-                models = ["judd_wright", "power_law", "linear", "mori_tanaka"]
-                model_labels = ["Judd-Wright", "Power Law", "Linear", "Mori-Tanaka"]
-                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#555555"]
+                # Strength models (solid bars)
+                models = ["judd_wright", "power_law", "linear"]
+                model_labels = ["Judd-Wright", "Power Law", "Linear"]
+                colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+                hatches = [None, None, None]
 
-                # Add FE bar if available
+                # FE stiffness bar (hatched to distinguish from strength)
                 has_fe = fe_field is not None
                 if has_fe:
                     models.append("fe")
                     model_labels.append(f"FE Stiffness ({fe_loading})")
                     colors.append("#d62728")
+                    hatches.append("//")
 
                 n_models = len(models)
                 x = np.arange(len(modes))
@@ -1004,46 +1002,50 @@ if HAS_PYQT6:
 
                 ax = fig.add_subplot(111)
 
-                for i, (model_key, label, color) in enumerate(
-                    zip(models, model_labels, colors)
+                for i, (model_key, label, color, hatch) in enumerate(
+                    zip(models, model_labels, colors, hatches)
                 ):
                     vals = []
                     for mode in modes:
-                        if model_key == "mori_tanaka":
-                            vals.append(mt[mode]["knockdown"])
-                        elif model_key == "fe":
-                            # FE was run for fe_loading only; show same value for
-                            # the matching mode, NaN for others
+                        if model_key == "fe":
                             if mode == fe_loading:
                                 vals.append(fe_field.knockdown)
                             else:
                                 vals.append(float("nan"))
                         else:
                             vals.append(emp[mode][model_key]["knockdown"])
-                    # Plot bars, skip NaN
                     bar_x = x + i * width - (n_models - 1) * width / 2
                     for bx, bv in zip(bar_x, vals):
                         if not np.isnan(bv):
-                            ax.bar(bx, bv, width, color=color,
+                            ax.bar(bx, bv, width, color=color, hatch=hatch,
+                                   edgecolor='white' if hatch is None else '0.3',
                                    label=label if bx == bar_x[0] else "")
 
                 ax.set_xticks(x)
                 ax.set_xticklabels([m.upper() for m in modes], fontsize=10)
                 ax.set_ylabel("Knockdown Factor", fontsize=11)
+
+                # Build layup string for title
+                layup_str = self.layup_edit.text().strip()
                 ax.set_title(
                     f"Knockdown Factor by Loading Mode  |  "
                     f"Vp = {cfg['Vp']:.1f}%, {cfg['void_shape']}, "
-                    f"{cfg['distribution']}",
-                    fontsize=12, fontweight="bold",
+                    f"{cfg['distribution']}, {layup_str}",
+                    fontsize=11, fontweight="bold",
                 )
                 ax.set_ylim(0, 1.1)
-                ax.legend(fontsize=9, loc="lower left")
+                ax.legend(fontsize=8, loc="lower left")
                 ax.grid(True, alpha=0.3, axis="y")
+
+                # Footnote with model basis info
+                note = ("Solid bars = strength knockdown (at mean Vp); "
+                        "hatched bar = stiffness knockdown (FE)")
+                if f_md < 0.49:
+                    note += f"\nLayup scaling: f_md = {f_md:.2f} (coefficients reduced for fiber-dominated layup)"
                 ax.text(
-                    0.01, 0.01,
-                    "Note: FE bar = stiffness knockdown (E_porous/E_pristine)",
+                    0.01, 0.01, note,
                     transform=ax.transAxes,
-                    fontsize=8, color="0.5", va="bottom",
+                    fontsize=7, color="0.4", va="bottom",
                 )
 
                 fig.tight_layout()
@@ -1225,7 +1227,6 @@ if HAS_PYQT6:
                     result = self._result
                     cfg = result["config"]
                     emp = result["empirical"]
-                    mt = result["mori_tanaka"]
 
                     output = {
                         "config": {
@@ -1238,7 +1239,6 @@ if HAS_PYQT6:
                             "mesh": f"{cfg['nx']}x{cfg['ny']}x{cfg['nz']}",
                         },
                         "empirical": {},
-                        "mori_tanaka": {},
                     }
                     for mode in emp:
                         output["empirical"][mode] = {}
@@ -1248,12 +1248,6 @@ if HAS_PYQT6:
                                 "failure_stress_MPa": r["failure_stress"],
                                 "knockdown": r["knockdown"],
                             }
-                    for mode in mt:
-                        r = mt[mode]
-                        output["mori_tanaka"][mode] = {
-                            "failure_stress_MPa": r["failure_stress"],
-                            "knockdown": r["knockdown"],
-                        }
 
                     with open(filepath, "w") as f:
                         json.dump(output, f, indent=2)
@@ -1270,12 +1264,10 @@ if HAS_PYQT6:
                 "<p>Porosity defect analysis for composite laminates.</p>"
                 "<p>Evaluates strength knockdown from distributed porosity "
                 "using empirical models (Judd-Wright, Power Law, Linear) "
-                "and Mori-Tanaka micromechanics homogenization.</p>"
+                "and finite element analysis.</p>"
                 "<p><b>References:</b></p>"
                 "<ul>"
                 "<li>Judd & Wright - Empirical porosity-strength relations</li>"
-                "<li>Mori & Tanaka (1973) - Mean-field micromechanics</li>"
-                "<li>Eshelby (1957) - Inclusion theory</li>"
                 "<li>Tsai-Wu - 3D failure criterion</li>"
                 "</ul>"
             )

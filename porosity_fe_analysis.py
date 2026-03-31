@@ -9,11 +9,10 @@ macrovoids) on composite laminate strength under multiple loading modes
 
 Supports five porosity configurations across three material presets.
 Two solver tiers: empirical (Judd-Wright, power law, linear) and
-Mori-Tanaka micromechanics.
+finite element with Mori-Tanaka-degraded element stiffness.
 
 Based on:
 - Judd & Wright - Empirical porosity-strength relationships
-- Mori-Tanaka (1973) - Mean-field micromechanics homogenization
 - Eshelby (1957) - Inclusion theory for void stress concentration
 - Tsai-Wu - 3D failure criterion
 
@@ -64,7 +63,7 @@ class MaterialProperties:
     t_ply: float        # Ply thickness (mm)
     n_plies: int        # Number of plies
 
-    # Constituent properties (for Mori-Tanaka)
+    # Constituent properties (for micromechanics)
     matrix_modulus: float         # E_m (MPa)
     matrix_poisson: float         # nu_m
     fiber_modulus: float          # E_f (MPa)
@@ -289,7 +288,7 @@ class PorosityField:
             profile_ref = np.zeros_like(z_ref)
             for k in range(1, n):
                 z_int = k * t
-                profile_ref += np.exp(-0.5 * ((z_ref - z_int) / (t * 0.15))**2)
+                profile_ref += np.exp(-0.5 * ((z_ref - z_int) / (t * 0.35))**2)
         else:
             return 1.0
         mean_val = np.mean(profile_ref)
@@ -317,7 +316,7 @@ class PorosityField:
             profile = np.zeros_like(z)
             for k in range(1, n):
                 z_int = k * t
-                profile += np.exp(-0.5 * ((z - z_int) / (t * 0.15))**2)
+                profile += np.exp(-0.5 * ((z - z_int) / (t * 0.35))**2)
             norm = self._compute_normalization('interface', self.cluster_location)
             return self.Vp * profile / norm
         else:
@@ -600,28 +599,93 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
 # ============================================================
 
 class EmpiricalSolver:
-    """Fast analytical solver using empirical porosity-strength models."""
+    """Fast analytical solver using empirical porosity-strength models.
 
-    # Calibrated against Elhajjar (2025) Sci. Rep. 15:25977, Fig. 5a
-    # T700/#2510, [0/45/90/-45/0]_s, porosity 2-10%
-    JUDD_WRIGHT_ALPHA = {
+    Coefficients are calibrated against quasi-isotropic data and scaled by
+    a layup-dependent matrix-dominated fraction so that fiber-dominated
+    layups (e.g. UD [0]_n) see a smaller porosity penalty than QI layups.
+
+    Knockdowns are evaluated at the specimen-average porosity (Vp_mean),
+    matching how the original correlations were calibrated — not at the
+    local peak Vp that clustered distributions produce.
+    """
+
+    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977)
+    # Reference layup: [0/45/90/-45/0]_s (f_md_ref = 0.5)
+    _JUDD_WRIGHT_ALPHA_QI = {
         'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
     }
-    POWER_LAW_N = {
+    _POWER_LAW_N_QI = {
         'compression': 2.8, 'tension': 1.8, 'shear': 3.5, 'ilss': 4.5,
     }
-    LINEAR_BETA = {
+    _LINEAR_BETA_QI = {
         'compression': 5.5, 'tension': 3.5, 'shear': 7.0, 'ilss': 9.0,
     }
     PRISTINE_STRENGTH_KEY = {
         'compression': 'sigma_1c', 'tension': 'sigma_1t',
         'shear': 'tau_12', 'ilss': 'tau_ilss',
     }
+    # QI reference fraction and minimum floor
+    _F_MD_REF = 0.5    # f_md for the QI layup used in calibration
+    _F_MD_FLOOR = 0.15  # even UD has some matrix sensitivity
+    _F_MD_FLOOR_ILSS = 0.80  # ILSS is always matrix-dominated
 
-    def __init__(self, mesh: CompositeMesh, material: MaterialProperties):
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+                 ply_angles: Optional[List[float]] = None):
         self.mesh = mesh
         self.material = material
         self.nodal_knockdown = None
+
+        # Compute layup-dependent scaling
+        self.f_md = self._matrix_dominated_fraction(ply_angles)
+
+        # Build scaled coefficient dicts
+        self.JUDD_WRIGHT_ALPHA = {}
+        self.POWER_LAW_N = {}
+        self.LINEAR_BETA = {}
+        for mode in ['compression', 'tension', 'shear', 'ilss']:
+            s = self._layup_scale(mode)
+            self.JUDD_WRIGHT_ALPHA[mode] = self._JUDD_WRIGHT_ALPHA_QI[mode] * s
+            self.POWER_LAW_N[mode] = max(self._POWER_LAW_N_QI[mode] * s, 0.1)
+            self.LINEAR_BETA[mode] = self._LINEAR_BETA_QI[mode] * s
+
+    @staticmethod
+    def _matrix_dominated_fraction(ply_angles: Optional[List[float]]) -> float:
+        """Fraction of matrix-dominated plies in the layup (0 to 1).
+
+        - 0-degree plies contribute 0 (fiber-dominated)
+        - +/-45-degree plies contribute 0.5 (intermediate)
+        - 90-degree plies contribute 1.0 (matrix-dominated)
+
+        Returns 0.5 (QI reference) if ply_angles is None.
+        """
+        if ply_angles is None or len(ply_angles) == 0:
+            return 0.5  # default = QI reference
+        total = 0.0
+        for angle in ply_angles:
+            a = abs(angle) % 180
+            if a <= 10:        # near 0°
+                total += 0.0
+            elif a >= 80:      # near 90°
+                total += 1.0
+            else:              # off-axis (30°, 45°, 60°, etc.)
+                total += 0.5
+        return total / len(ply_angles)
+
+    def _layup_scale(self, mode: str) -> float:
+        """Scaling factor for empirical coefficients based on layup.
+
+        Maps f_md to a coefficient multiplier:
+        - f_md = f_md_ref (0.5, QI) -> scale = 1.0 (unchanged)
+        - f_md = 0 (UD) -> scale = floor (0.15 for most modes, 0.80 for ILSS)
+        - f_md > f_md_ref -> scale > 1.0 (more matrix-dominated than QI)
+        """
+        floor = self._F_MD_FLOOR_ILSS if mode == 'ilss' else self._F_MD_FLOOR
+        ref = self._F_MD_REF
+        if ref < 1e-12:
+            return 1.0
+        raw = self.f_md / ref
+        return max(raw, floor)
 
     def _judd_wright(self, Vp: float, mode: str) -> float:
         alpha = self.JUDD_WRIGHT_ALPHA[mode]
@@ -659,14 +723,26 @@ class EmpiricalSolver:
         self.nodal_knockdown = kd
 
     def get_failure_load(self, mode: str = 'compression', model: str = 'judd_wright') -> dict:
+        """Compute failure load using specimen-average porosity.
+
+        The knockdown is evaluated at the mean Vp (matching how the original
+        correlations were calibrated), not at the local peak.  Per-node
+        knockdown is still computed for visualization via apply_loading().
+        """
         self.apply_loading(mode, model)
         sigma_0 = self._get_pristine_strength(mode)
-        min_kd = float(np.min(self.nodal_knockdown))
-        critical_idx = int(np.argmin(self.nodal_knockdown))
+
+        # Use specimen-average Vp for knockdown (matches calibration basis)
+        Vp_mean = self.mesh.porosity_field.Vp
+        model_func = {'judd_wright': self._judd_wright,
+                      'power_law': self._power_law,
+                      'linear': self._linear}[model]
+        mean_kd = model_func(Vp_mean, mode)
+
         return {
-            'failure_stress': sigma_0 * min_kd,
-            'knockdown': min_kd,
-            'critical_location': self.mesh.nodes[critical_idx].tolist(),
+            'failure_stress': sigma_0 * mean_kd,
+            'knockdown': mean_kd,
+            'critical_location': [0.0, 0.0, 0.0],
             'model': model,
         }
 
@@ -678,203 +754,6 @@ class EmpiricalSolver:
                 results[mode][model] = self.get_failure_load(mode, model)
         return results
 
-# ============================================================
-# SECTION 6: MORI-TANAKA MICROMECHANICS SOLVER
-# ============================================================
-
-class MoriTanakaSolver:
-    """Micromechanics solver using Mori-Tanaka homogenization for void inclusions."""
-
-    def __init__(self, mesh: CompositeMesh, material: MaterialProperties):
-        self.mesh = mesh
-        self.material = material
-        self.nodal_knockdown = None
-
-    def _eshelby_tensor(self, aspect_ratio: float, nu_m: float) -> np.ndarray:
-        """Eshelby tensor S for ellipsoidal void in isotropic matrix.
-        aspect_ratio: a1/a3 where a1 is the symmetry axis (x1 direction).
-        - ar > 1: prolate (cylindrical), a1 > a2 = a3
-        - ar < 1: oblate (penny), a1 < a2 = a3
-        - ar = 1: sphere
-        Ref: Mura (1987) Ch. 11; Nemat-Nasser & Hori (1993) Sec. 11.3."""
-        S = np.zeros((6, 6))
-        ar = aspect_ratio
-        nu = nu_m
-
-        if abs(ar - 1.0) < 0.01:  # Sphere
-            S[0, 0] = S[1, 1] = S[2, 2] = (7 - 5 * nu) / (15 * (1 - nu))
-            S[0, 1] = S[0, 2] = S[1, 0] = S[1, 2] = S[2, 0] = S[2, 1] = \
-                (5 * nu - 1) / (15 * (1 - nu))
-            S[3, 3] = S[4, 4] = S[5, 5] = (4 - 5 * nu) / (15 * (1 - nu))
-
-        elif ar > 1.0:  # Prolate spheroid (cylindrical void, a1 > a2 = a3)
-            # g function for prolate: Mura Eq. 11.18
-            g = ar / (ar**2 - 1)**1.5 * (ar * np.sqrt(ar**2 - 1) - np.arccosh(ar))
-            a2 = ar**2
-
-            S[0, 0] = (1.0 / (2 * (1 - nu))) * (
-                1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g)
-
-            S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g
-
-            S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g
-
-            S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g
-
-            S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
-                a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g)
-
-            S[3, 3] = (1.0 / (4 * (1 - nu))) * (
-                a2 / (2 * (a2 - 1)) + (1 - 2 * nu - 3.0 / (4 * (a2 - 1))) * g)
-
-            S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
-                1 - 2 * nu - (a2 + 1) / (a2 - 1) -
-                0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g)
-
-        else:  # Oblate spheroid (penny void, a1 < a2 = a3)
-            # g function for oblate: Mura Eq. 11.19
-            # For oblate, ar < 1, use p = 1/ar > 1 as the "other" aspect ratio
-            p = 1.0 / ar  # p > 1
-            g_ob = p / (p**2 - 1)**1.5 * (np.arccos(1.0 / p) - (1.0 / p) * np.sqrt(1 - 1.0 / p**2))
-            a2 = ar**2  # < 1 for oblate
-
-            S[0, 0] = (1.0 / (2 * (1 - nu))) * (
-                1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g_ob)
-
-            S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g_ob
-
-            S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g_ob
-
-            S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
-                (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g_ob
-
-            S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
-                a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g_ob)
-
-            S[3, 3] = (1.0 / (4 * (1 - nu))) * (
-                a2 / (2 * (a2 - 1)) + (1 - 2 * nu - 3.0 / (4 * (a2 - 1))) * g_ob)
-
-            S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
-                1 - 2 * nu - (a2 + 1) / (a2 - 1) -
-                0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g_ob)
-
-        return S
-
-    def _effective_stiffness(self, Vp: float, void_shape: Tuple) -> np.ndarray:
-        """Mori-Tanaka effective stiffness for void inclusions (C_i = 0)."""
-        C_m = self.material.get_isotropic_matrix_stiffness()
-        if Vp < 1e-12:
-            return C_m.copy()
-
-        ar = max(void_shape) / min(void_shape)
-        S = self._eshelby_tensor(ar, self.material.matrix_poisson)
-        I = np.eye(6)
-
-        # C_eff = C_m @ {I - Vp @ inv[I - (1-Vp)*S]}
-        inner = I - (1 - Vp) * S
-        inner_inv = np.linalg.inv(inner)
-        C_eff = C_m @ (I - Vp * inner_inv)
-
-        return C_eff
-
-    def _degraded_strengths(self, C_eff: np.ndarray) -> dict:
-        """Map degraded stiffness to degraded strengths via sqrt stiffness ratio.
-        Reference is C_pristine at Vp=0 (which equals C_m for the Mori-Tanaka
-        void-in-matrix model). Pristine strengths are the composite-level values,
-        so the ratio C_eff/C_pristine gives the fractional degradation from
-        adding voids to the matrix phase."""
-        C_pristine = self._effective_stiffness(0.0, self.mesh.porosity_field.void_shape_radii)
-        ratio_11 = np.sqrt(max(C_eff[0, 0] / C_pristine[0, 0], 0))
-        ratio_22 = np.sqrt(max(C_eff[1, 1] / C_pristine[1, 1], 0))
-        ratio_shear = np.sqrt(max(C_eff[5, 5] / C_pristine[5, 5], 0))
-        ratio_ilss = np.sqrt(max(C_eff[3, 3] / C_pristine[3, 3], 0))
-        return {
-            'sigma_1t': self.material.sigma_1t * ratio_11,
-            'sigma_1c': self.material.sigma_1c * ratio_11,
-            'sigma_2t': self.material.sigma_2t * ratio_22,
-            'sigma_2c': self.material.sigma_2c * ratio_22,
-            'tau_12': self.material.tau_12 * ratio_shear,
-            'tau_ilss': self.material.tau_ilss * ratio_ilss,
-        }
-
-    def _tsai_wu_failure(self, stress_state: np.ndarray, strengths: dict) -> float:
-        """Full 3D Tsai-Wu failure index.
-        Voigt notation: s = [s1, s2, s3, s4(=tau_23), s5(=tau_13), s6(=tau_12)]
-        Assumes transverse isotropy: direction 2 = direction 3.
-        tau_23 is approximated as tau_ilss (standard for interlaminar shear)."""
-        s = stress_state
-        st = strengths
-        # Linear terms
-        F1 = 1.0 / st['sigma_1t'] - 1.0 / st['sigma_1c']
-        F2 = 1.0 / st['sigma_2t'] - 1.0 / st['sigma_2c']
-        F3 = F2  # Transverse isotropy
-        # Quadratic diagonal terms
-        F11 = 1.0 / (st['sigma_1t'] * st['sigma_1c'])
-        F22 = 1.0 / (st['sigma_2t'] * st['sigma_2c'])
-        F33 = F22  # Transverse isotropy
-        # Shear terms: F44 for tau_23, F55 for tau_13, F66 for tau_12
-        F44 = 1.0 / st['tau_ilss']**2   # tau_23 ~ tau_ilss
-        F55 = 1.0 / st['tau_12']**2     # tau_13 ~ tau_12
-        F66 = 1.0 / st['tau_12']**2
-        # Interaction terms (stability approximation)
-        F12 = -0.5 * np.sqrt(F11 * F22)
-        F13 = F12  # Transverse isotropy
-        F23 = -0.5 * np.sqrt(F22 * F33)  # = -0.5 * F22
-
-        fi = (F1 * s[0] + F2 * s[1] + F3 * s[2] +
-              F11 * s[0]**2 + F22 * s[1]**2 + F33 * s[2]**2 +
-              F44 * s[3]**2 + F55 * s[4]**2 + F66 * s[5]**2 +
-              2 * F12 * s[0] * s[1] + 2 * F13 * s[0] * s[2] +
-              2 * F23 * s[1] * s[2])
-        return float(fi)
-
-    def get_failure_load(self, mode: str = 'compression') -> dict:
-        """Predict failure from degraded effective properties."""
-        Vp_avg = float(np.mean(self.mesh.porosity))
-        C_eff = self._effective_stiffness(Vp_avg, self.mesh.porosity_field.void_shape_radii)
-        strengths = self._degraded_strengths(C_eff)
-
-        pristine_key = {'compression': 'sigma_1c', 'tension': 'sigma_1t',
-                        'shear': 'tau_12', 'ilss': 'tau_ilss'}[mode]
-        pristine = getattr(self.material, pristine_key)
-        degraded = strengths[pristine_key]
-
-        stress_dir = {
-            'compression': np.array([-degraded, 0, 0, 0, 0, 0]),
-            'tension': np.array([degraded, 0, 0, 0, 0, 0]),
-            'shear': np.array([0, 0, 0, 0, 0, degraded]),
-            'ilss': np.array([0, 0, 0, degraded, 0, 0]),
-        }[mode]
-
-        fi = self._tsai_wu_failure(stress_dir, strengths)
-        knockdown = degraded / pristine
-
-        # Store knockdown per node for visualization (cached by unique Vp)
-        C_pristine = self._effective_stiffness(0.0, self.mesh.porosity_field.void_shape_radii)
-        unique_Vp = np.unique(self.mesh.porosity)
-        vp_to_ratio = {}
-        for vp in unique_Vp:
-            C_vp = self._effective_stiffness(float(vp), self.mesh.porosity_field.void_shape_radii)
-            vp_to_ratio[float(vp)] = C_vp[0, 0] / C_pristine[0, 0]
-        self.nodal_knockdown = np.array([vp_to_ratio[float(vp)] for vp in self.mesh.porosity])
-
-        return {
-            'failure_stress': degraded,
-            'knockdown': knockdown,
-            'tsai_wu_index': fi,
-            'effective_stiffness_ratio': float(C_eff[0, 0] / self.material.get_isotropic_matrix_stiffness()[0, 0]),
-        }
-
-    def get_all_failure_loads(self) -> dict:
-        results = {}
-        for mode in ['compression', 'tension', 'shear', 'ilss']:
-            results[mode] = self.get_failure_load(mode)
-        return results
 
 # ============================================================
 # SECTION 7: VISUALIZATION
@@ -1070,8 +949,7 @@ class FEVisualizer:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.ravel()
         modes = ['compression', 'tension', 'shear', 'ilss']
-        colors = {'judd_wright': 'blue', 'power_law': 'red', 'linear': 'green',
-                  'mori_tanaka': 'black'}
+        colors = {'judd_wright': 'blue', 'power_law': 'red', 'linear': 'green'}
 
         for idx, mode in enumerate(modes):
             ax = axes[idx]
@@ -1103,19 +981,17 @@ class FEVisualizer:
 
     @staticmethod
     def plot_model_comparison(results: dict, save_path: str = None):
-        """Empirical vs Mori-Tanaka comparison bar chart."""
+        """Empirical model comparison bar chart."""
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         configs = list(results.keys())
         x = np.arange(len(configs))
-        width = 0.15
+        width = 0.2
 
         # Left: compression knockdown
         for i, model in enumerate(['judd_wright', 'power_law', 'linear']):
             vals = [results[c]['empirical']['compression'][model]['knockdown'] for c in configs]
             axes[0].bar(x + i * width, vals, width, label=model.replace('_', ' ').title())
-        mt_vals = [results[c]['mori_tanaka']['compression']['knockdown'] for c in configs]
-        axes[0].bar(x + 3 * width, mt_vals, width, label='Mori-Tanaka', color='black')
-        axes[0].set_xticks(x + 1.5 * width)
+        axes[0].set_xticks(x + width)
         axes[0].set_xticklabels([c.replace('_', '\n') for c in configs], fontsize=8)
         axes[0].set_ylabel('Knockdown Factor')
         axes[0].set_title('Compression', fontsize=14, fontweight='bold')
@@ -1126,9 +1002,7 @@ class FEVisualizer:
         for i, model in enumerate(['judd_wright', 'power_law', 'linear']):
             vals = [results[c]['empirical']['ilss'][model]['knockdown'] for c in configs]
             axes[1].bar(x + i * width, vals, width, label=model.replace('_', ' ').title())
-        mt_vals = [results[c]['mori_tanaka']['ilss']['knockdown'] for c in configs]
-        axes[1].bar(x + 3 * width, mt_vals, width, label='Mori-Tanaka', color='black')
-        axes[1].set_xticks(x + 1.5 * width)
+        axes[1].set_xticks(x + width)
         axes[1].set_xticklabels([c.replace('_', '\n') for c in configs], fontsize=8)
         axes[1].set_ylabel('Knockdown Factor')
         axes[1].set_title('ILSS', fontsize=14, fontweight='bold')
@@ -1403,8 +1277,8 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
                             nu_m: float) -> np.ndarray:
     """Mori-Tanaka effective stiffness for void inclusions (C_inclusion = 0).
 
-    Standalone function reusing the Eshelby tensor logic from MoriTanakaSolver
-    for use inside Hex8Element.
+    Standalone Eshelby-tensor-based Mori-Tanaka calculation for use inside
+    Hex8Element.
 
     Parameters
     ----------
@@ -1482,6 +1356,124 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     return C_eff
 
 
+def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
+                                  mat: 'MaterialProperties') -> np.ndarray:
+    """Build porosity-degraded composite stiffness via component-wise micromechanics.
+
+    Rather than applying a single scalar degradation ratio, this function:
+    1. Uses Mori-Tanaka to get degraded matrix modulus E_m* and G_m*
+    2. Re-applies rule-of-mixtures with degraded matrix to get degraded
+       composite engineering constants (E11*, E22*, G12*, etc.)
+    3. Builds the full 6x6 stiffness from those degraded constants.
+
+    This correctly captures that porosity (matrix voids) barely affects
+    fiber-dominated E11 but strongly degrades matrix-dominated E22 and G12.
+
+    Parameters
+    ----------
+    Vp : float
+        Local void volume fraction (0 to 1).
+    void_shape_radii : tuple
+        (a1, a2, a3) for Eshelby tensor.
+    mat : MaterialProperties
+        Material with constituent properties (E_f, E_m, V_f, etc.).
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) degraded composite stiffness in material coordinates.
+    """
+    if Vp < 1e-12:
+        return mat.get_stiffness_matrix()
+    if Vp > 0.99:
+        return np.zeros((6, 6))
+
+    E_m = mat.matrix_modulus
+    nu_m = mat.matrix_poisson
+    G_m = E_m / (2.0 * (1.0 + nu_m))
+    E_f = mat.fiber_modulus
+    Vf = mat.fiber_volume_fraction
+    Vm = 1.0 - Vf
+
+    # --- Step 1: Degraded matrix properties from Mori-Tanaka ---
+    C_m = mat.get_isotropic_matrix_stiffness()
+    C_eff = _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
+
+    # Extract degraded isotropic matrix moduli
+    mu_eff = C_eff[3, 3]
+    lam_eff = C_eff[0, 1]
+    denom = lam_eff + mu_eff
+    G_m_eff = max(mu_eff, 1.0)
+    E_m_eff = mu_eff * (3.0 * lam_eff + 2.0 * mu_eff) / denom if denom > 1e-12 else 1.0
+    E_m_eff = max(E_m_eff, 1.0)
+    nu_m_eff = lam_eff / (2.0 * denom) if denom > 1e-12 else nu_m
+
+    # --- Step 2: Compute degradation RATIOS via micromechanics ---
+    # Use Halpin-Tsai with pristine and degraded matrix to get ratios,
+    # then apply ratios to actual measured composite properties.
+    # This avoids mismatch between micromechanics predictions and actual data.
+
+    nu_f = 0.2  # typical carbon fiber Poisson's ratio
+    G_f = E_f / (2.0 * (1.0 + nu_f))
+
+    # E11 ratio (Rule of Mixtures — fiber-dominated, barely affected)
+    E11_rom_prist = Vf * E_f + Vm * E_m
+    E11_rom_deg = Vf * E_f + Vm * E_m_eff
+    r_E11 = E11_rom_deg / E11_rom_prist  # ~0.999 for 5% porosity
+
+    # E22 ratio (Halpin-Tsai — matrix-dominated, strongly affected)
+    xi_HT = 2.0
+    def _halpin_tsai(Ef, Em, xi, vf):
+        ratio = Ef / Em
+        eta = (ratio - 1.0) / (ratio + xi)
+        return Em * (1.0 + xi * eta * vf) / (1.0 - eta * vf)
+
+    E22_HT_prist = _halpin_tsai(E_f, E_m, xi_HT, Vf)
+    E22_HT_deg = _halpin_tsai(E_f, E_m_eff, xi_HT, Vf)
+    r_E22 = E22_HT_deg / E22_HT_prist
+
+    # G12 ratio (Halpin-Tsai — matrix-dominated)
+    xi_G = 1.0
+    G12_HT_prist = _halpin_tsai(G_f, G_m, xi_G, Vf)
+    G12_HT_deg = _halpin_tsai(G_f, G_m_eff, xi_G, Vf)
+    r_G12 = G12_HT_deg / G12_HT_prist
+
+    # G23 ratio (Halpin-Tsai — matrix-dominated)
+    G23_HT_prist = _halpin_tsai(G_f, G_m, xi_G, Vf)
+    G23_HT_deg = _halpin_tsai(G_f, G_m_eff, xi_G, Vf)
+    r_G23 = G23_HT_deg / G23_HT_prist
+
+    # nu12 ratio (Rule of Mixtures — weakly affected)
+    nu12_rom_prist = Vf * nu_f + Vm * nu_m
+    nu12_rom_deg = Vf * nu_f + Vm * nu_m_eff
+    r_nu12 = nu12_rom_deg / nu12_rom_prist if abs(nu12_rom_prist) > 1e-12 else 1.0
+
+    # --- Step 3: Apply ratios to actual measured properties ---
+    E11_deg = mat.E11 * r_E11
+    E22_deg = mat.E22 * r_E22
+    E33_deg = mat.E33 * r_E22  # same as E22 (transverse isotropy)
+    G12_deg = mat.G12 * r_G12
+    G13_deg = mat.G13 * r_G12  # same as G12
+    G23_deg = mat.G23 * r_G23
+    nu12_deg = mat.nu12 * r_nu12
+    nu13_deg = mat.nu13 * r_nu12
+    nu23_deg = mat.nu23  # weakly affected, keep constant
+
+    # --- Step 4: Build compliance matrix from degraded constants ---
+    S = np.zeros((6, 6))
+    S[0, 0] = 1.0 / E11_deg
+    S[1, 1] = 1.0 / E22_deg
+    S[2, 2] = 1.0 / E33_deg
+    S[0, 1] = S[1, 0] = -nu12_deg / E11_deg
+    S[0, 2] = S[2, 0] = -nu13_deg / E11_deg
+    S[1, 2] = S[2, 1] = -nu23_deg / E22_deg
+    S[3, 3] = 1.0 / G23_deg
+    S[4, 4] = 1.0 / G13_deg
+    S[5, 5] = 1.0 / G12_deg
+
+    return np.linalg.inv(S)
+
+
 class Hex8Element:
     """8-node isoparametric hexahedral element with porosity degradation.
 
@@ -1513,7 +1505,8 @@ class Hex8Element:
     def __init__(self, node_coords: np.ndarray, C_base: np.ndarray,
                  ply_angle_deg: float, node_porosities: np.ndarray,
                  void_shape_radii: Tuple, nu_m: float,
-                 C_m: np.ndarray, is_void: bool = False) -> None:
+                 C_m: np.ndarray, is_void: bool = False,
+                 material: 'MaterialProperties' = None) -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")
@@ -1525,6 +1518,7 @@ class Hex8Element:
         self.void_shape_radii = void_shape_radii
         self.nu_m = nu_m
         self.C_m = np.asarray(C_m, dtype=float)
+        self.material = material
         self.is_void = is_void
 
         self._gauss_points, self._gauss_weights = gauss_points_hex(order=2)
@@ -1620,9 +1614,11 @@ class Hex8Element:
 
         Steps:
         1. Interpolate porosity at this point from nodal values.
-        2. Compute C_eff via Mori-Tanaka (void inclusions in matrix).
-        3. Scale base composite stiffness by the M-T degradation ratio.
-        4. Rotate by ply angle about z-axis.
+        2. Degrade individual composite engineering constants (E11, E22, G12, etc.)
+           via Mori-Tanaka + micromechanics rule-of-mixtures, so that porosity in
+           0-degree plies correctly yields different laminate stiffness reduction
+           than porosity in 90-degree plies.
+        3. Rotate by ply angle about z-axis.
 
         Returns
         -------
@@ -1642,22 +1638,26 @@ class Hex8Element:
             Vp = float(N @ self.node_porosities)
         Vp = max(0.0, min(Vp, 0.99))
 
-        # 2. Mori-Tanaka effective stiffness for matrix with voids
-        C_eff_mt = _mt_effective_stiffness(self.C_m, Vp, self.void_shape_radii, self.nu_m)
-
-        # 3. Compute stiffness degradation ratio from M-T
-        # Scale the full composite stiffness by the average M-T degradation
-        diag_pristine = np.diag(self.C_m)
-        diag_degraded = np.diag(C_eff_mt)
-        mask = diag_pristine > 1e-12
-        if np.any(mask):
-            avg_ratio = np.mean(diag_degraded[mask] / diag_pristine[mask])
+        # 2. Component-wise degradation: degrade E11, E22, G12, etc. individually
+        #    This correctly captures that E11 (fiber-dominated) is barely affected
+        #    while E22/G12 (matrix-dominated) are strongly reduced by porosity.
+        if self.material is not None:
+            C_degraded = _degraded_composite_stiffness(
+                Vp, self.void_shape_radii, self.material)
         else:
-            avg_ratio = 1.0
-        avg_ratio = max(0.0, min(avg_ratio, 1.0))
-        C_degraded = self.C_base * avg_ratio
+            # Fallback: scalar degradation (legacy behavior)
+            C_eff_mt = _mt_effective_stiffness(self.C_m, Vp, self.void_shape_radii, self.nu_m)
+            diag_pristine = np.diag(self.C_m)
+            diag_degraded = np.diag(C_eff_mt)
+            mask = diag_pristine > 1e-12
+            if np.any(mask):
+                avg_ratio = np.mean(diag_degraded[mask] / diag_pristine[mask])
+            else:
+                avg_ratio = 1.0
+            avg_ratio = max(0.0, min(avg_ratio, 1.0))
+            C_degraded = self.C_base * avg_ratio
 
-        # 4. Rotate by ply angle
+        # 3. Rotate by ply angle
         ply_rad = np.radians(self.ply_angle_deg)
         if abs(ply_rad) > 1e-15:
             C_degraded = rotate_stiffness_3d(C_degraded, ply_rad, axis='z')
@@ -1795,6 +1795,7 @@ class GlobalAssembler:
             nu_m=self._nu_m,
             C_m=self._C_m,
             is_void=is_void,
+            material=self.material,
         )
 
     def _element_cache_key(self, elem_idx: int) -> Optional[tuple]:
@@ -2247,30 +2248,34 @@ class FESolver:
         max_fi = self._evaluate_tsai_wu(stress_local)
 
         # 7. Compute knockdown as average-stress ratio (porous / pristine)
-        # For displacement-controlled loading, the knockdown is the ratio of
-        # the volume-averaged axial stress to the pristine expected stress.
+        # Both numerator and denominator use the same 3D FE framework so that
+        # dimensional/mesh effects cancel.  For each element we compute what
+        # sigma_xx *would* be with pristine stiffness at the same strain, then
+        # average.  This avoids the CLT-vs-3D mismatch that caused knockdown>1.
 
-        # Average axial stress (sigma_xx) across all elements and Gauss points
         avg_sigma_xx = np.mean(stress_global[:, :, 0])
 
-        # Pristine expected stress: E_eff * applied_strain
-        # Compute E_eff using proper CLT (ABD matrix) for accurate reference
-        if self.ply_angles is not None:
-            clt_angles = list(self.ply_angles)
-        elif self.mesh._input_ply_angles is not None:
-            clt_angles = list(self.mesh._input_ply_angles)
-            # Expand to full n_plies if needed
-            n_plies = self.material.n_plies
-            if len(clt_angles) < n_plies:
-                clt_angles = (clt_angles * (n_plies // len(clt_angles) + 1))[:n_plies]
-        else:
-            clt_angles = [0.0] * self.material.n_plies
-        E_eff = compute_clt_effective_modulus(self.material, clt_angles)
+        # Pristine reference: compute sigma_xx = C_pristine_rot[0,:] @ eps
+        # at each element/GP using the same strain field but pristine stiffness.
+        C_base = self.material.get_stiffness_matrix()
+        pristine_sigma_sum = 0.0
+        pristine_count = 0
+        for e in range(n_elem):
+            ply_rad = np.radians(float(self.mesh.ply_angles[e]))
+            if abs(ply_rad) > 1e-15:
+                C_prist_rot = rotate_stiffness_3d(C_base, ply_rad, axis='z')
+            else:
+                C_prist_rot = C_base
+            for g in range(n_gp):
+                eps = strain_global[e, g]
+                pristine_sig_xx = float(C_prist_rot[0, :] @ eps)
+                pristine_sigma_sum += pristine_sig_xx
+                pristine_count += 1
 
-        pristine_sigma_xx = E_eff * applied_strain  # same sign as applied
+        pristine_avg = pristine_sigma_sum / pristine_count if pristine_count > 0 else 1.0
 
-        if abs(pristine_sigma_xx) > 1e-12:
-            knockdown = abs(avg_sigma_xx) / abs(pristine_sigma_xx)
+        if abs(pristine_avg) > 1e-12:
+            knockdown = abs(avg_sigma_xx) / abs(pristine_avg)
         else:
             knockdown = 1.0
         knockdown = min(knockdown, 1.0)
@@ -2325,21 +2330,35 @@ class FESolver:
                 continue
 
             if elem_Vp > 1e-12:
+                # Component-wise strength degradation:
+                # Fiber-direction strengths (Xt, Xc) are fiber-dominated — barely
+                # affected by matrix porosity. Transverse/shear strengths (Yt, Yc,
+                # S12, S23) are matrix-dominated — strongly affected.
                 C_eff = _mt_effective_stiffness(
                     C_m_pristine, elem_Vp,
                     self.porosity_field.void_shape_radii,
                     mat.matrix_poisson)
-                ratio = np.sqrt(max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0))
+                # Matrix stiffness degradation ratio (for matrix-dominated properties)
+                r_matrix = np.sqrt(max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0))
+                # Fiber-direction ratio: much weaker effect (scale by ROM ratio)
+                E_m = mat.matrix_modulus
+                E_m_eff_approx = E_m * max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0)
+                Vf = mat.fiber_volume_fraction
+                Vm = 1.0 - Vf
+                r_fiber = (Vf * mat.fiber_modulus + Vm * E_m_eff_approx) / \
+                          (Vf * mat.fiber_modulus + Vm * E_m)
+                r_fiber = np.sqrt(max(r_fiber, 0.0))  # sqrt for strength vs stiffness
             else:
-                ratio = 1.0
+                r_matrix = 1.0
+                r_fiber = 1.0
 
-            # Degrade strengths
-            Xt = mat.sigma_1t * ratio
-            Xc = mat.sigma_1c * ratio
-            Yt = mat.sigma_2t * ratio
-            Yc = mat.sigma_2c * ratio
-            S12 = mat.tau_12 * ratio
-            S23 = mat.tau_ilss * ratio
+            # Degrade strengths per component
+            Xt = mat.sigma_1t * r_fiber   # fiber-dominated
+            Xc = mat.sigma_1c * r_fiber   # fiber-dominated
+            Yt = mat.sigma_2t * r_matrix  # matrix-dominated
+            Yc = mat.sigma_2c * r_matrix  # matrix-dominated
+            S12 = mat.tau_12 * r_matrix   # matrix-dominated
+            S23 = mat.tau_ilss * r_matrix # matrix-dominated
 
             # Tsai-Wu coefficients (recomputed per element)
             F1 = 1.0 / Xt - 1.0 / Xc
@@ -2453,19 +2472,15 @@ def compare_configurations(void_volume_fraction: float,
         mesh = CompositeMesh(porosity_field, material, nx=30, ny=10, nz=12)
 
         empirical = EmpiricalSolver(mesh, material)
-        mori_tanaka = MoriTanakaSolver(mesh, material)
 
         emp_results = empirical.get_all_failure_loads()
-        mt_results = mori_tanaka.get_all_failure_loads()
 
         results[name] = {
             'config': config,
             'mesh': mesh,
             'porosity_field': porosity_field,
             'empirical_solver': empirical,
-            'mori_tanaka_solver': mori_tanaka,
             'empirical': emp_results,
-            'mori_tanaka': mt_results,
         }
 
         comp_kd = emp_results['compression']['judd_wright']['knockdown']
@@ -2494,7 +2509,6 @@ def save_results_to_json(results: Dict, filename: str):
             'config': data['config'],
             'void_volume_fraction': float(data['porosity_field'].Vp),
             'empirical': {},
-            'mori_tanaka': {},
         }
         for mode in data['empirical']:
             entry['empirical'][mode] = {}
@@ -2504,12 +2518,6 @@ def save_results_to_json(results: Dict, filename: str):
                     'failure_stress_MPa': r['failure_stress'],
                     'knockdown': r['knockdown'],
                 }
-        for mode in data['mori_tanaka']:
-            r = data['mori_tanaka'][mode]
-            entry['mori_tanaka'][mode] = {
-                'failure_stress_MPa': r['failure_stress'],
-                'knockdown': r['knockdown'],
-            }
         output[name] = entry
 
     with open(filename, 'w') as f:
