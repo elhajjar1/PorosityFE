@@ -33,11 +33,11 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 ### Porosity Distribution Models
 ![Porosity Distributions](screenshots/porosity_distributions.png)
 
-### 3D Finite Element Mesh
-![3D Mesh](screenshots/mesh_3d.png)
+### Cross-Section Porosity Contour and Hex Element
+![Mesh Detail](screenshots/mesh_detail.png)
 
-### Damage Contour at Midplane
-![Damage Contour](screenshots/damage_contour.png)
+### Void Stress Concentration Field
+![Void SCF](screenshots/void_scf.png)
 
 ## Installation
 
