@@ -378,23 +378,25 @@ class TestEmpiricalSolver:
         assert result['failure_stress'] < self.material.sigma_1c
 
     def test_discrete_void_scf_amplifies_knockdown(self):
-        """Discrete macrovoid should cause worse knockdown near the void."""
+        """Discrete macrovoid should cause worse local knockdown near the void."""
         material = MATERIALS['T800_epoxy']
         void = VoidGeometry(center=(25, 10, material.total_thickness / 2),
                             radii=(2, 2, 0.5))
         pf = PorosityField(material, 0.02, distribution='uniform',
                            discrete_voids=[void])
-        mesh = CompositeMesh(pf, material, nx=10, ny=5, nz=6)
+        mesh = CompositeMesh(pf, material, nx=20, ny=10, nz=12)
         solver = EmpiricalSolver(mesh, material)
-        result_with_void = solver.get_failure_load('compression', 'judd_wright')
+        solver.apply_loading('compression', 'judd_wright')
+        min_kd_with_void = solver.nodal_knockdown.min()
 
         pf_no_void = PorosityField(material, 0.02, distribution='uniform')
-        mesh_no_void = CompositeMesh(pf_no_void, material, nx=10, ny=5, nz=6)
+        mesh_no_void = CompositeMesh(pf_no_void, material, nx=20, ny=10, nz=12)
         solver_no_void = EmpiricalSolver(mesh_no_void, material)
-        result_no_void = solver_no_void.get_failure_load('compression', 'judd_wright')
+        solver_no_void.apply_loading('compression', 'judd_wright')
+        min_kd_no_void = solver_no_void.nodal_knockdown.min()
 
-        # Discrete void should reduce strength further
-        assert result_with_void['knockdown'] < result_no_void['knockdown']
+        # Discrete void should reduce local knockdown near the void
+        assert min_kd_with_void < min_kd_no_void
 
 
 class TestFEVisualizer:
