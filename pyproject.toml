@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "porosity-fe"
+version = "1.0.0"
+description = "Desktop application for porosity-degraded composite laminate analysis"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Rani Elhajjar", email = "elhajjar@uwm.edu"},
+]
+keywords = [
+    "composites",
+    "porosity",
+    "finite-element",
+    "micromechanics",
+    "damage-mechanics",
+    "materials-science",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0",
+    "matplotlib>=3.4.0",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.4.0"]
+dev = ["pytest>=7.0.0"]
+all = ["PyQt6>=6.4.0", "pytest>=7.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/elhajjar1/PorosityFE"
+Repository = "https://github.com/elhajjar1/PorosityFE"
+Issues = "https://github.com/elhajjar1/PorosityFE/issues"
+
+[project.scripts]
+porosity-fe = "porosity_gui:main"
+
+[tool.setuptools]
+py-modules = ["porosity_fe_analysis", "porosity_gui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

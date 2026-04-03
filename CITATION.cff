@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "PorosityFE: Porosity-Degraded Composite Laminate Analysis"
+version: 1.0.0
+date-released: 2026-04-03
+url: "https://github.com/elhajjar1/PorosityFE"
+repository-code: "https://github.com/elhajjar1/PorosityFE"
+license: MIT
+authors:
+  - family-names: Elhajjar
+    given-names: Rani
+    orcid: "https://orcid.org/0000-0002-1636-3498"
+keywords:
+  - composite materials
+  - porosity
+  - finite element analysis
+  - micromechanics
+  - damage mechanics
+  - strength knockdown
+references:
+  - type: article
+    title: "Fat-tailed failure strength distributions and manufacturing defects in advanced composites"
+    authors:
+      - family-names: Elhajjar
+        given-names: Rani
+    journal: "Scientific Reports"
+    volume: 15
+    pages: "25977"
+    year: 2025
+    doi: "10.1038/s41598-025-06693-4"
