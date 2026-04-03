@@ -33,9 +33,6 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 ### Porosity Distribution Models
 ![Porosity Distributions](screenshots/porosity_distributions.png)
 
-### Cross-Section Porosity Contour and Hex Element
-![Mesh Detail](screenshots/mesh_detail.png)
-
 ### Void Stress Concentration Field
 ![Void SCF](screenshots/void_scf.png)
 
