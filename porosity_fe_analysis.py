@@ -30,6 +30,103 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from dataclasses import dataclass, field
 from typing import Tuple, Dict, List, Optional, Union
 import json
+import os as _os
+import warnings as _warnings_mod
+
+
+# ============================================================
+# ML CORRECTION MODULE (Tier 1: ML-Corrected Mori-Tanaka)
+# ============================================================
+
+class _MLCorrectionModel:
+    """Numpy-only MLP that predicts correction factors for M-T ratios.
+
+    Loaded lazily from ml_correction/mt_correction_model.npz on first use.
+    If weights are not found, falls back to identity (correction = 1.0).
+
+    Input features: [Vp, AR, prop_E22, prop_G12, prop_Flex, prop_Tens]
+    Output: correction factor in (0, 1] that multiplies the M-T ratio.
+    """
+    _instance = None
+
+    def __init__(self):
+        self.weights = []
+        self.biases = []
+        self.X_mean = None
+        self.X_std = None
+        self.available = False
+
+    @classmethod
+    def get(cls):
+        """Singleton lazy loader."""
+        if cls._instance is None:
+            cls._instance = cls()
+            cls._instance._try_load()
+        return cls._instance
+
+    def _try_load(self):
+        """Attempt to load trained weights."""
+        base = _os.path.dirname(_os.path.abspath(__file__))
+        model_path = _os.path.join(base, 'ml_correction', 'mt_correction_model.npz')
+        norm_path = _os.path.join(base, 'ml_correction', 'mt_correction_norm.npz')
+        if _os.path.exists(model_path) and _os.path.exists(norm_path):
+            try:
+                data = np.load(model_path)
+                n_layers = int(data['n_layers'][0])
+                self.weights = [data[f'W{i}'] for i in range(n_layers)]
+                self.biases = [data[f'b{i}'] for i in range(n_layers)]
+                norm = np.load(norm_path)
+                self.X_mean = norm['X_mean']
+                self.X_std = norm['X_std']
+                self.available = True
+            except Exception:
+                self.available = False
+
+    def predict_correction(self, Vp: float, void_ar: float,
+                           prop_class: str = 'E22') -> float:
+        """Predict correction factor for a given property class.
+
+        Parameters
+        ----------
+        Vp : float
+            Void volume fraction (0 to 1).
+        void_ar : float
+            Void aspect ratio (1.0 = sphere, >1 = elongated).
+        prop_class : str
+            One of 'E22', 'G12', 'Flex', 'Tens'.
+
+        Returns
+        -------
+        float
+            Correction factor to multiply M-T ratio by. Returns 1.0 if
+            model not available.
+        """
+        if not self.available or Vp < 1e-6:
+            return 1.0
+
+        # One-hot encode property class
+        class_map = {'E22': 0, 'G12': 1, 'Flex': 2, 'Tens': 3}
+        idx = class_map.get(prop_class, 0)
+        onehot = [0.0] * 4
+        onehot[idx] = 1.0
+
+        x = np.array([[Vp, void_ar] + onehot])
+
+        # Normalize
+        x = (x - self.X_mean) / self.X_std
+
+        # Forward pass: ReLU hidden, sigmoid output
+        for i, (W, b) in enumerate(zip(self.weights, self.biases)):
+            x = x @ W + b
+            if i < len(self.weights) - 1:
+                x = np.maximum(0, x)
+            else:
+                x = 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
+
+        correction = float(x[0, 0])
+        # Clamp to reasonable range
+        return max(0.5, min(correction, 1.05))
+
 
 # ============================================================
 # SECTION 1: MATERIAL PROPERTIES AND CONSTANTS
@@ -1447,6 +1544,19 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
     nu12_rom_prist = Vf * nu_f + Vm * nu_m
     nu12_rom_deg = Vf * nu_f + Vm * nu_m_eff
     r_nu12 = nu12_rom_deg / nu12_rom_prist if abs(nu12_rom_prist) > 1e-12 else 1.0
+
+    # --- Step 2b: ML correction for void interaction / clustering effects ---
+    # The ML model learns the systematic bias between M-T and experimental data.
+    ml = _MLCorrectionModel.get()
+    void_ar = max(void_shape_radii) / max(min(void_shape_radii), 1e-6)
+    c_E22 = ml.predict_correction(Vp, void_ar, 'E22')
+    c_G12 = ml.predict_correction(Vp, void_ar, 'G12')
+    c_Tens = ml.predict_correction(Vp, void_ar, 'Tens')
+
+    r_E11 = r_E11 * c_Tens     # fiber-dominated: mild correction
+    r_E22 = r_E22 * c_E22      # transverse: significant correction
+    r_G12 = r_G12 * c_G12      # shear: strongest correction
+    r_G23 = r_G23 * c_G12      # same as G12
 
     # --- Step 3: Apply ratios to actual measured properties ---
     E11_deg = mat.E11 * r_E11
