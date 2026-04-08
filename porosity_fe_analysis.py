@@ -1205,6 +1205,93 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     return float(E_x)
 
 
+def compute_degraded_clt_moduli(material: MaterialProperties,
+                                ply_angles: List[float],
+                                Vp: float,
+                                void_shape_radii: Tuple = (1.0, 1.0, 1.0)) -> dict:
+    """Compute porosity-degraded laminate moduli via CLT with M-T degraded plies.
+
+    Uses _degraded_composite_stiffness() to get porosity-degraded ply stiffness,
+    then builds the CLT A-matrix to extract effective laminate moduli (Ex, Ey, Gxy).
+    Reports both absolute values and knockdown ratios vs pristine laminate.
+
+    This is the correct way to predict laminate stiffness reduction from porosity:
+    the Mori-Tanaka model degrades each ply's properties (E22, G12 affected most),
+    and CLT integrates these through the layup to get the laminate-level response.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Material with orthotropic ply-level and constituent properties.
+    ply_angles : list of float
+        Ply orientation angles in degrees (one per ply).
+    Vp : float
+        Void volume fraction (0 to 1).
+    void_shape_radii : tuple
+        (a1, a2, a3) radii defining void shape for Eshelby tensor.
+
+    Returns
+    -------
+    dict
+        Keys: 'Ex', 'Ey', 'Gxy' (MPa), 'Ex_pristine', 'Ey_pristine',
+        'Gxy_pristine' (MPa), 'knockdown_Ex', 'knockdown_Ey', 'knockdown_Gxy'.
+    """
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+    idx = [0, 1, 5]  # Voigt indices for 11, 22, 12
+
+    def _build_A(C_6x6):
+        """Build CLT A-matrix from a 6x6 stiffness."""
+        A = np.zeros((3, 3))
+        for angle_deg in ply_angles:
+            angle_rad = np.radians(float(angle_deg))
+            if abs(angle_rad) > 1e-15:
+                C_rot = rotate_stiffness_3d(C_6x6, angle_rad, axis='z')
+            else:
+                C_rot = C_6x6
+            Q_bar = np.zeros((3, 3))
+            for i in range(3):
+                for j in range(3):
+                    ii, jj = idx[i], idx[j]
+                    if abs(C_rot[2, 2]) > 1e-12:
+                        Q_bar[i, j] = (C_rot[ii, jj]
+                                        - C_rot[ii, 2] * C_rot[jj, 2] / C_rot[2, 2])
+                    else:
+                        Q_bar[i, j] = C_rot[ii, jj]
+            A += Q_bar * t_ply
+        return A
+
+    def _moduli_from_A(A):
+        """Extract Ex, Ey, Gxy from A-matrix."""
+        A_inv = np.linalg.inv(A)
+        Ex = 1.0 / (h_total * A_inv[0, 0])
+        Ey = 1.0 / (h_total * A_inv[1, 1])
+        Gxy = 1.0 / (h_total * A_inv[2, 2])
+        return float(Ex), float(Ey), float(Gxy)
+
+    # Pristine laminate
+    C_pristine = material.get_stiffness_matrix()
+    A_pristine = _build_A(C_pristine)
+    Ex_p, Ey_p, Gxy_p = _moduli_from_A(A_pristine)
+
+    # Degraded laminate
+    if Vp < 1e-12:
+        Ex_d, Ey_d, Gxy_d = Ex_p, Ey_p, Gxy_p
+    else:
+        C_degraded = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+        A_degraded = _build_A(C_degraded)
+        Ex_d, Ey_d, Gxy_d = _moduli_from_A(A_degraded)
+
+    return {
+        'Ex': Ex_d, 'Ey': Ey_d, 'Gxy': Gxy_d,
+        'Ex_pristine': Ex_p, 'Ey_pristine': Ey_p, 'Gxy_pristine': Gxy_p,
+        'knockdown_Ex': Ex_d / Ex_p if Ex_p > 0 else 1.0,
+        'knockdown_Ey': Ey_d / Ey_p if Ey_p > 0 else 1.0,
+        'knockdown_Gxy': Gxy_d / Gxy_p if Gxy_p > 0 else 1.0,
+    }
+
+
 # ============================================================
 # SECTION 7c: GAUSS QUADRATURE
 # ============================================================
@@ -2106,13 +2193,20 @@ class FieldResults:
     strain_local: np.ndarray
     max_failure_index: float
     knockdown: float
+    # CLT-based modulus knockdowns (Degraded CLT approach)
+    knockdown_Ex: float = 1.0
+    knockdown_Ey: float = 1.0
+    knockdown_Gxy: float = 1.0
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
         n_elem = self.stress_global.shape[0] if self.stress_global is not None else 0
         return (f"FieldResults(n_nodes={n_nodes}, n_elements={n_elem}, "
                 f"max_FI={self.max_failure_index:.4f}, "
-                f"knockdown={self.knockdown:.4f})")
+                f"knockdown={self.knockdown:.4f}, "
+                f"kd_Ex={self.knockdown_Ex:.4f}, "
+                f"kd_Ey={self.knockdown_Ey:.4f}, "
+                f"kd_Gxy={self.knockdown_Gxy:.4f})")
 
 
 class FESolver:
@@ -2280,6 +2374,19 @@ class FESolver:
             knockdown = 1.0
         knockdown = min(knockdown, 1.0)
 
+        # 8. CLT-based modulus knockdowns (Degraded CLT approach)
+        # Uses Mori-Tanaka degraded ply properties -> CLT A-matrix -> Ex, Ey, Gxy
+        Vp_mean = self.porosity_field.Vp
+        void_radii = self.porosity_field.void_shape_radii
+        if self.ply_angles is not None and len(self.ply_angles) > 0:
+            clt_kd = compute_degraded_clt_moduli(
+                self.material, self.ply_angles, Vp_mean, void_radii)
+        else:
+            # No ply angles specified — default QI assumption
+            default_angles = [0] * self.material.n_plies
+            clt_kd = compute_degraded_clt_moduli(
+                self.material, default_angles, Vp_mean, void_radii)
+
         displacement = u.reshape(-1, 3)
 
         if verbose:
@@ -2287,7 +2394,10 @@ class FESolver:
             print(f"  Post-processing time: {t3 - t1:.2f} s")
             print(f"Total solve time: {t3 - t0:.2f} s")
             print(f"  Max Tsai-Wu FI: {max_fi:.4f}")
-            print(f"  Knockdown factor: {knockdown:.4f}")
+            print(f"  Knockdown (stress ratio): {knockdown:.4f}")
+            print(f"  CLT knockdown Ex: {clt_kd['knockdown_Ex']:.4f}")
+            print(f"  CLT knockdown Ey: {clt_kd['knockdown_Ey']:.4f}")
+            print(f"  CLT knockdown Gxy: {clt_kd['knockdown_Gxy']:.4f}")
 
         return FieldResults(
             displacement=displacement,
@@ -2297,6 +2407,9 @@ class FESolver:
             strain_local=strain_local,
             max_failure_index=max_fi,
             knockdown=knockdown,
+            knockdown_Ex=clt_kd['knockdown_Ex'],
+            knockdown_Ey=clt_kd['knockdown_Ey'],
+            knockdown_Gxy=clt_kd['knockdown_Gxy'],
         )
 
     def _evaluate_tsai_wu(self, stress_local: np.ndarray) -> float:
