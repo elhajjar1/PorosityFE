@@ -1208,16 +1208,18 @@ def compute_clt_effective_modulus(material: MaterialProperties,
 def compute_degraded_clt_moduli(material: MaterialProperties,
                                 ply_angles: List[float],
                                 Vp: float,
-                                void_shape_radii: Tuple = (1.0, 1.0, 1.0)) -> dict:
-    """Compute porosity-degraded laminate moduli via CLT with M-T degraded plies.
+                                void_shape_radii: Tuple = (1.0, 1.0, 1.0),
+                                method: str = 'mori_tanaka') -> dict:
+    """Compute porosity-degraded laminate moduli via CLT with degraded plies.
 
     Uses _degraded_composite_stiffness() to get porosity-degraded ply stiffness,
     then builds the CLT A-matrix to extract effective laminate moduli (Ex, Ey, Gxy).
     Reports both absolute values and knockdown ratios vs pristine laminate.
 
     This is the correct way to predict laminate stiffness reduction from porosity:
-    the Mori-Tanaka model degrades each ply's properties (E22, G12 affected most),
-    and CLT integrates these through the layup to get the laminate-level response.
+    the homogenization model degrades each ply's properties (E22, G12 affected
+    most), and CLT integrates these through the layup to get the laminate-level
+    response.
 
     Parameters
     ----------
@@ -1229,6 +1231,8 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
         Void volume fraction (0 to 1).
     void_shape_radii : tuple
         (a1, a2, a3) radii defining void shape for Eshelby tensor.
+    method : str
+        Homogenization method: 'mori_tanaka' (default) or 'differential'.
 
     Returns
     -------
@@ -1279,7 +1283,8 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
     if Vp < 1e-12:
         Ex_d, Ey_d, Gxy_d = Ex_p, Ey_p, Gxy_p
     else:
-        C_degraded = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+        C_degraded = _degraded_composite_stiffness(Vp, void_shape_radii, material,
+                                                    method=method)
         A_degraded = _build_A(C_degraded)
         Ex_d, Ey_d, Gxy_d = _moduli_from_A(A_degraded)
 
@@ -1295,7 +1300,8 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
 def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
                                           ply_angles: List[float],
                                           Vp: float,
-                                          void_shape_radii: Tuple = (1.0, 1.0, 1.0)
+                                          void_shape_radii: Tuple = (1.0, 1.0, 1.0),
+                                          method: str = 'mori_tanaka'
                                           ) -> dict:
     """Compute porosity-degraded laminate flexural modulus via D-matrix.
 
@@ -1376,7 +1382,8 @@ def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
     if Vp < 1e-12:
         Ef_x_d, Ef_y_d = Ef_x_p, Ef_y_p
     else:
-        C_degraded = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+        C_degraded = _degraded_composite_stiffness(Vp, void_shape_radii, material,
+                                                    method=method)
         D_degraded = _build_D(C_degraded)
         Ef_x_d, Ef_y_d = _flexural_moduli_from_D(D_degraded)
 
@@ -1539,8 +1546,108 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     return C_eff
 
 
+def _ds_effective_stiffness(C_m: np.ndarray, Vp: float,
+                            void_shape_radii: Tuple,
+                            nu_m: float) -> np.ndarray:
+    """Differential Scheme effective stiffness for void inclusions.
+
+    Unlike Mori-Tanaka which is a single-step mean-field homogenization,
+    the Differential Scheme (DS) incrementally adds voids to an already-
+    porous effective medium. This captures void-void interactions better
+    than M-T, especially at higher porosity levels where M-T breaks down.
+
+    For spherical voids in an isotropic matrix, the DS ODEs for the bulk
+    and shear moduli are (McLaughlin 1977):
+
+        dK/df = -(K + 4G/3) / (1 - f)      * (for spherical voids)
+        dG/df = -G * 15*(1-v)/(7 - 5*v) / (1 - f)
+
+    These are numerically integrated from 0 to Vp using RK4.
+
+    Parameters
+    ----------
+    C_m : np.ndarray
+        Shape (6, 6) isotropic matrix stiffness.
+    Vp : float
+        Void volume fraction (0 to 1).
+    void_shape_radii : tuple
+        (a1, a2, a3) radii defining void shape. Currently only spherical
+        (1,1,1) is supported for DS — for non-spherical voids, falls back
+        to M-T since the DS ODEs become much more complex.
+    nu_m : float
+        Matrix Poisson's ratio (used only as a starting value).
+
+    Returns
+    -------
+    np.ndarray
+        Shape (6, 6) effective stiffness matrix.
+    """
+    if Vp < 1e-12:
+        return C_m.copy()
+    if Vp > 0.99:
+        return np.zeros((6, 6))
+
+    # For non-spherical voids, fall back to M-T (DS ODEs become coupled
+    # anisotropic tensor ODEs which are out of scope for this simple impl).
+    ar = max(void_shape_radii) / min(void_shape_radii)
+    if abs(ar - 1.0) > 0.05:
+        return _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
+
+    # Extract initial isotropic constants from C_m
+    # C_m is isotropic with form [[lam+2mu, lam, lam, 0, 0, 0], ...]
+    mu_0 = C_m[3, 3]
+    lam_0 = C_m[0, 1]
+    K_0 = lam_0 + 2.0 * mu_0 / 3.0
+
+    # Numerical RK4 integration of the DS ODEs from f=0 to f=Vp
+    # For spherical voids in isotropic matrix (Norris 1985, Berryman 1980):
+    #   dK/df = -K * (3K + 4G) / (4G) / (1 - f)    (bulk)
+    #   dG/df = -G * 15*(1-v) / (7-5v) / (1 - f)   (shear)
+    def _derivs(f, K, G):
+        """DS ODEs for spherical voids in isotropic matrix."""
+        if f >= 0.999 or K <= 0 or G <= 0:
+            return 0.0, 0.0
+        # Current Poisson ratio from K and G
+        nu = (3.0 * K - 2.0 * G) / (2.0 * (3.0 * K + G))
+        nu = max(-0.999, min(nu, 0.499))
+        denom = 1.0 - f
+        # Bulk response: dK/df = -K * (3K + 4G) / (4G) / (1-f)
+        dK_df = -K * (3.0 * K + 4.0 * G) / (4.0 * G) / denom
+        # Shear response: dG/df = -G * 15*(1-v)/(7-5v) / (1-f)
+        shear_coef = 15.0 * (1.0 - nu) / (7.0 - 5.0 * nu)
+        dG_df = -G * shear_coef / denom
+        return dK_df, dG_df
+
+    # RK4 integration with adaptive steps
+    n_steps = max(50, int(Vp * 1000))  # ~1 step per 0.001 porosity
+    h = Vp / n_steps
+    K, G = K_0, mu_0
+    f = 0.0
+    for _ in range(n_steps):
+        k1_K, k1_G = _derivs(f, K, G)
+        k2_K, k2_G = _derivs(f + h/2, K + h*k1_K/2, G + h*k1_G/2)
+        k3_K, k3_G = _derivs(f + h/2, K + h*k2_K/2, G + h*k2_G/2)
+        k4_K, k4_G = _derivs(f + h, K + h*k3_K, G + h*k3_G)
+        K = K + h * (k1_K + 2*k2_K + 2*k3_K + k4_K) / 6.0
+        G = G + h * (k1_G + 2*k2_G + 2*k3_G + k4_G) / 6.0
+        f += h
+        # Clamp to non-negative (voids can only reduce stiffness)
+        K = max(K, 1.0)
+        G = max(G, 1.0)
+
+    # Build the degraded isotropic stiffness matrix from final K, G
+    lam_eff = K - 2.0 * G / 3.0
+    C_eff = np.zeros((6, 6))
+    C_eff[0, 0] = C_eff[1, 1] = C_eff[2, 2] = lam_eff + 2.0 * G
+    C_eff[0, 1] = C_eff[0, 2] = C_eff[1, 0] = C_eff[1, 2] = \
+        C_eff[2, 0] = C_eff[2, 1] = lam_eff
+    C_eff[3, 3] = C_eff[4, 4] = C_eff[5, 5] = G
+    return C_eff
+
+
 def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
-                                  mat: 'MaterialProperties') -> np.ndarray:
+                                  mat: 'MaterialProperties',
+                                  method: str = 'mori_tanaka') -> np.ndarray:
     """Build porosity-degraded composite stiffness via component-wise micromechanics.
 
     Rather than applying a single scalar degradation ratio, this function:
@@ -1578,9 +1685,12 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
     Vf = mat.fiber_volume_fraction
     Vm = 1.0 - Vf
 
-    # --- Step 1: Degraded matrix properties from Mori-Tanaka ---
+    # --- Step 1: Degraded matrix properties from homogenization ---
     C_m = mat.get_isotropic_matrix_stiffness()
-    C_eff = _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
+    if method == 'differential':
+        C_eff = _ds_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
+    else:
+        C_eff = _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
 
     # Extract degraded isotropic matrix moduli
     mu_eff = C_eff[3, 3]
