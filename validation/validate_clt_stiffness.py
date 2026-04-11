@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 
 from porosity_fe_analysis import (
     MATERIALS, compute_degraded_clt_moduli,
+    compute_degraded_clt_flexural_modulus,
 )
 import dataclasses
 
@@ -50,7 +51,11 @@ ELH_TENS_KD = np.array([0.94, 0.92, 0.90, 0.88, 0.86, 0.82, 0.78, 0.75, 0.72, 0.
 
 
 def run_clt_predictions():
-    """Run degraded CLT predictions for all datasets."""
+    """Run degraded CLT predictions for all datasets.
+
+    Computes both A-matrix (Ex, Ey, Gxy) and D-matrix (Ef_x) predictions
+    to compare membrane vs bending stiffness responses to porosity.
+    """
     results = {}
 
     # --- Liu: [0/90]3s ---
@@ -59,21 +64,22 @@ def run_clt_predictions():
     angles_liu = [0, 90, 0, 90, 0, 90, 90, 0, 90, 0, 90, 0]
 
     pcts_liu = np.linspace(0.5, 4.0, 30)
-    baseline_liu = compute_degraded_clt_moduli(mat_liu, angles_liu, 0.006)
+    base_a_liu = compute_degraded_clt_moduli(mat_liu, angles_liu, 0.006)
+    base_d_liu = compute_degraded_clt_flexural_modulus(mat_liu, angles_liu, 0.006)
 
-    liu_ex, liu_ey, liu_gxy = [], [], []
+    liu_ex, liu_gxy, liu_efx = [], [], []
     for vp_pct in pcts_liu:
-        kd = compute_degraded_clt_moduli(mat_liu, angles_liu, vp_pct / 100.0)
-        # Renormalize to 0.6% baseline
-        liu_ex.append(kd['Ex'] / baseline_liu['Ex'])
-        liu_ey.append(kd['Ey'] / baseline_liu['Ey'])
-        liu_gxy.append(kd['Gxy'] / baseline_liu['Gxy'])
+        a = compute_degraded_clt_moduli(mat_liu, angles_liu, vp_pct / 100.0)
+        d = compute_degraded_clt_flexural_modulus(mat_liu, angles_liu, vp_pct / 100.0)
+        liu_ex.append(a['Ex'] / base_a_liu['Ex'])
+        liu_gxy.append(a['Gxy'] / base_a_liu['Gxy'])
+        liu_efx.append(d['Ef_x'] / base_d_liu['Ef_x'])
 
     results['liu'] = {
         'pcts': pcts_liu,
-        'kd_Ex': np.array(liu_ex),
-        'kd_Ey': np.array(liu_ey),
+        'kd_Ex_membrane': np.array(liu_ex),
         'kd_Gxy': np.array(liu_gxy),
+        'kd_Ef_bending': np.array(liu_efx),
     }
 
     # --- Stamopoulos: UD (90)16 for transverse, (0)16 for shear/flex ---
@@ -83,111 +89,97 @@ def run_clt_predictions():
     angles_0 = [0] * 16
 
     pcts_stam = np.linspace(0.5, 4.5, 30)
-    baseline_trans = compute_degraded_clt_moduli(mat_stam, angles_90, 0.0082)
-    baseline_shear = compute_degraded_clt_moduli(mat_stam, angles_0, 0.0082)
+    base_a_trans = compute_degraded_clt_moduli(mat_stam, angles_90, 0.0082)
+    base_a_shear = compute_degraded_clt_moduli(mat_stam, angles_0, 0.0082)
+    base_d_flex = compute_degraded_clt_flexural_modulus(mat_stam, angles_0, 0.0082)
 
-    stam_trans, stam_shear, stam_flex_ex = [], [], []
+    stam_trans, stam_shear, stam_flex_bend = [], [], []
     for vp_pct in pcts_stam:
-        kd_90 = compute_degraded_clt_moduli(mat_stam, angles_90, vp_pct / 100.0)
-        kd_0 = compute_degraded_clt_moduli(mat_stam, angles_0, vp_pct / 100.0)
-        # Trans modulus = Ex of (90)16 layup (loading in fiber transverse dir)
-        stam_trans.append(kd_90['Ex'] / baseline_trans['Ex'])
-        # Shear modulus = Gxy of (0)16 layup
-        stam_shear.append(kd_0['Gxy'] / baseline_shear['Gxy'])
-        # Flexural ~ Ex of (0)16 (bending in fiber direction)
-        stam_flex_ex.append(kd_0['Ex'] / baseline_shear['Ex'])
+        a_90 = compute_degraded_clt_moduli(mat_stam, angles_90, vp_pct / 100.0)
+        a_0 = compute_degraded_clt_moduli(mat_stam, angles_0, vp_pct / 100.0)
+        d_0 = compute_degraded_clt_flexural_modulus(mat_stam, angles_0, vp_pct / 100.0)
+        # Trans modulus = Ex of (90)16 layup (A-matrix, fiber transverse dir)
+        stam_trans.append(a_90['Ex'] / base_a_trans['Ex'])
+        # Shear modulus = Gxy of (0)16 layup (A-matrix, in-plane shear)
+        stam_shear.append(a_0['Gxy'] / base_a_shear['Gxy'])
+        # Flexural modulus = Ef_x from D-matrix of (0)16 layup (bending)
+        stam_flex_bend.append(d_0['Ef_x'] / base_d_flex['Ef_x'])
 
     results['stam'] = {
         'pcts': pcts_stam,
         'kd_trans': np.array(stam_trans),
         'kd_shear': np.array(stam_shear),
-        'kd_flex': np.array(stam_flex_ex),
+        'kd_flex_bending': np.array(stam_flex_bend),
     }
 
     return results
 
 
 def plot_validation(results, save_path=None):
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.5))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
 
     fig.suptitle("Degraded CLT Stiffness Knockdown vs Experimental Data\n"
-                 "(Mori-Tanaka Degraded Plies + CLT A-Matrix)",
+                 "(Mori-Tanaka Degraded Plies + CLT A/D-Matrix)",
                  fontsize=13, fontweight='bold')
 
     # --- Panel 1: Liu [0/90]3s modulus ---
     ax = axes[0]
-    ax.set_title("Liu (2006)\nT700/TDE85, [0/90]$_{3s}$", fontsize=10, fontweight='bold')
+    ax.set_title("Liu (2006)\nT700/TDE85, [0/90]$_{3s}$", fontsize=11, fontweight='bold')
     ax.scatter(LIU_VP, LIU_FLEX_MOD, c='red', s=60, alpha=0.7,
-               marker='o', label='Exp. Flex. Modulus', zorder=5)
+               marker='o', label='Exp. Flex. Modulus (3-pt bend)', zorder=5)
     ax.scatter(LIU_VP, LIU_TENS_MOD, c='blue', s=60, alpha=0.7,
                marker='s', label='Exp. Tens. Modulus', zorder=5)
 
     p = results['liu']['pcts']
-    ax.plot(p, results['liu']['kd_Ex'], 'b-', linewidth=2, label='CLT E$_x$ (Tens.)')
-    ax.plot(p, results['liu']['kd_Gxy'], 'g--', linewidth=2, label='CLT G$_{xy}$ (Shear)')
+    ax.plot(p, results['liu']['kd_Ex_membrane'], 'b-', linewidth=2,
+            label='CLT E$_x$ (A-matrix, tension)')
+    ax.plot(p, results['liu']['kd_Ef_bending'], 'r-', linewidth=2,
+            label='CLT E$_f$ (D-matrix, bending)')
 
-    ax.set_xlabel('Void Content (%)', fontsize=10)
-    ax.set_ylabel('Normalized Modulus', fontsize=10)
+    ax.set_xlabel('Void Content (%)', fontsize=11)
+    ax.set_ylabel('Normalized Modulus', fontsize=11)
     ax.set_xlim(0, 4.0)
     ax.set_ylim(0.75, 1.02)
     ax.legend(fontsize=8, loc='lower left')
     ax.grid(True, alpha=0.3)
 
+    # Annotation: CLT cannot capture flexural drop
+    ax.annotate('CLT flex. prediction (D-matrix)\n'
+                '~flat — M-T cannot explain\nflex. modulus drop',
+                xy=(2.5, 0.85), fontsize=7, fontstyle='italic',
+                color='darkred',
+                bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.5))
+
     # --- Panel 2: Stamopoulos UD stiffness ---
     ax = axes[1]
-    ax.set_title("Stamopoulos (2016)\nHTA/EHkF420, UD", fontsize=10, fontweight='bold')
+    ax.set_title("Stamopoulos (2016)\nHTA/EHkF420, UD", fontsize=11, fontweight='bold')
     ax.scatter(STAM_VP, STAM_TRANS_MOD, c='blue', s=70, alpha=0.7,
-               marker='s', label='Exp. Trans. Modulus', zorder=5)
+               marker='s', label='Exp. Trans. Modulus E$_{22}$', zorder=5)
     ax.scatter(STAM_VP, STAM_SHEAR_MOD, c='purple', s=70, alpha=0.7,
-               marker='D', label='Exp. Shear Modulus', zorder=5)
+               marker='D', label='Exp. Shear Modulus G$_{12}$', zorder=5)
     ax.scatter(STAM_VP, STAM_FLEX_MOD, c='red', s=70, alpha=0.7,
-               marker='o', label='Exp. Flex. Modulus', zorder=5)
+               marker='o', label='Exp. Flex. Modulus (3-pt bend)', zorder=5)
 
     p = results['stam']['pcts']
-    ax.plot(p, results['stam']['kd_trans'], 'b-', linewidth=2, label='CLT Trans.')
+    ax.plot(p, results['stam']['kd_trans'], 'b-', linewidth=2,
+            label='CLT E$_x$ of (90°)$_{16}$')
     ax.plot(p, results['stam']['kd_shear'], color='purple', linestyle='-',
-            linewidth=2, label='CLT Shear (G$_{xy}$)')
-    ax.plot(p, results['stam']['kd_flex'], 'r-', linewidth=2, label='CLT Flex. (E$_x$)')
+            linewidth=2, label='CLT G$_{xy}$ of (0°)$_{16}$')
+    ax.plot(p, results['stam']['kd_flex_bending'], 'r-', linewidth=2,
+            label='CLT E$_f$ of (0°)$_{16}$ (D-mat)')
 
-    ax.set_xlabel('Void Content (%)', fontsize=10)
-    ax.set_ylabel('Normalized Modulus', fontsize=10)
+    ax.set_xlabel('Void Content (%)', fontsize=11)
+    ax.set_ylabel('Normalized Modulus', fontsize=11)
     ax.set_xlim(0, 4.5)
     ax.set_ylim(0.70, 1.05)
     ax.legend(fontsize=7, loc='lower left')
     ax.grid(True, alpha=0.3)
 
-    # --- Panel 3: Summary table ---
-    ax = axes[2]
-    ax.set_title("CLT Knockdown Summary\nat 3% Porosity", fontsize=10, fontweight='bold')
-    ax.axis('off')
-
-    mat = MATERIALS['T700_epoxy']
-    configs = [
-        ('QI [0/45/90/-45/0]s', [0, 45, 90, -45, 0, 0, -45, 90, 45, 0]),
-        ('[0/90]3s', [0, 90, 0, 90, 0, 90, 90, 0, 90, 0, 90, 0]),
-        ('UD (0)16', [0]*16),
-        ('UD (90)16', [90]*16),
-    ]
-    table_data = [['Layup', 'kd_Ex', 'kd_Ey', 'kd_Gxy']]
-    for label, angles in configs:
-        m = dataclasses.replace(mat, n_plies=len(angles))
-        kd = compute_degraded_clt_moduli(m, angles, 0.03)
-        table_data.append([
-            label,
-            f"{kd['knockdown_Ex']:.4f}",
-            f"{kd['knockdown_Ey']:.4f}",
-            f"{kd['knockdown_Gxy']:.4f}",
-        ])
-
-    table = ax.table(cellText=table_data[1:], colLabels=table_data[0],
-                     loc='center', cellLoc='center')
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1.0, 1.8)
-    for (row, col), cell in table.get_celld().items():
-        if row == 0:
-            cell.set_facecolor('#4472C4')
-            cell.set_text_props(color='white', fontweight='bold')
+    # Annotation: CLT cannot capture shear drop
+    ax.annotate('M-T underpredicts\nG$_{12}$ drop by ~7×',
+                xy=(2.8, 0.85), fontsize=7, fontstyle='italic',
+                color='darkred',
+                bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.5))
 
     plt.tight_layout()
     if save_path:
@@ -210,11 +202,12 @@ def main():
     print("=" * 70)
 
     print("\n--- Liu (2006): CLT vs Experimental Modulus ---")
-    print(f"{'Vp%':>6s} {'Flex Exp':>10s} {'CLT Gxy':>10s} {'Tens Exp':>10s} {'CLT Ex':>10s}")
+    print(f"{'Vp%':>6s} {'Flex Exp':>10s} {'CLT Ef(D)':>10s} "
+          f"{'Tens Exp':>10s} {'CLT Ex(A)':>10s}")
     for i, vp in enumerate(LIU_VP):
         idx = np.argmin(np.abs(results['liu']['pcts'] - vp))
-        print(f"{vp:6.1f} {LIU_FLEX_MOD[i]:10.3f} {results['liu']['kd_Gxy'][idx]:10.3f} "
-              f"{LIU_TENS_MOD[i]:10.3f} {results['liu']['kd_Ex'][idx]:10.3f}")
+        print(f"{vp:6.1f} {LIU_FLEX_MOD[i]:10.3f} {results['liu']['kd_Ef_bending'][idx]:10.3f} "
+              f"{LIU_TENS_MOD[i]:10.3f} {results['liu']['kd_Ex_membrane'][idx]:10.3f}")
 
     print("\n--- Stamopoulos (2016): CLT vs Experimental Modulus ---")
     print(f"{'Vp%':>6s} {'Trans Exp':>10s} {'CLT Trans':>10s} "
@@ -224,28 +217,31 @@ def main():
         idx = np.argmin(np.abs(results['stam']['pcts'] - vp))
         print(f"{vp:6.2f} {STAM_TRANS_MOD[i]:10.3f} {results['stam']['kd_trans'][idx]:10.3f} "
               f"{STAM_SHEAR_MOD[i]:10.3f} {results['stam']['kd_shear'][idx]:10.3f} "
-              f"{STAM_FLEX_MOD[i]:10.3f} {results['stam']['kd_flex'][idx]:10.3f}")
+              f"{STAM_FLEX_MOD[i]:10.3f} {results['stam']['kd_flex_bending'][idx]:10.3f}")
 
     # MAE
     liu_flex_err = []
     liu_tens_err = []
     for i, vp in enumerate(LIU_VP):
         idx = np.argmin(np.abs(results['liu']['pcts'] - vp))
-        liu_flex_err.append(abs(results['liu']['kd_Gxy'][idx] - LIU_FLEX_MOD[i]) / LIU_FLEX_MOD[i] * 100)
-        liu_tens_err.append(abs(results['liu']['kd_Ex'][idx] - LIU_TENS_MOD[i]) / LIU_TENS_MOD[i] * 100)
+        liu_flex_err.append(abs(results['liu']['kd_Ef_bending'][idx] - LIU_FLEX_MOD[i]) / LIU_FLEX_MOD[i] * 100)
+        liu_tens_err.append(abs(results['liu']['kd_Ex_membrane'][idx] - LIU_TENS_MOD[i]) / LIU_TENS_MOD[i] * 100)
 
     stam_trans_err = []
     stam_shear_err = []
+    stam_flex_err = []
     for i, vp in enumerate(STAM_VP):
         idx = np.argmin(np.abs(results['stam']['pcts'] - vp))
         stam_trans_err.append(abs(results['stam']['kd_trans'][idx] - STAM_TRANS_MOD[i]) / STAM_TRANS_MOD[i] * 100)
         stam_shear_err.append(abs(results['stam']['kd_shear'][idx] - STAM_SHEAR_MOD[i]) / STAM_SHEAR_MOD[i] * 100)
+        stam_flex_err.append(abs(results['stam']['kd_flex_bending'][idx] - STAM_FLEX_MOD[i]) / STAM_FLEX_MOD[i] * 100)
 
     print(f"\n--- Error Analysis ---")
-    print(f"Liu Flex. Modulus MAE:        {np.mean(liu_flex_err):.1f}%")
-    print(f"Liu Tens. Modulus MAE:        {np.mean(liu_tens_err):.1f}%")
-    print(f"Stam. Trans. Modulus MAE:     {np.mean(stam_trans_err):.1f}%")
-    print(f"Stam. Shear Modulus MAE:      {np.mean(stam_shear_err):.1f}%")
+    print(f"Liu Tens. Modulus (A-matrix)    MAE: {np.mean(liu_tens_err):.1f}%")
+    print(f"Liu Flex. Modulus (D-matrix)    MAE: {np.mean(liu_flex_err):.1f}%")
+    print(f"Stam. Trans. Modulus (A-matrix) MAE: {np.mean(stam_trans_err):.1f}%")
+    print(f"Stam. Shear Modulus (A-matrix)  MAE: {np.mean(stam_shear_err):.1f}%")
+    print(f"Stam. Flex. Modulus (D-matrix)  MAE: {np.mean(stam_flex_err):.1f}%")
 
     output_dir = os.path.dirname(os.path.abspath(__file__))
     plot_validation(results, save_path=os.path.join(
