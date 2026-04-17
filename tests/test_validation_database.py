@@ -60,3 +60,11 @@ def test_liu_2006_dataset_loads():
     data = load_dataset(path)
     assert len(data['properties']) == 5
     assert data['material']['layup_name'] == '[0/90]3s'
+
+
+def test_stamopoulos_2016_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'stamopoulos_2016.json')
+    data = load_dataset(path)
+    assert len(data['properties']) == 7
