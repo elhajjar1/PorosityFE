@@ -26,3 +26,6 @@ Thumbs.db
 
 # Pytest
 .pytest_cache/
+
+# Claude worktrees and session metadata
+.claude/
