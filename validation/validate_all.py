@@ -158,3 +158,14 @@ def predict_modulus(dataset: Dict[str, Any], prop_key: str,
 
     base_val = compute_fn(baseline_vp) if baseline_vp > 1e-9 else compute_fn(0.0)
     return [float(compute_fn(vp / 100.0) / base_val) for vp in vp_pcts]
+
+
+import numpy as np
+
+
+def compute_mae(predicted, experimental) -> float:
+    """Mean absolute error in percent between predicted and experimental."""
+    predicted = np.asarray(predicted, dtype=float)
+    experimental = np.asarray(experimental, dtype=float)
+    errs = np.abs(predicted - experimental) / np.maximum(np.abs(experimental), 1e-12) * 100.0
+    return float(np.mean(errs))

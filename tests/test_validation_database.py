@@ -209,3 +209,12 @@ def test_predict_modulus_returns_normalized():
     pred = predict_modulus(dataset, 'tensile_modulus', [0.6, 1.0, 2.0, 3.0])
     assert len(pred) == 4
     assert pred[3] < pred[0]
+
+
+def test_compute_mae():
+    from validation.validate_all import compute_mae
+    exp = [1.0, 0.9, 0.8]
+    pred = [1.0, 0.85, 0.75]
+    mae = compute_mae(pred, exp)
+    expected = (0 + 5.56 + 6.25) / 3
+    assert abs(mae - expected) < 0.5
