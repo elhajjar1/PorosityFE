@@ -218,3 +218,13 @@ def test_compute_mae():
     mae = compute_mae(pred, exp)
     expected = (0 + 5.56 + 6.25) / 3
     assert abs(mae - expected) < 0.5
+
+
+def test_run_all_produces_per_dataset_mae():
+    from validation.validate_all import run_all_datasets
+    results = run_all_datasets()
+    assert 'elhajjar_2025' in results
+    assert 'liu_2006' in results
+    liu = results['liu_2006']
+    assert 'ilss' in liu
+    assert 0 <= liu['ilss']['mae'] <= 100

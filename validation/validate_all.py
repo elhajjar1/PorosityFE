@@ -169,3 +169,47 @@ def compute_mae(predicted, experimental) -> float:
     experimental = np.asarray(experimental, dtype=float)
     errs = np.abs(predicted - experimental) / np.maximum(np.abs(experimental), 1e-12) * 100.0
     return float(np.mean(errs))
+
+
+import glob
+
+_MODULUS_PROPS = {'tensile_modulus', 'transverse_tensile_modulus',
+                  'flexural_modulus', 'shear_modulus'}
+
+
+def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
+    """Run predictions for all datasets, return nested MAE results."""
+    if datasets_dir is None:
+        datasets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'datasets')
+
+    all_results = {}
+    for path in sorted(glob.glob(os.path.join(datasets_dir, '*.json'))):
+        name = os.path.basename(path).replace('.json', '')
+        try:
+            data = load_dataset(path)
+        except ValidationError as e:
+            all_results[name] = {'error': str(e)}
+            continue
+
+        dataset_results = {}
+        for prop_key, prop_data in data['properties'].items():
+            vp = prop_data['void_content_pct']
+            exp = prop_data['normalized_values']
+            try:
+                if prop_key in _MODULUS_PROPS:
+                    pred = predict_modulus(data, prop_key, vp)
+                else:
+                    pred = predict_strength(data, prop_key, vp)
+                mae = compute_mae(pred, exp)
+                dataset_results[prop_key] = {
+                    'vp_pcts': list(vp),
+                    'experimental': list(exp),
+                    'predicted': pred,
+                    'mae': mae,
+                    'n_points': len(vp),
+                }
+            except Exception as e:
+                dataset_results[prop_key] = {'error': str(e)}
+        all_results[name] = dataset_results
+    return all_results
