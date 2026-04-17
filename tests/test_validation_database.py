@@ -194,3 +194,18 @@ def test_predict_strength_returns_normalized_values():
     assert len(pred) == 4
     assert abs(pred[0] - 1.0) < 0.01  # baseline normalizes to ~1
     assert pred[3] < pred[0]  # strength decreases with porosity
+
+
+def test_predict_modulus_returns_normalized():
+    from validation.validate_all import predict_modulus
+    dataset = {
+        'material': {
+            'fiber': 'T700', 'matrix': 'TDE85 epoxy',
+            'fiber_volume_fraction': 0.60, 'n_plies': 12,
+            'ply_angles': [0, 90, 0, 90, 0, 90, 90, 0, 90, 0, 90, 0]
+        },
+        'baseline_porosity_pct': 0.6,
+    }
+    pred = predict_modulus(dataset, 'tensile_modulus', [0.6, 1.0, 2.0, 3.0])
+    assert len(pred) == 4
+    assert pred[3] < pred[0]

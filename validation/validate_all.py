@@ -118,3 +118,43 @@ def predict_strength(dataset: Dict[str, Any], prop_key: str,
 
     kd_base = _kd(baseline_vp) if baseline_vp > 1e-9 else 1.0
     return [float(_kd(vp / 100.0) / kd_base) for vp in vp_pcts]
+
+
+from porosity_fe_analysis import (
+    compute_degraded_clt_moduli,
+    compute_degraded_clt_flexural_modulus,
+)
+
+
+def predict_modulus(dataset: Dict[str, Any], prop_key: str,
+                    vp_pcts, method: str = 'mori_tanaka') -> list:
+    """Predict normalized modulus at each porosity level via CLT.
+
+    For flexural_modulus, uses D-matrix (bending) formulation.
+    Otherwise uses A-matrix (membrane).
+    """
+    mat = resolve_material(dataset)
+    ply_angles = dataset['material']['ply_angles']
+    baseline_vp = dataset.get('baseline_porosity_pct', 0.0) / 100.0
+
+    if prop_key == 'flexural_modulus':
+        def compute_fn(vp):
+            return compute_degraded_clt_flexural_modulus(
+                mat, ply_angles, vp, method=method)['Ef_x']
+    elif prop_key in ('transverse_tensile_modulus', 'shear_modulus',
+                      'tensile_modulus'):
+        key_map = {
+            'tensile_modulus': 'Ex',
+            'transverse_tensile_modulus': 'Ey',
+            'shear_modulus': 'Gxy',
+        }
+        extract = key_map[prop_key]
+
+        def compute_fn(vp):
+            return compute_degraded_clt_moduli(
+                mat, ply_angles, vp, method=method)[extract]
+    else:
+        raise ValueError(f"Unknown modulus property: {prop_key}")
+
+    base_val = compute_fn(baseline_vp) if baseline_vp > 1e-9 else compute_fn(0.0)
+    return [float(compute_fn(vp / 100.0) / base_val) for vp in vp_pcts]
