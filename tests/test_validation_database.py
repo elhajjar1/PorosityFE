@@ -228,3 +228,22 @@ def test_run_all_produces_per_dataset_mae():
     liu = results['liu_2006']
     assert 'ilss' in liu
     assert 0 <= liu['ilss']['mae'] <= 100
+
+
+def test_elhajjar_validation_matches_existing():
+    """Regression: Elhajjar compression MAE is in expected range."""
+    from validation.validate_all import run_all_datasets
+    results = run_all_datasets()
+    elh = results.get('elhajjar_2025', {})
+    assert 'compression_strength' in elh
+    # Historical Elhajjar compression MAE was ~6.9% (pre-migration)
+    assert abs(elh['compression_strength']['mae'] - 6.9) < 1.5
+
+
+def test_liu_2006_validation_matches_existing():
+    from validation.validate_all import run_all_datasets
+    results = run_all_datasets()
+    liu = results.get('liu_2006', {})
+    assert 'ilss' in liu
+    # Historical Liu ILSS MAE was ~1.8%
+    assert liu['ilss']['mae'] < 5.0
