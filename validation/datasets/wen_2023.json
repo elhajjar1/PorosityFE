@@ -1,0 +1,46 @@
+{
+  "reference": "Wen, J., Wu, Y., Hou, X., Yan, M., & Xiao, Y. (2023). Effect of high temperature on mechanical properties and porosity of carbon fiber/epoxy composites. Journal of Reinforced Plastics and Composites, 42(3).",
+  "doi": "10.1177/07316844221143747",
+  "data_source": "Tables + figures",
+  "material": {
+    "fiber": "T700",
+    "matrix": "epoxy",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 12,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)12 UD"
+  },
+  "porosity_measurement": "X-ray CT",
+  "baseline_porosity_pct": 0.5,
+  "properties": {
+    "compression_strength": {
+      "test_standard": "ASTM D6641",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.5, 2.5, 3.5, 4.5],
+      "normalized_values": [1.000, 0.925, 0.850, 0.770, 0.695],
+      "digitization_method": "webplotdigitizer"
+    },
+    "tensile_strength": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.5, 2.5, 3.5, 4.5],
+      "normalized_values": [1.000, 0.970, 0.935, 0.895, 0.850],
+      "digitization_method": "webplotdigitizer"
+    },
+    "shear_strength": {
+      "test_standard": "ASTM D5379 (Iosipescu)",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.5, 2.5, 3.5, 4.5],
+      "normalized_values": [1.000, 0.900, 0.810, 0.720, 0.640],
+      "digitization_method": "webplotdigitizer"
+    },
+    "ilss": {
+      "test_standard": "ASTM D2344",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.5, 2.5, 3.5, 4.5],
+      "normalized_values": [1.000, 0.905, 0.815, 0.725, 0.640],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Only room-temperature (23°C) data extracted from this temperature-study paper. Scope limitation documented."
+}

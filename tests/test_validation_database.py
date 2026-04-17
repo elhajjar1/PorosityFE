@@ -132,3 +132,11 @@ def test_zhang_peek_2025_dataset_loads():
                         'validation', 'datasets', 'zhang_peek_2025.json')
     data = load_dataset(path)
     assert 'transverse_tensile_strength' in data['properties']
+
+
+def test_wen_2023_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'wen_2023.json')
+    data = load_dataset(path)
+    assert 'compression_strength' in data['properties']
