@@ -41,3 +41,13 @@ def test_load_dataset_rejects_invalid_json():
             load_dataset(tmppath)
     finally:
         os.unlink(tmppath)
+
+
+def test_elhajjar_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'elhajjar_2025.json')
+    data = load_dataset(path)
+    assert 'compression_strength' in data['properties']
+    assert 'tensile_strength' in data['properties']
+    assert data['material']['n_plies'] == 10
