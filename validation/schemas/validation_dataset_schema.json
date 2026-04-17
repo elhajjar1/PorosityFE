@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Porosity Validation Dataset",
+  "type": "object",
+  "required": ["reference", "material", "properties"],
+  "properties": {
+    "reference": {"type": "string", "minLength": 10},
+    "doi": {"type": "string"},
+    "data_source": {"type": "string"},
+    "material": {
+      "type": "object",
+      "required": ["fiber", "matrix", "fiber_volume_fraction", "n_plies", "ply_angles"],
+      "properties": {
+        "fiber": {"type": "string"},
+        "matrix": {"type": "string"},
+        "fiber_volume_fraction": {"type": "number", "minimum": 0.3, "maximum": 0.8},
+        "n_plies": {"type": "integer", "minimum": 1},
+        "ply_angles": {"type": "array", "items": {"type": "number"}},
+        "layup_name": {"type": "string"}
+      }
+    },
+    "porosity_measurement": {"type": "string"},
+    "baseline_porosity_pct": {"type": "number", "minimum": 0, "maximum": 15},
+    "properties": {
+      "type": "object",
+      "patternProperties": {
+        "^(compression_strength|tensile_strength|transverse_tensile_strength|flexural_strength|ilss|shear_strength|tensile_modulus|transverse_tensile_modulus|flexural_modulus|shear_modulus)$": {
+          "type": "object",
+          "required": ["void_content_pct", "normalized_values"],
+          "properties": {
+            "test_standard": {"type": "string"},
+            "test_config": {
+              "type": "object",
+              "properties": {
+                "loading_direction_deg": {"type": "number"},
+                "span_to_depth": {"type": "number"},
+                "temperature_C": {"type": "number"},
+                "humidity": {"type": "string"},
+                "n_specimens_per_point": {"type": "integer"}
+              }
+            },
+            "void_content_pct": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 15}},
+            "void_content_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
+            "normalized_values": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1.2}},
+            "normalized_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
+            "absolute_values_MPa": {"type": "array", "items": {"type": ["number", "null"]}},
+            "absolute_uncertainty_MPa": {"type": "array", "items": {"type": ["number", "null"]}},
+            "digitization_method": {"type": "string", "enum": ["tabulated", "webplotdigitizer", "direct"]}
+          }
+        }
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}
