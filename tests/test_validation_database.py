@@ -76,3 +76,11 @@ def test_ghiorse_1993_dataset_loads():
                         'validation', 'datasets', 'ghiorse_1993.json')
     data = load_dataset(path)
     assert 'ilss' in data['properties']
+
+
+def test_olivier_1995_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'olivier_1995.json')
+    data = load_dataset(path)
+    assert 'tensile_strength' in data['properties']
