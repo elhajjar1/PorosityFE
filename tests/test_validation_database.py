@@ -51,3 +51,12 @@ def test_elhajjar_dataset_loads():
     assert 'compression_strength' in data['properties']
     assert 'tensile_strength' in data['properties']
     assert data['material']['n_plies'] == 10
+
+
+def test_liu_2006_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'liu_2006.json')
+    data = load_dataset(path)
+    assert len(data['properties']) == 5
+    assert data['material']['layup_name'] == '[0/90]3s'
