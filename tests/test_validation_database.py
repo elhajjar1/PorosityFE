@@ -92,3 +92,11 @@ def test_almeida_1994_dataset_loads():
                         'validation', 'datasets', 'almeida_1994.json')
     data = load_dataset(path)
     assert 'flexural_strength' in data['properties']
+
+
+def test_tang_1987_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'tang_1987.json')
+    data = load_dataset(path)
+    assert 'ilss' in data['properties']
