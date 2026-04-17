@@ -1235,6 +1235,119 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     return float(E_x)
 
 
+def _build_clt_abd(material: MaterialProperties, ply_angles: List[float],
+                   C_base: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Build CLT A (membrane) and D (bending) matrices from a 6x6 stiffness."""
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    A_mat = np.zeros((3, 3))
+    D_mat = np.zeros((3, 3))
+
+    idx = [0, 1, 5]  # 11, 22, 12 in Voigt
+    z_k_prev = -h_total / 2.0
+
+    for k, angle_deg in enumerate(ply_angles):
+        z_k = z_k_prev + t_ply
+        z_mid = (z_k_prev + z_k) / 2.0
+
+        angle_rad = np.radians(float(angle_deg))
+        if abs(angle_rad) > 1e-15:
+            C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z')
+        else:
+            C_rot = C_base
+
+        # Plane-stress reduced stiffness Q_bar
+        Q_bar = np.zeros((3, 3))
+        for i in range(3):
+            for j in range(3):
+                ii, jj = idx[i], idx[j]
+                if abs(C_rot[2, 2]) > 1e-12:
+                    Q_bar[i, j] = C_rot[ii, jj] - C_rot[ii, 2] * C_rot[jj, 2] / C_rot[2, 2]
+                else:
+                    Q_bar[i, j] = C_rot[ii, jj]
+
+        A_mat += Q_bar * t_ply
+        D_mat += Q_bar * (t_ply * z_mid**2 + t_ply**3 / 12.0)
+
+        z_k_prev = z_k
+
+    return A_mat, D_mat
+
+
+def compute_degraded_clt_moduli(material: MaterialProperties,
+                                ply_angles: List[float],
+                                Vp: float,
+                                method: str = 'mori_tanaka') -> Dict[str, float]:
+    """Compute effective laminate in-plane moduli (Ex, Ey, Gxy) with porosity.
+
+    Uses Mori-Tanaka-degraded ply stiffness via _degraded_composite_stiffness,
+    then builds the CLT A-matrix to extract effective moduli.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+    ply_angles : list of float  (degrees)
+    Vp : float  void volume fraction (0–1)
+    method : str  ignored (kept for API symmetry); always uses Mori-Tanaka.
+
+    Returns
+    -------
+    dict with keys: 'Ex', 'Ey', 'Gxy' (all in MPa)
+    """
+    void_shape_radii = VOID_SHAPES['spherical']  # spherical default
+    C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    A_mat, _ = _build_clt_abd(material, ply_angles, C_deg)
+
+    a_inv = np.linalg.inv(A_mat)
+    Ex = 1.0 / (h_total * a_inv[0, 0])
+    Ey = 1.0 / (h_total * a_inv[1, 1])
+    Gxy = 1.0 / (h_total * a_inv[2, 2])
+
+    return {'Ex': float(Ex), 'Ey': float(Ey), 'Gxy': float(Gxy)}
+
+
+def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
+                                          ply_angles: List[float],
+                                          Vp: float,
+                                          method: str = 'mori_tanaka') -> Dict[str, float]:
+    """Compute effective laminate flexural modulus Ef_x with porosity.
+
+    Uses the CLT D-matrix (bending stiffness) to compute the flexural modulus.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+    ply_angles : list of float  (degrees)
+    Vp : float  void volume fraction (0–1)
+    method : str  ignored; always uses Mori-Tanaka.
+
+    Returns
+    -------
+    dict with key: 'Ef_x' (MPa)
+    """
+    void_shape_radii = VOID_SHAPES['spherical']
+    C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    _, D_mat = _build_clt_abd(material, ply_angles, C_deg)
+
+    d_inv = np.linalg.inv(D_mat)
+    # Flexural modulus: Ef_x = 12 / (h^3 * d_11_inv)
+    Ef_x = 12.0 / (h_total**3 * d_inv[0, 0])
+
+    return {'Ef_x': float(Ef_x)}
+
+
 # ============================================================
 # SECTION 7c: GAUSS QUADRATURE
 # ============================================================

@@ -148,3 +148,32 @@ def test_wang_2022_dataset_loads():
                         'validation', 'datasets', 'wang_2022.json')
     data = load_dataset(path)
     assert 'tensile_strength' in data['properties']
+
+
+def test_resolve_material_from_dataset():
+    from validation.validate_all import resolve_material
+    dataset = {
+        'material': {
+            'fiber': 'T700',
+            'matrix': 'TDE85 epoxy',
+            'fiber_volume_fraction': 0.60,
+            'n_plies': 12
+        }
+    }
+    mat = resolve_material(dataset)
+    assert mat.n_plies == 12
+    assert abs(mat.fiber_volume_fraction - 0.60) < 1e-6
+
+
+def test_resolve_material_uses_im7_for_8551():
+    from validation.validate_all import resolve_material
+    dataset = {
+        'material': {
+            'fiber': 'IM7',
+            'matrix': '8551-7 epoxy',
+            'fiber_volume_fraction': 0.60,
+            'n_plies': 24
+        }
+    }
+    mat = resolve_material(dataset)
+    assert 170000 <= mat.E11 <= 180000
