@@ -213,3 +213,91 @@ def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
                 dataset_results[prop_key] = {'error': str(e)}
         all_results[name] = dataset_results
     return all_results
+
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
+
+def generate_master_report(results: Dict[str, Any], output_dir: str = None):
+    """Generate master validation report (PNG plot + Markdown table)."""
+    if output_dir is None:
+        output_dir = os.path.dirname(os.path.abspath(__file__))
+
+    by_property = {}
+    for ds_name, ds_results in results.items():
+        if 'error' in ds_results:
+            continue
+        for prop, prop_result in ds_results.items():
+            if 'error' in prop_result:
+                continue
+            by_property.setdefault(prop, []).append({
+                'dataset': ds_name,
+                'mae': prop_result['mae'],
+                'n': prop_result['n_points'],
+            })
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+    labels = []
+    values = []
+    colors = []
+    for prop, entries in sorted(by_property.items()):
+        for e in entries:
+            labels.append(f"{e['dataset']}\n{prop}")
+            values.append(e['mae'])
+            if e['mae'] < 5:
+                colors.append('#5cb85c')
+            elif e['mae'] < 10:
+                colors.append('#f0ad4e')
+            else:
+                colors.append('#d9534f')
+
+    x = np.arange(len(labels))
+    ax.bar(x, values, color=colors, edgecolor='black', linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=90, fontsize=7)
+    ax.set_ylabel('MAE (%)', fontsize=12)
+    ax.set_title('Master Validation Report: MAE across all papers/properties',
+                 fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, 'validation_master_report.png')
+    plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+    md_lines = ['# Master Validation Report', '',
+                '| Dataset | Property | N points | MAE (%) |',
+                '|---|---|---|---|']
+    for ds_name, ds_results in sorted(results.items()):
+        if 'error' in ds_results:
+            md_lines.append(f"| {ds_name} | LOAD ERROR | - | - |")
+            continue
+        for prop in sorted(ds_results.keys()):
+            r = ds_results[prop]
+            if 'error' in r:
+                md_lines.append(f"| {ds_name} | {prop} | - | ERROR |")
+            else:
+                md_lines.append(f"| {ds_name} | {prop} | {r['n_points']} | {r['mae']:.2f} |")
+
+    md_path = os.path.join(output_dir, 'validation_detail_report.md')
+    with open(md_path, 'w') as f:
+        f.write('\n'.join(md_lines))
+
+    return plot_path, md_path
+
+
+if __name__ == "__main__":
+    results = run_all_datasets()
+    plot, md = generate_master_report(results)
+    print(f"Plot: {plot}")
+    print(f"Markdown: {md}")
+    total_maes = []
+    for ds_results in results.values():
+        if 'error' in ds_results:
+            continue
+        for r in ds_results.values():
+            if 'mae' in r:
+                total_maes.append(r['mae'])
+    if total_maes:
+        print(f"\nOverall MAE: {np.mean(total_maes):.2f}% (n={len(total_maes)})")
