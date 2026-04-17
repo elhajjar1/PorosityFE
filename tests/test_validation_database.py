@@ -100,3 +100,11 @@ def test_tang_1987_dataset_loads():
                         'validation', 'datasets', 'tang_1987.json')
     data = load_dataset(path)
     assert 'ilss' in data['properties']
+
+
+def test_bowles_1992_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'bowles_1992.json')
+    data = load_dataset(path)
+    assert 'ilss' in data['properties']
