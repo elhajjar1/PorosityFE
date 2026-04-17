@@ -18,3 +18,26 @@ def test_schema_is_valid_jsonschema():
     with open(SCHEMA_PATH) as f:
         schema = json.load(f)
     jsonschema.Draft7Validator.check_schema(schema)
+
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def test_load_dataset_function_exists():
+    from validation.validate_all import load_dataset
+    assert callable(load_dataset)
+
+
+def test_load_dataset_rejects_invalid_json():
+    from validation.validate_all import load_dataset, ValidationError
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump({"reference": "too short"}, f)  # missing required fields
+        tmppath = f.name
+    try:
+        import pytest
+        with pytest.raises(ValidationError):
+            load_dataset(tmppath)
+    finally:
+        os.unlink(tmppath)
