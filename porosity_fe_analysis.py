@@ -142,6 +142,36 @@ MATERIALS = {
         matrix_modulus=3500.0, matrix_poisson=0.35,
         fiber_modulus=73000.0, fiber_volume_fraction=0.55,
     ),
+    'IM7_8551_epoxy': MaterialProperties(
+        E11=172000.0, E22=10000.0, E33=10000.0,
+        G12=5500.0, G13=5500.0, G23=3800.0,
+        nu12=0.30, nu13=0.30, nu23=0.45,
+        sigma_1c=1600.0, sigma_1t=3100.0, sigma_2t=90.0, sigma_2c=260.0,
+        tau_12=110.0, tau_ilss=100.0,
+        t_ply=0.125, n_plies=24,
+        matrix_modulus=3700.0, matrix_poisson=0.35,
+        fiber_modulus=276000.0, fiber_volume_fraction=0.60,
+    ),
+    'T300_934_epoxy': MaterialProperties(
+        E11=131000.0, E22=8500.0, E33=8500.0,
+        G12=4600.0, G13=4600.0, G23=3000.0,
+        nu12=0.28, nu13=0.28, nu23=0.42,
+        sigma_1c=1200.0, sigma_1t=1900.0, sigma_2t=55.0, sigma_2c=200.0,
+        tau_12=75.0, tau_ilss=85.0,
+        t_ply=0.127, n_plies=16,
+        matrix_modulus=3400.0, matrix_poisson=0.35,
+        fiber_modulus=230000.0, fiber_volume_fraction=0.60,
+    ),
+    'CF_PEEK': MaterialProperties(
+        E11=140000.0, E22=10000.0, E33=10000.0,
+        G12=5200.0, G13=5200.0, G23=3500.0,
+        nu12=0.32, nu13=0.32, nu23=0.45,
+        sigma_1c=1100.0, sigma_1t=2200.0, sigma_2t=85.0, sigma_2c=180.0,
+        tau_12=105.0, tau_ilss=95.0,
+        t_ply=0.14, n_plies=8,
+        matrix_modulus=3800.0, matrix_poisson=0.38,
+        fiber_modulus=240000.0, fiber_volume_fraction=0.60,
+    ),
 }
 
 # ============================================================

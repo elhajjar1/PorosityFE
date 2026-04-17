@@ -91,6 +91,21 @@ class TestMaterialProperties:
         assert abs(C_m[0, 1] - lam) < 1.0
         assert abs(C_m[3, 3] - mu) < 1.0
 
+    def test_im7_preset_exists(self):
+        assert 'IM7_8551_epoxy' in MATERIALS
+        mat = MATERIALS['IM7_8551_epoxy']
+        assert 170000 <= mat.E11 <= 180000
+
+    def test_t300_934_preset_exists(self):
+        assert 'T300_934_epoxy' in MATERIALS
+        mat = MATERIALS['T300_934_epoxy']
+        assert 125000 <= mat.E11 <= 140000
+
+    def test_cf_peek_preset_exists(self):
+        assert 'CF_PEEK' in MATERIALS
+        mat = MATERIALS['CF_PEEK']
+        assert 130000 <= mat.E11 <= 150000
+
 
 class TestVoidGeometry:
     def test_sphere_creation(self):
