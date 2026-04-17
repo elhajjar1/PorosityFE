@@ -1,0 +1,38 @@
+{
+  "reference": "Ghiorse, S.R. (1993). Effect of void content on the mechanical properties of carbon/epoxy laminates. SAMPE Quarterly, 24(2), 54-59.",
+  "data_source": "Tabulated knockdown rates in text (ILSS 9.7%/%, flex str 10.3%/%, flex mod 5.3%/%)",
+  "material": {
+    "fiber": "AS4",
+    "matrix": "3501-6 epoxy",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 32,
+    "ply_angles": [0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0, 90, 0],
+    "layup_name": "[0/90]_8s"
+  },
+  "porosity_measurement": "acid digestion + optical metallography",
+  "baseline_porosity_pct": 0.5,
+  "properties": {
+    "ilss": {
+      "test_standard": "ASTM D2344",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.0, 2.0, 3.0, 4.0, 5.0],
+      "normalized_values": [1.000, 0.903, 0.806, 0.709, 0.612, 0.515],
+      "digitization_method": "tabulated"
+    },
+    "flexural_strength": {
+      "test_standard": "ASTM D790",
+      "test_config": {"span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.0, 2.0, 3.0, 4.0, 5.0],
+      "normalized_values": [1.000, 0.897, 0.794, 0.691, 0.588, 0.485],
+      "digitization_method": "tabulated"
+    },
+    "flexural_modulus": {
+      "test_standard": "ASTM D790",
+      "test_config": {"span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.5, 1.0, 2.0, 3.0, 4.0, 5.0],
+      "normalized_values": [1.000, 0.947, 0.894, 0.841, 0.788, 0.735],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "Values derived from stated knockdown rates (9.7%/% ILSS, 10.3%/% flex str, 5.3%/% flex mod) at 0.5% intervals. Linear model per the paper's reported relationship. Note: paper does not explicitly tabulate per-point values; these are regression-derived."
+}
