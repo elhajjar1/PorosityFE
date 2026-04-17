@@ -140,3 +140,11 @@ def test_wen_2023_dataset_loads():
                         'validation', 'datasets', 'wen_2023.json')
     data = load_dataset(path)
     assert 'compression_strength' in data['properties']
+
+
+def test_wang_2022_dataset_loads():
+    from validation.validate_all import load_dataset
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'validation', 'datasets', 'wang_2022.json')
+    data = load_dataset(path)
+    assert 'tensile_strength' in data['properties']
