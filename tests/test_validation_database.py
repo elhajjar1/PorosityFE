@@ -177,3 +177,20 @@ def test_resolve_material_uses_im7_for_8551():
     }
     mat = resolve_material(dataset)
     assert 170000 <= mat.E11 <= 180000
+
+
+def test_predict_strength_returns_normalized_values():
+    from validation.validate_all import predict_strength
+    dataset = {
+        'material': {
+            'fiber': 'T700', 'matrix': 'TDE85 epoxy',
+            'fiber_volume_fraction': 0.60, 'n_plies': 12,
+            'ply_angles': [0, 90, 0, 90, 0, 90, 90, 0, 90, 0, 90, 0]
+        },
+        'baseline_porosity_pct': 0.6,
+    }
+    vp_pcts = [0.6, 1.0, 2.0, 3.0]
+    pred = predict_strength(dataset, 'tensile_strength', vp_pcts)
+    assert len(pred) == 4
+    assert abs(pred[0] - 1.0) < 0.01  # baseline normalizes to ~1
+    assert pred[3] < pred[0]  # strength decreases with porosity

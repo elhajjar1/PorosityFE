@@ -80,3 +80,41 @@ def resolve_material(dataset: Dict[str, Any]) -> MaterialProperties:
         n_plies=m['n_plies'],
         fiber_volume_fraction=m['fiber_volume_fraction'],
     )
+
+
+from porosity_fe_analysis import (
+    PorosityField, CompositeMesh, EmpiricalSolver,
+)
+
+
+_PROPERTY_TO_MODE = {
+    'compression_strength': 'compression',
+    'tensile_strength': 'tension',
+    'transverse_tensile_strength': 'tension',
+    'flexural_strength': 'compression',
+    'shear_strength': 'shear',
+    'ilss': 'ilss',
+}
+
+
+def predict_strength(dataset: Dict[str, Any], prop_key: str,
+                     vp_pcts) -> list:
+    """Predict normalized strength at each porosity level via Judd-Wright.
+
+    Renormalized to the dataset's baseline_porosity_pct.
+    """
+    mat = resolve_material(dataset)
+    ply_angles = dataset['material']['ply_angles']
+    mode = _PROPERTY_TO_MODE[prop_key]
+    baseline_vp = dataset.get('baseline_porosity_pct', 0.0) / 100.0
+
+    def _kd(vp_frac):
+        pf = PorosityField(mat, vp_frac, distribution='uniform',
+                           void_shape='spherical')
+        mesh = CompositeMesh(pf, mat, nx=10, ny=5,
+                             nz=mat.n_plies, ply_angles=ply_angles)
+        emp = EmpiricalSolver(mesh, mat, ply_angles=ply_angles)
+        return emp.get_failure_load(mode=mode, model='judd_wright')['knockdown']
+
+    kd_base = _kd(baseline_vp) if baseline_vp > 1e-9 else 1.0
+    return [float(_kd(vp / 100.0) / kd_base) for vp in vp_pcts]
