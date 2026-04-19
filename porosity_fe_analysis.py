@@ -142,6 +142,36 @@ MATERIALS = {
         matrix_modulus=3500.0, matrix_poisson=0.35,
         fiber_modulus=73000.0, fiber_volume_fraction=0.55,
     ),
+    'IM7_8551_epoxy': MaterialProperties(
+        E11=172000.0, E22=10000.0, E33=10000.0,
+        G12=5500.0, G13=5500.0, G23=3800.0,
+        nu12=0.30, nu13=0.30, nu23=0.45,
+        sigma_1c=1600.0, sigma_1t=3100.0, sigma_2t=90.0, sigma_2c=260.0,
+        tau_12=110.0, tau_ilss=100.0,
+        t_ply=0.125, n_plies=24,
+        matrix_modulus=3700.0, matrix_poisson=0.35,
+        fiber_modulus=276000.0, fiber_volume_fraction=0.60,
+    ),
+    'T300_934_epoxy': MaterialProperties(
+        E11=131000.0, E22=8500.0, E33=8500.0,
+        G12=4600.0, G13=4600.0, G23=3000.0,
+        nu12=0.28, nu13=0.28, nu23=0.42,
+        sigma_1c=1200.0, sigma_1t=1900.0, sigma_2t=55.0, sigma_2c=200.0,
+        tau_12=75.0, tau_ilss=85.0,
+        t_ply=0.127, n_plies=16,
+        matrix_modulus=3400.0, matrix_poisson=0.35,
+        fiber_modulus=230000.0, fiber_volume_fraction=0.60,
+    ),
+    'CF_PEEK': MaterialProperties(
+        E11=140000.0, E22=10000.0, E33=10000.0,
+        G12=5200.0, G13=5200.0, G23=3500.0,
+        nu12=0.32, nu13=0.32, nu23=0.45,
+        sigma_1c=1100.0, sigma_1t=2200.0, sigma_2t=85.0, sigma_2c=180.0,
+        tau_12=105.0, tau_ilss=95.0,
+        t_ply=0.14, n_plies=8,
+        matrix_modulus=3800.0, matrix_poisson=0.38,
+        fiber_modulus=240000.0, fiber_volume_fraction=0.60,
+    ),
 }
 
 # ============================================================
@@ -1203,6 +1233,119 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     A_inv = np.linalg.inv(A)
     E_x = 1.0 / (h_total * A_inv[0, 0])
     return float(E_x)
+
+
+def _build_clt_abd(material: MaterialProperties, ply_angles: List[float],
+                   C_base: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Build CLT A (membrane) and D (bending) matrices from a 6x6 stiffness."""
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    A_mat = np.zeros((3, 3))
+    D_mat = np.zeros((3, 3))
+
+    idx = [0, 1, 5]  # 11, 22, 12 in Voigt
+    z_k_prev = -h_total / 2.0
+
+    for k, angle_deg in enumerate(ply_angles):
+        z_k = z_k_prev + t_ply
+        z_mid = (z_k_prev + z_k) / 2.0
+
+        angle_rad = np.radians(float(angle_deg))
+        if abs(angle_rad) > 1e-15:
+            C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z')
+        else:
+            C_rot = C_base
+
+        # Plane-stress reduced stiffness Q_bar
+        Q_bar = np.zeros((3, 3))
+        for i in range(3):
+            for j in range(3):
+                ii, jj = idx[i], idx[j]
+                if abs(C_rot[2, 2]) > 1e-12:
+                    Q_bar[i, j] = C_rot[ii, jj] - C_rot[ii, 2] * C_rot[jj, 2] / C_rot[2, 2]
+                else:
+                    Q_bar[i, j] = C_rot[ii, jj]
+
+        A_mat += Q_bar * t_ply
+        D_mat += Q_bar * (t_ply * z_mid**2 + t_ply**3 / 12.0)
+
+        z_k_prev = z_k
+
+    return A_mat, D_mat
+
+
+def compute_degraded_clt_moduli(material: MaterialProperties,
+                                ply_angles: List[float],
+                                Vp: float,
+                                method: str = 'mori_tanaka') -> Dict[str, float]:
+    """Compute effective laminate in-plane moduli (Ex, Ey, Gxy) with porosity.
+
+    Uses Mori-Tanaka-degraded ply stiffness via _degraded_composite_stiffness,
+    then builds the CLT A-matrix to extract effective moduli.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+    ply_angles : list of float  (degrees)
+    Vp : float  void volume fraction (0–1)
+    method : str  ignored (kept for API symmetry); always uses Mori-Tanaka.
+
+    Returns
+    -------
+    dict with keys: 'Ex', 'Ey', 'Gxy' (all in MPa)
+    """
+    void_shape_radii = VOID_SHAPES['spherical']  # spherical default
+    C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    A_mat, _ = _build_clt_abd(material, ply_angles, C_deg)
+
+    a_inv = np.linalg.inv(A_mat)
+    Ex = 1.0 / (h_total * a_inv[0, 0])
+    Ey = 1.0 / (h_total * a_inv[1, 1])
+    Gxy = 1.0 / (h_total * a_inv[2, 2])
+
+    return {'Ex': float(Ex), 'Ey': float(Ey), 'Gxy': float(Gxy)}
+
+
+def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
+                                          ply_angles: List[float],
+                                          Vp: float,
+                                          method: str = 'mori_tanaka') -> Dict[str, float]:
+    """Compute effective laminate flexural modulus Ef_x with porosity.
+
+    Uses the CLT D-matrix (bending stiffness) to compute the flexural modulus.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+    ply_angles : list of float  (degrees)
+    Vp : float  void volume fraction (0–1)
+    method : str  ignored; always uses Mori-Tanaka.
+
+    Returns
+    -------
+    dict with key: 'Ef_x' (MPa)
+    """
+    void_shape_radii = VOID_SHAPES['spherical']
+    C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
+
+    n_plies = len(ply_angles)
+    t_ply = material.t_ply
+    h_total = n_plies * t_ply
+
+    _, D_mat = _build_clt_abd(material, ply_angles, C_deg)
+
+    d_inv = np.linalg.inv(D_mat)
+    # Flexural modulus: Ef_x = 12 / (h^3 * d_11_inv)
+    Ef_x = 12.0 / (h_total**3 * d_inv[0, 0])
+
+    return {'Ef_x': float(Ef_x)}
 
 
 # ============================================================

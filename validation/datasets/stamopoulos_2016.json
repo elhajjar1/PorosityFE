@@ -1,0 +1,67 @@
+{
+  "reference": "Stamopoulos, A.G., Tserpes, K.I., Prucha, P., & Vavrik, D. (2016). Evaluation of porosity effects on the mechanical properties of CFRP UD laminates by X-ray CT and mechanical testing. Journal of Composite Materials, 50(15), 2087-2098.",
+  "doi": "10.1177/0021998315602049",
+  "data_source": "Table 1, Figs. 10, 13, 16, 19",
+  "material": {
+    "fiber": "HTA 24k",
+    "matrix": "EHkF 420 epoxy",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)16 / (90)16 / (0)32 depending on test"
+  },
+  "porosity_measurement": "X-ray CT",
+  "baseline_porosity_pct": 0.82,
+  "properties": {
+    "transverse_tensile_strength": {
+      "test_standard": "ASTM D3039M",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.962, 0.957, 0.863],
+      "digitization_method": "tabulated"
+    },
+    "transverse_tensile_modulus": {
+      "test_standard": "ASTM D3039M",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.998, 0.995, 0.991],
+      "digitization_method": "tabulated"
+    },
+    "shear_strength": {
+      "test_standard": "ASTM D7078 (V-notch rail shear)",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.968, 0.957, 0.869],
+      "digitization_method": "tabulated"
+    },
+    "shear_modulus": {
+      "test_standard": "ASTM D7078 (V-notch rail shear)",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.833, 0.822, 0.792],
+      "digitization_method": "tabulated"
+    },
+    "flexural_strength": {
+      "test_standard": "ISO 14125 (3-point bend)",
+      "test_config": {"loading_direction_deg": 0, "span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.950, 0.874, 0.834],
+      "digitization_method": "tabulated"
+    },
+    "flexural_modulus": {
+      "test_standard": "ISO 14125 (3-point bend)",
+      "test_config": {"loading_direction_deg": 0, "span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.984, 0.967, 0.959],
+      "digitization_method": "tabulated"
+    },
+    "ilss": {
+      "test_standard": "ASTM D2344M",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.82, 1.56, 1.62, 3.43],
+      "normalized_values": [1.000, 0.945, 0.904, 0.864],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "4 porosity levels (Reference, Minimum, Medium, Extensive). Different layups per test: (0)16 for shear/flex, (90)16 for transverse, (0)32 for ILSS. Dataset records (0)16 as default; validation runner overrides per-property."
+}

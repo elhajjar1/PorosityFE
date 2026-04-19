@@ -1,0 +1,32 @@
+{
+  "reference": "Zhang, Y., Li, Y., Luan, X., Meng, B., Liu, J., & Lu, Y. (2025). Effects of Void Characteristics on the Mechanical Properties of CF/PEEK Composites. Polymers, 17(13), 1721.",
+  "doi": "10.3390/polym17131721",
+  "data_source": "Tables 2-3 (experimental) + FEA validation",
+  "material": {
+    "fiber": "Carbon fiber (PEEK-CF60)",
+    "matrix": "PEEK (thermoplastic)",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 8,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)8 UD"
+  },
+  "porosity_measurement": "X-ray CT (Xradia 620 Versa)",
+  "baseline_porosity_pct": 0.6,
+  "properties": {
+    "transverse_tensile_strength": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.6, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.910, 0.825, 0.740, 0.659],
+      "digitization_method": "tabulated"
+    },
+    "transverse_tensile_modulus": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.6, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.970, 0.935, 0.900, 0.865],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "THERMOPLASTIC matrix (PEEK) — different from epoxy systems in other papers. Good transverse data with controlled void morphology."
+}

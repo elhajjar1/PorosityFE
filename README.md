@@ -85,11 +85,32 @@ print(f"Knockdown: {result['knockdown']:.3f}")
 results = compare_configurations(0.03, material_name='T800_epoxy')
 ```
 
-### Build macOS app
+### Build macOS GUI app
 ```bash
 pip install pyinstaller
 python -m PyInstaller PorosityFE.spec --noconfirm --clean
 # App at dist/PorosityFE.app
+```
+
+### Build validate_porosity CLI executable (Linux / macOS / Windows)
+```bash
+pip install pyinstaller
+python -m PyInstaller ValidatePorosity.spec --noconfirm --clean
+# Linux/macOS: dist/validate_porosity/validate_porosity
+# Windows:     dist\validate_porosity\validate_porosity.exe
+```
+
+Pre-built executables for all three platforms are produced automatically
+by GitHub Actions on every push; download them from the Actions tab
+(artifact names: `validate_porosity-linux`, `-macos`, `-windows`) or
+from the Releases page for tagged versions.
+
+CLI usage:
+```bash
+validate_porosity --help             # show all options
+validate_porosity                    # run against bundled datasets, write to cwd
+validate_porosity --output-dir /tmp  # write reports elsewhere
+validate_porosity --quiet            # suppress progress output
 ```
 
 ## Output Files

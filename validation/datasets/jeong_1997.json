@@ -1,0 +1,25 @@
+{
+  "reference": "Jeong, H. (1997). Effects of voids on the mechanical strength and ultrasonic attenuation of laminated composites. Journal of Composite Materials, 31(3), 276-292.",
+  "doi": "10.1177/002199839703100303",
+  "data_source": "Figs. 8-11",
+  "material": {
+    "fiber": "AS4 fabric",
+    "matrix": "3501-6 epoxy",
+    "fiber_volume_fraction": 0.55,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "woven (0)16"
+  },
+  "porosity_measurement": "acid digestion + ultrasonic attenuation",
+  "baseline_porosity_pct": 0.3,
+  "properties": {
+    "ilss": {
+      "test_standard": "ASTM D2344",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.3, 1.0, 2.0, 3.0, 4.5, 6.0],
+      "normalized_values": [1.000, 0.930, 0.850, 0.770, 0.670, 0.580],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Woven fabric architecture (different from UD in other papers). Void morphology effects linked to ultrasonic attenuation. Fabric layup approximated as (0)_n for model input; actual weave is 2D."
+}

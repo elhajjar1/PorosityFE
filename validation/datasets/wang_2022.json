@@ -1,0 +1,32 @@
+{
+  "reference": "Wang, J., Zhou, W., Wei, Z.-y., Ding, Z.-j., Ma, L.-h., & Liu, J. (2022). Effects of various porosities on the damage evolution behavior of carbon fiber/epoxy composites using acoustic emission and micro-CT. Journal of Composite Materials, 56(1).",
+  "doi": "10.1177/00219983211073727",
+  "data_source": "Figs. 3-4 (stress-strain) + Table 2",
+  "material": {
+    "fiber": "Carbon fiber",
+    "matrix": "epoxy",
+    "fiber_volume_fraction": 0.58,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)16 UD"
+  },
+  "porosity_measurement": "micro-CT",
+  "baseline_porosity_pct": 0.4,
+  "properties": {
+    "tensile_strength": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.4, 1.2, 2.5, 4.0, 5.5],
+      "normalized_values": [1.000, 0.960, 0.900, 0.820, 0.740],
+      "digitization_method": "webplotdigitizer"
+    },
+    "tensile_modulus": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.4, 1.2, 2.5, 4.0, 5.5],
+      "normalized_values": [1.000, 0.995, 0.988, 0.980, 0.970],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Acoustic emission + micro-CT damage evolution. Only quasi-static tensile values extracted; AE damage metrics not in validation schema."
+}

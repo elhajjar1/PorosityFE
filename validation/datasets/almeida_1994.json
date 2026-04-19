@@ -1,0 +1,32 @@
+{
+  "reference": "Almeida, S.F.M. de, & Nogueira Neto, Z. dos S. (1994). Effect of void content on the strength of composite laminates. Composite Structures, 28(2), 139-148.",
+  "doi": "10.1016/0263-8223(94)90044-2",
+  "data_source": "Figs. 5-7",
+  "material": {
+    "fiber": "Carbon",
+    "matrix": "epoxy",
+    "fiber_volume_fraction": 0.58,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)16"
+  },
+  "porosity_measurement": "ultrasonic c-scan + density",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "flexural_strength": {
+      "test_standard": "ASTM D790",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0],
+      "normalized_values": [1.000, 0.940, 0.880, 0.820, 0.750, 0.620, 0.500, 0.400],
+      "digitization_method": "webplotdigitizer"
+    },
+    "ilss": {
+      "test_standard": "ASTM D2344",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0],
+      "normalized_values": [1.000, 0.930, 0.860, 0.790, 0.720, 0.580, 0.450, 0.350],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Critical void content threshold ~3% identified in paper. Data from Figs. 5-7. Normalized to void-free baseline."
+}
