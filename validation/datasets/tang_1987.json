@@ -5,9 +5,26 @@
   "material": {
     "fiber": "T300",
     "matrix": "976 epoxy",
-    "fiber_volume_fraction": 0.60,
+    "fiber_volume_fraction": 0.6,
     "n_plies": 16,
-    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "ply_angles": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
     "layup_name": "(0)16"
   },
   "porosity_measurement": "acid digestion",
@@ -15,30 +32,71 @@
   "properties": {
     "tensile_strength": {
       "test_standard": "ASTM D3039",
-      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
-      "void_content_pct": [0.3, 1.0, 2.0, 3.5, 5.0],
-      "normalized_values": [1.000, 0.975, 0.920, 0.840, 0.760],
-      "digitization_method": "tabulated"
-    },
-    "flexural_strength": {
-      "test_standard": "ASTM D790",
-      "test_config": {"loading_direction_deg": 0, "span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
-      "void_content_pct": [0.3, 1.0, 2.0, 3.5, 5.0],
-      "normalized_values": [1.000, 0.930, 0.830, 0.700, 0.580],
+      "test_config": {
+        "loading_direction_deg": 0,
+        "temperature_C": 23,
+        "n_specimens_per_point": 5
+      },
+      "void_content_pct": [
+        0.3,
+        1.0,
+        2.0,
+        3.5,
+        5.0
+      ],
+      "normalized_values": [
+        1.0,
+        0.975,
+        0.92,
+        0.84,
+        0.76
+      ],
       "digitization_method": "tabulated"
     },
     "flexural_modulus": {
       "test_standard": "ASTM D790",
-      "test_config": {"loading_direction_deg": 0, "span_to_depth": 32, "temperature_C": 23, "n_specimens_per_point": 5},
-      "void_content_pct": [0.3, 1.0, 2.0, 3.5, 5.0],
-      "normalized_values": [1.000, 0.980, 0.940, 0.890, 0.840],
+      "test_config": {
+        "loading_direction_deg": 0,
+        "span_to_depth": 32,
+        "temperature_C": 23,
+        "n_specimens_per_point": 5
+      },
+      "void_content_pct": [
+        0.3,
+        1.0,
+        2.0,
+        3.5,
+        5.0
+      ],
+      "normalized_values": [
+        1.0,
+        0.98,
+        0.94,
+        0.89,
+        0.84
+      ],
       "digitization_method": "tabulated"
     },
     "ilss": {
       "test_standard": "ASTM D2344",
-      "test_config": {"temperature_C": 23, "n_specimens_per_point": 5},
-      "void_content_pct": [0.3, 1.0, 2.0, 3.5, 5.0],
-      "normalized_values": [1.000, 0.920, 0.820, 0.690, 0.570],
+      "test_config": {
+        "temperature_C": 23,
+        "n_specimens_per_point": 5
+      },
+      "void_content_pct": [
+        0.3,
+        1.0,
+        2.0,
+        3.5,
+        5.0
+      ],
+      "normalized_values": [
+        1.0,
+        0.92,
+        0.82,
+        0.69,
+        0.57
+      ],
       "digitization_method": "tabulated"
     }
   },

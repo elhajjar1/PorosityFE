@@ -91,7 +91,6 @@ _PROPERTY_TO_MODE = {
     'compression_strength': 'compression',
     'tensile_strength': 'tension',
     'transverse_tensile_strength': 'tension',
-    'flexural_strength': 'compression',
     'shear_strength': 'shear',
     'ilss': 'ilss',
 }
