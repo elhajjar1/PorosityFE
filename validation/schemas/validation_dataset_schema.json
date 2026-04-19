@@ -24,7 +24,7 @@
     "properties": {
       "type": "object",
       "patternProperties": {
-        "^(compression_strength|tensile_strength|transverse_tensile_strength|flexural_strength|ilss|shear_strength|tensile_modulus|transverse_tensile_modulus|flexural_modulus|shear_modulus)$": {
+        "^(compression_strength|tensile_strength|transverse_tensile_strength|ilss|shear_strength|tensile_modulus|transverse_tensile_modulus|flexural_modulus|shear_modulus)$": {
           "type": "object",
           "required": ["void_content_pct", "normalized_values"],
           "properties": {

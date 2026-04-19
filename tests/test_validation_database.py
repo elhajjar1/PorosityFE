@@ -58,7 +58,7 @@ def test_liu_2006_dataset_loads():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'validation', 'datasets', 'liu_2006.json')
     data = load_dataset(path)
-    assert len(data['properties']) == 5
+    assert len(data['properties']) == 4
     assert data['material']['layup_name'] == '[0/90]3s'
 
 
@@ -67,7 +67,7 @@ def test_stamopoulos_2016_dataset_loads():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'validation', 'datasets', 'stamopoulos_2016.json')
     data = load_dataset(path)
-    assert len(data['properties']) == 7
+    assert len(data['properties']) == 6
 
 
 def test_ghiorse_1993_dataset_loads():
@@ -91,7 +91,7 @@ def test_almeida_1994_dataset_loads():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'validation', 'datasets', 'almeida_1994.json')
     data = load_dataset(path)
-    assert 'flexural_strength' in data['properties']
+    assert 'ilss' in data['properties']
 
 
 def test_tang_1987_dataset_loads():

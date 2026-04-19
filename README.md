@@ -3,6 +3,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/elhajjar1/PorosityFE/actions/workflows/tests.yml/badge.svg)](https://github.com/elhajjar1/PorosityFE/actions/workflows/tests.yml)
+[![Build Executables](https://github.com/elhajjar1/PorosityFE/actions/workflows/build-executables.yml/badge.svg)](https://github.com/elhajjar1/PorosityFE/actions/workflows/build-executables.yml)
+[![Release](https://img.shields.io/github/v/release/elhajjar1/PorosityFE?include_prereleases)](https://github.com/elhajjar1/PorosityFE/releases)
 
 A desktop application and Python library for predicting how porosity defects degrade the strength and stiffness of fiber-reinforced composite laminates.
 
@@ -156,6 +158,30 @@ Full 3D Tsai-Wu with degraded strengths:
 F1*s1 + F2*s2 + F11*s1^2 + F22*s2^2 + F66*s6^2 + 2*F12*s1*s2 = 1
 ```
 
+## Validation
+
+PorosityFE is validated against **13 peer-reviewed experimental datasets**
+covering carbon/epoxy, IM7/toughened epoxy, T300/epoxy systems, and
+CF/PEEK thermoplastic. Validation is automated via `validate_porosity`
+CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
+or in-process via `validation/validate_all.py`.
+
+**Model scope (validated properties):**
+
+| Property | # papers | Overall MAE |
+|---|---|---|
+| ILSS (short-beam shear) | 9 | 4.3% |
+| Tensile strength | 7 | 6.9% |
+| Tensile modulus | 3 | 1.3% |
+| Transverse tensile modulus | 3 | 3.4% |
+| Flexural modulus (D-matrix CLT) | 5 | 8.9% |
+| Compression strength | 2 | 11.4% |
+| Shear strength | 2 | 13.5% |
+| Transverse tensile strength | 3 | 14.5% |
+| Shear modulus (A-matrix CLT) | 1 | 15.4% |
+
+Overall MAE: **7.7%** across 35 (paper, property) pairs.
+
 ## Limitations
 
 - Empirical models are calibrated for porosity levels up to ~10%
@@ -163,6 +189,10 @@ F1*s1 + F2*s2 + F11*s1^2 + F22*s2^2 + F66*s6^2 + 2*F12*s1*s2 = 1
 - Thermal residual stresses are not included
 - Fatigue and environmental effects are not modeled
 - Delamination initiation/propagation is not explicitly simulated
+- **Flexural strength** was removed from the validation database in v1.1.1
+  because 3-point bend failure involves mixed compression + interlaminar
+  shear mechanisms that the Judd-Wright mode proxy cannot capture reliably
+  (observed MAE 8-40% across papers)
 
 ## Citation
 
