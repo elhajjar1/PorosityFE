@@ -8,6 +8,10 @@ on:
     branches: [master, 'feature/**']
     tags: ['v*']
 
+# Needed for softprops/action-gh-release to create/update GitHub Releases
+permissions:
+  contents: write
+
 jobs:
   build-cli:
     name: Build validate_porosity on ${{ matrix.os }}
@@ -78,11 +82,26 @@ jobs:
           path: dist/validate_porosity/
           retention-days: 30
 
-      - name: Attach to release (tag builds only)
+      - name: Package executable as zip (Linux/macOS)
+        if: matrix.os != 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd dist
+          zip -r ${{ matrix.artifact_name }}.zip validate_porosity
+          cd ..
+          ls -la dist/${{ matrix.artifact_name }}.zip
+
+      - name: Package executable as zip (Windows)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          Compress-Archive -Path dist/validate_porosity -DestinationPath dist/${{ matrix.artifact_name }}.zip
+        shell: pwsh
+
+      - name: Attach zip to release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/validate_porosity/**
+          files: dist/${{ matrix.artifact_name }}.zip
           fail_on_unmatched_files: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
