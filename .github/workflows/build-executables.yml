@@ -1,0 +1,88 @@
+name: Build Executables
+
+on:
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+  # Build on pushes to master, feature branches, AND release tags
+  push:
+    branches: [master, 'feature/**']
+    tags: ['v*']
+
+jobs:
+  build-cli:
+    name: Build validate_porosity on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false  # continue building other OSes if one fails
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: validate_porosity-linux
+            executable: validate_porosity/validate_porosity
+          - os: macos-latest
+            artifact_name: validate_porosity-macos
+            executable: validate_porosity/validate_porosity
+          - os: windows-latest
+            artifact_name: validate_porosity-windows
+            executable: validate_porosity/validate_porosity.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install numpy scipy matplotlib jsonschema
+
+      - name: Verify CLI runs from source
+        run: |
+          python validate_porosity_cli.py --help
+          python validate_porosity_cli.py --quiet --output-dir test_output
+        shell: bash
+
+      - name: Build executable
+        run: python -m PyInstaller ValidatePorosity.spec --clean --noconfirm
+
+      - name: Smoke-test executable (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          ./dist/validate_porosity/validate_porosity --version
+          ./dist/validate_porosity/validate_porosity --help
+          mkdir -p /tmp/validate_out
+          ./dist/validate_porosity/validate_porosity --quiet --output-dir /tmp/validate_out
+          test -f /tmp/validate_out/validation_master_report.png
+          test -f /tmp/validate_out/validation_detail_report.md
+
+      - name: Smoke-test executable (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          .\dist\validate_porosity\validate_porosity.exe --version
+          .\dist\validate_porosity\validate_porosity.exe --help
+          New-Item -ItemType Directory -Force -Path validate_out
+          .\dist\validate_porosity\validate_porosity.exe --quiet --output-dir validate_out
+          if (!(Test-Path validate_out\validation_master_report.png)) { exit 1 }
+          if (!(Test-Path validate_out\validation_detail_report.md)) { exit 1 }
+        shell: pwsh
+
+      - name: Upload executable as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/validate_porosity/
+          retention-days: 30
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/validate_porosity/**
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
