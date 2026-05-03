@@ -151,6 +151,37 @@ The FE solver builds a 3D hexahedral mesh and degrades element stiffness based o
 2. **Micromechanics rules** map matrix degradation to composite degradation ratios for E11, E22, G12
 3. **Tsai-Wu criterion** evaluates multiaxial failure at each integration point
 
+#### How porosity is applied across plies
+
+The user supplies a single global porosity value `Vp`, but it is **not** applied
+as a uniform knockdown to every ply. Instead, `Vp` defines the *volume-average*
+porosity of the laminate; the chosen distribution model determines how that
+porosity is spatially redistributed through the thickness:
+
+| `distribution` | Through-thickness porosity profile |
+|---|---|
+| `'uniform'` | Constant `Vp` at every ply |
+| `'clustered'` + `cluster_location='midplane'` | Peaks near the laminate midplane, near-zero at the surfaces |
+| `'clustered'` + `cluster_location='surface'` | Peaks at the outer surfaces, near-zero at the midplane |
+| `'interface'` | Concentrated at ply interfaces; matrix-rich resin layers see higher local Vp |
+
+The volume-average porosity is renormalized to `Vp` for every distribution, so
+two runs with the same `Vp` but different distributions inject the same total
+void content — only the through-thickness location of that void content
+changes.
+
+At solve time, each Gauss point reads its **local** porosity from the field
+profile evaluated at the point's z-coordinate, then the degraded composite
+stiffness is computed for that ply orientation and rotated into the global
+frame. As a result, modulus reduction is **ply-by-ply**: two plies with the
+same orientation but different z-locations can have different effective
+stiffness, and two plies at the same z but different orientations see
+different directional knockdowns even when their local Vp is identical.
+
+The only case where the reduction is uniform across plies is the `uniform`
+distribution applied to a laminate of identical orientation — a rare scenario
+in practice.
+
 ### Failure Criterion
 
 Full 3D Tsai-Wu with degraded strengths:
