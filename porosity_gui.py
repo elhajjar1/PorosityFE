@@ -33,6 +33,65 @@ try:
 except ImportError:
     HAS_PYQT6 = False
 
+
+def parse_layup(text: str) -> list:
+    """Parse a layup string like '[0/45/-45/90]_3s' to a flat angle list.
+
+    Raises ValueError on malformed input (empty, non-numeric tokens,
+    invalid repeat counts) rather than silently substituting a default.
+    Pure function, kept module-level so it is testable without Qt.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Layup string is empty.")
+
+    cleaned = text.replace("[", "").replace("]", "")
+
+    symmetric = cleaned.endswith("s")
+    if symmetric:
+        cleaned = cleaned[:-1]
+
+    repeat = 1
+    if "_" in cleaned:
+        cleaned, repeat_token = cleaned.rsplit("_", 1)
+        try:
+            repeat = int(repeat_token)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid repeat count {repeat_token!r} in layup {text!r}; "
+                f"expected an integer after the '_' (e.g. '[0/90]_3s')."
+            ) from exc
+        if repeat < 1:
+            raise ValueError(
+                f"Repeat count must be >= 1, got {repeat} in layup {text!r}."
+            )
+
+    sep = "/" if "/" in cleaned else ","
+    tokens = [a.strip() for a in cleaned.split(sep) if a.strip()]
+    if not tokens:
+        raise ValueError(f"No ply angles found in layup {text!r}.")
+    try:
+        angles = [float(a) for a in tokens]
+    except ValueError as exc:
+        bad = next((a for a in tokens if not _is_float(a)), tokens[0])
+        raise ValueError(
+            f"Invalid ply angle {bad!r} in layup {text!r}; "
+            f"expected numeric degrees (e.g. '[0/45/-45/90]_3s')."
+        ) from exc
+
+    angles = angles * repeat
+    if symmetric:
+        angles = angles + list(reversed(angles))
+    return angles
+
+
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
 try:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.figure import Figure
@@ -134,28 +193,42 @@ if HAS_PYQT6:
                     return
 
                 # --- FE Solver ---
+                # FESolver BCs don't support ILSS short-beam shear today; rather
+                # than silently substituting compression and reporting a knockdown
+                # the user didn't ask for (#9), skip the FE pass entirely for
+                # ILSS and let the empirical bar stand alone in the comparison.
                 loading_mode = cfg["loading_mode"]
-                # ilss not supported by FESolver BCs; fall back to compression
-                fe_loading = loading_mode if loading_mode in ("compression", "tension", "shear") else "compression"
-                applied_strain = -0.01 if fe_loading == "compression" else 0.01
+                fe_supported = loading_mode in ("compression", "tension", "shear")
 
-                self.progress.emit("Assembling stiffness matrix (FE)...")
-                fe_solver = FESolver(mesh, material, porosity_field, ply_angles=cfg["angles"])
+                fe_solver = None
+                fe_field = None
+                fe_loading = None
+                if fe_supported:
+                    applied_strain = -0.01 if loading_mode == "compression" else 0.01
+                    fe_loading = loading_mode
 
-                if self._stop_requested:
-                    return
+                    self.progress.emit("Assembling stiffness matrix (FE)...")
+                    fe_solver = FESolver(mesh, material, porosity_field, ply_angles=cfg["angles"])
 
-                self.progress.emit("Solving FE system...")
-                fe_field: FieldResults = fe_solver.solve(
-                    loading=fe_loading,
-                    applied_strain=applied_strain,
-                    verbose=False,
-                )
+                    if self._stop_requested:
+                        return
 
-                if self._stop_requested:
-                    return
+                    self.progress.emit("Solving FE system...")
+                    fe_field = fe_solver.solve(
+                        loading=fe_loading,
+                        applied_strain=applied_strain,
+                        verbose=False,
+                    )
 
-                self.progress.emit("Recovering FE stresses...")
+                    if self._stop_requested:
+                        return
+
+                    self.progress.emit("Recovering FE stresses...")
+                else:
+                    self.progress.emit(
+                        f"Skipping FE solve (mode '{loading_mode}' not supported "
+                        f"by FE BCs; empirical results only)."
+                    )
 
                 self.progress.emit("Analysis complete.")
 
@@ -169,6 +242,10 @@ if HAS_PYQT6:
                     "fe_solver": fe_solver,
                     "fe_field": fe_field,
                     "fe_loading": fe_loading,
+                    "fe_skipped_reason": (
+                        None if fe_supported
+                        else f"FE solver does not support '{loading_mode}' boundary conditions"
+                    ),
                     "f_md": empirical.f_md,
                 }
 
@@ -561,36 +638,12 @@ if HAS_PYQT6:
 
         @staticmethod
         def _parse_layup(text: str) -> list:
-            """Parse a layup string like '[0/45/-45/90]_3s' to angle list."""
-            text = text.strip()
-            cleaned = text.replace("[", "").replace("]", "")
+            """Parse a layup string like '[0/45/-45/90]_3s' to angle list.
 
-            symmetric = cleaned.endswith("s")
-            if symmetric:
-                cleaned = cleaned[:-1]
-
-            repeat = 1
-            if "_" in cleaned:
-                parts = cleaned.rsplit("_", 1)
-                cleaned = parts[0]
-                try:
-                    repeat = int(parts[1])
-                except ValueError:
-                    repeat = 1
-
-            sep = "/" if "/" in cleaned else ","
-            try:
-                angles = [float(a.strip()) for a in cleaned.split(sep) if a.strip()]
-            except ValueError:
-                angles = [0, 45, -45, 90]
-                repeat = 3
-                symmetric = True
-
-            angles = angles * repeat
-            if symmetric:
-                angles = angles + list(reversed(angles))
-
-            return angles
+            Raises ValueError on malformed input rather than silently
+            falling back to a default — see issue #9.
+            """
+            return parse_layup(text)
 
         # ----------------------------------------------------------
         # Actions
@@ -778,7 +831,14 @@ if HAS_PYQT6:
             comp_fs = emp["compression"]["judd_wright"]["failure_stress"]
             lines.append(f"  Knockdown = {comp_kd:.3f}, Failure stress = {comp_fs:.0f} MPa")
 
-            if fe_field is not None:
+            if fe_field is None:
+                fe_skipped_reason = result.get("fe_skipped_reason")
+                if fe_skipped_reason:
+                    lines.append("")
+                    lines.append("-" * 70)
+                    lines.append(f"FE solve skipped: {fe_skipped_reason}.")
+                    lines.append("Empirical results above use this loading mode directly.")
+            else:
                 lines.append("")
                 lines.append("-" * 70)
                 lines.append("FINITE ELEMENT ANALYSIS RESULTS")
