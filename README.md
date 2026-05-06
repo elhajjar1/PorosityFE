@@ -173,7 +173,7 @@ A floor of `0.15` is applied to the scale (`0.80` for ILSS, which is always matr
 
 | Layup | `f_md` | scale | `alpha_eff` (compression) |
 |---|---|---|---|
-| `[0]_16` (UD)              | 0.00 | 0.15 (floor) | 1.04  |
+| `[0]_16` (UD)              | 0.00 | 0.15 (floor) | 1.035 |
 | `[±45]_4s` (off-axis)      | 0.50 | 1.00          | 6.90  |
 | `[90]_8` (transverse)      | 1.00 | 2.00          | 13.80 |
 
