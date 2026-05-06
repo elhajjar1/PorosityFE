@@ -641,7 +641,12 @@ class EmpiricalSolver:
     """
 
     # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977).
-    # Reference layup: [0/45/90/-45/0]_s (f_md_ref = 0.5).
+    # `_F_MD_REF = 0.5` below is the LAYUP-SCALING reference (scale = 1.0 at
+    # f_md = 0.5), NOT a property of the Elhajjar coupon layup itself
+    # (`[0/45/90/-45/0]_s`, which the binning rule below puts at f_md = 0.4).
+    # The coefficients were tuned with the layup-scaling already applied,
+    # so they represent the model's effective f_md = 0.5 baseline rather
+    # than the raw fit on a single layup.
     # See README "Empirical Strength Knockdown" for definitions, units (alpha, n
     # are dimensionless when Vp is a fraction in [0, 1]), validity bounds, and
     # the calibration recipe for custom materials.
