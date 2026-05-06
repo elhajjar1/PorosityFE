@@ -22,11 +22,12 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 ## Features
 
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
-- **Five distribution models**: Uniform, interface-concentrated, clustered (midplane/surface), layup-dependent
+- **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
 - **Four loading modes**: Compression, tension, shear, ILSS
+- **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
-- **Three material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy (or define your own)
+- **Six material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with stress concentration factors
 - **Tsai-Wu failure criterion**: Full 3D multiaxial strength evaluation
 
@@ -147,16 +148,22 @@ KD = (1 - Vp)^n
 ```
 - `n` is a phenomenological exponent rooted in Mackenzie (1950) spherical-void elasticity and generalized empirically (Rice, 2005). `n = 1` corresponds to a simple area-reduction rule of mixtures; `n > 1` captures stress concentration around voids.
 
+**Linear**:
+```
+KD = max(1 - beta * Vp, 0)
+```
+- `beta` is the same kind of sensitivity coefficient as `alpha` in Judd-Wright (dimensionless when `Vp` is a fraction; `beta ≈ -ΔKD / ΔVp`). The linear form matches the original Judd & Wright (1978) "ILSS drops ~7% per 1% voids" reading directly, and is included for screening and easy hand-checks. It saturates to zero at `Vp = 1/beta` and is best used at low `Vp` (typically `< 0.05`).
+
 #### QI-calibrated coefficients (Elhajjar 2025)
 
-Calibrated against quasi-isotropic experimental data; reference scaling fraction `f_md_ref = 0.5`:
+`f_md_ref = 0.5` is the layup-scaling reference (`scale = 1.0` at `f_md = 0.5`); the QI coefficients below were tuned with this scaling already applied, so they are NOT raw fits to a single layup but represent the model's effective-baseline values:
 
-| Loading mode | `alpha` (Judd-Wright) | `n` (Power-Law) |
-|---|---|---|
-| Compression       | 6.9  | 2.8 |
-| Tension           | 3.9  | 1.8 |
-| Shear (in-plane)  | 8.0  | 3.5 |
-| ILSS              | 10.0 | 4.5 |
+| Loading mode | `alpha` (Judd-Wright) | `n` (Power-Law) | `beta` (Linear) |
+|---|---|---|---|
+| Compression       | 6.9  | 2.8 | 5.5 |
+| Tension           | 3.9  | 1.8 | 3.5 |
+| Shear (in-plane)  | 8.0  | 3.5 | 7.0 |
+| ILSS              | 10.0 | 4.5 | 9.0 |
 
 These values sit inside published CFRP ranges: `alpha ≈ 1–3` for fiber-dominated tension and `5–10` for matrix-dominated ILSS / flexure; `n ≈ 1–2` for stiffness-like properties and `3–5` for compression / ILSS.
 
