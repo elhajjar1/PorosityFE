@@ -640,8 +640,14 @@ class EmpiricalSolver:
     local peak Vp that clustered distributions produce.
     """
 
-    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977)
-    # Reference layup: [0/45/90/-45/0]_s (f_md_ref = 0.5)
+    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977).
+    # Reference layup: [0/45/90/-45/0]_s (f_md_ref = 0.5).
+    # See README "Empirical Strength Knockdown" for definitions, units (alpha, n
+    # are dimensionless when Vp is a fraction in [0, 1]), validity bounds, and
+    # the calibration recipe for custom materials.
+    # Modes: 'compression' (sigma_1c, fiber+matrix), 'tension' (sigma_1t,
+    # fiber-dominated), 'shear' (tau_12, in-plane, matrix-dominated),
+    # 'ilss' (tau_ilss, short-beam, matrix/interface-dominated).
     _JUDD_WRIGHT_ALPHA_QI = {
         'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
     }
@@ -718,10 +724,24 @@ class EmpiricalSolver:
         return max(raw, floor)
 
     def _judd_wright(self, Vp: float, mode: str) -> float:
+        """Judd-Wright knockdown: KD = exp(-alpha * Vp).
+
+        Vp is a void volume fraction in [0, 1]. ``alpha`` is the
+        layup-scaled, mode-specific sensitivity coefficient (see
+        ``JUDD_WRIGHT_ALPHA`` and the README "Empirical Strength
+        Knockdown" section for definitions and ranges).
+        """
         alpha = self.JUDD_WRIGHT_ALPHA[mode]
         return float(np.exp(-alpha * Vp))
 
     def _power_law(self, Vp: float, mode: str) -> float:
+        """Power-law knockdown: KD = (1 - Vp)**n.
+
+        Vp is a void volume fraction in [0, 1]. ``n`` is the
+        layup-scaled, mode-specific exponent (see ``POWER_LAW_N`` and
+        the README "Empirical Strength Knockdown" section for
+        definitions and ranges).
+        """
         n = self.POWER_LAW_N[mode]
         return float((1.0 - Vp)**n)
 
