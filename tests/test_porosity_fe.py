@@ -265,6 +265,27 @@ class TestPorosityField:
         Vp = pf.local_porosity(np.array([10.0]), np.array([5.0]), np.array([1.0]))
         assert Vp[0] <= 1.0
 
+    def test_negative_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction in \[0, 1\]"):
+            PorosityField(self.material, -0.01, distribution='uniform')
+
+    def test_Vp_above_one_raises_with_percent_hint(self):
+        with pytest.raises(ValueError, match=r"Did you pass a percent\?"):
+            PorosityField(self.material, 3.0, distribution='uniform')
+
+    def test_nan_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction"):
+            PorosityField(self.material, float('nan'), distribution='uniform')
+
+    def test_inf_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction"):
+            PorosityField(self.material, float('inf'), distribution='uniform')
+
+    def test_Vp_boundary_zero_and_one_accepted(self):
+        # Both boundaries should be accepted (no exception)
+        PorosityField(self.material, 0.0, distribution='uniform')
+        PorosityField(self.material, 1.0, distribution='uniform')
+
     def test_effective_porosity_profile_shape(self):
         pf = PorosityField(self.material, 0.03, distribution='uniform')
         z, Vp = pf.effective_porosity_profile(nz=50)

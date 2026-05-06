@@ -287,8 +287,17 @@ class PorosityField:
                  distribution: str = 'uniform', void_shape: Union[str, Tuple] = 'spherical',
                  cluster_location: str = 'midplane',
                  discrete_voids: Optional[List[VoidGeometry]] = None):
+        Vp = float(void_volume_fraction)
+        if not np.isfinite(Vp) or not (0.0 <= Vp <= 1.0):
+            hint = (f" Did you pass a percent? Use {Vp / 100:.4f} instead of {Vp}."
+                    if np.isfinite(Vp) and Vp > 1.0 else "")
+            raise ValueError(
+                f"void_volume_fraction must be a finite fraction in [0, 1], "
+                f"got {void_volume_fraction!r}.{hint}"
+            )
+
         self.material = material
-        self.Vp = void_volume_fraction
+        self.Vp = Vp
         self.distribution = distribution
         self.cluster_location = cluster_location
         self.discrete_voids = discrete_voids or []
@@ -728,6 +737,14 @@ class EmpiricalSolver:
         raw = self.f_md / ref
         return max(raw, floor)
 
+    @staticmethod
+    def _check_internal_Vp(Vp: float) -> float:
+        # Defensive: tolerate fp overshoot (~1e-15) from element-mean averaging
+        # by clipping to [0, 1]; reject non-finite outright.
+        if not np.isfinite(Vp):
+            raise ValueError(f"Internal Vp is non-finite: {Vp!r}")
+        return float(np.clip(Vp, 0.0, 1.0))
+
     def _judd_wright(self, Vp: float, mode: str) -> float:
         """Judd-Wright knockdown: KD = exp(-alpha * Vp).
 
@@ -736,6 +753,7 @@ class EmpiricalSolver:
         ``JUDD_WRIGHT_ALPHA`` and the README "Empirical Strength
         Knockdown" section for definitions and ranges).
         """
+        Vp = self._check_internal_Vp(Vp)
         alpha = self.JUDD_WRIGHT_ALPHA[mode]
         return float(np.exp(-alpha * Vp))
 
@@ -747,10 +765,12 @@ class EmpiricalSolver:
         the README "Empirical Strength Knockdown" section for
         definitions and ranges).
         """
+        Vp = self._check_internal_Vp(Vp)
         n = self.POWER_LAW_N[mode]
         return float((1.0 - Vp)**n)
 
     def _linear(self, Vp: float, mode: str) -> float:
+        Vp = self._check_internal_Vp(Vp)
         beta = self.LINEAR_BETA[mode]
         return float(max(1.0 - beta * Vp, 0.0))
 
