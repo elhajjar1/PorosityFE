@@ -39,6 +39,7 @@ dependencies = [
     "numpy>=1.20.0",
     "scipy>=1.7.0",
     "matplotlib>=3.4.0",
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -52,10 +53,11 @@ Repository = "https://github.com/elhajjar1/PorosityFE"
 Issues = "https://github.com/elhajjar1/PorosityFE/issues"
 
 [project.scripts]
-porosity-fe = "porosity_gui:main"
+porosity-fe = "porosity_gui:launch"
+validate_porosity = "validate_porosity_cli:main"
 
 [tool.setuptools]
-py-modules = ["porosity_fe_analysis", "porosity_gui"]
+py-modules = ["porosity_fe_analysis", "porosity_gui", "validate_porosity_cli"]
 packages = ["validation"]
 
 [tool.setuptools.package-data]
