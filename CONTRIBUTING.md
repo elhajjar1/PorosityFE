@@ -48,6 +48,12 @@ To add a material system, add a new entry to the `MATERIALS` dictionary in `poro
 ## Adding New Porosity Models
 
 New empirical correlation models can be added to the `EmpiricalSolver` class. Each model should:
-- Accept porosity volume fraction as input
+- Accept porosity volume fraction as input (`Vp`, dimensionless fraction in `[0, 1]`)
 - Return a knockdown factor (0 to 1)
 - Include a literature reference in the docstring
+
+When introducing or recalibrating coefficients (e.g. a custom `alpha` for Judd-Wright or `n` for the power law):
+- Document the calibration coupon set (Vp range, layup, fiber/matrix system) and the test standard used (ASTM D2344 for ILSS, D7264 for flexure, D3039 for tension, D6641 for compression).
+- Fit on log-transformed data: regress `ln(KD)` vs `Vp` for the slope `−alpha`, or `ln(KD)` vs `ln(1 − Vp)` for `n`.
+- Note the validity bounds — both forms are commonly bounded to `Vp ≲ 0.05`.
+- Cross-reference the README "Empirical Strength Knockdown" section so user-facing docs stay in sync.

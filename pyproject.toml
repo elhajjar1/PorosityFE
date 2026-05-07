@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "porosity-fe"
@@ -39,12 +39,13 @@ dependencies = [
     "numpy>=1.20.0",
     "scipy>=1.7.0",
     "matplotlib>=3.4.0",
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]
-gui = ["PyQt6>=6.4.0"]
+gui = ["PyQt6>=6.5.0"]
 dev = ["pytest>=7.0.0"]
-all = ["PyQt6>=6.4.0", "pytest>=7.0.0"]
+all = ["PyQt6>=6.5.0", "pytest>=7.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/elhajjar1/PorosityFE"
@@ -52,10 +53,15 @@ Repository = "https://github.com/elhajjar1/PorosityFE"
 Issues = "https://github.com/elhajjar1/PorosityFE/issues"
 
 [project.scripts]
-porosity-fe = "porosity_gui:main"
+porosity-fe = "porosity_gui:launch"
+validate_porosity = "validate_porosity_cli:main"
 
 [tool.setuptools]
-py-modules = ["porosity_fe_analysis", "porosity_gui"]
+py-modules = ["porosity_fe_analysis", "porosity_gui", "validate_porosity_cli"]
+packages = ["validation"]
+
+[tool.setuptools.package-data]
+validation = ["datasets/*.json", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

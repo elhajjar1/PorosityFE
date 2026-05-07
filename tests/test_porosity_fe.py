@@ -265,6 +265,27 @@ class TestPorosityField:
         Vp = pf.local_porosity(np.array([10.0]), np.array([5.0]), np.array([1.0]))
         assert Vp[0] <= 1.0
 
+    def test_negative_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction in \[0, 1\]"):
+            PorosityField(self.material, -0.01, distribution='uniform')
+
+    def test_Vp_above_one_raises_with_percent_hint(self):
+        with pytest.raises(ValueError, match=r"Did you pass a percent\?"):
+            PorosityField(self.material, 3.0, distribution='uniform')
+
+    def test_nan_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction"):
+            PorosityField(self.material, float('nan'), distribution='uniform')
+
+    def test_inf_Vp_raises(self):
+        with pytest.raises(ValueError, match=r"finite fraction"):
+            PorosityField(self.material, float('inf'), distribution='uniform')
+
+    def test_Vp_boundary_zero_and_one_accepted(self):
+        # Both boundaries should be accepted (no exception)
+        PorosityField(self.material, 0.0, distribution='uniform')
+        PorosityField(self.material, 1.0, distribution='uniform')
+
     def test_effective_porosity_profile_shape(self):
         pf = PorosityField(self.material, 0.03, distribution='uniform')
         z, Vp = pf.effective_porosity_profile(nz=50)
@@ -1198,3 +1219,182 @@ class TestVoidInclusions:
         # than elements far from the void
         assert results.max_failure_index > 0
         assert np.any(np.isfinite(results.stress_global))
+
+
+# ============================================================
+# Coverage backfill (#12): layup-scaling helpers, linear-model
+# saturation, CLT degradation boundaries, CLI smoke, GUI parser.
+# ============================================================
+
+
+class TestEmpiricalLayupScaling:
+    """Direct unit tests for _matrix_dominated_fraction and _layup_scale."""
+
+    def test_f_md_pure_zero(self):
+        assert EmpiricalSolver._matrix_dominated_fraction([0] * 8) == 0.0
+
+    def test_f_md_pure_ninety(self):
+        assert EmpiricalSolver._matrix_dominated_fraction([90] * 8) == 1.0
+
+    def test_f_md_off_axis_only(self):
+        assert EmpiricalSolver._matrix_dominated_fraction([45, -45, 45, -45]) == 0.5
+
+    def test_f_md_qi_layup_is_0p4(self):
+        # Documented QI calibration coupon -> 0.4 under the binning rule.
+        # See the comment above _F_MD_REF in porosity_fe_analysis.py and
+        # the README "Empirical Strength Knockdown" section.
+        layup = [0, 45, 90, -45, 0, 0, -45, 90, 45, 0]
+        assert abs(EmpiricalSolver._matrix_dominated_fraction(layup) - 0.4) < 1e-12
+
+    def test_f_md_empty_returns_qi_default(self):
+        assert EmpiricalSolver._matrix_dominated_fraction([]) == 0.5
+        assert EmpiricalSolver._matrix_dominated_fraction(None) == 0.5
+
+    def test_f_md_threshold_band_at_10_and_80_degrees(self):
+        # 10° -> still binned as 0° (fiber-dominated)
+        assert EmpiricalSolver._matrix_dominated_fraction([10]) == 0.0
+        # 80° -> binned as 90° (matrix-dominated)
+        assert EmpiricalSolver._matrix_dominated_fraction([80]) == 1.0
+        # 11° -> off-axis bin
+        assert EmpiricalSolver._matrix_dominated_fraction([11]) == 0.5
+
+    def _solver_with_layup(self, ply_angles):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
+        return EmpiricalSolver(mesh, material, ply_angles=ply_angles)
+
+    def test_layup_scale_unity_at_reference(self):
+        # f_md = 0.5 -> scale = 1.0 -> alpha_eff == alpha_QI
+        solver = self._solver_with_layup([45, -45, 45, -45])
+        for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
+            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - alpha_qi) < 1e-12
+
+    def test_layup_scale_floor_for_ud(self):
+        # f_md = 0.0 -> hits 0.15 floor for non-ILSS modes, 0.80 for ILSS.
+        solver = self._solver_with_layup([0] * 8)
+        for mode in ('compression', 'tension', 'shear'):
+            expected = EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI[mode] * 0.15
+            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - expected) < 1e-12
+        ilss_expected = EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI['ilss'] * 0.80
+        assert abs(solver.JUDD_WRIGHT_ALPHA['ilss'] - ilss_expected) < 1e-12
+
+    def test_layup_scale_above_reference(self):
+        # Pure 90 -> f_md = 1.0 -> scale = 2.0
+        solver = self._solver_with_layup([90] * 8)
+        for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
+            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - alpha_qi * 2.0) < 1e-12
+
+
+class TestEmpiricalLinearSaturation:
+    """The linear knockdown clips to 0 once Vp >= 1/beta."""
+
+    def setup_method(self):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
+        self.solver = EmpiricalSolver(mesh, material)
+
+    def test_linear_clips_to_zero_at_full_porosity(self):
+        for mode in ('compression', 'tension', 'shear', 'ilss'):
+            assert self.solver._linear(1.0, mode) == 0.0
+
+    def test_linear_monotone_decreasing_until_saturation(self):
+        prev = 1.0
+        for vp in (0.0, 0.01, 0.05, 0.10, 0.18, 0.20):
+            kd = self.solver._linear(vp, 'compression')
+            assert kd <= prev + 1e-12
+            assert 0.0 <= kd <= 1.0
+            prev = kd
+
+    def test_linear_internal_clip_tolerates_fp_overshoot(self):
+        # FE element-mean averaging can produce 1 + ~1e-15.
+        kd = self.solver._linear(1.0 + 1e-15, 'compression')
+        assert kd == 0.0
+
+    def test_internal_clip_rejects_nan(self):
+        with pytest.raises(ValueError, match="non-finite"):
+            self.solver._judd_wright(float('nan'), 'compression')
+
+
+class TestCLTDegradation:
+    """Boundary tests for compute_degraded_clt_moduli (#12)."""
+
+    def setup_method(self):
+        from porosity_fe_analysis import compute_degraded_clt_moduli, \
+            compute_degraded_clt_flexural_modulus
+        self.compute_degraded_clt_moduli = compute_degraded_clt_moduli
+        self.compute_degraded_clt_flexural_modulus = compute_degraded_clt_flexural_modulus
+        self.material = MATERIALS['T800_epoxy']
+        self.layup = [0, 45, 90, -45, 0, 0, -45, 90, 45, 0]
+
+    def test_pristine_at_zero_porosity(self):
+        deg = self.compute_degraded_clt_moduli(self.material, self.layup, Vp=0.0)
+        # At Vp=0, degraded should be very close to nearly-zero-Vp baseline.
+        baseline = self.compute_degraded_clt_moduli(self.material, self.layup, Vp=1e-9)
+        for key in ('Ex', 'Ey', 'Gxy'):
+            assert abs(deg[key] - baseline[key]) / baseline[key] < 1e-3
+
+    def test_moduli_decrease_with_porosity(self):
+        low = self.compute_degraded_clt_moduli(self.material, self.layup, Vp=0.01)
+        high = self.compute_degraded_clt_moduli(self.material, self.layup, Vp=0.10)
+        for key in ('Ex', 'Ey', 'Gxy'):
+            assert high[key] < low[key]
+
+    def test_flexural_modulus_decreases_with_porosity(self):
+        f_low = self.compute_degraded_clt_flexural_modulus(
+            self.material, self.layup, Vp=0.0
+        )['Ef_x']
+        f_high = self.compute_degraded_clt_flexural_modulus(
+            self.material, self.layup, Vp=0.05
+        )['Ef_x']
+        assert f_high < f_low
+
+
+class TestValidateCLISmoke:
+    """Smoke tests for the validate_porosity CLI entry point (#12)."""
+
+    def test_help_exits_zero(self):
+        from validate_porosity_cli import main
+        with pytest.raises(SystemExit) as exc:
+            main(['--help'])
+        assert exc.value.code == 0
+
+
+class TestLayupParser:
+    """parse_layup is a pure helper extracted in #9; tested here for #12."""
+
+    def setup_method(self):
+        from porosity_gui import parse_layup
+        self.parse_layup = parse_layup
+
+    def test_simple_slash_form(self):
+        assert self.parse_layup('[0/45/-45/90]') == [0.0, 45.0, -45.0, 90.0]
+
+    def test_repeat_and_symmetry(self):
+        out = self.parse_layup('[0/90]_2s')
+        # repeat then mirror: [0,90,0,90] -> [0,90,0,90,90,0,90,0]
+        assert out == [0.0, 90.0, 0.0, 90.0, 90.0, 0.0, 90.0, 0.0]
+
+    def test_comma_separator_alternative(self):
+        assert self.parse_layup('[90, 0, 90]') == [90.0, 0.0, 90.0]
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="empty"):
+            self.parse_layup('')
+
+    def test_invalid_angle_token_raises(self):
+        with pytest.raises(ValueError, match="Invalid ply angle"):
+            self.parse_layup('[0/oops/90]')
+
+    def test_invalid_repeat_token_raises(self):
+        with pytest.raises(ValueError, match="Invalid repeat count"):
+            self.parse_layup('[0/45]_xyz')
+
+    def test_negative_repeat_raises(self):
+        with pytest.raises(ValueError, match=">= 1"):
+            self.parse_layup('[0/45]_-3')
+
+    def test_no_angles_raises(self):
+        with pytest.raises(ValueError, match="No ply angles"):
+            self.parse_layup('[]_3s')

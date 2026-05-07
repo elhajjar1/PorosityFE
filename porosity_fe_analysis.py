@@ -287,8 +287,17 @@ class PorosityField:
                  distribution: str = 'uniform', void_shape: Union[str, Tuple] = 'spherical',
                  cluster_location: str = 'midplane',
                  discrete_voids: Optional[List[VoidGeometry]] = None):
+        Vp = float(void_volume_fraction)
+        if not np.isfinite(Vp) or not (0.0 <= Vp <= 1.0):
+            hint = (f" Did you pass a percent? Use {Vp / 100:.4f} instead of {Vp}."
+                    if np.isfinite(Vp) and Vp > 1.0 else "")
+            raise ValueError(
+                f"void_volume_fraction must be a finite fraction in [0, 1], "
+                f"got {void_volume_fraction!r}.{hint}"
+            )
+
         self.material = material
-        self.Vp = void_volume_fraction
+        self.Vp = Vp
         self.distribution = distribution
         self.cluster_location = cluster_location
         self.discrete_voids = discrete_voids or []
@@ -640,8 +649,19 @@ class EmpiricalSolver:
     local peak Vp that clustered distributions produce.
     """
 
-    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977)
-    # Reference layup: [0/45/90/-45/0]_s (f_md_ref = 0.5)
+    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977).
+    # `_F_MD_REF = 0.5` below is the LAYUP-SCALING reference (scale = 1.0 at
+    # f_md = 0.5), NOT a property of the Elhajjar coupon layup itself
+    # (`[0/45/90/-45/0]_s`, which the binning rule below puts at f_md = 0.4).
+    # The coefficients were tuned with the layup-scaling already applied,
+    # so they represent the model's effective f_md = 0.5 baseline rather
+    # than the raw fit on a single layup.
+    # See README "Empirical Strength Knockdown" for definitions, units (alpha, n
+    # are dimensionless when Vp is a fraction in [0, 1]), validity bounds, and
+    # the calibration recipe for custom materials.
+    # Modes: 'compression' (sigma_1c, fiber+matrix), 'tension' (sigma_1t,
+    # fiber-dominated), 'shear' (tau_12, in-plane, matrix-dominated),
+    # 'ilss' (tau_ilss, short-beam, matrix/interface-dominated).
     _JUDD_WRIGHT_ALPHA_QI = {
         'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
     }
@@ -717,15 +737,40 @@ class EmpiricalSolver:
         raw = self.f_md / ref
         return max(raw, floor)
 
+    @staticmethod
+    def _check_internal_Vp(Vp: float) -> float:
+        # Defensive: tolerate fp overshoot (~1e-15) from element-mean averaging
+        # by clipping to [0, 1]; reject non-finite outright.
+        if not np.isfinite(Vp):
+            raise ValueError(f"Internal Vp is non-finite: {Vp!r}")
+        return float(np.clip(Vp, 0.0, 1.0))
+
     def _judd_wright(self, Vp: float, mode: str) -> float:
+        """Judd-Wright knockdown: KD = exp(-alpha * Vp).
+
+        Vp is a void volume fraction in [0, 1]. ``alpha`` is the
+        layup-scaled, mode-specific sensitivity coefficient (see
+        ``JUDD_WRIGHT_ALPHA`` and the README "Empirical Strength
+        Knockdown" section for definitions and ranges).
+        """
+        Vp = self._check_internal_Vp(Vp)
         alpha = self.JUDD_WRIGHT_ALPHA[mode]
         return float(np.exp(-alpha * Vp))
 
     def _power_law(self, Vp: float, mode: str) -> float:
+        """Power-law knockdown: KD = (1 - Vp)**n.
+
+        Vp is a void volume fraction in [0, 1]. ``n`` is the
+        layup-scaled, mode-specific exponent (see ``POWER_LAW_N`` and
+        the README "Empirical Strength Knockdown" section for
+        definitions and ranges).
+        """
+        Vp = self._check_internal_Vp(Vp)
         n = self.POWER_LAW_N[mode]
         return float((1.0 - Vp)**n)
 
     def _linear(self, Vp: float, mode: str) -> float:
+        Vp = self._check_internal_Vp(Vp)
         beta = self.LINEAR_BETA[mode]
         return float(max(1.0 - beta * Vp, 0.0))
 

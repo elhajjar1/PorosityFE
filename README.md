@@ -22,11 +22,12 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 ## Features
 
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
-- **Five distribution models**: Uniform, interface-concentrated, clustered (midplane/surface), layup-dependent
+- **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
 - **Four loading modes**: Compression, tension, shear, ILSS
+- **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
-- **Three material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy (or define your own)
+- **Six material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with stress concentration factors
 - **Tsai-Wu failure criterion**: Full 3D multiaxial strength evaluation
 
@@ -131,17 +132,75 @@ validate_porosity --quiet            # suppress progress output
 
 ### Empirical Strength Knockdown
 
+Both empirical models below take the **specimen-average** void volume fraction `Vp` as a dimensionless **fraction in `[0, 1]`** (e.g. 3% porosity → `Vp = 0.03`, never `Vp = 3.0`). Each returns a knockdown factor `KD ∈ (0, 1]` that multiplies the pristine strength `σ₀`.
+
 **Judd-Wright** (exponential decay):
 ```
 KD = exp(-alpha * Vp)
 ```
+- `alpha` is an empirical sensitivity coefficient. It is **dimensionless** when `Vp` is a fraction.
+- For small `Vp`, `KD ≈ 1 − alpha · Vp`, so `alpha` is approximately the fractional strength loss per unit `Vp`. Judd & Wright (1978) reported ILSS dropping ~7% per 1% voids in CFRP, which corresponds to `alpha ≈ 7`.
+- The exponential form is an engineering convention re-fit of Judd & Wright's linear data; it is well-behaved up to `Vp ≈ 0.04–0.05` and over-penalizes higher porosities.
 
 **Power Law**:
 ```
 KD = (1 - Vp)^n
 ```
+- `n` is a phenomenological exponent rooted in Mackenzie (1950) spherical-void elasticity and generalized empirically (Rice, 2005). `n = 1` corresponds to a simple area-reduction rule of mixtures; `n > 1` captures stress concentration around voids.
 
-Coefficients are layup-dependent: matrix-dominated layups (many off-axis plies) are more sensitive to porosity than fiber-dominated layups.
+**Linear**:
+```
+KD = max(1 - beta * Vp, 0)
+```
+- `beta` is the same kind of sensitivity coefficient as `alpha` in Judd-Wright (dimensionless when `Vp` is a fraction; `beta ≈ -ΔKD / ΔVp`). The linear form matches the original Judd & Wright (1978) "ILSS drops ~7% per 1% voids" reading directly, and is included for screening and easy hand-checks. It saturates to zero at `Vp = 1/beta` and is best used at low `Vp` (typically `< 0.05`).
+
+#### QI-calibrated coefficients (Elhajjar 2025)
+
+`f_md_ref = 0.5` is the layup-scaling reference (`scale = 1.0` at `f_md = 0.5`); the QI coefficients below were tuned with this scaling already applied, so they are NOT raw fits to a single layup but represent the model's effective-baseline values:
+
+| Loading mode | `alpha` (Judd-Wright) | `n` (Power-Law) | `beta` (Linear) |
+|---|---|---|---|
+| Compression       | 6.9  | 2.8 | 5.5 |
+| Tension           | 3.9  | 1.8 | 3.5 |
+| Shear (in-plane)  | 8.0  | 3.5 | 7.0 |
+| ILSS              | 10.0 | 4.5 | 9.0 |
+
+These values sit inside published CFRP ranges: `alpha ≈ 1–3` for fiber-dominated tension and `5–10` for matrix-dominated ILSS / flexure; `n ≈ 1–2` for stiffness-like properties and `3–5` for compression / ILSS.
+
+#### Layup scaling
+
+PorosityFE adapts the QI coefficients to the user's layup via a matrix-dominated fraction `f_md` computed from the ply angles (0° → 0.0, ±45° → 0.5, 90° → 1.0):
+
+```
+alpha_eff(mode) = alpha_QI(mode) * (f_md / 0.5)
+n_eff(mode)     = max(n_QI(mode) * (f_md / 0.5), 0.1)
+```
+
+A floor of `0.15` is applied to the scale (`0.80` for ILSS, which is always matrix-dominated):
+
+| Layup | `f_md` | scale | `alpha_eff` (compression) |
+|---|---|---|---|
+| `[0]_16` (UD)              | 0.00 | 0.15 (floor) | 1.035 |
+| `[±45]_4s` (off-axis)      | 0.50 | 1.00          | 6.90  |
+| `[90]_8` (transverse)      | 1.00 | 2.00          | 13.80 |
+
+Matrix-dominated layups are penalized more by porosity than fiber-dominated layups, as expected physically.
+
+#### Validity bounds
+
+The calibration data covers `Vp ≲ 0.05`. Beyond that, both forms should be treated as extrapolations. `Vp` alone does not capture void *morphology* (size, aspect ratio, clustering), which is a known source of scatter — use the FE solver path when spatial stress-concentration detail is needed.
+
+#### Calibrating `alpha` / `n` for a custom material
+
+If your material system differs significantly from the calibration set:
+
+1. Manufacture a ladder of coupons spanning `Vp ≈ 0–5%` (vary autoclave debulk pressure or cure vacuum).
+2. Measure void content per ASTM D2734 (matrix burnoff) or D3171 (acid digestion); cross-check by μCT or polished cross-section.
+3. Run the relevant strength test: ASTM D2344 (ILSS / short-beam shear), D7264 (flexure), D3039 (tension), or D6641 (compression).
+4. Normalize each datum by the void-free baseline: `KD = σ(Vp) / σ(0)`.
+5. Regress `ln(KD)` vs `Vp` (slope `= −alpha`) for Judd-Wright, or `ln(KD)` vs `ln(1 − Vp)` (slope `= n`) for the power law.
+
+Custom `alpha` / `n` values are not currently exposed as public API; until a configuration hook lands, supply them by subclassing `EmpiricalSolver` and overriding `_JUDD_WRIGHT_ALPHA_QI` / `_POWER_LAW_N_QI`.
 
 ### Finite Element Solver
 
@@ -213,7 +272,9 @@ Related publication:
 
 ## References
 
-- Judd & Wright (1986) - Voids and their effects on mechanical properties of composites
+- Judd & Wright (1978) - Voids and their effects on the mechanical properties of composites — an appraisal. *SAMPE Journal* 14(1), 10–14
+- Mackenzie (1950) - The elastic constants of a solid containing spherical holes. *Proc. Phys. Soc. B* 63(1), 2–11
+- Rice (2005) - Use of normalized porosity in models for the porosity dependence of mechanical properties. *J. Mater. Sci.* 40, 983–989
 - Eshelby (1957) - The determination of the elastic field of an ellipsoidal inclusion
 - Mura (1987) - Micromechanics of Defects in Solids
 - Tsai & Wu (1971) - A general theory of strength for anisotropic materials
