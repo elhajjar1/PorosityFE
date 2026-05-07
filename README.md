@@ -116,6 +116,50 @@ validate_porosity --output-dir /tmp  # write reports elsewhere
 validate_porosity --quiet            # suppress progress output
 ```
 
+### Web app (Streamlit)
+
+The same engineering library is wrapped as a Streamlit web app in `app.py`,
+suitable for hosting on [Streamlit Community Cloud](https://share.streamlit.io)
+so colleagues without a Python install can drive analyses from a browser.
+
+Run locally:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+#### Deploying to Streamlit Community Cloud
+
+1. **Push your branch to GitHub.** The branch must contain `app.py` and
+   `requirements.txt` at the repo root.
+2. **Sign in at <https://share.streamlit.io>** with your GitHub account
+   (use the same account that has access to the repo).
+3. Click **Create app** → **Deploy a public app from GitHub**.
+4. Fill in:
+   - **Repository**: `<owner>/<repo>` (e.g. `elhajjar1/PorosityFE`)
+   - **Branch**: `master` (or whichever branch contains `app.py`)
+   - **Main file path**: `app.py`
+   - **App URL** (optional): pick a custom subdomain; default is
+     `<owner>-<repo>-<random>.streamlit.app`.
+5. Under **Advanced settings**, set **Python version** to `3.11` or later.
+6. Click **Deploy**. The first build pulls dependencies from
+   `requirements.txt` and takes 2–5 minutes. Subsequent reboots are
+   ~30 seconds.
+7. Share the resulting `https://*.streamlit.app` URL with your team.
+
+**Cloud notes**
+
+- Resource limits: 1 GB RAM and a shared CPU per app. The FE solver
+  defaults to off for that reason; cap mesh sizes (`nx·ny·nz ≲ 10⁵`) if
+  you turn it on.
+- Auto-redeploy: every push to the deployed branch triggers a rebuild.
+  Manual reboot via the app dashboard's **Manage app → Reboot**.
+- Logs are visible in the dashboard's logs panel; set `--logger.level=info`
+  in **Advanced settings** for more detail.
+- Secrets (e.g. private dataset URLs) live in **Settings → Secrets** and
+  are accessed via `st.secrets["KEY"]`.
+
 ## Output Files
 
 | File Pattern | Description |
