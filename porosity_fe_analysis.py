@@ -283,17 +283,45 @@ POROSITY_CONFIGS = {
 class PorosityField:
     """Distributed + discrete porosity field."""
 
+    _CLUSTER_OFFSETS = {'midplane': 0.5, 'surface': 0.0, 'quarter': 0.25}
+    _DISTRIBUTIONS = ('uniform', 'clustered', 'interface')
+
     def __init__(self, material: MaterialProperties, void_volume_fraction: float,
                  distribution: str = 'uniform', void_shape: Union[str, Tuple] = 'spherical',
                  cluster_location: str = 'midplane',
                  discrete_voids: Optional[List[VoidGeometry]] = None):
+        if void_volume_fraction is None:
+            raise ValueError("void_volume_fraction is None; expected a finite float in [0, 1].")
+        if not isinstance(void_volume_fraction, (int, float, np.floating, np.integer)):
+            raise TypeError(
+                f"void_volume_fraction must be a numeric type (int, float, or numpy scalar), "
+                f"got {type(void_volume_fraction).__name__}."
+            )
         Vp = float(void_volume_fraction)
+        # Snap to 1.0 for inputs in (1.0, 1.0 + 1e-9] — accommodates upstream
+        # numerical noise (e.g. np.mean across an element) without rejecting it.
+        if 1.0 < Vp <= 1.0 + 1e-9:
+            Vp = 1.0
         if not np.isfinite(Vp) or not (0.0 <= Vp <= 1.0):
+            # Suppress the percent-confusion hint for values just above 1.0
+            # (likely numerical noise rather than a percent mistake).
+            show_percent_hint = (np.isfinite(Vp) and Vp >= 1.0 + 1e-3)
             hint = (f" Did you pass a percent? Use {Vp / 100:.4f} instead of {Vp}."
-                    if np.isfinite(Vp) and Vp > 1.0 else "")
+                    if show_percent_hint else "")
             raise ValueError(
                 f"void_volume_fraction must be a finite fraction in [0, 1], "
                 f"got {void_volume_fraction!r}.{hint}"
+            )
+
+        if distribution not in self._DISTRIBUTIONS:
+            raise ValueError(
+                f"Unknown distribution {distribution!r}. "
+                f"Use one of {list(self._DISTRIBUTIONS)}."
+            )
+        if cluster_location not in self._CLUSTER_OFFSETS:
+            raise ValueError(
+                f"Unknown cluster_location {cluster_location!r}. "
+                f"Use one of {sorted(self._CLUSTER_OFFSETS)}."
             )
 
         self.material = material
@@ -305,6 +333,11 @@ class PorosityField:
 
         # Resolve void shape
         if isinstance(void_shape, str):
+            if void_shape not in VOID_SHAPES:
+                raise ValueError(
+                    f"Unknown void_shape {void_shape!r}. "
+                    f"Use one of {sorted(VOID_SHAPES)}."
+                )
             self.void_shape_radii = VOID_SHAPES[void_shape]
         else:
             self.void_shape_radii = tuple(void_shape)
@@ -313,12 +346,7 @@ class PorosityField:
         """Compute normalization factor over the full domain so average equals Vp."""
         z_ref = np.linspace(0, self.Lz, 1000)
         if distribution == 'clustered':
-            if cluster_location == 'midplane':
-                z0 = self.Lz / 2
-            elif cluster_location == 'surface':
-                z0 = 0.0
-            else:  # quarter
-                z0 = self.Lz / 4
+            z0 = self.Lz * self._CLUSTER_OFFSETS[cluster_location]
             sigma = self.Lz / 6
             profile_ref = np.exp(-0.5 * ((z_ref - z0) / sigma)**2)
         elif distribution == 'interface':
@@ -339,12 +367,7 @@ class PorosityField:
         if self.distribution == 'uniform':
             return np.full_like(z, self.Vp)
         elif self.distribution == 'clustered':
-            if self.cluster_location == 'midplane':
-                z0 = self.Lz / 2
-            elif self.cluster_location == 'surface':
-                z0 = 0.0
-            else:  # quarter
-                z0 = self.Lz / 4
+            z0 = self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
             sigma = self.Lz / 6
             profile = np.exp(-0.5 * ((z - z0) / sigma)**2)
             norm = self._compute_normalization('clustered', self.cluster_location)
@@ -359,7 +382,10 @@ class PorosityField:
             norm = self._compute_normalization('interface', self.cluster_location)
             return self.Vp * profile / norm
         else:
-            raise ValueError(f"Unknown distribution: {self.distribution}")
+            raise ValueError(
+                f"Unknown distribution {self.distribution!r}. "
+                f"Use one of {list(self._DISTRIBUTIONS)}."
+            )
 
     def local_porosity(self, x, y, z) -> np.ndarray:
         x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
@@ -775,6 +801,11 @@ class EmpiricalSolver:
         return float(max(1.0 - beta * Vp, 0.0))
 
     def _get_pristine_strength(self, mode: str) -> float:
+        if mode not in self.PRISTINE_STRENGTH_KEY:
+            raise ValueError(
+                f"Unknown loading mode {mode!r}. "
+                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
+            )
         return getattr(self.material, self.PRISTINE_STRENGTH_KEY[mode])
 
     def _apply_discrete_void_scf(self, base_knockdown: np.ndarray, mode: str) -> np.ndarray:
@@ -2631,7 +2662,7 @@ class FESolver:
             },
         }
 
-        with open(filename, 'w') as f:
+        with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2)
         print(f"Saved FE results: {filename}")
 
@@ -2645,6 +2676,11 @@ def compare_configurations(void_volume_fraction: float,
                            applied_stress: float = -1500.0,
                            configs: Optional[Dict] = None) -> Dict:
     """Main analysis function — loops through porosity configurations."""
+    if material_name not in MATERIALS:
+        raise ValueError(
+            f"Unknown material {material_name!r}. "
+            f"Available presets: {sorted(MATERIALS)}."
+        )
     material = MATERIALS[material_name]
     configs = configs or POROSITY_CONFIGS
     results = {}
@@ -2708,7 +2744,7 @@ def save_results_to_json(results: Dict, filename: str):
                 }
         output[name] = entry
 
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2)
     print(f"Saved: {filename}")
 

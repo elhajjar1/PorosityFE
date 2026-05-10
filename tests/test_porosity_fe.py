@@ -306,6 +306,45 @@ class TestPorosityField:
         pf = PorosityField(self.material, 0.03, void_shape=(2.0, 1.5, 0.5))
         assert pf.void_shape_radii == (2.0, 1.5, 0.5)
 
+    def test_unknown_void_shape_string_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown void_shape"):
+            PorosityField(self.material, 0.03, void_shape='spheroidal')
+
+    def test_unknown_distribution_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown distribution"):
+            PorosityField(self.material, 0.03, distribution='gradient')
+
+    def test_unknown_cluster_location_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown cluster_location"):
+            PorosityField(self.material, 0.03,
+                          distribution='clustered', cluster_location='midplne')
+
+    def test_quarter_cluster_location_supported(self):
+        # 'quarter' is one of the documented cluster locations and should round-trip.
+        pf = PorosityField(self.material, 0.03,
+                           distribution='clustered', cluster_location='quarter')
+        assert pf.cluster_location == 'quarter'
+
+    def test_Vp_snap_to_one_from_fp_noise(self):
+        # numerical noise just above 1.0 should snap to 1.0 instead of raising
+        pf = PorosityField(self.material, 1.0 + 5e-10, distribution='uniform')
+        assert pf.Vp == 1.0
+
+    def test_Vp_just_above_one_no_percent_hint(self):
+        # Values barely above the boundary are likely numerical noise, not
+        # percent confusion — the percent hint should be suppressed.
+        with pytest.raises(ValueError) as exc:
+            PorosityField(self.material, 1.0001, distribution='uniform')
+        assert "Did you pass a percent?" not in str(exc.value)
+
+    def test_Vp_string_rejected_with_typeerror(self):
+        with pytest.raises(TypeError, match=r"numeric type"):
+            PorosityField(self.material, "0.5", distribution='uniform')
+
+    def test_Vp_none_rejected(self):
+        with pytest.raises(ValueError, match=r"None"):
+            PorosityField(self.material, None, distribution='uniform')
+
 
 class TestCompositeMesh:
     def setup_method(self):
@@ -401,6 +440,10 @@ class TestEmpiricalSolver:
         result = self.solver.get_failure_load(mode='compression', model='judd_wright')
         assert result['failure_stress'] > 0
         assert 0 < result['knockdown'] <= 1.0
+
+    def test_unknown_loading_mode_raises_with_listing(self):
+        with pytest.raises(ValueError, match=r"Unknown loading mode"):
+            self.solver._get_pristine_strength('flexure')
 
     def test_get_all_failure_loads(self):
         results = self.solver.get_all_failure_loads()
@@ -501,9 +544,13 @@ class TestAnalysisPipeline:
         path = str(tmp_path / "test_results.json")
         save_results_to_json(results, path)
         assert os.path.exists(path)
-        with open(path) as f:
+        with open(path, encoding='utf-8') as f:
             data = json.load(f)
         assert 'uniform_spherical' in data
+
+    def test_compare_configurations_unknown_material_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown material"):
+            compare_configurations(0.03, material_name='T800epoxy')
 
 
 class TestIntegration:
@@ -1112,7 +1159,7 @@ class TestFEExportResults:
         results = solver.solve(loading='compression', applied_strain=-0.001)
         path = str(tmp_path / "fe_results.json")
         FESolver.export_results(results, path)
-        with open(path) as f:
+        with open(path, encoding='utf-8') as f:
             data = json.load(f)
         assert 'displacement' in data
         assert 'stress_global' in data
