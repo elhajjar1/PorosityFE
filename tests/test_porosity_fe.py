@@ -1617,3 +1617,76 @@ class TestLayupParser:
     def test_no_angles_raises(self):
         with pytest.raises(ValueError, match="No ply angles"):
             self.parse_layup('[]_3s')
+
+
+class TestExportHelpers:
+    """Module-level CSV / JSON writers extracted for issue #30."""
+
+    @staticmethod
+    def _sample_result():
+        return {
+            "config": {
+                "material_name": "T800_epoxy",
+                "n_plies": 24,
+                "t_ply": 0.183,
+                "Vp": 3.0,
+                "distribution": "uniform",
+                "void_shape": "spherical",
+                "nx": 30, "ny": 10, "nz": 12,
+            },
+            "empirical": {
+                "compression": {
+                    "judd_wright": {"failure_stress": 1234.5, "knockdown": 0.823},
+                    "power_law": {"failure_stress": 1300.0, "knockdown": 0.867},
+                },
+                "ilss": {
+                    "judd_wright": {"failure_stress": 67.0, "knockdown": 0.744},
+                },
+            },
+        }
+
+    def test_build_export_payload_shape(self):
+        from porosity_gui import build_export_payload
+        payload = build_export_payload(self._sample_result())
+        assert payload["config"]["material"] == "T800_epoxy"
+        assert payload["config"]["mesh"] == "30x10x12"
+        assert payload["empirical"]["compression"]["judd_wright"]["knockdown"] == 0.823
+
+    def test_write_results_json_round_trips(self, tmp_path):
+        from porosity_gui import build_export_payload, write_results_json
+        path = str(tmp_path / "out.json")
+        write_results_json(path, build_export_payload(self._sample_result()))
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["empirical"]["compression"]["judd_wright"]["knockdown"] == 0.823
+
+    def test_write_results_csv_header_and_rows(self, tmp_path):
+        from porosity_gui import build_export_payload, write_results_csv
+        path = str(tmp_path / "out.csv")
+        write_results_csv(path, build_export_payload(self._sample_result()))
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        # First N lines are #-prefixed config; then the header; then rows.
+        comment_lines = [l for l in lines if l.startswith("#")]
+        data_lines = [l for l in lines if not l.startswith("#")]
+        assert any("material: T800_epoxy" in l for l in comment_lines)
+        assert any("Vp_percent: 3.0" in l for l in comment_lines)
+        assert data_lines[0] == "mode,model,failure_stress_MPa,knockdown"
+        # Three (mode, model) rows in the sample → header + 3 = 4 lines.
+        assert len(data_lines) == 4
+        assert "compression,judd_wright,1234.5,0.823" in data_lines
+
+    def test_write_results_csv_round_trips_via_csv_module(self, tmp_path):
+        import csv as _csv
+        from porosity_gui import build_export_payload, write_results_csv
+        path = str(tmp_path / "out.csv")
+        write_results_csv(path, build_export_payload(self._sample_result()))
+        with open(path, encoding="utf-8", newline="") as f:
+            # Skip comment lines exactly the way pandas read_csv(comment='#') would.
+            rows = [r for r in _csv.reader(f) if r and not r[0].startswith("#")]
+        assert rows[0] == ["mode", "model", "failure_stress_MPa", "knockdown"]
+        # All non-header rows should parse to four columns; numeric ones finite.
+        for row in rows[1:]:
+            assert len(row) == 4
+            float(row[2])
+            float(row[3])

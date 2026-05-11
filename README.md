@@ -179,6 +179,8 @@ validate_porosity --quiet            # suppress progress output
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
 
+The GUI's **File → Export Results** menu writes the active run's empirical knockdown table to either JSON or CSV — the format is picked from the file extension you type in the save dialog (`.json` or `.csv`). CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table.
+
 ## Inputs and Conventions
 
 ### Void volume fraction `Vp`
