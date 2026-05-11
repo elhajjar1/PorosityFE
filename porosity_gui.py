@@ -13,6 +13,7 @@ Usage
 
 from __future__ import annotations
 
+import csv
 import dataclasses
 import json
 import sys
@@ -110,6 +111,70 @@ def _check_pyqt6() -> None:
             "  pip install PyQt6\n"
             "Or run the analysis script directly: python porosity_fe_analysis.py"
         )
+
+
+# ======================================================================
+# Result export helpers (module-level so they're testable without Qt)
+# ======================================================================
+
+def build_export_payload(result: dict) -> dict:
+    """Flatten an analysis result into the export payload structure.
+
+    Shared by the JSON and CSV writers so both formats describe the same
+    fields. ``result`` is the dict produced by ``AnalysisWorker`` and stored
+    on the main window as ``self._result``.
+    """
+    cfg = result["config"]
+    emp = result["empirical"]
+    payload = {
+        "config": {
+            "material": cfg["material_name"],
+            "n_plies": cfg["n_plies"],
+            "t_ply": cfg["t_ply"],
+            "Vp_percent": cfg["Vp"],
+            "distribution": cfg["distribution"],
+            "void_shape": cfg["void_shape"],
+            "mesh": f"{cfg['nx']}x{cfg['ny']}x{cfg['nz']}",
+        },
+        "empirical": {},
+    }
+    for mode in emp:
+        payload["empirical"][mode] = {}
+        for model in emp[mode]:
+            r = emp[mode][model]
+            payload["empirical"][mode][model] = {
+                "failure_stress_MPa": r["failure_stress"],
+                "knockdown": r["knockdown"],
+            }
+    return payload
+
+
+def write_results_json(filepath: str, payload: dict) -> None:
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def write_results_csv(filepath: str, payload: dict) -> None:
+    """Write the export payload as a flat CSV.
+
+    Configuration metadata is written as comment lines prefixed with ``#``;
+    pandas (``read_csv(comment='#')``) and most CSV viewers handle this
+    cleanly, while Excel ignores the comments and treats the table as data.
+    """
+    with open(filepath, "w", encoding="utf-8", newline="") as f:
+        # Config preamble as comment lines
+        for key, value in payload["config"].items():
+            f.write(f"# {key}: {value}\n")
+        writer = csv.writer(f)
+        writer.writerow(["mode", "model", "failure_stress_MPa", "knockdown"])
+        for mode in payload["empirical"]:
+            for model in payload["empirical"][mode]:
+                r = payload["empirical"][mode][model]
+                writer.writerow([
+                    mode, model,
+                    r["failure_stress_MPa"],
+                    r["knockdown"],
+                ])
 
 
 # ======================================================================
@@ -1270,7 +1335,7 @@ if HAS_PYQT6:
                     canvas.draw()
 
         def _on_export(self) -> None:
-            """Export results to JSON."""
+            """Export results to JSON or CSV."""
             if self._result is None:
                 QMessageBox.information(
                     self, "No Results",
@@ -1278,43 +1343,30 @@ if HAS_PYQT6:
                 )
                 return
 
-            filepath, _ = QFileDialog.getSaveFileName(
+            filepath, selected_filter = QFileDialog.getSaveFileName(
                 self, "Export Results", "porosity_results.json",
-                "JSON Files (*.json);;All Files (*)"
+                "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
             )
-            if filepath:
-                try:
-                    result = self._result
-                    cfg = result["config"]
-                    emp = result["empirical"]
+            if not filepath:
+                return
+            try:
+                payload = build_export_payload(self._result)
+                # Pick the format from the file extension, falling back to the
+                # selected filter (so a user who types "results.csv" gets CSV
+                # even when the JSON filter is active).
+                lower = filepath.lower()
+                if lower.endswith(".csv"):
+                    write_results_csv(filepath, payload)
+                elif lower.endswith(".json"):
+                    write_results_json(filepath, payload)
+                elif "csv" in (selected_filter or "").lower():
+                    write_results_csv(filepath, payload)
+                else:
+                    write_results_json(filepath, payload)
 
-                    output = {
-                        "config": {
-                            "material": cfg["material_name"],
-                            "n_plies": cfg["n_plies"],
-                            "t_ply": cfg["t_ply"],
-                            "Vp_percent": cfg["Vp"],
-                            "distribution": cfg["distribution"],
-                            "void_shape": cfg["void_shape"],
-                            "mesh": f"{cfg['nx']}x{cfg['ny']}x{cfg['nz']}",
-                        },
-                        "empirical": {},
-                    }
-                    for mode in emp:
-                        output["empirical"][mode] = {}
-                        for model in emp[mode]:
-                            r = emp[mode][model]
-                            output["empirical"][mode][model] = {
-                                "failure_stress_MPa": r["failure_stress"],
-                                "knockdown": r["knockdown"],
-                            }
-
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        json.dump(output, f, indent=2)
-
-                    self.statusBar().showMessage(f"Results exported to {filepath}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Export Error", str(e))
+                self.statusBar().showMessage(f"Results exported to {filepath}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", str(e))
 
         def _on_about(self) -> None:
             """Show about dialog."""
