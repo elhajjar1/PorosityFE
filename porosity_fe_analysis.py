@@ -1645,6 +1645,13 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     Standalone Eshelby-tensor-based Mori-Tanaka calculation for use inside
     Hex8Element.
 
+    The Eshelby tensor is computed in a canonical frame (symmetry axis along
+    x_1) and then permuted to align with the actual void axis. The previous
+    implementation used ``ar = max/min`` as the aspect ratio, which is
+    always >= 1, leaving the ``else: # Oblate`` branch unreachable — oblate
+    voids (penny shape) were silently routed to the prolate formulas. See
+    issue #32.
+
     Parameters
     ----------
     C_m : np.ndarray
@@ -1666,19 +1673,55 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     if Vp > 0.99:
         return np.zeros((6, 6))
 
-    ar = max(void_shape_radii) / min(void_shape_radii)
     nu = nu_m
+    r = list(void_shape_radii)
+    sphere_tol = 0.01
 
-    # Build Eshelby tensor
     S = np.zeros((6, 6))
-    if abs(ar - 1.0) < 0.01:  # Sphere
+
+    if (max(r) - min(r)) / max(r) < sphere_tol:
+        # All three radii within 1% — treat as sphere.
         S[0, 0] = S[1, 1] = S[2, 2] = (7 - 5 * nu) / (15 * (1 - nu))
         S[0, 1] = S[0, 2] = S[1, 0] = S[1, 2] = S[2, 0] = S[2, 1] = \
             (5 * nu - 1) / (15 * (1 - nu))
         S[3, 3] = S[4, 4] = S[5, 5] = (4 - 5 * nu) / (15 * (1 - nu))
-    elif ar > 1.0:  # Prolate
-        g = ar / (ar**2 - 1)**1.5 * (ar * np.sqrt(ar**2 - 1) - np.arccosh(ar))
-        a2 = ar**2
+    else:
+        # Axisymmetric: find the symmetry axis (the radius that differs
+        # from the other two equal radii).
+        def _close(a, b):
+            return abs(a - b) / max(a, b) < sphere_tol
+
+        if _close(r[1], r[2]):
+            idx_axis = 0  # a_1 is the unique axis
+        elif _close(r[0], r[2]):
+            idx_axis = 1
+        elif _close(r[0], r[1]):
+            idx_axis = 2
+        else:
+            # Triaxial: no axisymmetric closed form. Approximate by
+            # treating the largest axis as the symmetry axis (prolate
+            # fallback). Documented limitation; acceptable because the
+            # default VOID_SHAPES are all axisymmetric.
+            idx_axis = r.index(max(r))
+
+        a_axis = r[idx_axis]
+        a_eq = r[(idx_axis + 1) % 3]  # equatorial radius
+        alpha = a_axis / a_eq
+        a2 = alpha ** 2
+
+        # g-function with correct branch:
+        #   prolate (alpha > 1): cosh-based form
+        #   oblate  (alpha < 1): arccos-based form
+        # The S-tensor formulas below are identical in structure for both;
+        # only the g-function and the sign of (alpha^2 - 1) differ.
+        if alpha > 1.0:
+            g = alpha / (a2 - 1) ** 1.5 * (
+                alpha * np.sqrt(a2 - 1) - np.arccosh(alpha))
+        else:
+            g = alpha / (1 - a2) ** 1.5 * (
+                np.arccos(alpha) - alpha * np.sqrt(1 - a2))
+
+        # Eshelby tensor in canonical frame (symmetry axis along x_1).
         S[0, 0] = (1.0 / (2 * (1 - nu))) * (
             1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g)
         S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
@@ -1694,25 +1737,19 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
         S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
             1 - 2 * nu - (a2 + 1) / (a2 - 1) -
             0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g)
-    else:  # Oblate
-        p = 1.0 / ar
-        g_ob = p / (p**2 - 1)**1.5 * (np.arccos(1.0 / p) - (1.0 / p) * np.sqrt(1 - 1.0 / p**2))
-        a2 = ar**2
-        S[0, 0] = (1.0 / (2 * (1 - nu))) * (
-            1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g_ob)
-        S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
-            (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g_ob
-        S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
-            (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g_ob
-        S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
-            (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g_ob
-        S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
-            a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g_ob)
-        S[3, 3] = (1.0 / (4 * (1 - nu))) * (
-            a2 / (2 * (a2 - 1)) + (1 - 2 * nu - 3.0 / (4 * (a2 - 1))) * g_ob)
-        S[4, 4] = S[5, 5] = (1.0 / (4 * (1 - nu))) * (
-            1 - 2 * nu - (a2 + 1) / (a2 - 1) -
-            0.5 * (1 - 2 * nu - 3 * (a2 + 1) / (a2 - 1)) * g_ob)
+
+        # Permute the Voigt tensor to align the symmetry axis with the
+        # actual unique-radius axis. For a swap x_1 <-> x_k the Voigt
+        # permutation is:
+        #   x_1 <-> x_2: [1, 0, 2, 4, 3, 5]
+        #   x_1 <-> x_3: [2, 1, 0, 5, 4, 3]
+        if idx_axis != 0:
+            if idx_axis == 1:
+                perm = [1, 0, 2, 4, 3, 5]
+            else:
+                perm = [2, 1, 0, 5, 4, 3]
+            P = np.eye(6)[perm]
+            S = P @ S @ P.T
 
     I6 = np.eye(6)
     inner = I6 - (1 - Vp) * S
@@ -2065,6 +2102,14 @@ class Hex8Element:
         """Element stiffness matrix (24x24) via 2x2x2 Gauss quadrature.
 
         Ke = sum over GPs of: B^T @ C_bar @ B * |J| * w
+
+        Raises
+        ------
+        ValueError
+            If the Jacobian determinant is non-positive at any Gauss point —
+            this signals a degenerate or inverted element whose contribution
+            would corrupt the assembled global stiffness with a wrong-sign
+            block. Catching here makes failures legible instead of silent.
         """
         Ke = np.zeros((24, 24))
         for gp_idx in range(len(self._gauss_weights)):
@@ -2074,6 +2119,15 @@ class Hex8Element:
             C_bar = self._degraded_stiffness(xi, eta, zeta)
             J = self.jacobian(xi, eta, zeta)
             detJ = np.linalg.det(J)
+            if not np.isfinite(detJ) or detJ <= 0.0:
+                raise ValueError(
+                    f"Element has non-positive Jacobian determinant "
+                    f"(detJ={detJ!r}) at Gauss point "
+                    f"(xi={xi}, eta={eta}, zeta={zeta}). The element is "
+                    f"degenerate or has inverted node ordering — its "
+                    f"contribution would silently corrupt the assembled "
+                    f"stiffness."
+                )
             with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
                 Ke_contrib = (B.T @ C_bar @ B) * detJ * w
             # Protect against overflow in void elements
@@ -2129,13 +2183,20 @@ class Hex8Element:
 
     @property
     def volume(self) -> float:
-        """Element volume via Gauss quadrature."""
+        """Element volume via Gauss quadrature.
+
+        Uses ``abs(det(J))`` so an inverted-but-otherwise-valid element
+        still reports a sensible (positive) volume. ``stiffness_matrix``
+        rejects inverted elements at assembly time, so the negative-volume
+        case is only reachable via direct ``.volume`` lookup on a degenerate
+        element constructed manually.
+        """
         vol = 0.0
         for gp_idx in range(len(self._gauss_weights)):
             xi, eta, zeta = self._gauss_points[gp_idx]
             w = self._gauss_weights[gp_idx]
             J = self.jacobian(xi, eta, zeta)
-            vol += np.linalg.det(J) * w
+            vol += abs(np.linalg.det(J)) * w
         return float(vol)
 
 
@@ -2633,13 +2694,17 @@ class FESolver:
             stress_global[e] = sig_g
             strain_global[e] = eps_g
 
-            # Transform to local coordinates
+            # Transform to local coordinates. Stress uses T_sigma; engineering
+            # strain (with gamma_ij = 2*eps_ij in slots 3-5) uses T_epsilon —
+            # T_sigma applied to engineering strain leaves the shear components
+            # off by 2x.
             ply_rad = np.radians(float(self.mesh.ply_angles[e]))
-            T_ply = stress_transformation_3d(ply_rad, axis='z')
+            T_sigma = stress_transformation_3d(ply_rad, axis='z')
+            T_eps = strain_transformation_3d(ply_rad, axis='z')
 
             for g in range(n_gp):
-                stress_local[e, g] = T_ply @ sig_g[g]
-                strain_local[e, g] = T_ply @ eps_g[g]
+                stress_local[e, g] = T_sigma @ sig_g[g]
+                strain_local[e, g] = T_eps @ eps_g[g]
 
         # 6. Evaluate Tsai-Wu at each GP
         max_fi = self._evaluate_tsai_wu(stress_local)

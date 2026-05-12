@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for porosity_fe_analysis.py"""
 
+import dataclasses
+
 import numpy as np
 import scipy.sparse
 import pytest
@@ -868,6 +870,42 @@ class TestMTEffectiveStiffness:
             C_eff = _mt_effective_stiffness(self.C_m, Vp, (3, 3, 0.3), 0.35)
             assert np.all(np.isfinite(C_eff)), f"non-finite C_eff at Vp={Vp}"
 
+    def test_penny_void_anisotropy_along_short_axis(self):
+        """Regression for #32. A penny-shaped void (3, 3, 0.3) has its
+        symmetry axis along x_3 (the short axis), so the effective
+        stiffness should show LARGER degradation along the through-disk
+        direction (S[2,2]) than along the in-plane directions (S[0,0],
+        S[1,1]). The old code treated penny as a prolate cylinder along
+        x_1 and degraded the wrong axis."""
+        Vp = 0.05
+        C_eff = _mt_effective_stiffness(self.C_m, Vp, (3, 3, 0.3), 0.35)
+        # Through-thickness (x_3) component degrades more than in-plane (x_1, x_2)
+        deg_xx = (self.C_m[0, 0] - C_eff[0, 0]) / self.C_m[0, 0]
+        deg_yy = (self.C_m[1, 1] - C_eff[1, 1]) / self.C_m[1, 1]
+        deg_zz = (self.C_m[2, 2] - C_eff[2, 2]) / self.C_m[2, 2]
+        assert deg_zz > deg_xx, (
+            f"penny axis degradation {deg_zz:.4f} should exceed in-plane "
+            f"degradation {deg_xx:.4f} (the disk is perpendicular to x_3)"
+        )
+        # The two in-plane components should be approximately equal
+        # (transverse isotropy of an axisymmetric disk).
+        assert abs(deg_xx - deg_yy) < 1e-6
+
+    def test_prolate_cylindrical_anisotropy_transverse_to_long_axis(self):
+        """Regression for #32. (3, 1, 1) is a prolate cylindrical void
+        with its symmetry axis along x_1. Load flows easily along the
+        long axis (the void is thin in cross-section), but transverse
+        load has to bypass a long obstacle — so transverse degradation
+        (deg_yy, deg_zz) should exceed axial degradation (deg_xx)."""
+        Vp = 0.05
+        C_eff = _mt_effective_stiffness(self.C_m, Vp, (3, 1, 1), 0.35)
+        deg_xx = (self.C_m[0, 0] - C_eff[0, 0]) / self.C_m[0, 0]
+        deg_yy = (self.C_m[1, 1] - C_eff[1, 1]) / self.C_m[1, 1]
+        deg_zz = (self.C_m[2, 2] - C_eff[2, 2]) / self.C_m[2, 2]
+        assert deg_yy > deg_xx
+        # The two equatorial directions are equivalent (axisymmetric).
+        assert abs(deg_yy - deg_zz) < 1e-6
+
 
 class TestHex8Element:
     def setup_method(self):
@@ -977,6 +1015,38 @@ class TestHex8Element:
 
     def test_volume_unit_cube(self):
         assert abs(self.elem.volume - 1.0) < 1e-12
+
+    def test_inverted_element_rejected_at_assembly(self):
+        """Regression for #33: signed det(J) silently corrupting K."""
+        # Swap two adjacent nodes on the bottom face to invert the element.
+        inverted = self.node_coords.copy()
+        inverted[[0, 1]] = inverted[[1, 0]]
+        bad_elem = Hex8Element(
+            node_coords=inverted,
+            C_base=self.C_base,
+            ply_angle_deg=0.0,
+            node_porosities=np.full(8, 0.03),
+            void_shape_radii=(1, 1, 1),
+            nu_m=0.35,
+            C_m=self.C_m,
+        )
+        with pytest.raises(ValueError, match="non-positive Jacobian"):
+            bad_elem.stiffness_matrix()
+
+    def test_inverted_element_volume_still_positive(self):
+        """volume uses abs(det J); only stiffness_matrix raises."""
+        inverted = self.node_coords.copy()
+        inverted[[0, 1]] = inverted[[1, 0]]
+        bad_elem = Hex8Element(
+            node_coords=inverted,
+            C_base=self.C_base,
+            ply_angle_deg=0.0,
+            node_porosities=np.full(8, 0.03),
+            void_shape_radii=(1, 1, 1),
+            nu_m=0.35,
+            C_m=self.C_m,
+        )
+        assert bad_elem.volume > 0
 
     def test_stress_at_gauss_points_shape(self):
         u_elem = np.zeros(24)
@@ -1271,6 +1341,31 @@ class TestFESolver:
         solver = FESolver(self.mesh, self.material, self.pf)
         with pytest.raises(ValueError):
             solver.solve(loading='invalid')
+
+    def test_strain_local_uses_strain_transform_not_stress_transform(self):
+        """Regression for #38: engineering strain was rotated via T_sigma
+        (the stress transformation), which leaves the shear slots off by
+        a factor of 2. strain_local must equal T_epsilon @ strain_global
+        per (element, Gauss point) — within numerical noise."""
+        from porosity_fe_analysis import strain_transformation_3d
+        # 45-degree plies make the bug most visible (shear components dominate).
+        mat45 = dataclasses.replace(self.material, n_plies=4)
+        pf = PorosityField(mat45, 0.02, distribution='uniform')
+        mesh = CompositeMesh(pf, mat45, nx=3, ny=2, nz=4,
+                              ply_angles=[45.0, -45.0, -45.0, 45.0])
+        solver = FESolver(mesh, mat45, pf)
+        r = solver.solve(loading='compression', applied_strain=-0.001)
+        # Check transformation invariant on a handful of elements.
+        for e in [0, mesh.n_elements // 2, mesh.n_elements - 1]:
+            ply_rad = np.radians(float(mesh.ply_angles[e]))
+            T_eps = strain_transformation_3d(ply_rad, axis='z')
+            for g in range(8):
+                expected = T_eps @ r.strain_global[e, g]
+                np.testing.assert_allclose(
+                    r.strain_local[e, g], expected,
+                    rtol=1e-10, atol=1e-12,
+                    err_msg=f"strain_local mismatch at elem={e}, gp={g}",
+                )
 
     def test_higher_porosity_softer_response(self):
         """Higher porosity should produce softer material (lower stresses
@@ -1690,3 +1785,27 @@ class TestExportHelpers:
             assert len(row) == 4
             float(row[2])
             float(row[3])
+
+
+class TestConsoleMainWrapper:
+    """Regression for #46: porosity-fe console script must print a friendly
+    message + exit non-zero when PyQt6 is missing, instead of leaking a
+    Python traceback."""
+
+    def test_console_main_exits_zero_or_one(self):
+        """The wrapper must return an int exit code, not raise."""
+        from porosity_gui import _console_main, HAS_PYQT6
+        if HAS_PYQT6:
+            pytest.skip("PyQt6 present; missing-import path can't be exercised")
+        rc = _console_main()
+        assert rc == 1
+
+    def test_check_pyqt6_message_points_to_gui_extra(self):
+        """Error message must mention the [gui] extra so users know what
+        install command to run (not just `pip install PyQt6`)."""
+        from porosity_gui import _check_pyqt6, HAS_PYQT6
+        if HAS_PYQT6:
+            pytest.skip("PyQt6 present; error path can't be exercised")
+        with pytest.raises(ImportError) as exc:
+            _check_pyqt6()
+        assert "porosity-fe[gui]" in str(exc.value)
