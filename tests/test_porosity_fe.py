@@ -6,11 +6,7 @@ import dataclasses
 import numpy as np
 import scipy.sparse
 import pytest
-import sys
 import os
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib
 matplotlib.use('Agg')
@@ -25,6 +21,7 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    strain_transformation_3d, rotate_stiffness_3d,
                                    gauss_points_1d, gauss_points_hex,
                                    Hex8Element, _mt_effective_stiffness,
+                                   _degraded_composite_stiffness,
                                    GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
                                    compute_clt_effective_modulus, check_mesh_quality)
 
@@ -601,6 +598,16 @@ class TestEmpiricalSolver:
         # Discrete void should reduce local knockdown near the void
         assert min_kd_with_void < min_kd_no_void
 
+    def test_apply_loading_bad_model_raises_value_error(self):
+        # #22: bad model name should give a ValueError listing the valid
+        # choices, not a bare KeyError.
+        with pytest.raises(ValueError, match=r"Unknown knockdown model 'bogus'"):
+            self.solver.apply_loading(mode='compression', model='bogus')
+
+    def test_apply_loading_bad_mode_raises_value_error(self):
+        with pytest.raises(ValueError, match=r"Unknown loading mode 'bogus'"):
+            self.solver.apply_loading(mode='bogus', model='judd_wright')
+
 
 class TestFEVisualizer:
     def setup_method(self):
@@ -675,6 +682,62 @@ class TestAnalysisPipeline:
     def test_compare_configurations_unknown_material_raises(self):
         with pytest.raises(ValueError, match=r"Unknown material"):
             compare_configurations(0.03, material_name='T800epoxy')
+
+    def test_save_results_writes_schema_envelope(self, tmp_path):
+        # #20: saved files must carry schema_version + format so consumers
+        # can detect version drift.
+        from porosity_fe_analysis import (JSON_SCHEMA_VERSION,
+                                          FORMAT_EMPIRICAL_SWEEP)
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
+        path = str(tmp_path / "envelope.json")
+        save_results_to_json(results, path)
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        assert data['schema_version'] == JSON_SCHEMA_VERSION
+        assert data['format'] == FORMAT_EMPIRICAL_SWEEP
+
+    def test_load_results_from_json_round_trips(self, tmp_path):
+        from porosity_fe_analysis import load_results_from_json
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
+        path = str(tmp_path / "round_trip.json")
+        save_results_to_json(results, path)
+        loaded = load_results_from_json(path)
+        assert 'uniform_spherical' in loaded
+        # Inner payload survives the round trip.
+        assert (loaded['uniform_spherical']['empirical']['compression']
+                ['judd_wright']['knockdown']
+                == results['uniform_spherical']['empirical']['compression']
+                ['judd_wright']['knockdown'])
+
+    def test_load_results_from_json_rejects_missing_envelope(self, tmp_path):
+        from porosity_fe_analysis import load_results_from_json
+        path = tmp_path / "legacy.json"
+        path.write_text(json.dumps({"uniform_spherical": {"empirical": {}}}),
+                        encoding='utf-8')
+        with pytest.raises(ValueError, match=r"missing 'schema_version'"):
+            load_results_from_json(str(path))
+
+    def test_load_results_from_json_rejects_incompatible_major(self, tmp_path):
+        from porosity_fe_analysis import load_results_from_json
+        path = tmp_path / "future.json"
+        path.write_text(json.dumps({
+            "schema_version": "2.0",
+            "format": "porosity-fe.empirical-sweep",
+        }), encoding='utf-8')
+        with pytest.raises(ValueError, match=r"incompatible"):
+            load_results_from_json(str(path))
+
+    def test_load_results_from_json_rejects_unknown_format(self, tmp_path):
+        from porosity_fe_analysis import load_results_from_json
+        path = tmp_path / "wrong-fmt.json"
+        path.write_text(json.dumps({
+            "schema_version": "1.0",
+            "format": "porosity-fe.something-else",
+        }), encoding='utf-8')
+        with pytest.raises(ValueError, match=r"unknown format"):
+            load_results_from_json(str(path))
 
 
 class TestIntegration:
@@ -905,6 +968,113 @@ class TestMTEffectiveStiffness:
         assert deg_yy > deg_xx
         # The two equatorial directions are equivalent (axisymmetric).
         assert abs(deg_yy - deg_zz) < 1e-6
+
+    def test_cache_hit_returns_identical_result(self):
+        # #42: a repeated call with the same key must come from the cache
+        # and return a numerically identical result (within fp tolerance
+        # of the original computation, which here is exact equality since
+        # the cache stores the actual array).
+        from porosity_fe_analysis import _mt_cache, _mt_cache_clear
+        _mt_cache_clear()
+        first = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
+        assert len(_mt_cache) == 1
+        second = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
+        # Still one entry — no duplication.
+        assert len(_mt_cache) == 1
+        np.testing.assert_array_equal(first, second)
+
+    def test_cache_returns_defensive_copy(self):
+        # Callers may mutate the returned array (e.g. callers in the FE
+        # path build derived ratios). The cache must not be poisoned by
+        # that mutation — the next call must still return the original.
+        from porosity_fe_analysis import _mt_cache_clear
+        _mt_cache_clear()
+        first = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
+        first[0, 0] = -999.0  # mutate the returned array
+        second = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
+        assert second[0, 0] != -999.0
+
+    def test_cache_distinguishes_materials(self):
+        # Two materials with different C_m[0,0] must NOT collide in the
+        # cache even at identical (Vp, shape, nu_m).
+        from porosity_fe_analysis import _mt_cache, _mt_cache_clear
+        _mt_cache_clear()
+        C_m2 = self.C_m * 2.0  # different fingerprint
+        a = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
+        b = _mt_effective_stiffness(C_m2, 0.04, (1, 1, 1), 0.35)
+        assert len(_mt_cache) == 2
+        # The stiffer matrix should give a stiffer effective stiffness.
+        assert b[0, 0] > a[0, 0]
+
+
+class TestDegradedCompositeStiffness:
+    """Direct unit tests for _degraded_composite_stiffness (#48).
+
+    Previously exercised only indirectly through Hex8Element._degraded_stiffness;
+    the Vp < 1e-12, Vp > 0.99, and the lame-denominator guard branches were
+    not covered, and past matrix-modulus fixes lived in this function.
+    """
+
+    def setup_method(self):
+        self.mat = MATERIALS['T800_epoxy']
+        self.pristine = self.mat.get_stiffness_matrix()
+
+    def test_vp_zero_returns_pristine(self):
+        C = _degraded_composite_stiffness(0.0, (1, 1, 1), self.mat)
+        np.testing.assert_allclose(C, self.pristine, atol=1e-9)
+
+    def test_vp_subepsilon_returns_pristine(self):
+        # Below the 1e-12 guard: must take the early-return branch.
+        C = _degraded_composite_stiffness(1e-15, (1, 1, 1), self.mat)
+        np.testing.assert_allclose(C, self.pristine, atol=1e-9)
+
+    def test_vp_near_one_returns_zeros(self):
+        # Above the 0.99 guard: collapsed material is fully degraded.
+        C = _degraded_composite_stiffness(0.995, (1, 1, 1), self.mat)
+        np.testing.assert_array_equal(C, np.zeros((6, 6)))
+
+    def test_e11_weakly_affected_e22_g12_strongly(self):
+        # At 5% porosity the fiber-dominated E11 barely moves while the
+        # matrix-dominated E22 and G12 take significant hits. This is the
+        # whole reason this helper exists; if a future refactor inverts
+        # those rates, this test must fail.
+        Vp = 0.05
+        C = _degraded_composite_stiffness(Vp, (1, 1, 1), self.mat)
+        S = np.linalg.inv(C)
+        S_pristine = np.linalg.inv(self.pristine)
+        # Engineering moduli come straight off the compliance diagonal.
+        E11_loss = 1.0 - (1.0 / S[0, 0]) / (1.0 / S_pristine[0, 0])
+        E22_loss = 1.0 - (1.0 / S[1, 1]) / (1.0 / S_pristine[1, 1])
+        G12_loss = 1.0 - (1.0 / S[5, 5]) / (1.0 / S_pristine[5, 5])
+        assert E11_loss < 0.01, f"E11 should be near-pristine, lost {E11_loss:.4f}"
+        assert E22_loss > E11_loss * 5, (
+            f"E22 loss {E22_loss:.4f} should be much larger than E11 loss {E11_loss:.4f}"
+        )
+        assert G12_loss > E11_loss * 5, (
+            f"G12 loss {G12_loss:.4f} should be much larger than E11 loss {E11_loss:.4f}"
+        )
+
+    def test_monotonic_e22_degradation(self):
+        Vp_list = [0.01, 0.03, 0.05, 0.08]
+        E22_seq = []
+        for Vp in Vp_list:
+            C = _degraded_composite_stiffness(Vp, (1, 1, 1), self.mat)
+            S = np.linalg.inv(C)
+            E22_seq.append(1.0 / S[1, 1])
+        for a, b in zip(E22_seq, E22_seq[1:]):
+            assert b < a, f"E22 should drop monotonically with Vp: got {E22_seq}"
+
+    def test_returned_stiffness_positive_definite(self):
+        C = _degraded_composite_stiffness(0.05, (1, 1, 1), self.mat)
+        eig = np.linalg.eigvalsh(C)
+        assert np.all(eig > 0), f"degraded stiffness not positive-definite: {eig}"
+
+    def test_all_finite(self):
+        # Sweep through the regime where the lame-denominator guard
+        # (lam_eff + mu_eff < 1e-12) could trip; outputs must stay finite.
+        for Vp in [1e-10, 0.01, 0.10, 0.50, 0.85, 0.985]:
+            C = _degraded_composite_stiffness(Vp, (1, 1, 1), self.mat)
+            assert np.all(np.isfinite(C)), f"non-finite C at Vp={Vp}"
 
 
 class TestHex8Element:

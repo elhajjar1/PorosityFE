@@ -3,13 +3,10 @@
 
 import json
 import os
-import sys
 import tempfile
 
 import jsonschema
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -33,10 +30,13 @@ def test_load_dataset_function_exists():
 
 def test_load_dataset_rejects_invalid_json():
     from validation.validate_all import load_dataset, ValidationError
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({"reference": "too short"}, f)  # missing required fields
-        tmppath = f.name
+    # Use mkstemp so the descriptor is closed before load_dataset reopens
+    # the path — NamedTemporaryFile in text mode on Windows can hold a lock
+    # that blocks the reopen even with delete=False.
+    fd, tmppath = tempfile.mkstemp(suffix='.json')
     try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({"reference": "too short"}, f)
         with pytest.raises(ValidationError):
             load_dataset(tmppath)
     finally:

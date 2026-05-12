@@ -20,6 +20,8 @@ Dependencies:
     pip install numpy scipy matplotlib
 """
 
+import logging
+
 import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
@@ -27,9 +29,12 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Tuple, Dict, List, Optional, Union
 import json
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
 # SECTION 1: MATERIAL PROPERTIES AND CONSTANTS
@@ -967,9 +972,20 @@ class EmpiricalSolver:
         return kd
 
     def apply_loading(self, mode: str = 'compression', model: str = 'judd_wright'):
-        model_func = {'judd_wright': self._judd_wright,
-                      'power_law': self._power_law,
-                      'linear': self._linear}[model]
+        _MODEL_FUNCS = {'judd_wright': self._judd_wright,
+                        'power_law': self._power_law,
+                        'linear': self._linear}
+        if model not in _MODEL_FUNCS:
+            raise ValueError(
+                f"Unknown knockdown model {model!r}. "
+                f"Use one of {sorted(_MODEL_FUNCS)}."
+            )
+        if mode not in self.PRISTINE_STRENGTH_KEY:
+            raise ValueError(
+                f"Unknown loading mode {mode!r}. "
+                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
+            )
+        model_func = _MODEL_FUNCS[model]
         kd = np.array([model_func(Vp, mode) for Vp in self.mesh.porosity])
         kd = self._apply_discrete_void_scf(kd, mode)
         self.nodal_knockdown = kd
@@ -1637,10 +1653,43 @@ _NODE_COORDS_REF = np.array([
 ], dtype=float)
 
 
+# Bounded LRU cache for _mt_effective_stiffness results (#42). The FE stress
+# recovery loop calls this once per (element, Gauss point) with a Vp that
+# only varies element-to-element, so within an element the same key recurs
+# 8x. Across an FE run with a few thousand elements, the number of unique
+# (Vp, shape, nu_m, C_m-fingerprint) tuples is small enough that an LRU of
+# a few thousand entries gives a high hit rate at low memory cost.
+_MT_CACHE_MAXSIZE = 4096
+_mt_cache: 'OrderedDict[tuple, np.ndarray]' = OrderedDict()
+
+
+def _mt_cache_key(C_m: np.ndarray, Vp: float, void_shape_radii: Tuple,
+                  nu_m: float) -> tuple:
+    # An isotropic 6x6 stiffness is fully determined by (lam+2mu, mu); use
+    # both diagonal slots as a content fingerprint so different materials
+    # never collide. Rounding tolerances are tighter than typical FP noise
+    # but loose enough that two physically-identical inputs collapse.
+    return (
+        round(float(Vp), 6),
+        tuple(round(float(r), 6) for r in void_shape_radii),
+        round(float(nu_m), 8),
+        round(float(C_m[0, 0]), 4),
+        round(float(C_m[3, 3]), 4),
+    )
+
+
+def _mt_cache_clear() -> None:
+    """Drop the MT effective-stiffness cache. Test/diagnostic helper."""
+    _mt_cache.clear()
+
+
 def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
                             void_shape_radii: Tuple,
                             nu_m: float) -> np.ndarray:
     """Mori-Tanaka effective stiffness for void inclusions (C_inclusion = 0).
+
+    Memoized by a content-fingerprint cache (#42). The cached result is
+    copied before return so callers can mutate it freely.
 
     Standalone Eshelby-tensor-based Mori-Tanaka calculation for use inside
     Hex8Element.
@@ -1672,6 +1721,14 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
         return C_m.copy()
     if Vp > 0.99:
         return np.zeros((6, 6))
+
+    # Cache check (#42). The compute path below is ~200x more expensive
+    # than the fingerprint+lookup, so the hit case is essentially free.
+    cache_key = _mt_cache_key(C_m, Vp, void_shape_radii, nu_m)
+    cached = _mt_cache.get(cache_key)
+    if cached is not None:
+        _mt_cache.move_to_end(cache_key)  # LRU touch
+        return cached.copy()
 
     nu = nu_m
     r = list(void_shape_radii)
@@ -1764,8 +1821,16 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     C_eff = C_m @ (I6 - Vp * inner_inv)
     if not np.all(np.isfinite(C_eff)):
         # Last-ditch: return the void-saturated zero stiffness rather than
-        # silently emitting NaN/inf from a near-singular inner.
+        # silently emitting NaN/inf from a near-singular inner. Skip the
+        # cache for this path — it's a defensive fallback, not a result
+        # we want to look up later.
         return np.zeros((6, 6))
+
+    # Store in the LRU cache (#42); evict the oldest entry if full. Cache
+    # a defensive copy so callers can mutate the returned array.
+    _mt_cache[cache_key] = C_eff.copy()
+    if len(_mt_cache) > _MT_CACHE_MAXSIZE:
+        _mt_cache.popitem(last=False)
     return C_eff
 
 
@@ -2865,23 +2930,31 @@ class FESolver:
                 F13 = F12
                 F23 = -0.5 * np.sqrt(F22_F33)
 
-            for g in range(n_gp):
-                s = stress_local[e, g]
-                fi = (F1 * s[0] + F2 * s[1] + F3 * s[2] +
-                      F11 * s[0]**2 + F22 * s[1]**2 + F33 * s[2]**2 +
-                      F44 * s[3]**2 + F55 * s[4]**2 + F66 * s[5]**2 +
-                      2 * F12 * s[0] * s[1] + 2 * F13 * s[0] * s[2] +
-                      2 * F23 * s[1] * s[2])
-                if not np.isfinite(fi):
-                    raise ValueError(
-                        f"Tsai-Wu failure index is non-finite at element {e}, "
-                        f"Gauss point {g} (Vp={elem_Vp:.4f}, "
-                        f"stress={s.tolist()}). This usually indicates a "
-                        f"degenerate stiffness or strength matrix; refine the "
-                        f"mesh or check input bounds."
-                    )
-                if fi > max_fi:
-                    max_fi = fi
+            # Vectorize across all Gauss points of this element (#41).
+            # stress_local[e] is shape (n_gp, 6); the Tsai-Wu polynomial is
+            # element-wise, so the inner Gauss loop collapses to a single
+            # numpy expression of length n_gp.
+            s_all = stress_local[e]  # (n_gp, 6)
+            fi_per_gp = (
+                F1 * s_all[:, 0] + F2 * s_all[:, 1] + F3 * s_all[:, 2]
+                + F11 * s_all[:, 0]**2 + F22 * s_all[:, 1]**2 + F33 * s_all[:, 2]**2
+                + F44 * s_all[:, 3]**2 + F55 * s_all[:, 4]**2 + F66 * s_all[:, 5]**2
+                + 2 * F12 * s_all[:, 0] * s_all[:, 1]
+                + 2 * F13 * s_all[:, 0] * s_all[:, 2]
+                + 2 * F23 * s_all[:, 1] * s_all[:, 2]
+            )
+            if not np.all(np.isfinite(fi_per_gp)):
+                bad_g = int(np.argmax(~np.isfinite(fi_per_gp)))
+                raise ValueError(
+                    f"Tsai-Wu failure index is non-finite at element {e}, "
+                    f"Gauss point {bad_g} (Vp={elem_Vp:.4f}, "
+                    f"stress={s_all[bad_g].tolist()}). This usually indicates "
+                    f"a degenerate stiffness or strength matrix; refine the "
+                    f"mesh or check input bounds."
+                )
+            elem_max = float(fi_per_gp.max())
+            if elem_max > max_fi:
+                max_fi = elem_max
 
         return float(max_fi)
 
@@ -2942,6 +3015,13 @@ class FESolver:
             },
         }
 
+        # Prepend the schema envelope (#20) while keeping the existing
+        # top-level keys flat for backward compatibility.
+        output = {
+            'schema_version': JSON_SCHEMA_VERSION,
+            'format': FORMAT_FE_FIELDS,
+            **output,
+        }
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2)
         print(f"Saved FE results: {filename}")
@@ -3005,10 +3085,28 @@ def compare_configurations(void_volume_fraction: float,
     return results
 
 
+# JSON output schema (#20). Bump the major when an incompatible change
+# to the payload structure ships; bump the minor for additive changes.
+JSON_SCHEMA_VERSION = "1.0"
+FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
+FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
+_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS}
+
+
 def save_results_to_json(results: Dict, filename: str):
     """Export numerical results to JSON."""
-    output = {}
+    output = {
+        'schema_version': JSON_SCHEMA_VERSION,
+        'format': FORMAT_EMPIRICAL_SWEEP,
+    }
     for name, data in results.items():
+        if name in ('schema_version', 'format'):
+            # Defensive: a user-named config that collides with envelope
+            # keys would silently overwrite them. Skip with a clear error.
+            raise ValueError(
+                f"Configuration name {name!r} collides with the JSON "
+                f"envelope keys ('schema_version', 'format')."
+            )
         entry = {
             'config': data['config'],
             'void_volume_fraction': float(data['porosity_field'].Vp),
@@ -3027,6 +3125,39 @@ def save_results_to_json(results: Dict, filename: str):
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2)
     print(f"Saved: {filename}")
+
+
+def load_results_from_json(filename: str) -> Dict:
+    """Round-trip loader for save_results_to_json / export_results outputs.
+
+    Validates schema_version compatibility and format identifier. Raises
+    ValueError on missing or incompatible envelope so callers don't silently
+    consume the wrong shape.
+    """
+    with open(filename, encoding='utf-8') as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"{filename}: expected a JSON object at the top level.")
+    sv = data.get('schema_version')
+    if sv is None:
+        raise ValueError(
+            f"{filename}: missing 'schema_version'. "
+            f"This file was likely written by a pre-1.0 build of porosity-fe."
+        )
+    major = sv.split('.', 1)[0]
+    expected_major = JSON_SCHEMA_VERSION.split('.', 1)[0]
+    if major != expected_major:
+        raise ValueError(
+            f"{filename}: schema_version {sv} is incompatible with this "
+            f"loader (expects {expected_major}.x)."
+        )
+    fmt = data.get('format')
+    if fmt not in _KNOWN_FORMATS:
+        raise ValueError(
+            f"{filename}: unknown format {fmt!r}. "
+            f"Known formats: {sorted(_KNOWN_FORMATS)}."
+        )
+    return data
 
 
 def main():

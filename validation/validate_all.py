@@ -2,6 +2,7 @@
 """Master validation runner: loads all datasets and runs model predictions."""
 
 import json
+import logging
 import os
 import sys
 from typing import Dict, Any
@@ -9,6 +10,8 @@ from typing import Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import jsonschema
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationError(Exception):
@@ -231,6 +234,7 @@ def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
         try:
             data = load_dataset(path)
         except ValidationError as e:
+            logger.warning("Skipping dataset %s: %s", name, e)
             all_results[name] = {'error': str(e)}
             continue
 
@@ -252,6 +256,11 @@ def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
                     'n_points': len(vp),
                 }
             except Exception as e:
+                # logger.exception() captures the traceback so a downstream
+                # debug log (logging level DEBUG/INFO) shows *why* the
+                # property prediction failed, rather than just the bare
+                # string we surface in the JSON results (#19).
+                logger.exception("Prediction failed for %s/%s", name, prop_key)
                 dataset_results[prop_key] = {'error': str(e)}
         all_results[name] = dataset_results
     return all_results
@@ -265,7 +274,10 @@ import matplotlib.pyplot as plt
 def generate_master_report(results: Dict[str, Any], output_dir: str = None):
     """Generate master validation report (PNG plot + Markdown table)."""
     if output_dir is None:
-        output_dir = os.path.dirname(os.path.abspath(__file__))
+        # Default to cwd, not the package directory: when running inside a
+        # PyInstaller-frozen bundle (macOS .app / Windows .exe) the package
+        # path is read-only and writing the PNG/MD there crashes.
+        output_dir = os.getcwd()
 
     by_property = {}
     for ds_name, ds_results in results.items():
