@@ -6,11 +6,7 @@ import dataclasses
 import numpy as np
 import scipy.sparse
 import pytest
-import sys
 import os
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib
 matplotlib.use('Agg')
