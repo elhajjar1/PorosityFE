@@ -2348,8 +2348,16 @@ class GlobalAssembler:
         Elements can share stiffness matrices when they have:
         - Same ply angle
         - Same uniform porosity at all 8 nodes
-        - Same element geometry (same node_coords shape via dx, dy, dz)
+        - Same element geometry (all 8 node positions relative to centroid)
         - Same void status
+        - Same base stiffness matrix C_base
+
+        The geometry fingerprint uses all 8 node coordinates relative to the
+        element centroid (rounded to 8 decimal places) so that skewed, rotated,
+        or otherwise non-rectilinear elements are never incorrectly coalesced
+        with axis-aligned elements that share the same bounding-box extents.
+        C_base is included so elements with identical shape but different
+        material properties do not share a cached stiffness matrix.
         """
         node_ids = self.mesh.elements[elem_idx]
         node_porosities = self.mesh.porosity[node_ids]
@@ -2359,13 +2367,18 @@ class GlobalAssembler:
         is_void = elem_idx in self.mesh.void_element_set
         ply_angle = float(self.mesh.ply_angles[elem_idx])
         porosity_val = round(float(node_porosities[0]), 10)
-        # For structured meshes, all elements have the same shape.
-        # Use element edge lengths as a geometry fingerprint.
+        # Encode the full element shape: 8 node positions relative to the
+        # centroid, rounded to 8 decimal places.  This correctly distinguishes
+        # skewed/non-rectilinear elements from axis-aligned ones that happen to
+        # share the same (dx, dy, dz) bounding-box extents.
         coords = self.mesh.nodes[node_ids]
-        dx = round(float(coords[1, 0] - coords[0, 0]), 8)
-        dy = round(float(coords[3, 1] - coords[0, 1]), 8)
-        dz = round(float(coords[4, 2] - coords[0, 2]), 8)
-        return (ply_angle, porosity_val, is_void, dx, dy, dz)
+        centroid = coords.mean(axis=0)
+        rel_coords = np.round(coords - centroid, 8)
+        geom_key = tuple(rel_coords.ravel())
+        # Include a hash of C_base so elements with the same geometry but
+        # different material stiffness do not share a cached matrix.
+        c_key = hash(self._C_base.tobytes())
+        return (ply_angle, porosity_val, is_void, geom_key, c_key)
 
     def _cache_uniform_elements(self) -> None:
         """Pre-compute stiffness matrices for elements that share properties.
