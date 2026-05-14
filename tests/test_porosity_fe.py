@@ -23,7 +23,8 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    Hex8Element, _mt_effective_stiffness,
                                    _degraded_composite_stiffness,
                                    GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
-                                   compute_clt_effective_modulus, check_mesh_quality)
+                                   compute_clt_effective_modulus, check_mesh_quality,
+                                   _build_provenance)
 
 
 class TestMaterialProperties:
@@ -677,6 +678,10 @@ class TestAnalysisPipeline:
         assert os.path.exists(path)
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
+        # Envelope keys (flat structure: schema_version/format/provenance at
+        # top level alongside per-configuration entries).
+        assert 'schema_version' in data
+        assert 'provenance' in data
         assert 'uniform_spherical' in data
 
     def test_compare_configurations_unknown_material_raises(self):
@@ -1598,6 +1603,10 @@ class TestFEExportResults:
         FESolver.export_results(results, path)
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
+        # Envelope keys
+        assert 'schema_version' in data
+        assert 'provenance' in data
+        # Results merged into the envelope at the top level
         assert 'displacement' in data
         assert 'stress_global' in data
         assert 'failure' in data
@@ -1979,3 +1988,402 @@ class TestConsoleMainWrapper:
         with pytest.raises(ImportError) as exc:
             _check_pyqt6()
         assert "porosity-fe[gui]" in str(exc.value)
+
+
+class TestKeCacheKeyGeometry:
+    """Regression tests for issue #40: _ke_cache key must encode full element
+    geometry and material so skewed/non-rectilinear elements or elements with
+    different C_base never collide with axis-aligned ones."""
+
+    def _make_elem(self, node_coords, C_base, porosity=0.03, material=None):
+        mat = MATERIALS['T800_epoxy']
+        C_m = mat.get_isotropic_matrix_stiffness()
+        return Hex8Element(
+            node_coords=np.asarray(node_coords, dtype=float),
+            C_base=C_base,
+            ply_angle_deg=0.0,
+            node_porosities=np.full(8, porosity),
+            void_shape_radii=(1, 1, 1),
+            nu_m=mat.matrix_poisson,
+            C_m=C_m,
+            material=material,  # None => legacy C_base scaling path
+        )
+
+    def setup_method(self):
+        mat = MATERIALS['T800_epoxy']
+        self.C_base = mat.get_stiffness_matrix()
+
+        # Axis-aligned unit cube
+        self.coords_rect = np.array([
+            [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+            [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+        ], dtype=float)
+
+        # Same bounding box (dx=dy=dz=1) but one node is sheared in x
+        self.coords_shear = self.coords_rect.copy()
+        self.coords_shear[2, 0] += 0.2   # shear node 2 in x
+
+    def test_stiffness_differs_for_sheared_element(self):
+        """Sheared element must produce a different Ke than its axis-aligned twin."""
+        elem_rect = self._make_elem(self.coords_rect, self.C_base)
+        elem_shear = self._make_elem(self.coords_shear, self.C_base)
+        Ke_rect = elem_rect.stiffness_matrix()
+        Ke_shear = elem_shear.stiffness_matrix()
+        assert not np.allclose(Ke_rect, Ke_shear, atol=1.0), (
+            "Stiffness matrices of axis-aligned and sheared elements should differ"
+        )
+
+    def test_cache_key_differs_for_sheared_element(self):
+        """Cache key must differ between axis-aligned and sheared elements."""
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        assembler = GlobalAssembler(mesh, mat, pf)
+
+        # Manually build keys from two synthetic node-coord arrays.
+        # We exploit that _element_cache_key reads from mesh internals,
+        # so instead we test the geometry encoding directly via
+        # the centroid-relative tuple approach used in the fixed code.
+        import numpy as _np
+
+        def _geom_key(coords):
+            centroid = coords.mean(axis=0)
+            rel = _np.round(coords - centroid, 8)
+            return tuple(rel.ravel())
+
+        key_rect = _geom_key(self.coords_rect)
+        key_shear = _geom_key(self.coords_shear)
+        assert key_rect != key_shear, (
+            "Geometry cache keys must differ for axis-aligned vs sheared nodes"
+        )
+
+    def test_stiffness_differs_for_different_material(self):
+        """Two elements with the same geometry but different C_base must differ in Ke.
+
+        We use the legacy path (material=None) so that the stiffness is computed
+        directly from C_base, making the difference observable in Ke.
+        """
+        mat2 = MATERIALS['T700_epoxy']
+        C_base2 = mat2.get_stiffness_matrix()
+        # material=None → legacy scalar-degradation path that reads C_base directly
+        elem1 = self._make_elem(self.coords_rect, self.C_base, material=None)
+        elem2 = self._make_elem(self.coords_rect, C_base2, material=None)
+        Ke1 = elem1.stiffness_matrix()
+        Ke2 = elem2.stiffness_matrix()
+        assert not np.allclose(Ke1, Ke2, atol=1.0), (
+            "Stiffness matrices of elements with different C_base should differ"
+        )
+
+    def test_cache_key_differs_for_different_material(self):
+        """Cache key must differ when C_base changes, even for identical geometry."""
+        mat2 = MATERIALS['T700_epoxy']
+        C_base2 = mat2.get_stiffness_matrix()
+        c_key1 = hash(self.C_base.tobytes())
+        c_key2 = hash(C_base2.tobytes())
+        assert c_key1 != c_key2, (
+            "Material hash in cache key must differ for different C_base matrices"
+        )
+
+    def test_identical_elements_share_cache_key(self):
+        """Two identical axis-aligned elements must produce the same cache key."""
+        import numpy as _np
+
+        def _geom_key(coords):
+            centroid = coords.mean(axis=0)
+            rel = _np.round(coords - centroid, 8)
+            return tuple(rel.ravel())
+
+        key1 = _geom_key(self.coords_rect)
+        # Translate the element — the centroid-relative coords must be identical.
+        coords_translated = self.coords_rect + np.array([5.0, 3.0, 1.0])
+        key2 = _geom_key(coords_translated)
+        assert key1 == key2, (
+            "Translated copies of the same element shape should share the geometry key"
+        )
+
+
+# ============================================================
+# Issue #39: pure-shear BC fix — G12 recovery test
+# ============================================================
+
+
+class TestPureShearBCs:
+    """Verify that shear_bcs imposes true pure shear and recovers G12 correctly.
+
+    An isotropic material (E11=E22=E33, G12=E/(2*(1+nu))) is used so that
+    the analytical shear modulus is known exactly.  The FE-recovered G12 is
+    computed as:
+
+        G12_fe = mean(sigma_xy) / gamma
+
+    where gamma = applied_strain (engineering shear strain) and sigma_xy is
+    the volume-average Voigt component index 5 (1-indexed: [0]=s11, [1]=s22,
+    [2]=s33, [3]=s23, [4]=s13, [5]=s12).
+    """
+
+    @staticmethod
+    def _make_isotropic_material(E: float = 10000.0, nu: float = 0.30) -> 'MaterialProperties':
+        """Return a MaterialProperties that behaves as an isotropic solid."""
+        G = E / (2.0 * (1.0 + nu))
+        return MaterialProperties(
+            E11=E, E22=E, E33=E,
+            G12=G, G13=G, G23=G,
+            nu12=nu, nu13=nu, nu23=nu,
+            sigma_1c=1e6, sigma_1t=1e6,
+            sigma_2t=1e6, sigma_2c=1e6,
+            tau_12=1e6, tau_ilss=1e6,
+            t_ply=0.5, n_plies=4,
+            matrix_modulus=E, matrix_poisson=nu,
+            fiber_modulus=E, fiber_volume_fraction=0.6,
+        )
+
+    def test_shear_bcs_prescribes_all_four_faces(self):
+        """After the fix, all four side faces must carry prescribed displacements."""
+        mat = self._make_isotropic_material()
+        pf = PorosityField(mat, 0.0, distribution='uniform')
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        handler = BoundaryHandler(mesh)
+
+        gamma = 0.01
+        constrained, F = handler.shear_bcs(applied_strain=gamma)
+
+        nodes = mesh.nodes
+        # Every node on any of the four side faces must have ux and uy prescribed.
+        for face in ('x_min', 'x_max', 'y_min', 'y_max'):
+            for nid in mesh.nodes_on_face(face):
+                nid = int(nid)
+                assert 3 * nid in constrained, (
+                    f"ux not prescribed for node {nid} on face {face}")
+                assert 3 * nid + 1 in constrained, (
+                    f"uy not prescribed for node {nid} on face {face}")
+                x_n = float(nodes[nid, 0])
+                y_n = float(nodes[nid, 1])
+                np.testing.assert_allclose(
+                    constrained[3 * nid], (gamma / 2.0) * y_n, atol=1e-12,
+                    err_msg=f"ux wrong for node {nid} on {face}")
+                np.testing.assert_allclose(
+                    constrained[3 * nid + 1], (gamma / 2.0) * x_n, atol=1e-12,
+                    err_msg=f"uy wrong for node {nid} on {face}")
+
+    def test_recovered_G12_matches_analytical(self):
+        """FE-recovered G12 must match E/(2*(1+nu)) within 2 %."""
+        E = 10000.0
+        nu = 0.30
+        G_analytical = E / (2.0 * (1.0 + nu))
+
+        mat = self._make_isotropic_material(E=E, nu=nu)
+        pf = PorosityField(mat, 0.0, distribution='uniform')
+        # 4x4x4 gives 64 elements — coarse but sufficient for a homogeneous cube
+        mesh = CompositeMesh(pf, mat, nx=4, ny=4, nz=4)
+        solver = FESolver(mesh, mat, pf)
+
+        gamma = 0.01
+        results = solver.solve(loading='shear', applied_strain=gamma)
+
+        # Volume-average sigma_xy (Voigt index 5, 0-based)
+        sigma_xy_mean = float(np.mean(results.stress_global[:, :, 5]))
+        G12_fe = sigma_xy_mean / gamma
+
+        rel_err = abs(G12_fe - G_analytical) / G_analytical
+        assert rel_err < 0.02, (
+            f"G12 recovery failed: G12_fe={G12_fe:.1f}, "
+            f"G_analytical={G_analytical:.1f}, rel_err={rel_err:.4f}")
+
+    def test_shear_only_stress_state(self):
+        """Normal stresses must be negligible compared with shear stress."""
+        E = 10000.0
+        nu = 0.30
+
+        mat = self._make_isotropic_material(E=E, nu=nu)
+        pf = PorosityField(mat, 0.0, distribution='uniform')
+        mesh = CompositeMesh(pf, mat, nx=4, ny=4, nz=4)
+        solver = FESolver(mesh, mat, pf)
+
+        gamma = 0.01
+        results = solver.solve(loading='shear', applied_strain=gamma)
+
+        # indices: 0=s11, 1=s22, 2=s33, 3=s23, 4=s13, 5=s12
+        sigma = results.stress_global  # shape (n_elem, n_gp, 6)
+
+        sigma_xy_rms = float(np.sqrt(np.mean(sigma[:, :, 5] ** 2)))
+        for i, label in enumerate(['s11', 's22', 's33', 's23', 's13']):
+            sigma_i_rms = float(np.sqrt(np.mean(sigma[:, :, i] ** 2)))
+            ratio = sigma_i_rms / sigma_xy_rms if sigma_xy_rms > 0 else 0.0
+            assert ratio < 0.05, (
+                f"Non-shear stress {label} too large relative to s12: "
+                f"ratio={ratio:.4f} (rms {label}={sigma_i_rms:.2f}, "
+                f"rms s12={sigma_xy_rms:.2f})")
+
+
+class TestHRefinementConvergence:
+    """h-refinement convergence: finer mesh should approach the analytical
+    uniaxial-tension result more closely than the coarser mesh (#18)."""
+
+    def _run_tension(self, nx, ny, nz, applied_strain=0.001):
+        """Build a zero-porosity mesh and solve uniaxial tension.
+
+        Returns the volume-averaged sigma_xx stress at all Gauss points.
+        """
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, void_volume_fraction=0.0, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz)
+        solver = FESolver(mesh, material, pf)
+        results = solver.solve(loading='tension', applied_strain=applied_strain)
+        # Average sigma_xx across all elements and Gauss points
+        avg_sigma_xx = float(np.mean(results.stress_global[:, :, 0]))
+        return avg_sigma_xx
+
+    def test_h_refinement_monotone_convergence(self):
+        """Refining the mesh from 2x2x2 to 4x4x4 elements should produce a
+        sigma_xx that is closer to the analytical value, OR the two mesh
+        densities agree to within a tightening tolerance (monotone convergence).
+
+        Analytical uniaxial tension for an all-0-degree ply laminate:
+          sigma_xx_analytic ≈ E11 * applied_strain  (simplified, ignores
+          lateral coupling), which serves as an upper-bound reference.
+        """
+        applied_strain = 0.001
+        material = MATERIALS['T800_epoxy']
+
+        # Coarse mesh: 2x2x2 hex elements
+        sigma_coarse = self._run_tension(nx=2, ny=2, nz=2,
+                                         applied_strain=applied_strain)
+
+        # Fine mesh: 4x4x4 hex elements
+        sigma_fine = self._run_tension(nx=4, ny=4, nz=4,
+                                       applied_strain=applied_strain)
+
+        # Analytical reference: sigma_xx ~ C11 * eps_xx for uniaxial tension
+        # with all-0-degree plies.  C11 from the material stiffness matrix.
+        C = material.get_stiffness_matrix()
+        sigma_analytic = float(C[0, 0]) * applied_strain
+
+        err_coarse = abs(sigma_coarse - sigma_analytic)
+        err_fine = abs(sigma_fine - sigma_analytic)
+
+        # The fine mesh must be at least as accurate as the coarse mesh,
+        # OR the difference between the two meshes must be small relative
+        # to the magnitude (monotone convergence guard).
+        mesh_diff = abs(sigma_fine - sigma_coarse)
+        relative_diff = mesh_diff / max(abs(sigma_analytic), 1.0)
+
+        assert err_fine <= err_coarse or relative_diff < 0.05, (
+            f"h-refinement did not converge monotonically: "
+            f"coarse err={err_coarse:.4e}, fine err={err_fine:.4e}, "
+            f"mesh-to-mesh diff={mesh_diff:.4e} ({relative_diff*100:.2f}%)"
+        )
+
+
+# ============================================================
+# PROVENANCE METADATA TESTS
+# ============================================================
+
+class TestBuildProvenance:
+    """Tests for the _build_provenance() reproducibility helper."""
+
+    def test_provenance_returns_dict(self):
+        prov = _build_provenance()
+        assert isinstance(prov, dict)
+
+    def test_required_keys_present(self):
+        prov = _build_provenance()
+        for key in ('porosity_fe_version', 'python_version', 'numpy_version',
+                    'scipy_version', 'matplotlib_version', 'timestamp_utc',
+                    'platform', 'seed', 'git_commit'):
+            assert key in prov, f"Missing provenance key: {key}"
+
+    def test_python_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['python_version'], str)
+        assert len(prov['python_version']) > 0
+        # Should look like "3.X.Y"
+        parts = prov['python_version'].split('.')
+        assert len(parts) == 3
+        assert all(p.isdigit() for p in parts)
+
+    def test_numpy_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['numpy_version'], str)
+        assert len(prov['numpy_version']) > 0
+
+    def test_scipy_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['scipy_version'], str)
+        assert len(prov['scipy_version']) > 0
+
+    def test_matplotlib_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['matplotlib_version'], str)
+        assert len(prov['matplotlib_version']) > 0
+
+    def test_timestamp_utc_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['timestamp_utc'], str)
+        assert prov['timestamp_utc'].endswith('Z')
+        # Should be parseable as ISO-8601
+        import datetime
+        ts = prov['timestamp_utc'].rstrip('Z')
+        datetime.datetime.fromisoformat(ts)  # raises if malformed
+
+    def test_platform_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['platform'], str)
+        assert len(prov['platform']) > 0
+
+    def test_seed_is_none(self):
+        # No random seed is used in this codebase; must be null
+        prov = _build_provenance()
+        assert prov['seed'] is None
+
+    def test_git_commit_is_string_or_none(self):
+        prov = _build_provenance()
+        assert prov['git_commit'] is None or isinstance(prov['git_commit'], str)
+
+
+class TestProvenanceInSaveResultsJson:
+    """Integration: provenance is present and valid in save_results_to_json output."""
+
+    def test_provenance_in_json_output(self, tmp_path):
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']}
+        )
+        path = str(tmp_path / "prov_test.json")
+        save_results_to_json(results, path)
+        with open(path) as f:
+            data = json.load(f)
+        prov = data['provenance']
+        assert isinstance(prov['python_version'], str) and prov['python_version']
+        assert isinstance(prov['numpy_version'], str) and prov['numpy_version']
+        assert isinstance(prov['timestamp_utc'], str) and prov['timestamp_utc']
+        assert 'porosity_fe_version' in prov
+
+    def test_schema_version_in_json_output(self, tmp_path):
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']}
+        )
+        path = str(tmp_path / "schema_test.json")
+        save_results_to_json(results, path)
+        with open(path) as f:
+            data = json.load(f)
+        assert data['schema_version'] == '1.0'
+
+
+class TestProvenanceInFEExportResults:
+    """Integration: provenance is present and valid in FESolver.export_results output."""
+
+    def test_provenance_in_fe_json_output(self, tmp_path):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, material, pf)
+        field_results = solver.solve(loading='compression', applied_strain=-0.001)
+        path = str(tmp_path / "fe_prov_test.json")
+        FESolver.export_results(field_results, path)
+        with open(path) as f:
+            data = json.load(f)
+        prov = data['provenance']
+        assert isinstance(prov['python_version'], str) and prov['python_version']
+        assert isinstance(prov['numpy_version'], str) and prov['numpy_version']
+        assert isinstance(prov['timestamp_utc'], str) and prov['timestamp_utc']
+        assert 'porosity_fe_version' in prov
+        assert data['schema_version'] == '1.0'

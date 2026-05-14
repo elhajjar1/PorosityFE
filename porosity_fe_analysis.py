@@ -33,8 +33,33 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Tuple, Dict, List, Optional, Union
 import json
+import sys
+import platform
+import datetime
+import subprocess
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# PLOT STYLE — applied once at import time
+# ============================================================
+
+def _apply_plot_style():
+    """Set shared rcParams for all plots: fonts, DPI, line widths, grid."""
+    import matplotlib
+    matplotlib.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 11,
+        'axes.titlesize': 14,
+        'axes.labelsize': 12,
+        'lines.linewidth': 1.5,
+        'axes.grid': True,
+        'grid.alpha': 0.3,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+    })
+
+_apply_plot_style()
 
 # ============================================================
 # SECTION 1: MATERIAL PROPERTIES AND CONSTANTS
@@ -1136,8 +1161,8 @@ class FEVisualizer:
             ax.annotate(str(idx), (c[0] + c[1]*0.3 + 0.05, c[2] + c[1]*0.3 + 0.05),
                        fontsize=10, fontweight='bold')
         ax.set_title('8-Node Hexahedral Element', fontsize=14, fontweight='bold')
-        ax.set_xlabel('x')
-        ax.set_ylabel('z')
+        ax.set_xlabel('x (mm)')
+        ax.set_ylabel('z (mm)')
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)
 
@@ -1166,8 +1191,8 @@ class FEVisualizer:
         else:
             kd = mesh.stiffness_reduction[start:end].reshape(ny1, nx1)
 
-        im = ax.contourf(X, Y, kd, levels=20, cmap='RdYlGn')
-        plt.colorbar(im, ax=ax, label='Stiffness Retention')
+        im = ax.contourf(X, Y, kd, levels=20, cmap='viridis')
+        plt.colorbar(im, ax=ax, label='Stiffness Retention (fraction)')
         ax.set_xlabel('x (mm)', fontsize=12)
         ax.set_ylabel('y (mm)', fontsize=12)
         ax.set_title('Stiffness Reduction at Midplane', fontsize=14, fontweight='bold')
@@ -1197,7 +1222,7 @@ class FEVisualizer:
         scf_max = scf['compression']
         field = np.where(dist < 0, 0, 1.0 + (scf_max - 1) * np.exp(-dist / max(void_geometry.radii)))
 
-        im = ax.contourf(X, Y, field, levels=30, cmap='hot_r')
+        im = ax.contourf(X, Y, field, levels=30, cmap='plasma')
         plt.colorbar(im, ax=ax, label='Stress Concentration Factor')
         ax.set_xlabel('x (mm)', fontsize=12)
         ax.set_ylabel('y (mm)', fontsize=12)
@@ -2327,8 +2352,16 @@ class GlobalAssembler:
         Elements can share stiffness matrices when they have:
         - Same ply angle
         - Same uniform porosity at all 8 nodes
-        - Same element geometry (same node_coords shape via dx, dy, dz)
+        - Same element geometry (all 8 node positions relative to centroid)
         - Same void status
+        - Same base stiffness matrix C_base
+
+        The geometry fingerprint uses all 8 node coordinates relative to the
+        element centroid (rounded to 8 decimal places) so that skewed, rotated,
+        or otherwise non-rectilinear elements are never incorrectly coalesced
+        with axis-aligned elements that share the same bounding-box extents.
+        C_base is included so elements with identical shape but different
+        material properties do not share a cached stiffness matrix.
         """
         node_ids = self.mesh.elements[elem_idx]
         node_porosities = self.mesh.porosity[node_ids]
@@ -2338,13 +2371,18 @@ class GlobalAssembler:
         is_void = elem_idx in self.mesh.void_element_set
         ply_angle = float(self.mesh.ply_angles[elem_idx])
         porosity_val = round(float(node_porosities[0]), 10)
-        # For structured meshes, all elements have the same shape.
-        # Use element edge lengths as a geometry fingerprint.
+        # Encode the full element shape: 8 node positions relative to the
+        # centroid, rounded to 8 decimal places.  This correctly distinguishes
+        # skewed/non-rectilinear elements from axis-aligned ones that happen to
+        # share the same (dx, dy, dz) bounding-box extents.
         coords = self.mesh.nodes[node_ids]
-        dx = round(float(coords[1, 0] - coords[0, 0]), 8)
-        dy = round(float(coords[3, 1] - coords[0, 1]), 8)
-        dz = round(float(coords[4, 2] - coords[0, 2]), 8)
-        return (ply_angle, porosity_val, is_void, dx, dy, dz)
+        centroid = coords.mean(axis=0)
+        rel_coords = np.round(coords - centroid, 8)
+        geom_key = tuple(rel_coords.ravel())
+        # Include a hash of C_base so elements with the same geometry but
+        # different material stiffness do not share a cached matrix.
+        c_key = hash(self._C_base.tobytes())
+        return (ply_angle, porosity_val, is_void, geom_key, c_key)
 
     def _cache_uniform_elements(self) -> None:
         """Pre-compute stiffness matrices for elements that share properties.
@@ -2517,28 +2555,56 @@ class BoundaryHandler:
 
     def shear_bcs(self, applied_strain: float = 0.01
                   ) -> Tuple[Dict[int, float], np.ndarray]:
-        """Simple shear boundary conditions.
+        """Pure shear boundary conditions for engineering shear strain gamma_12.
 
-        - x_min: ux = uy = 0
-        - x_max: uy = applied_strain * Lx
-        - one corner fixed in z
+        Prescribes the deformation field consistent with pure shear on ALL four
+        side faces (±x and ±y) so that no spurious bending or traction-free
+        condition biases the computed shear modulus G12.
+
+        For engineering shear strain gamma = applied_strain, the displacement
+        field is::
+
+            u(x, y) = (gamma / 2) * y
+            v(x, y) = (gamma / 2) * x
+            w       = 0
+
+        This gives ε_xy = gamma/2 (Voigt ε_6 = gamma), with all normal strains
+        and out-of-plane shear strains exactly zero.
+
+        BCs applied
+        -----------
+        - x_min (x = 0): ux = 0,              uy = (gamma/2) * y_node
+        - x_max (x = Lx): ux = (gamma/2)*y_node, uy = (gamma/2)*Lx
+        - y_min (y = 0): ux = 0,              uy = (gamma/2)*x_node
+        - y_max (y = Ly): ux = (gamma/2)*Ly,  uy = (gamma/2)*x_node
+        - uz = 0 pinned at the (x_min, y_min, z_min) corner to remove rigid-body
+          motion in z.
         """
         n_dof = self.mesh.n_dof
-        Lx = self.mesh.L_x
-        prescribed_disp = applied_strain * Lx
+        gamma = applied_strain
+        nodes = self.mesh.nodes  # shape (n_nodes, 3)
 
         constrained: Dict[int, float] = {}
 
-        # Fix ux and uy on x_min
-        for nid in self.mesh.nodes_on_face('x_min'):
-            constrained[3 * int(nid)] = 0.0
-            constrained[3 * int(nid) + 1] = 0.0
+        # ±x faces: u = gamma/2 * y_node,  v = gamma/2 * x_node
+        for face in ('x_min', 'x_max'):
+            for nid in self.mesh.nodes_on_face(face):
+                nid = int(nid)
+                x_n = float(nodes[nid, 0])
+                y_n = float(nodes[nid, 1])
+                constrained[3 * nid]     = (gamma / 2.0) * y_n   # ux
+                constrained[3 * nid + 1] = (gamma / 2.0) * x_n   # uy
 
-        # Prescribe uy on x_max
-        for nid in self.mesh.nodes_on_face('x_max'):
-            constrained[3 * int(nid) + 1] = prescribed_disp
+        # ±y faces: u = gamma/2 * y_node,  v = gamma/2 * x_node
+        for face in ('y_min', 'y_max'):
+            for nid in self.mesh.nodes_on_face(face):
+                nid = int(nid)
+                x_n = float(nodes[nid, 0])
+                y_n = float(nodes[nid, 1])
+                constrained[3 * nid]     = (gamma / 2.0) * y_n   # ux
+                constrained[3 * nid + 1] = (gamma / 2.0) * x_n   # uy
 
-        # Fix uz on one corner
+        # Fix uz at one corner to prevent rigid-body translation in z
         xmin_nodes = self.mesh.nodes_on_face('x_min')
         ymin_nodes = self.mesh.nodes_on_face('y_min')
         zmin_nodes = self.mesh.nodes_on_face('z_min')
@@ -2727,10 +2793,23 @@ class FESolver:
             print(f"Solving system ({self.mesh.n_dof} DOFs)...")
         u = scipy.sparse.linalg.spsolve(K_mod, F_mod)
 
+        # Hygiene checks on the solution vector
+        if not np.isfinite(u).all():
+            raise RuntimeError(
+                "spsolve produced non-finite values (NaN or Inf) in the solution "
+                "vector. Check matrix conditioning and boundary conditions."
+            )
+        _r = K_mod @ u - F_mod
+        _rel_res = np.linalg.norm(_r) / max(np.linalg.norm(F_mod), 1.0)
+        if _rel_res >= 1e-6:
+            raise RuntimeError(
+                f"spsolve residual {_rel_res:.4e} exceeds tolerance 1e-6. "
+                "Check matrix conditioning or penalty factor."
+            )
+
         if verbose:
             t2 = time.perf_counter()
-            residual = np.linalg.norm(K_mod @ u - F_mod)
-            print(f"  Solve time: {t2 - t1:.2f} s, residual: {residual:.4e}")
+            print(f"  Solve time: {t2 - t1:.2f} s, residual: {_rel_res:.4e}")
             t1 = t2
 
         # 5. Recover stresses and strains
@@ -2982,7 +3061,7 @@ class FESolver:
                 'std': float(np.std(arr)),
             }
 
-        output = {
+        results_data = {
             'displacement': {
                 'n_nodes': int(field_results.displacement.shape[0]),
                 'ux': _array_stats(field_results.displacement[:, 0]),
@@ -3015,12 +3094,11 @@ class FESolver:
             },
         }
 
-        # Prepend the schema envelope (#20) while keeping the existing
-        # top-level keys flat for backward compatibility.
         output = {
             'schema_version': JSON_SCHEMA_VERSION,
             'format': FORMAT_FE_FIELDS,
-            **output,
+            'provenance': _build_provenance(),
+            **results_data,
         }
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2)
@@ -3093,11 +3171,56 @@ FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS}
 
 
+def _build_provenance() -> dict:
+    """Return a provenance metadata dict for JSON output reproducibility.
+
+    Captures software versions, platform, timestamp, and optional git commit
+    so that any JSON output can be traced back to the exact environment used.
+    """
+    try:
+        import importlib.metadata as _ilm
+        pfe_version: Optional[str] = _ilm.version("porosity-fe")
+    except Exception:
+        # Fall back to the module-level attribute when not installed via pip
+        pfe_version = getattr(
+            sys.modules.get("porosity_fe_analysis"), "__version__", None
+        )
+
+    vi = sys.version_info
+    python_version = f"{vi.major}.{vi.minor}.{vi.micro}"
+
+    def _pkg_version(module_name: str) -> Optional[str]:
+        mod = sys.modules.get(module_name)
+        return getattr(mod, "__version__", None) if mod else None
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        git_commit: Optional[str] = result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        git_commit = None
+
+    return {
+        "porosity_fe_version": pfe_version,
+        "python_version": python_version,
+        "platform": platform.platform(),
+        "numpy_version": _pkg_version("numpy"),
+        "scipy_version": _pkg_version("scipy"),
+        "matplotlib_version": _pkg_version("matplotlib"),
+        "timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": None,
+        "git_commit": git_commit,
+    }
+
+
 def save_results_to_json(results: Dict, filename: str):
     """Export numerical results to JSON."""
     output = {
         'schema_version': JSON_SCHEMA_VERSION,
         'format': FORMAT_EMPIRICAL_SWEEP,
+        'provenance': _build_provenance(),
     }
     for name, data in results.items():
         if name in ('schema_version', 'format'):
