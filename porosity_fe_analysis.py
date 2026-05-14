@@ -33,6 +33,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Tuple, Dict, List, Optional, Union
 import json
+import sys
+import platform
+import datetime
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -3057,7 +3061,7 @@ class FESolver:
                 'std': float(np.std(arr)),
             }
 
-        output = {
+        results_data = {
             'displacement': {
                 'n_nodes': int(field_results.displacement.shape[0]),
                 'ux': _array_stats(field_results.displacement[:, 0]),
@@ -3090,12 +3094,11 @@ class FESolver:
             },
         }
 
-        # Prepend the schema envelope (#20) while keeping the existing
-        # top-level keys flat for backward compatibility.
         output = {
             'schema_version': JSON_SCHEMA_VERSION,
             'format': FORMAT_FE_FIELDS,
-            **output,
+            'provenance': _build_provenance(),
+            **results_data,
         }
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2)
@@ -3168,11 +3171,56 @@ FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS}
 
 
+def _build_provenance() -> dict:
+    """Return a provenance metadata dict for JSON output reproducibility.
+
+    Captures software versions, platform, timestamp, and optional git commit
+    so that any JSON output can be traced back to the exact environment used.
+    """
+    try:
+        import importlib.metadata as _ilm
+        pfe_version: Optional[str] = _ilm.version("porosity-fe")
+    except Exception:
+        # Fall back to the module-level attribute when not installed via pip
+        pfe_version = getattr(
+            sys.modules.get("porosity_fe_analysis"), "__version__", None
+        )
+
+    vi = sys.version_info
+    python_version = f"{vi.major}.{vi.minor}.{vi.micro}"
+
+    def _pkg_version(module_name: str) -> Optional[str]:
+        mod = sys.modules.get(module_name)
+        return getattr(mod, "__version__", None) if mod else None
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        git_commit: Optional[str] = result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        git_commit = None
+
+    return {
+        "porosity_fe_version": pfe_version,
+        "python_version": python_version,
+        "platform": platform.platform(),
+        "numpy_version": _pkg_version("numpy"),
+        "scipy_version": _pkg_version("scipy"),
+        "matplotlib_version": _pkg_version("matplotlib"),
+        "timestamp_utc": datetime.datetime.utcnow().isoformat() + "Z",
+        "seed": None,
+        "git_commit": git_commit,
+    }
+
+
 def save_results_to_json(results: Dict, filename: str):
     """Export numerical results to JSON."""
     output = {
         'schema_version': JSON_SCHEMA_VERSION,
         'format': FORMAT_EMPIRICAL_SWEEP,
+        'provenance': _build_provenance(),
     }
     for name, data in results.items():
         if name in ('schema_version', 'format'):

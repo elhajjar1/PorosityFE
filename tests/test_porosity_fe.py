@@ -23,7 +23,8 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    Hex8Element, _mt_effective_stiffness,
                                    _degraded_composite_stiffness,
                                    GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
-                                   compute_clt_effective_modulus, check_mesh_quality)
+                                   compute_clt_effective_modulus, check_mesh_quality,
+                                   _build_provenance)
 
 
 class TestMaterialProperties:
@@ -677,6 +678,10 @@ class TestAnalysisPipeline:
         assert os.path.exists(path)
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
+        # Envelope keys (flat structure: schema_version/format/provenance at
+        # top level alongside per-configuration entries).
+        assert 'schema_version' in data
+        assert 'provenance' in data
         assert 'uniform_spherical' in data
 
     def test_compare_configurations_unknown_material_raises(self):
@@ -1598,6 +1603,10 @@ class TestFEExportResults:
         FESolver.export_results(results, path)
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
+        # Envelope keys
+        assert 'schema_version' in data
+        assert 'provenance' in data
+        # Results merged into the envelope at the top level
         assert 'displacement' in data
         assert 'stress_global' in data
         assert 'failure' in data
@@ -2263,3 +2272,118 @@ class TestHRefinementConvergence:
             f"coarse err={err_coarse:.4e}, fine err={err_fine:.4e}, "
             f"mesh-to-mesh diff={mesh_diff:.4e} ({relative_diff*100:.2f}%)"
         )
+
+
+# ============================================================
+# PROVENANCE METADATA TESTS
+# ============================================================
+
+class TestBuildProvenance:
+    """Tests for the _build_provenance() reproducibility helper."""
+
+    def test_provenance_returns_dict(self):
+        prov = _build_provenance()
+        assert isinstance(prov, dict)
+
+    def test_required_keys_present(self):
+        prov = _build_provenance()
+        for key in ('porosity_fe_version', 'python_version', 'numpy_version',
+                    'scipy_version', 'matplotlib_version', 'timestamp_utc',
+                    'platform', 'seed', 'git_commit'):
+            assert key in prov, f"Missing provenance key: {key}"
+
+    def test_python_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['python_version'], str)
+        assert len(prov['python_version']) > 0
+        # Should look like "3.X.Y"
+        parts = prov['python_version'].split('.')
+        assert len(parts) == 3
+        assert all(p.isdigit() for p in parts)
+
+    def test_numpy_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['numpy_version'], str)
+        assert len(prov['numpy_version']) > 0
+
+    def test_scipy_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['scipy_version'], str)
+        assert len(prov['scipy_version']) > 0
+
+    def test_matplotlib_version_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['matplotlib_version'], str)
+        assert len(prov['matplotlib_version']) > 0
+
+    def test_timestamp_utc_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['timestamp_utc'], str)
+        assert prov['timestamp_utc'].endswith('Z')
+        # Should be parseable as ISO-8601
+        import datetime
+        ts = prov['timestamp_utc'].rstrip('Z')
+        datetime.datetime.fromisoformat(ts)  # raises if malformed
+
+    def test_platform_is_non_null_string(self):
+        prov = _build_provenance()
+        assert isinstance(prov['platform'], str)
+        assert len(prov['platform']) > 0
+
+    def test_seed_is_none(self):
+        # No random seed is used in this codebase; must be null
+        prov = _build_provenance()
+        assert prov['seed'] is None
+
+    def test_git_commit_is_string_or_none(self):
+        prov = _build_provenance()
+        assert prov['git_commit'] is None or isinstance(prov['git_commit'], str)
+
+
+class TestProvenanceInSaveResultsJson:
+    """Integration: provenance is present and valid in save_results_to_json output."""
+
+    def test_provenance_in_json_output(self, tmp_path):
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']}
+        )
+        path = str(tmp_path / "prov_test.json")
+        save_results_to_json(results, path)
+        with open(path) as f:
+            data = json.load(f)
+        prov = data['provenance']
+        assert isinstance(prov['python_version'], str) and prov['python_version']
+        assert isinstance(prov['numpy_version'], str) and prov['numpy_version']
+        assert isinstance(prov['timestamp_utc'], str) and prov['timestamp_utc']
+        assert 'porosity_fe_version' in prov
+
+    def test_schema_version_in_json_output(self, tmp_path):
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']}
+        )
+        path = str(tmp_path / "schema_test.json")
+        save_results_to_json(results, path)
+        with open(path) as f:
+            data = json.load(f)
+        assert data['schema_version'] == '1.0'
+
+
+class TestProvenanceInFEExportResults:
+    """Integration: provenance is present and valid in FESolver.export_results output."""
+
+    def test_provenance_in_fe_json_output(self, tmp_path):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, material, pf)
+        field_results = solver.solve(loading='compression', applied_strain=-0.001)
+        path = str(tmp_path / "fe_prov_test.json")
+        FESolver.export_results(field_results, path)
+        with open(path) as f:
+            data = json.load(f)
+        prov = data['provenance']
+        assert isinstance(prov['python_version'], str) and prov['python_version']
+        assert isinstance(prov['numpy_version'], str) and prov['numpy_version']
+        assert isinstance(prov['timestamp_utc'], str) and prov['timestamp_utc']
+        assert 'porosity_fe_version' in prov
+        assert data['schema_version'] == '1.0'
