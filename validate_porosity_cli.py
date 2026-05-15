@@ -12,8 +12,10 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import sys
+from datetime import datetime, timezone
 
 
 def _resolve_version() -> str:
@@ -58,13 +60,46 @@ def _resolve_bundled_schema_dir() -> str:
     return os.path.join(here, 'validation', 'schemas')
 
 
+def _configure_debug_logging(output_dir: str) -> str:
+    """Attach a DEBUG file handler so a failed run leaves a diagnosable log.
+
+    Returns the path of the log file. The validation pipeline already calls
+    ``logger.exception(...)`` on swallowed errors (#19); without a handler at
+    DEBUG those tracebacks go nowhere.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    log_path = os.path.join(output_dir, f'validate_porosity_{stamp}.log')
+    handler = logging.FileHandler(log_path, encoding='utf-8')
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s %(levelname)s %(name)s: %(message)s'
+    ))
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    # Third-party libraries emit a flood of DEBUG records that bury the
+    # validation-pipeline tracebacks this log exists to capture (#19).
+    for noisy in ('matplotlib', 'PIL', 'fontTools'):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    return log_path
+
+
 def _ensure_validation_imports():
     """Make validation/ importable regardless of whether we're frozen."""
     if getattr(sys, 'frozen', False):
+        # The PyInstaller bundle dir is trusted (we built it), so prepending
+        # it is fine.
         base = sys._MEIPASS
-        sys.path.insert(0, base)
+        if base not in sys.path:
+            sys.path.insert(0, base)
     else:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        # Append, not insert(0, ...): a file dropped next to this script
+        # must not be able to shadow a stdlib / site-packages module of the
+        # same name on import (#29).
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.append(here)
 
 
 def main(argv=None) -> int:
@@ -86,10 +121,19 @@ def main(argv=None) -> int:
         help='Suppress per-dataset progress output',
     )
     parser.add_argument(
+        '--debug', action='store_true',
+        help='Write a per-run DEBUG log (with tracebacks for any failed '
+             'datasets) to the output directory',
+    )
+    parser.add_argument(
         '--version', action='version',
         version=f'validate_porosity {_resolve_version()}',
     )
     args = parser.parse_args(argv)
+
+    debug_log_path = None
+    if args.debug:
+        debug_log_path = _configure_debug_logging(args.output_dir)
 
     _ensure_validation_imports()
 
@@ -146,6 +190,8 @@ def main(argv=None) -> int:
     print()
     print(f"Report: {plot_path}")
     print(f"Detail: {md_path}")
+    if debug_log_path is not None:
+        print(f"Debug log: {debug_log_path}")
     print()
     print(f"Datasets processed:  {n_datasets_ok} succeeded, "
           f"{n_datasets_err} failed")

@@ -10,11 +10,15 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Append (not insert(0, ...)) so a file dropped next to this script can't
+# shadow a stdlib / site-packages module of the same name on import (#29).
+# pip-installing the package makes this unnecessary; it only matters for
+# source-layout / direct `python validation/validate_all.py` runs.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
 
 import jsonschema
-
-logger = logging.getLogger(__name__)
 
 
 class ValidationError(Exception):
@@ -30,8 +34,15 @@ _SCHEMA = None
 def _get_schema() -> Dict[str, Any]:
     global _SCHEMA
     if _SCHEMA is None:
-        with open(_SCHEMA_PATH, encoding='utf-8') as f:
-            _SCHEMA = json.load(f)
+        try:
+            with open(_SCHEMA_PATH, encoding='utf-8') as f:
+                _SCHEMA = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.exception("Failed to load validation schema")
+            raise ValueError(
+                f"Failed to load validation schema from {_SCHEMA_PATH!r}: "
+                f"{type(e).__name__}: {e}"
+            ) from e
     return _SCHEMA
 
 
@@ -292,7 +303,10 @@ def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
             data = load_dataset(path)
         except ValidationError as e:
             logger.warning("Skipping dataset %s: %s", name, e)
-            all_results[name] = {'error': str(e)}
+            all_results[name] = {
+                'error': str(e),
+                'error_type': type(e).__name__,
+            }
             continue
 
         dataset_results = {}
@@ -326,7 +340,10 @@ def run_all_datasets(datasets_dir: str = None) -> Dict[str, Any]:
                 # property prediction failed, rather than just the bare
                 # string we surface in the JSON results (#19).
                 logger.exception("Prediction failed for %s/%s", name, prop_key)
-                dataset_results[prop_key] = {'error': str(e)}
+                dataset_results[prop_key] = {
+                    'error': str(e),
+                    'error_type': type(e).__name__,
+                }
         all_results[name] = dataset_results
     return all_results
 

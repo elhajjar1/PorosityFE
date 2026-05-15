@@ -24,7 +24,8 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, VoidGeometry, V
                                    _degraded_composite_stiffness,
                                    GlobalAssembler, BoundaryHandler, FESolver, FieldResults,
                                    compute_clt_effective_modulus, check_mesh_quality,
-                                   _build_provenance)
+                                   _build_provenance, load_results_from_json,
+                                   JSON_SCHEMA_VERSION, FORMAT_EMPIRICAL_SWEEP)
 
 
 class TestMaterialProperties:
@@ -2325,7 +2326,7 @@ class TestProvenanceInSaveResultsJson:
         )
         path = str(tmp_path / "prov_test.json")
         save_results_to_json(results, path)
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         prov = data['provenance']
         assert isinstance(prov['python_version'], str) and prov['python_version']
@@ -2339,9 +2340,31 @@ class TestProvenanceInSaveResultsJson:
         )
         path = str(tmp_path / "schema_test.json")
         save_results_to_json(results, path)
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         assert data['schema_version'] == '1.0'
+
+
+class TestJsonEncodingRoundTrip:
+    """Regression for #21: JSON I/O must be UTF-8 on every platform.
+
+    Without explicit encoding, Windows opens files in the locale code page
+    (cp1252) and silently mangles non-ASCII content. This locks the
+    round-trip with characters that are not representable in cp1252.
+    """
+
+    def test_non_ascii_round_trips_through_loader(self, tmp_path):
+        path = str(tmp_path / "ünïcode_µCT.json")
+        payload = {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "format": FORMAT_EMPIRICAL_SWEEP,
+            "note": "µCT scan, σ₁c knockdown — café/naïve ✓",
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        loaded = load_results_from_json(path)
+        assert loaded["note"] == "µCT scan, σ₁c knockdown — café/naïve ✓"
 
 
 class TestProvenanceInFEExportResults:
@@ -2355,7 +2378,7 @@ class TestProvenanceInFEExportResults:
         field_results = solver.solve(loading='compression', applied_strain=-0.001)
         path = str(tmp_path / "fe_prov_test.json")
         FESolver.export_results(field_results, path)
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         prov = data['provenance']
         assert isinstance(prov['python_version'], str) and prov['python_version']
