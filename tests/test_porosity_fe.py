@@ -1721,6 +1721,184 @@ class TestFEExportResults:
         assert data['failure']['knockdown_factor'] > 0
 
 
+def _parse_legacy_vtk(path):
+    """Minimal legacy-ASCII VTK UNSTRUCTURED_GRID parser for test assertions.
+
+    Returns a dict with header, n_points, n_cells, the parsed point
+    coordinates, the cell connectivity, cell types, and the names of the
+    POINT_DATA / CELL_DATA arrays found.
+    """
+    with open(path, encoding='utf-8') as fh:
+        tokens = fh.read().split('\n')
+    lines = [ln.strip() for ln in tokens if ln.strip() != '']
+
+    info = {
+        'header': lines[0],
+        'point_data_arrays': [],
+        'cell_data_arrays': [],
+    }
+    i = 0
+    assert lines[2] == 'ASCII'
+    assert lines[3] == 'DATASET UNSTRUCTURED_GRID'
+
+    section = None  # None / 'point_data' / 'cell_data'
+    while i < len(lines):
+        ln = lines[i]
+        parts = ln.split()
+        if parts[0] == 'POINTS':
+            n_points = int(parts[1])
+            info['n_points'] = n_points
+            pts = []
+            for row in lines[i + 1:i + 1 + n_points]:
+                pts.append([float(v) for v in row.split()])
+            info['points'] = np.array(pts)
+            i += 1 + n_points
+            continue
+        if parts[0] == 'CELLS':
+            n_cells = int(parts[1])
+            info['n_cells'] = n_cells
+            info['cells_total_ints'] = int(parts[2])
+            conn = []
+            for row in lines[i + 1:i + 1 + n_cells]:
+                vals = [int(v) for v in row.split()]
+                assert vals[0] == 8  # hex8
+                conn.append(vals[1:])
+            info['cells'] = np.array(conn)
+            i += 1 + n_cells
+            continue
+        if parts[0] == 'CELL_TYPES':
+            n = int(parts[1])
+            types = [int(v) for v in lines[i + 1:i + 1 + n]]
+            info['cell_types'] = types
+            i += 1 + n
+            continue
+        if parts[0] == 'POINT_DATA':
+            section = 'point_data'
+            i += 1
+            continue
+        if parts[0] == 'CELL_DATA':
+            section = 'cell_data'
+            i += 1
+            continue
+        if parts[0] in ('SCALARS', 'VECTORS'):
+            name = parts[1]
+            if section == 'point_data':
+                info['point_data_arrays'].append(name)
+            elif section == 'cell_data':
+                info['cell_data_arrays'].append(name)
+            i += 1
+            continue
+        i += 1
+    return info
+
+
+class TestFEExportVTK:
+    """Issue #61: hex mesh + per-element fields written to legacy VTK."""
+
+    def _solve(self):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        solver = FESolver(mesh, material, pf)
+        results = solver.solve(loading='compression', applied_strain=-0.001)
+        return mesh, results
+
+    def test_to_vtk_creates_file(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.vtk")
+        results.to_vtk(mesh, path)
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
+
+    def test_to_vtk_header_and_counts(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.vtk")
+        results.to_vtk(mesh, path)
+        info = _parse_legacy_vtk(path)
+        assert info['header'].startswith('# vtk DataFile Version')
+        assert info['n_points'] == mesh.n_nodes
+        assert info['n_cells'] == mesh.n_elements
+        # Each hex line is "8 n0..n7" -> 9 ints per cell.
+        assert info['cells_total_ints'] == mesh.n_elements * 9
+        # All cells must be VTK_HEXAHEDRON (type 12).
+        assert info['cell_types'] == [12] * mesh.n_elements
+
+    def test_to_vtk_geometry_matches_mesh(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.vtk")
+        results.to_vtk(mesh, path)
+        info = _parse_legacy_vtk(path)
+        np.testing.assert_allclose(info['points'], mesh.nodes, rtol=1e-6)
+        np.testing.assert_array_equal(info['cells'], mesh.elements)
+
+    def test_to_vtk_has_expected_fields(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.vtk")
+        results.to_vtk(mesh, path)
+        info = _parse_legacy_vtk(path)
+        assert 'displacement' in info['point_data_arrays']
+        assert 'porosity' in info['point_data_arrays']
+        for name in ('von_mises', 'sigma_xx', 'tau_xy',
+                     'tsai_wu_index', 'Vp_elem', 'is_void'):
+            assert name in info['cell_data_arrays'], name
+
+    def test_export_results_fmt_vtk(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "via_export.vtk")
+        FESolver.export_results(results, path, fmt='vtk', mesh=mesh)
+        info = _parse_legacy_vtk(path)
+        assert info['n_points'] == mesh.n_nodes
+        assert info['n_cells'] == mesh.n_elements
+
+    def test_export_results_vtk_requires_mesh(self, tmp_path):
+        _, results = self._solve()
+        path = str(tmp_path / "no_mesh.vtk")
+        with pytest.raises(ValueError):
+            FESolver.export_results(results, path, fmt='vtk')
+
+    def test_export_results_rejects_unknown_format(self, tmp_path):
+        _, results = self._solve()
+        path = str(tmp_path / "bad.xyz")
+        with pytest.raises(ValueError):
+            FESolver.export_results(results, path, fmt='nope')
+
+    def test_per_element_failure_index_populated(self):
+        mesh, results = self._solve()
+        assert results.per_element_failure_index is not None
+        assert results.per_element_failure_index.shape == (mesh.n_elements,)
+        assert np.all(results.per_element_failure_index >= 0)
+        # Scalar max must equal the per-element array's max.
+        np.testing.assert_allclose(
+            results.max_failure_index,
+            float(results.per_element_failure_index.max()))
+
+    def test_json_export_unchanged_back_compatible(self, tmp_path):
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.json")
+        # Default still JSON; explicit fmt='json' also works.
+        FESolver.export_results(results, path)
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        assert 'displacement' in data
+        assert 'stress_global' in data
+        assert 'failure' in data
+
+    def test_to_vtk_meshio_roundtrip_if_available(self, tmp_path):
+        """If meshio happens to be importable, it must parse our file too.
+
+        meshio is NOT a project dependency; this test self-skips when it is
+        absent so it never forces the dependency.
+        """
+        meshio = pytest.importorskip("meshio")
+        mesh, results = self._solve()
+        path = str(tmp_path / "fe_results.vtk")
+        results.to_vtk(mesh, path)
+        m = meshio.read(path)
+        assert m.points.shape == (mesh.n_nodes, 3)
+        total_cells = sum(len(cb.data) for cb in m.cells)
+        assert total_cells == mesh.n_elements
+
+
 class TestReprMethods:
     def test_material_repr(self):
         mat = MATERIALS['T800_epoxy']
