@@ -21,24 +21,21 @@ Dependencies:
 """
 
 import argparse
+import datetime
+import json
 import logging
 import os
+import platform
+import subprocess
+import sys
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Tuple, Dict, List, Optional, Union
-import json
-import sys
-import platform
-import datetime
-import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -705,9 +702,9 @@ class CompositeMesh:
 
         nodes = []
 
-        for k, zk in enumerate(z):
-            for j, yj in enumerate(y):
-                for i, xi in enumerate(x):
+        for zk in z:
+            for yj in y:
+                for xi in x:
                     nodes.append([xi, yj, zk])
 
         self.nodes = np.array(nodes)
@@ -852,9 +849,6 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
     aspect_ratios = np.empty(n_elem)
     min_detJ_per_elem = np.empty(n_elem)
 
-    # Gauss point at element center for Jacobian check
-    gp_points = np.array([[0, 0, 0]])  # center only for quick check
-
     for e in range(n_elem):
         node_ids = mesh.elements[e]
         coords = mesh.nodes[node_ids]  # (8, 3)
@@ -902,9 +896,15 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
             print(f"    WARNING: {n_distorted} highly distorted elements (aspect ratio > 20)!")
 
     if n_inverted > 0:
-        warnings.warn(f"Mesh has {n_inverted} inverted elements (negative Jacobian determinant).")
+        warnings.warn(
+            f"Mesh has {n_inverted} inverted elements (negative Jacobian determinant).",
+            stacklevel=2,
+        )
     if n_distorted > 0:
-        warnings.warn(f"Mesh has {n_distorted} highly distorted elements (aspect ratio > 20).")
+        warnings.warn(
+            f"Mesh has {n_distorted} highly distorted elements (aspect ratio > 20).",
+            stacklevel=2,
+        )
 
     return result
 
@@ -1931,7 +1931,7 @@ def _build_clt_abd(material: MaterialProperties, ply_angles: List[float],
     idx = [0, 1, 5]  # 11, 22, 12 in Voigt
     z_k_prev = -h_total / 2.0
 
-    for k, angle_deg in enumerate(ply_angles):
+    for angle_deg in ply_angles:
         z_k = z_k_prev + t_ply
         z_mid = (z_k_prev + z_k) / 2.0
 
@@ -2440,9 +2440,9 @@ class Hex8Element:
             raise ValueError(f"node_porosities must be (8,), got {self.node_porosities.shape}.")
         if not np.all(np.isfinite(self.node_porosities)):
             raise ValueError(
-                f"node_porosities must be finite; "
-                f"received NaN/inf values would propagate as NaN through "
-                f"the assembled stiffness."
+                "node_porosities must be finite; "
+                "received NaN/inf values would propagate as NaN through "
+                "the assembled stiffness."
             )
         # Allow a small fp overshoot (~1e-9) and clip back into [0, 1]; reject
         # anything beyond that as a clear unit/percent confusion.
