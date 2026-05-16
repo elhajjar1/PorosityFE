@@ -3107,6 +3107,12 @@ class FieldResults:
         Maximum Tsai-Wu failure index across all Gauss points.
     knockdown : float
         Stiffness knockdown factor (modulus ratio: E_porous/E_pristine).
+    per_element_failure_index : np.ndarray or None
+        Shape (n_elem,) max-over-Gauss-point Tsai-Wu index per element.
+        Optional (defaults to ``None`` for back-compatibility with callers
+        that construct ``FieldResults`` directly); populated by
+        ``FESolver.solve`` and consumed by the VTK export so failure
+        hot-spots can be sliced in ParaView.
     """
     displacement: np.ndarray
     stress_global: np.ndarray
@@ -3115,6 +3121,7 @@ class FieldResults:
     strain_local: np.ndarray
     max_failure_index: float
     knockdown: float
+    per_element_failure_index: Optional[np.ndarray] = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -3122,6 +3129,167 @@ class FieldResults:
         return (f"FieldResults(n_nodes={n_nodes}, n_elements={n_elem}, "
                 f"max_FI={self.max_failure_index:.4f}, "
                 f"knockdown={self.knockdown:.4f})")
+
+    def to_vtk(self, mesh: 'CompositeMesh', filename: str) -> None:
+        """Write the hex mesh and per-element FE fields to a legacy ASCII VTK
+        file (``UNSTRUCTURED_GRID``) for inspection in ParaView / VisIt / PyVista.
+
+        The writer is dependency-free: it emits the legacy VTK 3.0 ASCII
+        format by hand. The 8-node hex connectivity already stored in
+        ``mesh.elements`` follows the standard VTK hexahedron ordering
+        (bottom face CCW then top face CCW, see ``_NODE_COORDS_REF``), so the
+        cells are written verbatim with cell type 12 (``VTK_HEXAHEDRON``).
+
+        Point data
+        -----------
+        - ``displacement`` (3-vector), and the scalars ``porosity``,
+          ``stiffness_reduction``, ``ply_id`` if present on the mesh.
+
+        Cell data
+        ---------
+        - element-averaged ``von_mises`` and the six global stress
+          (``sigma_xx`` .. ``tau_xy``) and strain (``eps_xx`` .. ``gamma_xy``)
+          components (Gauss points reduced by mean),
+        - ``tsai_wu_index`` (max-over-GP per element, if available),
+        - ``Vp_elem`` (mean nodal porosity over the 8 corners),
+        - ``ply_id``, ``ply_angle_deg``, ``is_void`` and ``knockdown`` where
+          available.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results (supplies geometry,
+            connectivity, porosity and ply metadata).
+        filename : str
+            Output ``.vtk`` file path.
+        """
+        nodes = np.asarray(mesh.nodes, dtype=float)
+        elements = np.asarray(mesh.elements, dtype=np.int64)
+        n_nodes = nodes.shape[0]
+        n_elem = elements.shape[0]
+
+        if elements.shape[1] != 8:
+            raise ValueError(
+                f"to_vtk only supports 8-node hexahedra; got connectivity "
+                f"of width {elements.shape[1]}."
+            )
+        if self.displacement is not None and \
+                self.displacement.shape[0] != n_nodes:
+            raise ValueError(
+                f"displacement has {self.displacement.shape[0]} rows but the "
+                f"mesh has {n_nodes} nodes; results do not match this mesh."
+            )
+
+        # Gauss-point-averaged global stress/strain -> (n_elem, 6)
+        sig = np.mean(self.stress_global, axis=1)
+        eps = np.mean(self.strain_global, axis=1)
+
+        # Element-averaged von Mises from the averaged stress tensor.
+        sxx, syy, szz = sig[:, 0], sig[:, 1], sig[:, 2]
+        tyz, txz, txy = sig[:, 3], sig[:, 4], sig[:, 5]
+        von_mises = np.sqrt(
+            0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2)
+            + 3.0 * (tyz ** 2 + txz ** 2 + txy ** 2)
+        )
+
+        def _fmt(values) -> str:
+            return "\n".join(repr(float(v)) for v in np.asarray(values).ravel())
+
+        def _fmt_xyz(rows) -> str:
+            return "\n".join(
+                f"{float(r[0])!r} {float(r[1])!r} {float(r[2])!r}"
+                for r in rows
+            )
+
+        lines = [
+            "# vtk DataFile Version 3.0",
+            "PorosityFE results (hex mesh + per-element fields)",
+            "ASCII",
+            "DATASET UNSTRUCTURED_GRID",
+            f"POINTS {n_nodes} float",
+        ]
+        lines.append(_fmt_xyz(nodes))
+
+        # CELLS: each line is "8 n0 n1 ... n7"; total size = n_elem * 9.
+        lines.append(f"CELLS {n_elem} {n_elem * 9}")
+        lines.append(
+            "\n".join(
+                "8 " + " ".join(str(int(i)) for i in conn) for conn in elements
+            )
+        )
+        lines.append(f"CELL_TYPES {n_elem}")
+        lines.append("\n".join("12" for _ in range(n_elem)))
+
+        # ---- POINT_DATA ----
+        lines.append(f"POINT_DATA {n_nodes}")
+        if self.displacement is not None:
+            disp = np.asarray(self.displacement, dtype=float)
+            lines.append("VECTORS displacement float")
+            lines.append(_fmt_xyz(disp))
+
+        def _point_scalar(name: str, arr) -> None:
+            arr = np.asarray(arr, dtype=float).ravel()
+            if arr.shape[0] != n_nodes:
+                return
+            lines.append(f"SCALARS {name} float 1")
+            lines.append("LOOKUP_TABLE default")
+            lines.append(_fmt(arr))
+
+        if getattr(mesh, 'porosity', None) is not None:
+            _point_scalar("porosity", mesh.porosity)
+        if getattr(mesh, 'stiffness_reduction', None) is not None:
+            _point_scalar("stiffness_reduction", mesh.stiffness_reduction)
+        if getattr(mesh, 'ply_ids', None) is not None:
+            _point_scalar("ply_id", mesh.ply_ids)
+
+        # ---- CELL_DATA ----
+        lines.append(f"CELL_DATA {n_elem}")
+
+        def _cell_scalar(name: str, arr) -> None:
+            arr = np.asarray(arr, dtype=float).ravel()
+            if arr.shape[0] != n_elem:
+                return
+            lines.append(f"SCALARS {name} float 1")
+            lines.append("LOOKUP_TABLE default")
+            lines.append(_fmt(arr))
+
+        _cell_scalar("von_mises", von_mises)
+        for idx, comp in enumerate(
+                ("sigma_xx", "sigma_yy", "sigma_zz",
+                 "tau_yz", "tau_xz", "tau_xy")):
+            _cell_scalar(comp, sig[:, idx])
+        for idx, comp in enumerate(
+                ("eps_xx", "eps_yy", "eps_zz",
+                 "gamma_yz", "gamma_xz", "gamma_xy")):
+            _cell_scalar(comp, eps[:, idx])
+
+        if self.per_element_failure_index is not None:
+            _cell_scalar("tsai_wu_index", self.per_element_failure_index)
+
+        # Element-averaged nodal porosity over the 8 corner nodes.
+        if getattr(mesh, 'porosity', None) is not None:
+            vp_elem = np.mean(
+                np.asarray(mesh.porosity, dtype=float)[elements], axis=1)
+            _cell_scalar("Vp_elem", vp_elem)
+        if getattr(mesh, 'elem_ply_ids', None) is not None:
+            _cell_scalar("ply_id", mesh.elem_ply_ids)
+        if getattr(mesh, 'ply_angles', None) is not None:
+            _cell_scalar("ply_angle_deg", mesh.ply_angles)
+        if getattr(mesh, 'void_elements', None) is not None:
+            is_void = np.zeros(n_elem, dtype=float)
+            void_idx = np.asarray(mesh.void_elements, dtype=np.int64).ravel()
+            if void_idx.size:
+                is_void[void_idx] = 1.0
+            _cell_scalar("is_void", is_void)
+
+        _cell_scalar(
+            "knockdown",
+            np.full(n_elem, float(self.knockdown), dtype=float))
+
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
+            f.write("\n")
+        print(f"Saved FE results (VTK): {filename}")
 
 
 class FESolver:
@@ -3270,8 +3438,10 @@ class FESolver:
                 stress_local[e, g] = T_sigma @ sig_g[g]
                 strain_local[e, g] = T_eps @ eps_g[g]
 
-        # 6. Evaluate Tsai-Wu at each GP
-        max_fi = self._evaluate_tsai_wu(stress_local)
+        # 6. Evaluate Tsai-Wu at each GP. per_elem_fi[e] is the max-over-GP
+        #    failure index for element e (0.0 for skipped void elements); the
+        #    scalar max_fi is its overall maximum.
+        max_fi, per_elem_fi = self._evaluate_tsai_wu(stress_local)
 
         # 7. Compute knockdown as average-stress ratio (porous / pristine)
         # Both numerator and denominator use the same 3D FE framework so that
@@ -3323,9 +3493,11 @@ class FESolver:
             strain_local=strain_local,
             max_failure_index=max_fi,
             knockdown=knockdown,
+            per_element_failure_index=per_elem_fi,
         )
 
-    def _evaluate_tsai_wu(self, stress_local: np.ndarray) -> float:
+    def _evaluate_tsai_wu(self, stress_local: np.ndarray
+                          ) -> Tuple[float, np.ndarray]:
         """Evaluate Tsai-Wu failure index at all Gauss points.
 
         Strengths are degraded per-element based on the element's average
@@ -3339,14 +3511,19 @@ class FESolver:
 
         Returns
         -------
-        float
-            Maximum Tsai-Wu failure index.
+        max_fi : float
+            Maximum Tsai-Wu failure index over all elements/Gauss points.
+        per_elem_fi : np.ndarray
+            Shape (n_elem,) max-over-Gauss-point Tsai-Wu index for each
+            element (0.0 for skipped void elements). Retained so the VTK
+            export can render the spatial distribution of failure hot-spots.
         """
         mat = self.material
         C_m_pristine = mat.get_isotropic_matrix_stiffness()
 
         max_fi = 0.0
         n_elem, n_gp, _ = stress_local.shape
+        per_elem_fi = np.zeros(n_elem, dtype=float)
         # Defense in depth: a single non-finite value in the porosity field
         # (e.g. from upstream NaN propagation) silently corrupts elem_Vp via
         # np.mean; clip + isfinite check stops it from reaching Tsai-Wu.
@@ -3452,26 +3629,55 @@ class FESolver:
                     f"mesh or check input bounds."
                 )
             elem_max = float(fi_per_gp.max())
+            per_elem_fi[e] = elem_max
             if elem_max > max_fi:
                 max_fi = elem_max
 
-        return float(max_fi)
+        return float(max_fi), per_elem_fi
 
     @staticmethod
-    def export_results(field_results: 'FieldResults', filename: str) -> None:
-        """Export FE results to a JSON file.
+    def export_results(field_results: 'FieldResults', filename: str,
+                       fmt: str = 'json',
+                       mesh: Optional['CompositeMesh'] = None) -> None:
+        """Export FE results to a JSON summary or a VTK field file.
 
-        Saves displacement statistics, stress/strain summaries, failure data,
-        and knockdown factor. Large arrays are summarized (min/max/mean/std)
+        With ``fmt='json'`` (the default, unchanged legacy behavior) this
+        saves displacement statistics, stress/strain summaries, failure data,
+        and knockdown factor; large arrays are summarized (min/max/mean/std)
         rather than stored in full.
+
+        With ``fmt='vtk'`` it delegates to :meth:`FieldResults.to_vtk` and
+        writes the full hex mesh plus per-element fields as a legacy ASCII
+        ``UNSTRUCTURED_GRID`` for ParaView / VisIt / PyVista. The richer
+        per-element/per-node API lives on ``FieldResults.to_vtk`` directly;
+        this ``fmt='vtk'`` path is a convenience shim for callers that
+        already hold an ``FESolver``.
 
         Parameters
         ----------
         field_results : FieldResults
             Results from FESolver.solve().
         filename : str
-            Output JSON file path.
+            Output file path (``.json`` or ``.vtk``).
+        fmt : str
+            ``'json'`` (default) or ``'vtk'``.
+        mesh : CompositeMesh, optional
+            Required when ``fmt='vtk'`` (supplies geometry/connectivity).
         """
+        fmt = str(fmt).lower()
+        if fmt == 'vtk':
+            if mesh is None:
+                raise ValueError(
+                    "export_results(fmt='vtk') requires the `mesh` argument "
+                    "(pass the CompositeMesh used by the solver)."
+                )
+            field_results.to_vtk(mesh, filename)
+            return
+        if fmt != 'json':
+            raise ValueError(
+                f"Unknown export format {fmt!r}. Use 'json' or 'vtk'."
+            )
+
         def _array_stats(arr: np.ndarray) -> dict:
             """Compute summary statistics for an array."""
             return {
