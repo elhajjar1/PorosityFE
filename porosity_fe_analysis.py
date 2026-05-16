@@ -1201,7 +1201,7 @@ def _normalize_uq_spec(material: 'MaterialProperties',
     field collision). Fields with a non-positive CoV are dropped so a
     zero-CoV request is exactly the deterministic pipeline.
     """
-    resolved: "OrderedDict" = OrderedDict()
+    resolved: OrderedDict = OrderedDict()
     valid = set(MaterialProperties.PERTURBABLE_FIELDS)
 
     def _check_field(name: str) -> None:
