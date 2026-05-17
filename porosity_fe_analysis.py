@@ -3796,7 +3796,8 @@ def compare_configurations(void_volume_fraction: float,
 JSON_SCHEMA_VERSION = "1.0"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
-_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS}
+FORMAT_NCR = "porosity-fe.ncr"
+_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR}
 
 
 def _build_provenance(seed: Optional[int] = None) -> dict:
