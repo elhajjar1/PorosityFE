@@ -2249,6 +2249,110 @@ class TestExportHelpers:
             float(row[3])
 
 
+class TestNCRExport:
+    """NCR creation tool for MRB disposition support (field-engineer flow)."""
+
+    @staticmethod
+    def _result(comp_kd=0.823, ilss_kd=0.744, Vp=3.0):
+        return {
+            "config": {
+                "material_name": "T800_epoxy",
+                "n_plies": 24,
+                "t_ply": 0.183,
+                "Vp": Vp,
+                "distribution": "uniform",
+                "void_shape": "spherical",
+                "nx": 30, "ny": 10, "nz": 12,
+            },
+            "empirical": {
+                "compression": {
+                    "judd_wright": {"failure_stress": 1234.5, "knockdown": comp_kd},
+                    "power_law": {"failure_stress": 1300.0, "knockdown": 0.867},
+                },
+                "ilss": {
+                    "judd_wright": {"failure_stress": 67.0, "knockdown": ilss_kd},
+                },
+            },
+        }
+
+    @staticmethod
+    def _meta(**overrides):
+        meta = {
+            "ncr_number": "NCR-2026-0042",
+            "part_number": "PN-12345",
+            "part_name": "Aft spar",
+            "serial_number": "SN-001",
+            "work_order": "WO-9",
+            "program": "X-Wing",
+            "originator": "J. Engineer",
+            "location_on_part": "Web, BL 120",
+            "detection_method": "Ultrasonic C-scan",
+            "structural_class": "primary",
+            "date": "2026-05-17",
+            "layup": "[0/45/-45/90]_3s",
+        }
+        meta.update(overrides)
+        return meta
+
+    def test_governing_failure_picks_lowest_knockdown(self):
+        from app import governing_failure
+        worst = governing_failure(self._result(comp_kd=0.823, ilss_kd=0.744))
+        assert worst["mode"] == "ilss"
+        assert worst["model"] == "judd_wright"
+        assert worst["knockdown"] == 0.744
+        assert worst["residual_strength_MPa"] == 67.0
+
+    def test_recommend_disposition_bins_by_severity(self):
+        from app import recommend_disposition
+        uai = recommend_disposition(0.8, 0.97, "primary")
+        assert uai["path"].startswith("Use-As-Is (UAI)")
+        repair = recommend_disposition(7.0, 0.65, "primary")
+        assert "Scrap" in repair["path"] or "Repair" in repair["path"]
+        # Disclaimer is always present — tool never issues a final disposition.
+        assert "NOT a final disposition" in uai["disclaimer"]
+        assert uai["cited_criteria"] and uai["required_mrb_actions"]
+
+    def test_recommend_disposition_primary_requires_concurrence(self):
+        from app import recommend_disposition
+        d = recommend_disposition(0.5, 0.98, "primary")
+        assert any("concurrence" in a for a in d["required_mrb_actions"])
+
+    def test_build_ncr_record_shape(self):
+        from app import build_ncr_record
+        ncr = build_ncr_record(self._result(), self._meta())
+        assert ncr["ncr"]["ncr_number"] == "NCR-2026-0042"
+        assert ncr["ncr"]["originator"] == "J. Engineer"
+        assert ncr["nonconformance"]["measured_Vp_percent"] == 3.0
+        assert ncr["nonconformance"]["layup"] == "[0/45/-45/90]_3s"
+        # Governing analysis derives from the worst (ILSS) case.
+        assert ncr["engineering_analysis"]["governing_mode"] == "ilss"
+        assert ncr["recommended_disposition"]["path"]
+        # Approval block ships unsigned for the MRB to complete.
+        assert ncr["approvals"]["mrb_chair"]["signature"] == ""
+
+    def test_serialise_ncr_json_envelope_and_round_trip(self, tmp_path):
+        from app import build_ncr_record, write_ncr_json
+        from porosity_fe_analysis import FORMAT_NCR, load_results_from_json
+        path = str(tmp_path / "ncr.json")
+        write_ncr_json(path, build_ncr_record(self._result(), self._meta()))
+        data = load_results_from_json(path)
+        assert data["format"] == FORMAT_NCR
+        assert "provenance" in data
+        assert data["ncr"]["part_number"] == "PN-12345"
+
+    def test_serialise_ncr_markdown_has_sections(self, tmp_path):
+        from app import build_ncr_record, write_ncr_markdown
+        path = str(tmp_path / "ncr.md")
+        write_ncr_markdown(path, build_ncr_record(self._result(), self._meta()))
+        with open(path, encoding="utf-8") as f:
+            md = f.read()
+        assert "# NONCONFORMANCE REPORT (NCR)" in md
+        assert "Recommended Disposition Path" in md
+        assert "NOT a final disposition" in md
+        assert "NCR-2026-0042" in md
+        assert "Approvals / Sign-off" in md
+
+
 class TestKeCacheKeyGeometry:
     """Regression tests for issue #40: _ke_cache key must encode full element
     geometry and material so skewed/non-rectilinear elements or elements with

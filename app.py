@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import datetime
 import io
 import json
 import logging
@@ -202,6 +203,370 @@ def _serialise_payload_csv(payload: dict) -> str:
                 r["knockdown"],
             ])
     return buf.getvalue()
+
+
+# ======================================================================
+# Nonconformance Report (NCR) — MRB disposition support
+# ======================================================================
+#
+# Lets a field engineer turn a porosity analysis into a structured NCR that
+# an MRB can review. The tool produces *analysis and a recommended
+# disposition path* — it never issues a final disposition. The governing
+# (worst-case) knockdown across all modes/models drives the recommendation,
+# because the MRB cares about the most-critical residual strength, not the
+# average.
+
+STRUCTURAL_CLASSES = ("primary", "secondary", "non-structural")
+
+
+def governing_failure(result: dict) -> dict:
+    """Most-critical empirical case (lowest knockdown) across modes/models.
+
+    The MRB evaluates the worst-case residual strength, so the
+    disposition recommendation keys off the minimum knockdown rather than
+    a per-mode average.
+    """
+    emp = result["empirical"]
+    worst = None
+    for mode in emp:
+        for model in emp[mode]:
+            r = emp[mode][model]
+            kd = r["knockdown"]
+            if worst is None or kd < worst["knockdown"]:
+                worst = {
+                    "mode": mode,
+                    "model": model,
+                    "knockdown": kd,
+                    "residual_strength_MPa": r["failure_stress"],
+                }
+    if worst is None:
+        raise ValueError("Analysis result has no empirical knockdown data.")
+    return worst
+
+
+def recommend_disposition(
+    Vp: float, governing_knockdown: float, structural_class: str = "primary"
+) -> dict:
+    """Recommend (not decide) an MRB disposition path for a porosity NCR.
+
+    The recommendation bins on the measured void content and the governing
+    (worst-case) knockdown, then escalates required substantiation by
+    structural class. It is deliberately conservative: the released
+    engineering drawing / process spec is the governing acceptance
+    authority, and the MRB must substantiate against it.
+    """
+    structural_class = structural_class if structural_class in STRUCTURAL_CLASSES else "primary"
+
+    if Vp <= 1.0 and governing_knockdown >= 0.95:
+        path = "Use-As-Is (UAI) — pending MRB concurrence"
+        rationale = (
+            f"Measured void content ({Vp:.2f}%) is within the porosity range "
+            f"typical of autoclave-grade primary structure, and the predicted "
+            f"governing residual strength retains "
+            f"{governing_knockdown * 100:.1f}% of pristine. Strength loss is "
+            f"minor and likely covered by as-designed margin."
+        )
+    elif Vp <= 2.0 and governing_knockdown >= 0.90:
+        path = "Use-As-Is with Engineering Evaluation"
+        rationale = (
+            f"Void content ({Vp:.2f}%) is marginal against typical drawing "
+            f"allowables and the governing knockdown "
+            f"({governing_knockdown * 100:.1f}% retained) indicates moderate "
+            f"strength loss. UAI may be substantiated by a positive "
+            f"margin-of-safety check at the knockdown-adjusted allowable."
+        )
+    elif Vp <= 5.0 and governing_knockdown >= 0.80:
+        path = "Engineering Evaluation / Repair"
+        rationale = (
+            f"Void content ({Vp:.2f}%) exceeds porosity allowables typical of "
+            f"primary structure and the governing knockdown leaves only "
+            f"{governing_knockdown * 100:.1f}% of pristine strength. "
+            f"Disposition hinges on the as-designed margin and on whether an "
+            f"approved repair can restore a serviceable condition."
+        )
+    else:
+        path = "Repair or Scrap"
+        rationale = (
+            f"Void content ({Vp:.2f}%) and the predicted governing knockdown "
+            f"({governing_knockdown * 100:.1f}% retained) represent a severe "
+            f"degradation. Use-As-Is is not recommended without exceptional, "
+            f"test-backed substantiation; repair or scrap is the expected path."
+        )
+
+    cited_criteria = [
+        "Released engineering drawing / part specification porosity allowable "
+        "(governing acceptance limit — verify against the controlled drawing).",
+        "Process specification cure / void-content requirements for the "
+        "applicable material system.",
+        "Structural substantiation: laminate margin of safety recomputed at "
+        "the knockdown-adjusted allowable for the governing loading mode.",
+        "NDI acceptance criteria (ultrasonic C-scan attenuation / void "
+        "content) per the applicable NDT specification.",
+        "Quality-system MRB procedure for disposition of nonconforming "
+        "material.",
+    ]
+
+    required_mrb_actions = [
+        "Confirm measured void content by micrograph / acid digestion or a "
+        "validated C-scan correlation.",
+        "Verify the governing porosity allowable on the released engineering "
+        "drawing / specification.",
+        "Perform structural substantiation: recompute the margin of safety "
+        "using the knockdown-adjusted allowable for the governing mode.",
+        "Define the NDI extent and map the affected zone / part region.",
+    ]
+    if structural_class == "primary":
+        required_mrb_actions.append(
+            "Primary structure: obtain customer / DER engineering concurrence "
+            "before approving any Use-As-Is disposition."
+        )
+    elif structural_class == "non-structural":
+        required_mrb_actions.append(
+            "Non-structural item: confirm there is no fluid-ingress, "
+            "fatigue, or interface-sealing function affected by the porosity."
+        )
+    if path.startswith("Repair") or "Repair" in path:
+        required_mrb_actions.append(
+            "If repair is selected, document the approved repair scheme and "
+            "the post-repair re-inspection requirements."
+        )
+
+    disclaimer = (
+        "This recommended disposition path was produced by an automated MRB "
+        "support tool from a predictive porosity-knockdown analysis. It is "
+        "NOT a final disposition. A qualified Material Review Board must "
+        "independently review, may modify, and must formally approve the "
+        "disposition. Final acceptance requires substantiation against the "
+        "governing engineering drawing / specification and the applicable "
+        "structural margins."
+    )
+
+    return {
+        "path": path,
+        "structural_class": structural_class,
+        "rationale": rationale,
+        "cited_criteria": cited_criteria,
+        "required_mrb_actions": required_mrb_actions,
+        "disclaimer": disclaimer,
+    }
+
+
+def build_ncr_record(result: dict, meta: dict) -> dict:
+    """Assemble a structured NCR from an analysis result and engineer-entered
+    metadata.
+
+    ``meta`` carries the field-engineer inputs (NCR number, part number,
+    originator, etc.); everything technical is derived from ``result`` so the
+    nonconformance description and analysis cannot drift from what was run.
+    """
+    payload = build_export_payload(result)
+    cfg = payload["config"]
+    worst = governing_failure(result)
+    Vp = float(cfg["Vp_percent"])
+    structural_class = meta.get("structural_class", "primary")
+
+    disposition = recommend_disposition(
+        Vp, worst["knockdown"], structural_class
+    )
+
+    today = datetime.date.today().isoformat()
+    layup = meta.get("layup") or "(see analysis configuration)"
+
+    return {
+        "ncr": {
+            "ncr_number": meta.get("ncr_number", ""),
+            "part_number": meta.get("part_number", ""),
+            "part_name": meta.get("part_name", ""),
+            "serial_number": meta.get("serial_number", ""),
+            "work_order": meta.get("work_order", ""),
+            "program": meta.get("program", ""),
+            "originator": meta.get("originator", ""),
+            "date": meta.get("date") or today,
+            "structural_class": structural_class,
+        },
+        "nonconformance": {
+            "summary": (
+                f"Porosity / void content of {Vp:.2f}% measured in a "
+                f"{cfg['material']} laminate ({cfg['n_plies']} plies, layup "
+                f"{layup}); {cfg['distribution']} distribution, "
+                f"{cfg['void_shape']} void morphology. Predicted to exceed "
+                f"typical drawing porosity allowables and to knock down "
+                f"residual strength — see engineering analysis."
+            ),
+            "material": cfg["material"],
+            "layup": layup,
+            "n_plies": cfg["n_plies"],
+            "t_ply_mm": cfg["t_ply"],
+            "measured_Vp_percent": Vp,
+            "distribution": cfg["distribution"],
+            "void_shape": cfg["void_shape"],
+            "analysis_mesh": cfg["mesh"],
+            "detection_method": meta.get("detection_method", ""),
+            "location_on_part": meta.get("location_on_part", ""),
+        },
+        "engineering_analysis": {
+            "governing_mode": worst["mode"],
+            "governing_model": worst["model"],
+            "governing_knockdown": worst["knockdown"],
+            "governing_residual_strength_MPa": worst["residual_strength_MPa"],
+            "per_mode": payload["empirical"],
+        },
+        "recommended_disposition": disposition,
+        "approvals": {
+            "originating_engineer": {
+                "name": meta.get("originator", ""),
+                "signature": "",
+                "date": "",
+            },
+            "stress_engineering": {"name": "", "signature": "", "date": ""},
+            "quality_assurance": {"name": "", "signature": "", "date": ""},
+            "mrb_chair": {"name": "", "signature": "", "date": ""},
+        },
+    }
+
+
+def serialise_ncr_json(ncr: dict) -> str:
+    from porosity_fe_analysis import (
+        FORMAT_NCR, JSON_SCHEMA_VERSION,
+        _build_provenance, _json_default,
+    )
+    envelope = {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "format": FORMAT_NCR,
+        "provenance": _build_provenance(),
+        **ncr,
+    }
+    return json.dumps(envelope, indent=2, default=_json_default)
+
+
+def serialise_ncr_markdown(ncr: dict) -> str:
+    """Render the NCR as a printable form a field engineer can attach."""
+    n = ncr["ncr"]
+    nc = ncr["nonconformance"]
+    ea = ncr["engineering_analysis"]
+    dp = ncr["recommended_disposition"]
+    ap = ncr["approvals"]
+
+    lines = []
+    lines.append("# NONCONFORMANCE REPORT (NCR)")
+    lines.append("")
+    lines.append("_Composite porosity nonconformance — MRB disposition support_")
+    lines.append("")
+
+    lines.append("## 1. Identification")
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| NCR number | {n['ncr_number'] or '—'} |")
+    lines.append(f"| Part number | {n['part_number'] or '—'} |")
+    lines.append(f"| Part name | {n['part_name'] or '—'} |")
+    lines.append(f"| Serial number | {n['serial_number'] or '—'} |")
+    lines.append(f"| Work order | {n['work_order'] or '—'} |")
+    lines.append(f"| Program | {n['program'] or '—'} |")
+    lines.append(f"| Originating engineer | {n['originator'] or '—'} |")
+    lines.append(f"| Date | {n['date']} |")
+    lines.append(f"| Structural classification | {n['structural_class']} |")
+    lines.append("")
+
+    lines.append("## 2. Nonconformance Description")
+    lines.append("")
+    lines.append(nc["summary"])
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| Material | {nc['material']} |")
+    lines.append(f"| Layup | {nc['layup']} |")
+    lines.append(f"| Plies | {nc['n_plies']} |")
+    lines.append(f"| Ply thickness (mm) | {nc['t_ply_mm']} |")
+    lines.append(f"| Measured void content Vp (%) | {nc['measured_Vp_percent']:.2f} |")
+    lines.append(f"| Distribution | {nc['distribution']} |")
+    lines.append(f"| Void morphology | {nc['void_shape']} |")
+    lines.append(f"| Analysis mesh | {nc['analysis_mesh']} |")
+    lines.append(f"| Detection / NDI method | {nc['detection_method'] or '—'} |")
+    lines.append(f"| Location on part | {nc['location_on_part'] or '—'} |")
+    lines.append("")
+
+    lines.append("## 3. Engineering Analysis (predicted porosity knockdown)")
+    lines.append("")
+    lines.append(
+        f"**Governing (worst-case) case:** {ea['governing_mode']} / "
+        f"{ea['governing_model']} — knockdown "
+        f"{ea['governing_knockdown']:.3f} "
+        f"({ea['governing_knockdown'] * 100:.1f}% of pristine retained), "
+        f"residual strength "
+        f"{ea['governing_residual_strength_MPa']:.1f} MPa."
+    )
+    lines.append("")
+    lines.append("| Mode | Model | Residual strength (MPa) | Knockdown |")
+    lines.append("|---|---|---|---|")
+    for mode in ea["per_mode"]:
+        for model in ea["per_mode"][mode]:
+            r = ea["per_mode"][mode][model]
+            lines.append(
+                f"| {mode} | {model} | "
+                f"{r['failure_stress_MPa']:.1f} | {r['knockdown']:.3f} |"
+            )
+    lines.append("")
+
+    lines.append(
+        "## 4. Recommended Disposition Path "
+        "(for MRB review — NOT a final disposition)"
+    )
+    lines.append("")
+    lines.append(f"**Recommended path:** {dp['path']}")
+    lines.append("")
+    lines.append(f"**Rationale:** {dp['rationale']}")
+    lines.append("")
+    lines.append(f"> {dp['disclaimer']}")
+    lines.append("")
+
+    lines.append("## 5. Cited Criteria")
+    lines.append("")
+    for c in dp["cited_criteria"]:
+        lines.append(f"- {c}")
+    lines.append("")
+
+    lines.append("## 6. Required MRB Actions")
+    lines.append("")
+    for a in dp["required_mrb_actions"]:
+        lines.append(f"- [ ] {a}")
+    lines.append("")
+
+    lines.append("## 7. Approvals / Sign-off")
+    lines.append("")
+    lines.append("| Role | Name | Signature | Date |")
+    lines.append("|---|---|---|---|")
+    role_labels = [
+        ("originating_engineer", "Originating engineer"),
+        ("stress_engineering", "Stress / structures engineering"),
+        ("quality_assurance", "Quality assurance"),
+        ("mrb_chair", "MRB chair"),
+    ]
+    for key, label in role_labels:
+        a = ap[key]
+        lines.append(
+            f"| {label} | {a['name'] or '—'} | "
+            f"{a['signature'] or '__________'} | "
+            f"{a['date'] or '__________'} |"
+        )
+    lines.append("")
+    lines.append(
+        "_Generated by PorosityFE MRB support tool. This document records a "
+        "predictive analysis and a recommended disposition path; it does not "
+        "constitute MRB approval._"
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_ncr_json(filepath: str, ncr: dict) -> None:
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(serialise_ncr_json(ncr))
+
+
+def write_ncr_markdown(filepath: str, ncr: dict) -> None:
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(serialise_ncr_markdown(ncr))
 
 
 # ======================================================================
@@ -708,7 +1073,9 @@ def _render():
             - **Mesh** — mid-y cross-section of the FE mesh, coloured by stiffness retention
             - **Results** — empirical knockdown bar chart with the FE stiffness knockdown overlaid
             - **Stress** — FE stress contour for a chosen component (skipped for ILSS)
-            - **Export** — download the empirical knockdown sweep as JSON or CSV
+            - **Export** — download the empirical knockdown sweep as JSON or
+              CSV, or generate a Nonconformance Report (NCR) with a
+              recommended MRB disposition path
             """
         )
         if result is None:
@@ -781,6 +1148,99 @@ def _render():
             )
             with st.expander("Preview JSON"):
                 st.code(_serialise_payload_json(payload), language="json")
+
+            st.divider()
+            st.subheader("Create Nonconformance Report (NCR)")
+            st.caption(
+                "Turn this analysis into a structured NCR for the MRB. The "
+                "tool produces analysis and a **recommended** disposition "
+                "path — it does not issue a final disposition."
+            )
+
+            with st.form("ncr_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    ncr_number = st.text_input("NCR number", value="")
+                    part_number = st.text_input("Part number", value="")
+                    part_name = st.text_input("Part name", value="")
+                    serial_number = st.text_input("Serial number", value="")
+                    work_order = st.text_input("Work order", value="")
+                with c2:
+                    program = st.text_input("Program", value="")
+                    originator = st.text_input(
+                        "Originating engineer", value="",
+                        help="Engineer in the field raising this NCR.",
+                    )
+                    location_on_part = st.text_input(
+                        "Location on part", value="",
+                        help="Where on the part the porosity was found.",
+                    )
+                    detection_method = st.text_input(
+                        "Detection / NDI method", value="",
+                        help="e.g. ultrasonic C-scan, micrograph, acid digestion.",
+                    )
+                    structural_class = st.selectbox(
+                        "Structural classification",
+                        options=list(STRUCTURAL_CLASSES),
+                        index=0,
+                        help=(
+                            "Drives required substantiation. Primary "
+                            "structure escalates to customer/DER concurrence "
+                            "for any Use-As-Is."
+                        ),
+                    )
+                ncr_date = st.date_input(
+                    "Date", value=datetime.date.today()
+                )
+                make_ncr = st.form_submit_button(
+                    "Generate NCR", type="primary",
+                    use_container_width=True,
+                )
+
+            if make_ncr:
+                meta = {
+                    "ncr_number": ncr_number,
+                    "part_number": part_number,
+                    "part_name": part_name,
+                    "serial_number": serial_number,
+                    "work_order": work_order,
+                    "program": program,
+                    "originator": originator,
+                    "location_on_part": location_on_part,
+                    "detection_method": detection_method,
+                    "structural_class": structural_class,
+                    "date": ncr_date.isoformat(),
+                    "layup": layup_for_title,
+                }
+                ncr = build_ncr_record(result, meta)
+                dp = ncr["recommended_disposition"]
+                st.warning(
+                    f"**Recommended disposition path:** {dp['path']}  \n"
+                    f"{dp['rationale']}"
+                )
+                st.info(dp["disclaimer"])
+
+                ncr_md = serialise_ncr_markdown(ncr)
+                stem = ncr_number.strip().replace(" ", "_") or "porosity_ncr"
+                dl1, dl2 = st.columns(2)
+                with dl1:
+                    st.download_button(
+                        "Download NCR (Markdown)",
+                        data=ncr_md,
+                        file_name=f"{stem}.md",
+                        mime="text/markdown",
+                        use_container_width=True,
+                    )
+                with dl2:
+                    st.download_button(
+                        "Download NCR (JSON)",
+                        data=serialise_ncr_json(ncr),
+                        file_name=f"{stem}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
+                with st.expander("Preview NCR"):
+                    st.markdown(ncr_md)
 
 
 try:
