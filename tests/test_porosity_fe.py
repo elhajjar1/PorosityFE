@@ -1196,6 +1196,26 @@ class TestDegradedCompositeStiffness:
         for a, b in zip(E22_seq, E22_seq[1:]):
             assert b < a, f"E22 should drop monotonically with Vp: got {E22_seq}"
 
+    def test_monotonic_degradation(self):
+        """E22 AND G12 must monotonically decrease with Vp (issue #48 item 2).
+
+        E22 alone is not enough: a regression that boosts the shear-related
+        stiffness terms while degrading the transverse-normal terms would
+        slip past an E22-only test. Pin both engineering moduli on the
+        exact Vp set called out in the issue."""
+        Vp_list = [0.01, 0.03, 0.05, 0.10]
+        E22_seq: list = []
+        G12_seq: list = []
+        for Vp in Vp_list:
+            C = _degraded_composite_stiffness(Vp, (1, 1, 1), self.mat)
+            S = np.linalg.inv(C)
+            E22_seq.append(1.0 / S[1, 1])
+            G12_seq.append(1.0 / S[5, 5])
+        for a, b in zip(E22_seq, E22_seq[1:]):
+            assert b < a, f"E22 should drop monotonically with Vp: got {E22_seq}"
+        for a, b in zip(G12_seq, G12_seq[1:]):
+            assert b < a, f"G12 should drop monotonically with Vp: got {G12_seq}"
+
     def test_returned_stiffness_positive_definite(self):
         C = _degraded_composite_stiffness(0.05, (1, 1, 1), self.mat)
         eig = np.linalg.eigvalsh(C)
@@ -1590,6 +1610,144 @@ class TestBoundaryHandler:
                 x_n, y_n = float(nodes[nid, 0]), float(nodes[nid, 1])
                 assert abs(constrained[3 * nid] - (gamma / 2.0) * y_n) < 1e-12
                 assert abs(constrained[3 * nid + 1] - (gamma / 2.0) * x_n) < 1e-12
+
+    # ------------------------------------------------------------------
+    # Issue #48 (item 1) — deepen BC-handler asserts.  Mirror the rigor
+    # of test_compression_bcs_constrained_dofs for shear and tension:
+    # check the *specific* DOF indices and prescribed values on each
+    # face, the rigid-body corner pin, and that the other in-plane DOF
+    # is not constrained where the loading mode says it shouldn't be.
+    # A regression that, for instance, swapped ux<->uy on x_max would
+    # have passed the pre-existing length-only assertion.
+    # ------------------------------------------------------------------
+    def test_tension_bcs_constrained_dofs(self):
+        strain = 0.01
+        constrained, F = self.handler.tension_bcs(applied_strain=strain)
+        expected_xmax = strain * self.mesh.L_x
+
+        # x_min face: ux = 0 prescribed; uy on x_min must NOT be in the
+        # constrained set (would over-constrain Poisson contraction).
+        xmin_nodes = self.mesh.nodes_on_face('x_min')
+        assert len(xmin_nodes) > 0
+        for nid in xmin_nodes:
+            nid = int(nid)
+            assert 3 * nid in constrained, f"ux missing on x_min node {nid}"
+            assert constrained[3 * nid] == 0.0
+            # Corner nodes on (x_min, y_min) may have uy=0 from the y_min
+            # symmetry condition — but a generic x_min node must not.
+            if nid not in self.mesh.nodes_on_face('y_min'):
+                assert 3 * nid + 1 not in constrained, (
+                    f"uy on x_min interior node {nid} should be free")
+
+        # x_max face: ux = +strain * Lx; uy on x_max must be free
+        xmax_nodes = self.mesh.nodes_on_face('x_max')
+        assert len(xmax_nodes) > 0
+        for nid in xmax_nodes:
+            nid = int(nid)
+            assert 3 * nid in constrained, f"ux missing on x_max node {nid}"
+            assert abs(constrained[3 * nid] - expected_xmax) < 1e-12
+            if nid not in self.mesh.nodes_on_face('y_min'):
+                assert 3 * nid + 1 not in constrained, (
+                    f"uy on x_max interior node {nid} should be free")
+
+        # y_min symmetry face: uy = 0
+        ymin_nodes = self.mesh.nodes_on_face('y_min')
+        assert len(ymin_nodes) > 0
+        for nid in ymin_nodes:
+            nid = int(nid)
+            assert 3 * nid + 1 in constrained, f"uy missing on y_min node {nid}"
+            assert constrained[3 * nid + 1] == 0.0
+
+        # Rigid-body z pin lives on the (x_min, y_min, z_min) corner.
+        xmin_set = set(int(n) for n in xmin_nodes)
+        ymin_set = set(int(n) for n in ymin_nodes)
+        zmin_set = set(int(n) for n in self.mesh.nodes_on_face('z_min'))
+        corner_candidates = xmin_set & ymin_set & zmin_set
+        assert corner_candidates, "no (x_min, y_min, z_min) corner node found"
+        pinned_z_dofs = [d for d in constrained if d % 3 == 2]
+        assert len(pinned_z_dofs) == 1, (
+            f"tension should pin exactly one uz DOF, got {len(pinned_z_dofs)}")
+        pinned_node = pinned_z_dofs[0] // 3
+        assert pinned_node in corner_candidates, (
+            f"uz pin is on node {pinned_node}, not on x_min/y_min/z_min corner")
+        assert constrained[pinned_z_dofs[0]] == 0.0
+
+        # Sanity: the force vector is purely displacement-controlled.
+        assert np.all(F == 0.0)
+
+    def test_shear_bcs_constrained_dofs(self):
+        gamma = 0.01
+        constrained, F = self.handler.shear_bcs(applied_strain=gamma)
+        nodes = self.mesh.nodes
+
+        # For every node on any of the four side faces, BOTH ux and uy
+        # must be in the constrained set with the exact pure-shear values
+        # ux = (gamma/2) * y_n, uy = (gamma/2) * x_n.
+        for face in ('x_min', 'x_max', 'y_min', 'y_max'):
+            face_nodes = self.mesh.nodes_on_face(face)
+            assert len(face_nodes) > 0, f"face {face} has no nodes"
+            for nid in face_nodes:
+                nid = int(nid)
+                x_n = float(nodes[nid, 0])
+                y_n = float(nodes[nid, 1])
+                assert 3 * nid in constrained, (
+                    f"ux missing on {face} node {nid}")
+                assert 3 * nid + 1 in constrained, (
+                    f"uy missing on {face} node {nid}")
+                np.testing.assert_allclose(
+                    constrained[3 * nid], (gamma / 2.0) * y_n, atol=1e-12,
+                    err_msg=f"ux wrong on {face} node {nid}")
+                np.testing.assert_allclose(
+                    constrained[3 * nid + 1], (gamma / 2.0) * x_n, atol=1e-12,
+                    err_msg=f"uy wrong on {face} node {nid}")
+
+        # Distinct face values: with gamma=0.01, Lx>0, Ly>0 the prescribed
+        # ux on x_max varies with y (so different from x_min where it also
+        # varies with y but x-coordinate differs).  In particular, the
+        # *uy* value on x_max nodes must equal (gamma/2)*Lx, NOT zero —
+        # a regression that copied the compression BC into shear would
+        # set uy=0 there and would fail this asymmetric check.
+        half_Lx = (gamma / 2.0) * self.mesh.L_x
+        for nid in self.mesh.nodes_on_face('x_max'):
+            nid = int(nid)
+            assert abs(constrained[3 * nid + 1] - half_Lx) < 1e-12, (
+                f"uy on x_max node {nid} must equal (gamma/2)*Lx")
+        half_Ly = (gamma / 2.0) * self.mesh.L_y
+        for nid in self.mesh.nodes_on_face('y_max'):
+            nid = int(nid)
+            assert abs(constrained[3 * nid] - half_Ly) < 1e-12, (
+                f"ux on y_max node {nid} must equal (gamma/2)*Ly")
+
+        # Rigid-body uz pin: exactly one uz DOF constrained, on the
+        # (x_min, y_min, z_min) corner.
+        xmin_set = set(int(n) for n in self.mesh.nodes_on_face('x_min'))
+        ymin_set = set(int(n) for n in self.mesh.nodes_on_face('y_min'))
+        zmin_set = set(int(n) for n in self.mesh.nodes_on_face('z_min'))
+        corner_candidates = xmin_set & ymin_set & zmin_set
+        assert corner_candidates
+        pinned_z_dofs = [d for d in constrained if d % 3 == 2]
+        assert len(pinned_z_dofs) == 1, (
+            f"shear should pin exactly one uz DOF, got {len(pinned_z_dofs)}")
+        pinned_node = pinned_z_dofs[0] // 3
+        assert pinned_node in corner_candidates
+        assert constrained[pinned_z_dofs[0]] == 0.0
+
+        # Top/bottom (z_min, z_max) interior nodes — i.e. not also on a
+        # side face — must have ux and uy free; shear is in-plane only.
+        side_node_set = set()
+        for face in ('x_min', 'x_max', 'y_min', 'y_max'):
+            side_node_set.update(int(n) for n in self.mesh.nodes_on_face(face))
+        for face in ('z_min', 'z_max'):
+            for nid in self.mesh.nodes_on_face(face):
+                nid = int(nid)
+                if nid in side_node_set:
+                    continue
+                assert 3 * nid not in constrained, (
+                    f"ux on {face} interior node {nid} should be free")
+                assert 3 * nid + 1 not in constrained, (
+                    f"uy on {face} interior node {nid} should be free")
+
+        assert np.all(F == 0.0)
 
     def test_apply_penalty(self):
         assembler = GlobalAssembler(self.mesh, self.material, self.pf)
