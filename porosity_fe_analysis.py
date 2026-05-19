@@ -22,6 +22,7 @@ Dependencies:
 
 import argparse
 import concurrent.futures
+import dataclasses
 import datetime
 import json
 import logging
@@ -154,7 +155,8 @@ def _json_default(o):
     """json.dump ``default=`` hook: make numpy scalars/arrays serializable.
 
     The science payload is already float()-wrapped, but user-supplied
-    fields (e.g. ndarray ply_angles) would otherwise raise TypeError (#20).
+    fields (e.g. ndarray ply_angles, dataclass configs, datetime stamps)
+    would otherwise raise TypeError (#20).
     """
     if isinstance(o, np.generic):
         return o.item()
@@ -162,6 +164,11 @@ def _json_default(o):
         return o.tolist()
     if isinstance(o, (datetime.datetime, datetime.date)):
         return o.isoformat()
+    # Plain dataclass instances (e.g. MaterialProperties) — accept on a
+    # best-effort basis so callers can stash a dataclass field in the
+    # config dict without an explicit asdict() at the call site.
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+        return dataclasses.asdict(o)
     raise TypeError(
         f"Object of type {type(o).__name__} is not JSON serializable"
     )

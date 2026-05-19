@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Porosity Analysis Results",
-  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit exporters. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change.",
+  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit empirical exporter / the NCR exporter. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change. The known top-level format identifiers are listed in the `format` enum (#20).",
   "type": "object",
   "required": ["schema_version", "format", "provenance"],
   "properties": {
@@ -11,7 +11,12 @@
     },
     "format": {
       "type": "string",
-      "enum": ["porosity-fe.empirical-sweep", "porosity-fe.fe-fields"]
+      "description": "Output payload identifier. Mirrors the FORMAT_* module constants in porosity_fe_analysis.py.",
+      "enum": [
+        "porosity-fe.empirical-sweep",
+        "porosity-fe.fe-fields",
+        "porosity-fe.ncr"
+      ]
     },
     "provenance": {
       "type": "object",
@@ -51,6 +56,10 @@
         "git_sha": {"type": ["string", "null"]},
         "hostname": {"type": ["string", "null"]}
       }
+    },
+    "raw_sidecar": {
+      "type": "string",
+      "description": "Basename of the optional .npz sidecar containing the raw displacement/stress/strain arrays (FESolver.export_results include_raw=True)."
     }
   },
   "additionalProperties": true
