@@ -190,8 +190,9 @@ def test_predict_strength_returns_normalized_values():
         'baseline_porosity_pct': 0.6,
     }
     vp_pcts = [0.6, 1.0, 2.0, 3.0]
-    pred = predict_strength(dataset, 'tensile_strength', vp_pcts)
+    pred, band = predict_strength(dataset, 'tensile_strength', vp_pcts)
     assert len(pred) == 4
+    assert len(band) == 4
     assert abs(pred[0] - 1.0) < 0.01  # baseline normalizes to ~1
     assert pred[3] < pred[0]  # strength decreases with porosity
 
@@ -466,7 +467,7 @@ def test_predict_strength_runs_for_transverse_tensile():
         'baseline_porosity_pct': 0.0,
     }
 
-    preds = predict_strength(dataset, 'transverse_tensile_strength', [1.0, 2.0, 3.0])
+    preds, _band = predict_strength(dataset, 'transverse_tensile_strength', [1.0, 2.0, 3.0])
     assert len(preds) == 3
     # All knockdowns must be in (0, 1] and monotonically decreasing with Vp
     assert all(0.0 < p <= 1.0 for p in preds)

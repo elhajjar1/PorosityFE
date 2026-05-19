@@ -3691,3 +3691,146 @@ class TestPropagateUncertainty:
         with pytest.raises(ValueError, match="non-perturbable"):
             propagate_uncertainty(0.02, 'T800_epoxy',
                                   covs={'not_a_field': 0.1}, n_samples=4)
+
+
+# Issue #65: closed-form local sensitivities + per-point validation bands.
+class TestLocalSensitivities:
+    """Closed-form sensitivities must match a central-difference baseline
+    to machine precision, and the layup scaling must propagate into the
+    coefficient partial."""
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        # Vp = 2% — well into the interior of the validity region so the
+        # FD step doesn't bump into the [0, 1] clip.
+        pf = PorosityField(self.material, 0.02, distribution='uniform')
+        self.mesh = CompositeMesh(pf, self.material, nx=10, ny=5, nz=6)
+        self.solver = EmpiricalSolver(self.mesh, self.material)
+
+    def test_judd_wright_partial_matches_analytic(self):
+        s = self.solver.local_sensitivities(mode='compression',
+                                            model='judd_wright')
+        # Compare analytic dKD/dVp to a central-difference baseline.
+        fd = self.solver.sensitivity_fd(mode='compression',
+                                        model='judd_wright', param='Vp')
+        np.testing.assert_allclose(s['dKD_dVp'], fd, rtol=1e-6)
+        # And the coefficient partial.
+        fd_c = self.solver.sensitivity_fd(mode='compression',
+                                          model='judd_wright', param='coef')
+        np.testing.assert_allclose(s['dKD_dcoef'], fd_c, rtol=1e-6)
+        # Spot-check the algebra: dKD/dVp = -alpha * KD for judd_wright.
+        alpha = self.solver.JUDD_WRIGHT_ALPHA['compression']
+        np.testing.assert_allclose(s['dKD_dVp'], -alpha * s['KD'], rtol=1e-12)
+
+    def test_power_law_partial_matches_analytic(self):
+        s = self.solver.local_sensitivities(mode='compression',
+                                            model='power_law')
+        fd = self.solver.sensitivity_fd(mode='compression',
+                                        model='power_law', param='Vp')
+        np.testing.assert_allclose(s['dKD_dVp'], fd, rtol=1e-6)
+        fd_c = self.solver.sensitivity_fd(mode='compression',
+                                          model='power_law', param='coef')
+        np.testing.assert_allclose(s['dKD_dcoef'], fd_c, rtol=1e-6)
+
+    def test_linear_partial_matches_analytic(self):
+        s = self.solver.local_sensitivities(mode='compression',
+                                            model='linear')
+        fd = self.solver.sensitivity_fd(mode='compression',
+                                        model='linear', param='Vp')
+        np.testing.assert_allclose(s['dKD_dVp'], fd, rtol=1e-6)
+        fd_c = self.solver.sensitivity_fd(mode='compression',
+                                          model='linear', param='coef')
+        np.testing.assert_allclose(s['dKD_dcoef'], fd_c, rtol=1e-6)
+        # Linear law: dKD/dVp must be exactly -beta in the unclipped regime.
+        beta = self.solver.LINEAR_BETA['compression']
+        np.testing.assert_allclose(s['dKD_dVp'], -beta, rtol=1e-12)
+
+    def test_layup_scaled_alpha_propagates(self):
+        """A non-QI (UD) layup must propagate its layup scaling into the
+        coefficient partial.  ``dKD/dcoef`` magnitude is ``Vp * KD`` — KD
+        moves with the layup-scaled alpha, so the partial scales too."""
+        ud = [0.0] * 8  # UD: f_md = 0 -> floor = 0.15 (compression)
+        qi = [0.0, 45.0, 90.0, -45.0] * 2
+        solver_ud = EmpiricalSolver(self.mesh, self.material, ply_angles=ud)
+        solver_qi = EmpiricalSolver(self.mesh, self.material, ply_angles=qi)
+        s_ud = solver_ud.local_sensitivities(mode='compression',
+                                             model='judd_wright')
+        s_qi = solver_qi.local_sensitivities(mode='compression',
+                                             model='judd_wright')
+        # Sanity: the UD scale (0.15) is smaller than QI scale (1.0), so
+        # UD's alpha is smaller, KD is closer to 1, and the *magnitude*
+        # of dKD/dVp is smaller too (it's -alpha * KD).
+        assert abs(s_ud['dKD_dVp']) < abs(s_qi['dKD_dVp'])
+        # The coefficient partial magnitude is just |Vp| * KD; KD(UD) > KD(QI)
+        # at the same Vp because alpha(UD) < alpha(QI), so |dKD/dcoef|
+        # on UD must be larger than on QI.
+        assert abs(s_ud['dKD_dcoef']) > abs(s_qi['dKD_dcoef'])
+
+    def test_default_Vp_matches_mesh_porosity(self):
+        """Default Vp is ``mesh.porosity_field.Vp`` — same as
+        ``get_failure_load``."""
+        s_default = self.solver.local_sensitivities(mode='compression',
+                                                    model='judd_wright')
+        s_explicit = self.solver.local_sensitivities(
+            mode='compression', model='judd_wright',
+            Vp=self.mesh.porosity_field.Vp)
+        assert s_default == s_explicit
+
+    def test_unknown_model_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown knockdown model"):
+            self.solver.local_sensitivities(mode='compression', model='bogus')
+
+    def test_unknown_mode_raises(self):
+        with pytest.raises(ValueError, match=r"Unknown loading mode"):
+            self.solver.local_sensitivities(mode='flexure', model='judd_wright')
+
+    def test_sensitivity_fd_unknown_param(self):
+        with pytest.raises(ValueError, match=r"param must be"):
+            self.solver.sensitivity_fd(mode='compression',
+                                       model='judd_wright', param='nope')
+
+
+class TestValidationBands:
+    """run_all_datasets must propagate a per-point 1-sigma Vp confidence
+    band onto every strength prediction."""
+
+    def test_band_present_in_run_all_datasets(self, tmp_path):
+        """Synthesize a tiny dataset, run the full pipeline, and check
+        that every strength entry carries a ``predicted_band`` whose
+        per-point interval straddles the central ``predicted`` value."""
+        from validation.validate_all import run_all_datasets
+
+        ds = {
+            "reference": "synthetic_uq_test",
+            "material": {
+                "fiber": "T700",
+                "matrix": "TDE85 epoxy",
+                "fiber_volume_fraction": 0.60,
+                "n_plies": 8,
+                "ply_angles": [0, 45, 90, -45, -45, 90, 45, 0],
+            },
+            "baseline_porosity_pct": 0.0,
+            "properties": {
+                "tensile_strength": {
+                    "void_content_pct": [0.0, 1.0, 2.0, 3.0],
+                    "normalized_values": [1.0, 0.95, 0.85, 0.78],
+                }
+            },
+        }
+        datasets_dir = tmp_path / 'datasets'
+        datasets_dir.mkdir()
+        path = datasets_dir / 'synthetic.json'
+        path.write_text(json.dumps(ds))
+        results = run_all_datasets(datasets_dir=str(datasets_dir), n_jobs=1)
+        assert 'synthetic' in results
+        prop = results['synthetic']['tensile_strength']
+        assert 'predicted_band' in prop, \
+            "Per-point 1-sigma band missing from strength prediction (#65)"
+        band = prop['predicted_band']
+        pred = prop['predicted']
+        assert len(band) == len(pred)
+        for (lo, hi), p in zip(band, pred):
+            # The band must be ordered and must straddle the central point.
+            assert lo <= p <= hi, (
+                f"Band [{lo}, {hi}] does not straddle central prediction {p}"
+            )

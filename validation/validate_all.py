@@ -175,10 +175,39 @@ _UNSUPPORTED_STRENGTH_PROPS: set = set()
 
 
 def predict_strength(dataset: Dict[str, Any], prop_key: str,
-                     vp_pcts) -> list:
+                     vp_pcts,
+                     sigma_Vp: float = 0.002):
     """Predict normalized strength at each porosity level via Judd-Wright.
 
     Renormalized to the dataset's baseline_porosity_pct.
+
+    Issue #65: also propagates an assumed Vp measurement uncertainty
+    (``sigma_Vp``, default 0.2 vol-% as a fraction — typical microscopy
+    resolution) into a one-sigma confidence band on each predicted point
+    using the closed-form local sensitivity
+    ``KD +/- |dKD/dVp| * sigma_Vp``.  The band is normalized by the same
+    baseline knockdown as the central prediction so it lives in the same
+    "normalized strength" coordinates as the experimental points.
+
+    Parameters
+    ----------
+    dataset:
+        Validated dataset dict.
+    prop_key:
+        Property key in the dataset (e.g. ``'compression_strength'``).
+    vp_pcts:
+        Iterable of porosity percentages at which to evaluate.
+    sigma_Vp:
+        One-sigma Vp measurement uncertainty, expressed as a *fraction*
+        (so 0.002 = 0.2 vol-%).  Defaults to 0.002 — typical optical-
+        microscopy resolution for void-area measurements.
+
+    Returns
+    -------
+    (predicted, predicted_band):
+        ``predicted`` is the central list of normalized knockdowns (as
+        before).  ``predicted_band`` is a parallel list of
+        ``(lower, upper)`` 1-sigma bounds, also in normalized units.
 
     Raises
     ------
@@ -202,16 +231,34 @@ def predict_strength(dataset: Dict[str, Any], prop_key: str,
     mode = _PROPERTY_TO_MODE[prop_key]
     baseline_vp = dataset.get('baseline_porosity_pct', 0.0) / 100.0
 
-    def _kd(vp_frac):
+    def _kd_and_dvp(vp_frac):
         pf = PorosityField(mat, vp_frac, distribution='uniform',
                            void_shape='spherical')
         mesh = CompositeMesh(pf, mat, nx=10, ny=5,
                              nz=mat.n_plies, ply_angles=ply_angles)
         emp = EmpiricalSolver(mesh, mat, ply_angles=ply_angles)
-        return emp.get_failure_load(mode=mode, model='judd_wright')['knockdown']
+        kd = emp.get_failure_load(mode=mode, model='judd_wright')['knockdown']
+        s = emp.local_sensitivities(mode=mode, model='judd_wright',
+                                    Vp=vp_frac)
+        return float(kd), float(s['dKD_dVp'])
 
-    kd_base = _kd(baseline_vp) if baseline_vp > 1e-9 else 1.0
-    return [float(_kd(vp / 100.0) / kd_base) for vp in vp_pcts]
+    if baseline_vp > 1e-9:
+        kd_base, _ = _kd_and_dvp(baseline_vp)
+    else:
+        kd_base = 1.0
+
+    predicted = []
+    predicted_band = []
+    for vp in vp_pcts:
+        kd, dkd_dvp = _kd_and_dvp(vp / 100.0)
+        norm = kd / kd_base
+        # Linear (delta-method) 1-sigma propagation. Normalization is a
+        # constant w.r.t. Vp, so it falls straight through onto the band.
+        half_width = abs(dkd_dvp) * sigma_Vp / kd_base
+        predicted.append(float(norm))
+        predicted_band.append((float(norm - half_width),
+                               float(norm + half_width)))
+    return predicted, predicted_band
 
 
 from porosity_fe_analysis import (
@@ -351,18 +398,25 @@ def _run_one_dataset(path: str):
             dataset_results[prop_key] = {'skipped': skip_msg}
             continue
         try:
+            predicted_band = None
             if prop_key in _MODULUS_PROPS:
                 pred = predict_modulus(data, prop_key, vp)
             else:
-                pred = predict_strength(data, prop_key, vp)
+                pred, predicted_band = predict_strength(data, prop_key, vp)
             mae = compute_mae(pred, exp)
-            dataset_results[prop_key] = {
+            entry = {
                 'vp_pcts': list(vp),
                 'experimental': list(exp),
                 'predicted': pred,
                 'mae': mae,
                 'n_points': len(vp),
             }
+            # Issue #65: surface a per-point 1-sigma validation band when
+            # the analytic sensitivity is available (strength props go
+            # through the closed-form EmpiricalSolver path).
+            if predicted_band is not None:
+                entry['predicted_band'] = predicted_band
+            dataset_results[prop_key] = entry
         except Exception as e:
             # logger.exception() captures the traceback so a downstream
             # debug log (logging level DEBUG/INFO) shows *why* the
@@ -450,8 +504,67 @@ from porosity_fe_analysis import (  # noqa: E402
 _configure_matplotlib_style()
 
 
-def generate_master_report(results: Dict[str, Any], output_dir: str = None):
-    """Generate master validation report (PNG plot + Markdown table)."""
+def _emit_per_paper_band_pngs(results: Dict[str, Any], output_dir: str) -> list:
+    """Emit one ``validation_<dataset>_band.png`` per dataset that has a band.
+
+    Each PNG shows the predicted curve, the +/-1-sigma Vp band, and the
+    experimental points (with error bars when the dataset provides
+    ``standard_deviation`` / ``error_bar``).  Strength-only — modulus
+    properties skip the FE+CLT sensitivity which is not closed form yet.
+
+    Returns the list of PNG paths written.
+    """
+    written = []
+    for ds_name, ds_results in sorted(results.items()):
+        if 'error' in ds_results:
+            continue
+        for prop, r in sorted(ds_results.items()):
+            band = r.get('predicted_band')
+            if band is None:
+                continue
+            vp = r['vp_pcts']
+            exp = r['experimental']
+            pred = r['predicted']
+            lower = [b[0] for b in band]
+            upper = [b[1] for b in band]
+            fig, ax = plt.subplots(figsize=(6.5, 4.5))
+            ax.fill_between(vp, lower, upper, alpha=0.25,
+                            color='#1f77b4',
+                            label=r'$\pm 1\sigma$ ($\sigma_{V_p}=0.2$ vol-%)')
+            ax.plot(vp, pred, '-', color='#1f77b4',
+                    label='predicted (Judd-Wright)')
+            ax.plot(vp, exp, 'ko', label='experimental')
+            ax.set_xlabel('Void content (%)')
+            ax.set_ylabel('Normalized ' + prop.replace('_', ' '))
+            ax.set_title(f"{ds_name} — {prop}")
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            png_path = os.path.join(
+                output_dir, f'validation_{ds_name}_{prop}_band.png')
+            plt.savefig(png_path)
+            plt.close(fig)
+            written.append(png_path)
+    return written
+
+
+def generate_master_report(results: Dict[str, Any], output_dir: str = None,
+                           emit_band_pngs: bool = False):
+    """Generate master validation report (PNG plot + Markdown table).
+
+    Parameters
+    ----------
+    results:
+        Nested results dict from :func:`run_all_datasets`.
+    output_dir:
+        Directory to write artifacts into (defaults to ``os.getcwd()``).
+    emit_band_pngs:
+        Issue #65 — when True, also emit one
+        ``validation_<dataset>_<prop>_band.png`` per dataset/property
+        showing the +/-1-sigma Vp confidence band around the predicted
+        curve.  Defaults to False for back-compat with existing call
+        sites and CI artefact lists.
+    """
     if output_dir is None:
         # Default to cwd, not the package directory: when running inside a
         # PyInstaller-frozen bundle (macOS .app / Windows .exe) the package
@@ -542,6 +655,9 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None):
     md_path = os.path.join(output_dir, 'validation_detail_report.md')
     with open(md_path, 'w', encoding='utf-8', newline='') as f:
         f.write('\n'.join(md_lines))
+
+    if emit_band_pngs:
+        _emit_per_paper_band_pngs(results, output_dir)
 
     return plot_path, md_path
 

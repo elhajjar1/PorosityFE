@@ -1408,6 +1408,172 @@ class EmpiricalSolver:
                 results[mode][model] = self.get_failure_load(mode, model)
         return results
 
+    def local_sensitivities(self, mode: str = 'compression',
+                            model: str = 'judd_wright',
+                            Vp: Optional[float] = None) -> Dict[str, float]:
+        """Closed-form local sensitivities of the empirical knockdown.
+
+        Returns the analytic partials ``dKD/dVp`` and ``dKD/dcoef`` (the
+        layup-scaled coefficient for the chosen model) at the supplied
+        porosity ``Vp``.  The three knockdown laws are closed form, so the
+        partials are exact, dimensionless, and effectively free to compute
+        (no FD, no sampling).
+
+        Partial-derivative table (with ``c`` denoting the layup-scaled
+        coefficient — ``alpha`` for Judd-Wright, ``n`` for power-law,
+        ``beta`` for linear):
+
+        =============  ===========================  ===========================
+        Model          ``dKD/dVp``                  ``dKD/dcoef``
+        =============  ===========================  ===========================
+        judd_wright    ``-alpha * KD``              ``-Vp * KD``
+        power_law      ``-n * (1 - Vp)**(n-1)``     ``(1-Vp)**n * ln(1-Vp)``
+        linear         ``-beta`` (or 0 if clipped)  ``-Vp``  (or 0 if clipped)
+        =============  ===========================  ===========================
+
+        Parameters
+        ----------
+        mode:
+            Loading mode (same keys as :meth:`get_failure_load`).
+        model:
+            Empirical knockdown law: ``'judd_wright'``, ``'power_law'``,
+            or ``'linear'``.
+        Vp:
+            Specimen-average porosity at which to evaluate.  Defaults to
+            ``self.mesh.porosity_field.Vp`` — the same value
+            :meth:`get_failure_load` uses.
+
+        Returns
+        -------
+        dict
+            ``{'KD': float, 'dKD_dVp': float, 'dKD_dcoef': float}``.
+            ``dKD_dcoef`` is the partial with respect to the layup-scaled
+            coefficient (alpha/n/beta) that the solver actually applied;
+            it already reflects the layup scaling from
+            :meth:`_layup_scale`.
+        """
+        if mode not in self.PRISTINE_STRENGTH_KEY:
+            raise ValueError(
+                f"Unknown loading mode {mode!r}. "
+                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
+            )
+        if Vp is None:
+            Vp = self.mesh.porosity_field.Vp
+        Vp = self._check_internal_Vp(Vp)
+        if model == 'judd_wright':
+            alpha = self.JUDD_WRIGHT_ALPHA[mode]
+            kd = float(np.exp(-alpha * Vp))
+            return {
+                'KD': kd,
+                'dKD_dVp': float(-alpha * kd),
+                'dKD_dcoef': float(-Vp * kd),
+            }
+        if model == 'power_law':
+            n = self.POWER_LAW_N[mode]
+            one_minus = 1.0 - Vp
+            kd = float(one_minus**n)
+            # Guard the log when Vp = 1 (degenerate edge): KD is 0 there
+            # and the d/dn partial collapses to 0 because KD * ln(1-Vp)
+            # is 0 * (-inf) in the limit.  We pin it to 0.0 explicitly so
+            # callers see a finite value.
+            if one_minus <= 0.0:
+                d_dcoef = 0.0
+                d_dVp = 0.0
+            else:
+                d_dcoef = float(kd * np.log(one_minus))
+                d_dVp = float(-n * one_minus**(n - 1.0))
+            return {
+                'KD': kd,
+                'dKD_dVp': d_dVp,
+                'dKD_dcoef': d_dcoef,
+            }
+        if model == 'linear':
+            beta = self.LINEAR_BETA[mode]
+            raw = 1.0 - beta * Vp
+            kd = float(max(raw, 0.0))
+            # The linear law is clipped at 0: once raw < 0, the
+            # piecewise-constant 0 floor has zero gradient.
+            if raw <= 0.0:
+                d_dVp = 0.0
+                d_dcoef = 0.0
+            else:
+                d_dVp = float(-beta)
+                d_dcoef = float(-Vp)
+            return {
+                'KD': kd,
+                'dKD_dVp': d_dVp,
+                'dKD_dcoef': d_dcoef,
+            }
+        raise ValueError(
+            f"Unknown knockdown model {model!r}. "
+            f"Use one of ['judd_wright', 'linear', 'power_law']."
+        )
+
+    def sensitivity_fd(self, mode: str = 'compression',
+                       model: str = 'judd_wright',
+                       param: str = 'Vp',
+                       h: float = 1e-4) -> float:
+        """Central-difference fallback for the local knockdown sensitivity.
+
+        Useful for paths where the gradient is not closed form (FE or
+        Mori-Tanaka couplings).  For the bundled empirical models this
+        matches :meth:`local_sensitivities` to ~1e-7 and is shipped as a
+        cross-check / drop-in for non-analytic models.
+
+        Parameters
+        ----------
+        mode:
+            Loading mode (same keys as :meth:`get_failure_load`).
+        model:
+            Empirical knockdown law.
+        param:
+            Either ``'Vp'`` (porosity) or ``'coef'`` (the layup-scaled
+            coefficient that the model actually applied — alpha/n/beta).
+        h:
+            Step size for the central difference.
+
+        Returns
+        -------
+        float
+            ``(KD(x+h) - KD(x-h)) / (2*h)`` evaluated at the same
+            ``Vp_mean`` :meth:`get_failure_load` uses.
+        """
+        if mode not in self.PRISTINE_STRENGTH_KEY:
+            raise ValueError(
+                f"Unknown loading mode {mode!r}. "
+                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
+            )
+        if model not in ('judd_wright', 'power_law', 'linear'):
+            raise ValueError(
+                f"Unknown knockdown model {model!r}. "
+                f"Use one of ['judd_wright', 'linear', 'power_law']."
+            )
+        if param not in ('Vp', 'coef'):
+            raise ValueError(
+                f"param must be 'Vp' or 'coef', got {param!r}."
+            )
+        Vp0 = float(self.mesh.porosity_field.Vp)
+
+        # Select the analytic functional form so we can perturb the
+        # parameter without mutating solver state.
+        if model == 'judd_wright':
+            coef0 = float(self.JUDD_WRIGHT_ALPHA[mode])
+            def f(Vp_val, coef_val):
+                return float(np.exp(-coef_val * Vp_val))
+        elif model == 'power_law':
+            coef0 = float(self.POWER_LAW_N[mode])
+            def f(Vp_val, coef_val):
+                return float((1.0 - Vp_val)**coef_val)
+        else:  # linear
+            coef0 = float(self.LINEAR_BETA[mode])
+            def f(Vp_val, coef_val):
+                return float(max(1.0 - coef_val * Vp_val, 0.0))
+
+        if param == 'Vp':
+            return float((f(Vp0 + h, coef0) - f(Vp0 - h, coef0)) / (2.0 * h))
+        # param == 'coef'
+        return float((f(Vp0, coef0 + h) - f(Vp0, coef0 - h)) / (2.0 * h))
+
 
 # ============================================================
 # SECTION 6b: UNCERTAINTY PROPAGATION (MONTE CARLO / LHS)
@@ -4293,6 +4459,14 @@ def compare_configurations(void_volume_fraction: float,
             ilss_kd = result['empirical']['ilss']['judd_wright']['knockdown']
             logger.info("    Compression KD (J-W): %.3f", comp_kd)
             logger.info("    ILSS KD (J-W):        %.3f", ilss_kd)
+            # Issue #65: surface the closed-form local sensitivities at
+            # the same Vp_mean used for the headline KD. This is a free
+            # diagnostic — the partials are analytic.
+            s = result['empirical_solver'].local_sensitivities(
+                mode='compression', model='judd_wright')
+            logger.info(
+                "    Tornado [%s]: dKD/dVp=%.3g, dKD/dcoef=%.3g",
+                name_out, s['dKD_dVp'], s['dKD_dcoef'])
     else:
         logger.info("Parallel sweep: %d task(s) across %d worker process(es)",
                     len(tasks), workers)
@@ -4306,6 +4480,11 @@ def compare_configurations(void_volume_fraction: float,
                 logger.info("  Configuration %s done — "
                             "compression KD (J-W) %.3f, ILSS KD (J-W) %.3f",
                             name_out, comp_kd, ilss_kd)
+                s = result['empirical_solver'].local_sensitivities(
+                    mode='compression', model='judd_wright')
+                logger.info(
+                    "    Tornado [%s]: dKD/dVp=%.3g, dKD/dcoef=%.3g",
+                    name_out, s['dKD_dVp'], s['dKD_dcoef'])
 
     # Re-assemble in the original config insertion order so callers see a
     # deterministic dict regardless of which worker finished first.
