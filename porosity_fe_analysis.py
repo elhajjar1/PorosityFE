@@ -766,9 +766,11 @@ class CompositeMesh:
             # Default: all 0-degree plies
             self.ply_angles = np.zeros(len(self.elements), dtype=float)
 
-        print(f"Mesh generated: {len(self.nodes)} nodes, {len(self.elements)} elements")
-        print(f"  Domain: {self.L_x:.1f} x {self.L_y:.1f} x {self.L_z:.2f} mm")
-        print(f"  Void elements: {len(self.void_elements)}")
+        logger.info("Mesh generated: %d nodes, %d elements",
+                    len(self.nodes), len(self.elements))
+        logger.info("  Domain: %.1f x %.1f x %.2f mm",
+                    self.L_x, self.L_y, self.L_z)
+        logger.info("  Void elements: %d", len(self.void_elements))
 
     @property
     def n_nodes(self) -> int:
@@ -885,15 +887,24 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
     }
 
     if verbose:
-        print(f"  Mesh quality: {n_elem} elements")
-        print(f"    Aspect ratio: min={result['min_aspect_ratio']:.2f}, "
-              f"max={result['max_aspect_ratio']:.2f}, "
-              f"mean={result['mean_aspect_ratio']:.2f}")
-        print(f"    Min Jacobian det: {result['min_jacobian_det']:.6e}")
+        logger.info("  Mesh quality: %d elements", n_elem)
+        logger.info(
+            "    Aspect ratio: min=%.2f, max=%.2f, mean=%.2f",
+            result['min_aspect_ratio'],
+            result['max_aspect_ratio'],
+            result['mean_aspect_ratio'],
+        )
+        logger.info("    Min Jacobian det: %.6e", result['min_jacobian_det'])
         if n_inverted > 0:
-            print(f"    WARNING: {n_inverted} inverted elements (negative Jacobian)!")
+            logger.warning(
+                "    WARNING: %d inverted elements (negative Jacobian)!",
+                n_inverted,
+            )
         if n_distorted > 0:
-            print(f"    WARNING: {n_distorted} highly distorted elements (aspect ratio > 20)!")
+            logger.warning(
+                "    WARNING: %d highly distorted elements (aspect ratio > 20)!",
+                n_distorted,
+            )
 
     if n_inverted > 0:
         warnings.warn(
@@ -1491,7 +1502,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1535,7 +1546,7 @@ class FEVisualizer:
 
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1589,7 +1600,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1621,7 +1632,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1653,7 +1664,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1689,7 +1700,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
     @staticmethod
@@ -1726,7 +1737,7 @@ class FEVisualizer:
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved: {save_path}")
+            logger.info("Saved: %s", save_path)
         return fig
 
 
@@ -2857,7 +2868,10 @@ class GlobalAssembler:
 
         for e in range(n_elem):
             if verbose and e % 500 == 0:
-                print(f"  Assembling element {e}/{n_elem} ({100.0 * e / n_elem:.1f}%)")
+                logger.info(
+                    "  Assembling element %d/%d (%.1f%%)",
+                    e, n_elem, 100.0 * e / n_elem,
+                )
 
             # Try cache first
             key = self._element_cache_key(e)
@@ -2878,11 +2892,20 @@ class GlobalAssembler:
 
         if verbose:
             n_void = len(self.mesh.void_elements)
-            print(f"  Assembling element {n_elem}/{n_elem} (100.0%) -- done.")
-            print(f"  Void inclusion elements: {n_void} (E ~ {Hex8Element.VOID_MODULUS} MPa)")
-            print(f"  Ke cache: {len(self._ke_cache)} unique, "
-                  f"{self._cache_hits} hits, {self._cache_misses} misses")
-            print(f"  Building sparse matrix: {n_dof} DOFs, {total_entries} COO entries")
+            logger.info(
+                "  Assembling element %d/%d (100.0%%) -- done.", n_elem, n_elem)
+            logger.info(
+                "  Void inclusion elements: %d (E ~ %s MPa)",
+                n_void, Hex8Element.VOID_MODULUS,
+            )
+            logger.info(
+                "  Ke cache: %d unique, %d hits, %d misses",
+                len(self._ke_cache), self._cache_hits, self._cache_misses,
+            )
+            logger.info(
+                "  Building sparse matrix: %d DOFs, %d COO entries",
+                n_dof, total_entries,
+            )
 
         K_coo = scipy.sparse.coo_matrix(
             (coo_vals, (coo_rows, coo_cols)),
@@ -2891,7 +2914,10 @@ class GlobalAssembler:
         K_csc = K_coo.tocsc()
 
         if verbose:
-            print(f"  CSC matrix: {K_csc.nnz} stored entries ({K_csc.nnz / n_dof:.1f} per DOF)")
+            logger.info(
+                "  CSC matrix: %d stored entries (%.1f per DOF)",
+                K_csc.nnz, K_csc.nnz / n_dof,
+            )
 
         return K_csc
 
@@ -3289,7 +3315,7 @@ class FieldResults:
         with open(filename, 'w', encoding='utf-8') as f:
             f.write("\n".join(lines))
             f.write("\n")
-        print(f"Saved FE results (VTK): {filename}")
+        logger.info("Saved FE results (VTK): %s", filename)
 
 
 class FESolver:
@@ -3353,12 +3379,12 @@ class FESolver:
 
         # 1. Assemble global stiffness
         if verbose:
-            print("Assembling global stiffness matrix...")
+            logger.info("Assembling global stiffness matrix...")
         K = self.assembler.assemble_stiffness(verbose=verbose)
 
         if verbose:
             t1 = time.perf_counter()
-            print(f"  Assembly time: {t1 - t0:.2f} s")
+            logger.info("  Assembly time: %.2f s", t1 - t0)
 
         # 2. Build BCs
         if loading == 'compression':
@@ -3371,14 +3397,14 @@ class FESolver:
             raise ValueError(f"Unknown loading '{loading}'. Use compression/tension/shear.")
 
         if verbose:
-            print(f"  Applied {len(constrained)} displacement BCs")
+            logger.info("  Applied %d displacement BCs", len(constrained))
 
         # 3. Apply penalty
         K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
 
         # 4. Solve
         if verbose:
-            print(f"Solving system ({self.mesh.n_dof} DOFs)...")
+            logger.info("Solving system (%d DOFs)...", self.mesh.n_dof)
         u = scipy.sparse.linalg.spsolve(K_mod, F_mod)
 
         # Hygiene checks on the solution vector
@@ -3397,12 +3423,13 @@ class FESolver:
 
         if verbose:
             t2 = time.perf_counter()
-            print(f"  Solve time: {t2 - t1:.2f} s, residual: {_rel_res:.4e}")
+            logger.info(
+                "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
             t1 = t2
 
         # 5. Recover stresses and strains
         if verbose:
-            print("Recovering element stresses and strains...")
+            logger.info("Recovering element stresses and strains...")
 
         n_elem = self.mesh.n_elements
         n_gp = 8  # 2x2x2
@@ -3414,7 +3441,10 @@ class FESolver:
 
         for e in range(n_elem):
             if verbose and e % 500 == 0:
-                print(f"  Post-processing element {e}/{n_elem} ({100.0 * e / n_elem:.1f}%)")
+                logger.info(
+                    "  Post-processing element %d/%d (%.1f%%)",
+                    e, n_elem, 100.0 * e / n_elem,
+                )
 
             dofs = self.assembler.element_dof_indices(e)
             u_elem = u[dofs]
@@ -3480,10 +3510,10 @@ class FESolver:
 
         if verbose:
             t3 = time.perf_counter()
-            print(f"  Post-processing time: {t3 - t1:.2f} s")
-            print(f"Total solve time: {t3 - t0:.2f} s")
-            print(f"  Max Tsai-Wu FI: {max_fi:.4f}")
-            print(f"  Knockdown factor: {knockdown:.4f}")
+            logger.info("  Post-processing time: %.2f s", t3 - t1)
+            logger.info("Total solve time: %.2f s", t3 - t0)
+            logger.info("  Max Tsai-Wu FI: %.4f", max_fi)
+            logger.info("  Knockdown factor: %.4f", knockdown)
 
         return FieldResults(
             displacement=displacement,
@@ -3728,7 +3758,7 @@ class FESolver:
         }
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, default=_json_default)
-        print(f"Saved FE results: {filename}")
+        logger.info("Saved FE results: %s", filename)
 
 
 # ============================================================
@@ -3750,13 +3780,14 @@ def compare_configurations(void_volume_fraction: float,
     configs = configs or POROSITY_CONFIGS
     results = {}
 
-    print(f"\n{'='*70}")
-    print(f"POROSITY ANALYSIS: Vp = {void_volume_fraction*100:.1f}%")
-    print(f"Material: {material_name}")
-    print(f"{'='*70}")
+    _bar = '=' * 70
+    logger.info("\n%s", _bar)
+    logger.info("POROSITY ANALYSIS: Vp = %.1f%%", void_volume_fraction * 100)
+    logger.info("Material: %s", material_name)
+    logger.info("%s", _bar)
 
     for name, config in configs.items():
-        print(f"\n  Configuration: {name}")
+        logger.info("\n  Configuration: %s", name)
         porosity_field = PorosityField(material, void_volume_fraction,
                                        seed=seed, **config)
         mesh = CompositeMesh(porosity_field, material, nx=30, ny=10, nz=12)
@@ -3775,18 +3806,18 @@ def compare_configurations(void_volume_fraction: float,
 
         comp_kd = emp_results['compression']['judd_wright']['knockdown']
         ilss_kd = emp_results['ilss']['judd_wright']['knockdown']
-        print(f"    Compression KD (J-W): {comp_kd:.3f}")
-        print(f"    ILSS KD (J-W):        {ilss_kd:.3f}")
+        logger.info("    Compression KD (J-W): %.3f", comp_kd)
+        logger.info("    ILSS KD (J-W):        %.3f", ilss_kd)
 
-    print(f"\n{'='*70}")
-    print("RANKINGS (by compression strength, Judd-Wright)")
-    print(f"{'='*70}")
+    logger.info("\n%s", _bar)
+    logger.info("RANKINGS (by compression strength, Judd-Wright)")
+    logger.info("%s", _bar)
     ranked = sorted(results.keys(),
                    key=lambda c: results[c]['empirical']['compression']['judd_wright']['failure_stress'],
                    reverse=True)
     for i, name in enumerate(ranked, 1):
         fs = results[name]['empirical']['compression']['judd_wright']['failure_stress']
-        print(f"  {i}. {name}: {fs:.1f} MPa")
+        logger.info("  %d. %s: %.1f MPa", i, name, fs)
 
     return results
 
@@ -3882,7 +3913,7 @@ def save_results_to_json(results: Dict, filename: str):
 
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=2, default=_json_default)
-    print(f"Saved: {filename}")
+    logger.info("Saved: %s", filename)
 
 
 def load_results_from_json(filename: str) -> Dict:
@@ -3993,7 +4024,18 @@ def _build_arg_parser() -> 'argparse.ArgumentParser':
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress per-configuration progress output.",
+        help=(
+            "Suppress progress output; only warnings and errors are shown. "
+            "Mutually exclusive with --verbose."
+        ),
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help=(
+            "Show debug-level progress output in addition to the default "
+            "INFO progress. Mutually exclusive with --quiet."
+        ),
     )
     parser.add_argument(
         "--list-materials",
@@ -4001,6 +4043,64 @@ def _build_arg_parser() -> 'argparse.ArgumentParser':
         help="List the available material presets and exit.",
     )
     return parser
+
+
+class _DynamicStdoutHandler(logging.StreamHandler):
+    """StreamHandler that resolves ``sys.stdout`` on every emit.
+
+    Plain ``StreamHandler(sys.stdout)`` caches the stream reference at
+    construction time, which breaks pytest's ``capsys`` fixture (it
+    rebinds ``sys.stdout`` per-test). Looking it up lazily keeps the
+    formatting identical to the old bare-``print`` output while
+    remaining capturable.
+    """
+
+    @property
+    def stream(self):  # type: ignore[override]
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, value):
+        # logging.StreamHandler.__init__ assigns ``self.stream`` -- accept
+        # and ignore so the dynamic property above wins.
+        pass
+
+
+def _configure_cli_logging(*, quiet: bool, verbose: bool) -> None:
+    """Wire the module ``logger`` for CLI use.
+
+    Routes progress through the module logger so ``--quiet`` actually
+    silences the run (issue #78). Attaches a stdout stream handler the
+    first time the CLI is invoked so the output looks like the old
+    bare-``print`` style.
+
+    Parameters
+    ----------
+    quiet : bool
+        Suppress INFO/DEBUG; only warnings and errors are surfaced.
+    verbose : bool
+        Lower the threshold to DEBUG.
+    """
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    # Don't propagate to the root logger -- pytest's caplog and library
+    # consumers (the Streamlit app) configure their own handlers and we
+    # don't want duplicated lines.
+    logger.propagate = False
+    logger.setLevel(level)
+
+    # Reuse any handler we already attached; otherwise add a simple
+    # stdout stream so the formatting matches the old print()-based UX.
+    if not any(getattr(h, "_porosity_cli", False) for h in logger.handlers):
+        handler = _DynamicStdoutHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler._porosity_cli = True  # type: ignore[attr-defined]
+        logger.addHandler(handler)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -4018,6 +4118,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         for name in sorted(MATERIALS):
             print(name)
         return 0
+
+    if args.quiet and args.verbose:
+        parser.error("--quiet and --verbose are mutually exclusive.")
+
+    _configure_cli_logging(quiet=args.quiet, verbose=args.verbose)
 
     if args.material not in MATERIALS:
         parser.error(
@@ -4040,9 +4145,11 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
         return 2
 
+    # Back-compat shim: a few callers may still reference _log. Now that
+    # progress is routed through ``logger``, this just forwards to
+    # logger.info so --quiet (WARNING level) silences these too.
     def _log(msg: str) -> None:
-        if not args.quiet:
-            print(msg)
+        logger.info("%s", msg)
 
     all_results = {}
     for Vp in args.vp:
@@ -4095,13 +4202,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             all_results,
             save_path=os.path.join(output_dir, "porosity_knockdown_curves.png"))
 
-    _log(f"\n{'='*70}")
-    _log("COMPLETE ANALYSIS FINISHED")
-    _log(f"{'='*70}")
-    _log(f"Material: {args.material}")
-    _log(f"Porosity levels analyzed: {[f'{v*100:.2f}%' for v in args.vp]}")
-    _log(f"Configurations: {list(POROSITY_CONFIGS.keys())}")
-    _log(f"Output directory: {os.path.abspath(output_dir)}")
+    _bar = "=" * 70
+    logger.info("\n%s", _bar)
+    logger.info("COMPLETE ANALYSIS FINISHED")
+    logger.info("%s", _bar)
+    logger.info("Material: %s", args.material)
+    logger.info("Porosity levels analyzed: %s",
+                [f"{v*100:.2f}%" for v in args.vp])
+    logger.info("Configurations: %s", list(POROSITY_CONFIGS.keys()))
+    logger.info("Output directory: %s", os.path.abspath(output_dir))
     return 0
 
 
