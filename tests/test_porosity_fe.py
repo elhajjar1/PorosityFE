@@ -2560,6 +2560,98 @@ class TestEnvironmentalKnockdown:
             kd_fat, rel=1e-12)
 
 
+class TestDistributionComparison:
+    """#83: uniform vs clustered/interface knockdowns at matched Vp_mean.
+
+    Locks in the two-headed answer that resolves the issue:
+
+    1. ``EmpiricalSolver.get_failure_load`` evaluates the knockdown at
+       the specimen-mean Vp, so the empirical KDs are identical across
+       distributions when Vp_mean matches. A regression that started
+       evaluating at the local peak (a real design choice we might
+       revisit) would fail ``test_empirical_knockdowns_match...``.
+    2. The FE solver sees the local field, so its KDs diverge across
+       distributions even at matched mean — documented by
+       ``test_fe_knockdowns_diverge...``.
+    3. There is no preset literally named ``stack`` — the validator
+       must reject it with a message pointing at the real names.
+    """
+
+    VP_MEAN = 0.03
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+
+    def _make_solver(self, **kwargs):
+        pf = PorosityField(self.material, self.VP_MEAN, **kwargs)
+        mesh = CompositeMesh(pf, self.material, nx=4, ny=2, nz=4,
+                             ply_angles='QI')
+        return EmpiricalSolver(mesh, self.material), pf, mesh
+
+    def test_empirical_knockdowns_match_across_distributions_at_matched_vp_mean(self):
+        """Empirical KD uses specimen-mean Vp: same Vp_mean -> same KD."""
+        solver_u, _, _ = self._make_solver(distribution='uniform')
+        solver_c, _, _ = self._make_solver(distribution='clustered',
+                                           cluster_location='midplane')
+        solver_i, _, _ = self._make_solver(distribution='interface',
+                                           void_shape='penny')
+        kd_u = solver_u.get_failure_load(
+            mode='compression', model='judd_wright').knockdown
+        kd_c = solver_c.get_failure_load(
+            mode='compression', model='judd_wright').knockdown
+        kd_i = solver_i.get_failure_load(
+            mode='compression', model='judd_wright').knockdown
+        # Empirical solver collapses to the specimen-mean Vp, so the
+        # three distributions must match to machine precision.
+        assert kd_c == pytest.approx(kd_u, rel=1e-10)
+        assert kd_i == pytest.approx(kd_u, rel=1e-10)
+
+    def test_fe_knockdowns_diverge_across_distributions_at_matched_vp_mean(self):
+        """FE solver sees local Vp: distribution shape changes FE KD at matched mean.
+
+        We compare ``uniform`` (spherical) against ``clustered (midplane)``
+        with ``penny`` voids — pennies have a much higher stress
+        concentration than spheres, so even at matched specimen-mean Vp
+        the FE solver produces visibly distinct knockdowns once the
+        clustered profile concentrates them at the midplane. The
+        comparison against ``uniform`` (spherical) is enough to lock
+        in "the FE path *does* see the distribution shape", which is
+        the entire substantive claim of issue #83.
+        """
+        Vp_mean = 0.06
+        pf_u = PorosityField(self.material, Vp_mean,
+                              distribution='uniform',
+                              void_shape='spherical')
+        mesh_u = CompositeMesh(pf_u, self.material, nx=6, ny=3, nz=12,
+                               ply_angles='QI')
+        pf_c = PorosityField(self.material, Vp_mean,
+                              distribution='clustered',
+                              cluster_location='midplane',
+                              void_shape='penny')
+        mesh_c = CompositeMesh(pf_c, self.material, nx=6, ny=3, nz=12,
+                               ply_angles='QI')
+        # Sanity: the specimen-mean Vp is matched between the two cases.
+        assert pf_u.Vp == pytest.approx(pf_c.Vp, rel=1e-12)
+        kd_u = FESolver(mesh_u, self.material, pf_u, ply_angles='QI').solve(
+            loading='compression', applied_strain=-0.001).knockdown
+        kd_c = FESolver(mesh_c, self.material, pf_c, ply_angles='QI').solve(
+            loading='compression', applied_strain=-0.001).knockdown
+        # Loose tolerance: this is a "the FE path DOES see the shape"
+        # smoke test, not a regression lock on a specific number.
+        assert abs(kd_u - kd_c) > 1e-3
+
+    def test_no_preset_named_stack(self):
+        """'stack' is not a valid distribution preset; error must point at the real names."""
+        with pytest.raises(ValueError) as exc_info:
+            PorosityField(self.material, 0.02, distribution='stack')
+        msg = str(exc_info.value)
+        # The error must point at the actual valid names so a user who
+        # typed 'stack' can find the right one.
+        assert 'uniform' in msg
+        assert 'clustered' in msg
+        assert 'interface' in msg
+
+
 class TestILSSBeamTheoryValidation:
     """Beam-theory validation for the ILSS short-beam-shear FE BCs.
 

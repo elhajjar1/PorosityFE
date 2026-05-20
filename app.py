@@ -1071,10 +1071,27 @@ def _render():
             options=list(_DISTRIBUTION_OPTIONS.keys()),
             index=0,
             help=(
-                "uniform: constant porosity throughout.\n"
-                "clustered (midplane): Gaussian peak at midplane.\n"
-                "clustered (surface): Gaussian peak at surface.\n"
-                "interface: concentrated at ply interfaces."
+                "Through-thickness shape of the porosity field. All "
+                "options renormalize to the same specimen-average Vp, "
+                "so the empirical knockdowns (Judd-Wright / power-law / "
+                "linear) collapse to identical numbers across the four "
+                "shapes — only the FE solve sees the local peak and "
+                "diverges. See the 'Porosity Distribution Choice' "
+                "section of README.md for the full rationale (issue "
+                "#83).\n\n"
+                "uniform: constant Vp at every z — first-pass / NCR "
+                "default when only specimen-average Vp is known.\n"
+                "clustered (midplane): Gaussian peak at the midplane "
+                "(sigma = Lz / 6). Use when X-ray CT shows midplane "
+                "concentration.\n"
+                "clustered (surface): Gaussian peak at the laminate "
+                "surface.\n"
+                "interface: comb of Gaussians at every ply-to-ply "
+                "interface (sigma = 0.35 * t_ply). Worst case for "
+                "ILSS when paired with penny voids.\n\n"
+                "Note: there is no preset literally named 'stack' — "
+                "the stacked / layered shapes are 'clustered' and "
+                "'interface'."
             ),
         )
         void_shape = st.selectbox(
