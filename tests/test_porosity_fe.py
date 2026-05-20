@@ -4311,6 +4311,56 @@ class TestCLIMain:
         assert rc == 0
         assert seen.get('n_jobs') == 1
 
+    # #127: --vp / --vp-pct unit reconciliation -------------------------
+
+    def test_vp_pct_alias_converts_to_fraction(self, tmp_path, monkeypatch):
+        """`--vp-pct 2` must run as if `--vp 0.02` were passed."""
+        seen = []
+        original = porosity_fe_analysis.compare_configurations
+
+        def _spy(*args, **kwargs):
+            # First positional arg of compare_configurations is the Vp.
+            Vp = args[0] if args else kwargs.get('void_volume_fraction')
+            seen.append(float(Vp))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            _TINY_CONFIGS)
+        monkeypatch.setattr(porosity_fe_analysis,
+                            'compare_configurations', _spy)
+        rc = porosity_fe_analysis.main([
+            '--vp-pct', '2',
+            '--output-dir', str(tmp_path),
+            '--quiet',
+        ])
+        assert rc == 0
+        assert seen == [pytest.approx(0.02, rel=1e-12)]
+
+    def test_vp_pct_and_vp_mutually_exclusive(self, tmp_path, capsys):
+        """Passing both --vp and --vp-pct must error out cleanly."""
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main([
+                '--vp', '0.02', '--vp-pct', '2',
+                '--output-dir', str(tmp_path),
+            ])
+        # argparse exits 2 for invalid usage.
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert 'not allowed with' in err
+
+    def test_vp_percentage_typo_gets_helpful_hint(self, tmp_path, capsys):
+        """`--vp 3` (looks like a percentage) must suggest both fixes."""
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main([
+                '--vp', '3',
+                '--output-dir', str(tmp_path),
+            ])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        # Both alternatives surfaced — user gets to pick.
+        assert '--vp 0.0300' in err
+        assert '--vp-pct 3' in err
+
 
 class TestMaterialPropertiesPerturb:
     """Unit tests for the MaterialProperties.perturb sampling primitive."""

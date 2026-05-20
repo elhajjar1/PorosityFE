@@ -53,15 +53,35 @@ def _build_arg_parser() -> 'argparse.ArgumentParser':
         default="T800_epoxy",
         help="Material preset name (validated against the built-in presets).",
     )
-    parser.add_argument(
+    # #127: the Streamlit app collects Vp as a percentage (0-100) while the
+    # CLI historically required a fraction in [0, 1]. Users who used the GUI
+    # first naturally type `--vp 3` and get a confusing error. We keep `--vp`
+    # as fractions (the documented contract) and add a `--vp-pct` alias for
+    # callers who want to think in percent. The two are mutually exclusive.
+    vp_group = parser.add_mutually_exclusive_group()
+    vp_group.add_argument(
         "--vp",
         type=float,
         nargs="+",
-        default=list(DEFAULT_POROSITY_LEVELS),
+        default=None,
         metavar="VP",
         help=(
-            "One or more void volume fractions in [0, 1]. Defaults to the "
-            "historical sweep."
+            "One or more void volume fractions as a decimal in [0, 1]. "
+            "Example: --vp 0.03 for 3%%, --vp 0.01 0.03 0.05 for a sweep. "
+            "Use --vp-pct if you'd rather pass percentages (the Streamlit "
+            "app accepts percentages; this CLI defaults to fractions)."
+        ),
+    )
+    vp_group.add_argument(
+        "--vp-pct",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="VP_PCT",
+        help=(
+            "One or more void volume fractions as a percentage in [0, 100]. "
+            "Internally converted to fractions (--vp-pct 3 is equivalent to "
+            "--vp 0.03)."
         ),
     )
     parser.add_argument(
@@ -236,11 +256,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"Available presets: {sorted(materials)}."
         )
 
+    # #127: resolve --vp / --vp-pct into a single list of fractions for the
+    # rest of the pipeline. argparse already enforces mutual exclusion, so
+    # at most one is non-None.
+    if args.vp_pct is not None:
+        args.vp = [pct / 100.0 for pct in args.vp_pct]
+    elif args.vp is None:
+        args.vp = list(DEFAULT_POROSITY_LEVELS)
+
     for Vp in args.vp:
         if not (0.0 <= Vp <= 1.0) or Vp != Vp:  # NaN-safe range check
+            hint = ""
+            if 1.0 < Vp <= 100.0:
+                hint = (
+                    f" (looks like a percentage; "
+                    f"did you mean `--vp {Vp / 100.0:.4f}` or `--vp-pct {Vp}`?)"
+                )
             parser.error(
                 f"--vp value {Vp!r} is out of range; expected a finite "
                 f"float in [0, 1] (a void *fraction*, not a percentage)."
+                f"{hint}"
             )
 
     output_dir = args.output_dir
