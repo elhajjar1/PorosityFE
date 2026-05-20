@@ -40,6 +40,10 @@ porosity_fe_results_*.npz
 *.vtk
 examples/output/
 
+# Validation pipeline output (from `validate_porosity` runs)
+validation_detail_report.md
+validation_master_report.png
+
 # Sphinx build artefacts
 docs/_build/
 docs/api/
