@@ -2122,6 +2122,166 @@ class TestFESolverIterative:
             )
 
 
+class TestPenaltyFactorAndConditioning:
+    """Regression tests for the matrix-conditioning diagnostic, the
+    user-exposed ``penalty_factor`` kwarg, and the optional Jacobi
+    pre-scaling path (issue #60).
+
+    Background: the penalty-method BC enforcement uses
+    ``alpha = penalty_factor * max(diag(K))``. Pre-#60 this was hardwired
+    at ``penalty_factor=1e8`` which pushed cond(K_mod) to ~2.4e9 and
+    capped LU-vs-CG agreement at ~3e-6 even when the CG residual was at
+    machine precision. PR #60 lowers the default to ``1e6``, exposes the
+    knob, logs ``cond_diag_ratio`` on every solve, and adds a
+    symmetric-Jacobi pre-scaling path.
+    """
+
+    def setup_method(self):
+        import inspect
+        self._inspect = inspect
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        # Small but non-trivial mesh — keeps the suite fast while still
+        # exercising the iterative solvers and giving a measurable
+        # cond_diag_ratio.
+        self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+
+    def test_default_penalty_lowered(self):
+        """``BoundaryHandler.apply_penalty`` default must be 1e6, not 1e8."""
+        sig = self._inspect.signature(BoundaryHandler.apply_penalty)
+        default = sig.parameters['penalty_factor'].default
+        assert default == 1e6, (
+            f"Expected apply_penalty default penalty_factor=1e6, got {default!r}"
+        )
+
+    def test_penalty_factor_kwarg_threaded_through_solve(self):
+        """Passing penalty_factor through solve must reach apply_penalty.
+
+        We use a deliberately-loose penalty (1e2) which makes BC
+        enforcement slack enough to perturb the solution detectably
+        relative to the default (1e6).
+        """
+        solver = FESolver(self.mesh, self.material, self.pf)
+        r_default = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+        )
+        r_loose = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+            penalty_factor=1e2,
+        )
+        scale = float(np.max(np.abs(r_default.displacement)))
+        delta = float(np.max(np.abs(
+            r_loose.displacement - r_default.displacement
+        )))
+        # Loose penalty must produce a *detectable* perturbation
+        # (otherwise the kwarg is being ignored).
+        assert delta / max(scale, 1e-30) > 1e-4, (
+            f"penalty_factor kwarg appears not to be threaded through "
+            f"to apply_penalty: relative delta {delta/max(scale,1e-30):.3e}"
+        )
+
+    def test_conditioning_warning_logged(self, caplog):
+        """penalty_factor=1e15 must trip the float64-headroom warning."""
+        import logging
+        solver = FESolver(self.mesh, self.material, self.pf)
+        with caplog.at_level(logging.WARNING, logger='porosity_fe_analysis'):
+            solver.solve(
+                loading='compression', applied_strain=-0.001, solver='direct',
+                penalty_factor=1e15,
+            )
+        msgs = [rec.message for rec in caplog.records
+                if rec.levelno >= logging.WARNING]
+        assert any('Matrix conditioning near float64 limit' in m
+                   for m in msgs), (
+            f"Expected conditioning warning, got records: {msgs!r}"
+        )
+
+    def test_diag_scale_off_matches_legacy(self):
+        """diag_scale=False (default) must reproduce the un-rescaled path
+        bit-identically — diag_scale should be opt-in only.
+        """
+        solver = FESolver(self.mesh, self.material, self.pf)
+        r_default = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+        )
+        r_explicit_off = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+            diag_scale=False,
+        )
+        np.testing.assert_allclose(
+            r_explicit_off.displacement, r_default.displacement,
+            rtol=0.0, atol=0.0,
+            err_msg="diag_scale=False should be bit-identical to default",
+        )
+
+    def test_diag_scale_on_matches_off_for_well_conditioned(self):
+        """The Jacobi rescaling is a similarity transform on the linear
+        system — math unchanged, only conditioning. For a well-
+        conditioned problem the two paths must agree to ~1e-7.
+        """
+        solver = FESolver(self.mesh, self.material, self.pf)
+        r_off = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+            diag_scale=False,
+        )
+        r_on = solver.solve(
+            loading='compression', applied_strain=-0.001, solver='direct',
+            diag_scale=True,
+        )
+        scale = float(np.max(np.abs(r_off.displacement)))
+        delta = float(np.max(np.abs(r_on.displacement - r_off.displacement)))
+        assert delta / max(scale, 1e-30) < 1e-7, (
+            f"diag_scale on/off mismatch on well-conditioned mesh: "
+            f"max|du|/max|u| = {delta/max(scale, 1e-30):.3e}"
+        )
+
+    def test_diag_scale_reduces_conditioning_ratio(self, caplog):
+        """On a voided/graded mesh diag_scale must measurably reduce
+        the diagonal-conditioning ratio. We capture the INFO line both
+        ways and assert the rescaled ratio is strictly smaller.
+        """
+        import logging
+        import re
+
+        # Voided/graded mesh — clustered distribution drives spatial
+        # variation in stiffness, which widens the diagonal spread.
+        pf_voided = PorosityField(self.material, 0.10,
+                                  distribution='clustered', seed=42)
+        mesh_voided = CompositeMesh(pf_voided, self.material, nx=4, ny=3, nz=3)
+        solver = FESolver(mesh_voided, self.material, pf_voided)
+
+        def _capture_ratio(diag_scale_value):
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
+                solver.solve(
+                    loading='compression', applied_strain=-0.001,
+                    solver='direct', diag_scale=diag_scale_value,
+                )
+            # The post-scaling line (when diag_scale=True) takes priority;
+            # otherwise grab the initial diagnostic.
+            target_prefix = ('Matrix conditioning after diag_scale'
+                             if diag_scale_value
+                             else 'Matrix conditioning:')
+            for rec in caplog.records:
+                if rec.message.startswith(target_prefix):
+                    m = re.search(r'cond_diag_ratio=([0-9.eE+\-]+)',
+                                  rec.message)
+                    if m:
+                        return float(m.group(1))
+            raise AssertionError(
+                f"Did not find cond_diag_ratio log line for "
+                f"diag_scale={diag_scale_value}; got: "
+                f"{[r.message for r in caplog.records]!r}"
+            )
+
+        ratio_off = _capture_ratio(False)
+        ratio_on = _capture_ratio(True)
+        assert ratio_on < ratio_off, (
+            f"diag_scale=True did not reduce cond_diag_ratio: "
+            f"off={ratio_off:.3e}, on={ratio_on:.3e}"
+        )
+
+
 class TestILSSBeamTheoryValidation:
     """Beam-theory validation for the ILSS short-beam-shear FE BCs.
 
