@@ -162,6 +162,7 @@ python examples/uniform_spherical.py
 | [`examples/interface_penny.py`](examples/interface_penny.py) | Interface-concentrated porosity with penny-shaped voids — the worst-case ILSS morphology. |
 | [`examples/discrete_voids.py`](examples/discrete_voids.py) | Explicit `VoidGeometry` ellipsoids on top of a low-uniform background; renders the SCF field around one void. |
 | [`examples/compute_degraded_clt_moduli.py`](examples/compute_degraded_clt_moduli.py) | CLT path: laminate effective moduli `(Ex, Ey, Gxy)` vs. `Vp` for a quasi-isotropic layup. |
+| [`examples/distribution_comparison.py`](examples/distribution_comparison.py) | Side-by-side `uniform` vs `clustered` vs `interface` at matched `Vp_mean`; shows empirical KDs collapse, FE KDs diverge (#83). |
 
 See [`examples/README.md`](examples/README.md) for the full index and the
 conventions reminder. Math conventions (Voigt order, engineering vs. tensor
@@ -189,6 +190,72 @@ validate_porosity                    # run against bundled datasets, write to cw
 validate_porosity --output-dir /tmp  # write reports elsewhere
 validate_porosity --quiet            # suppress progress output
 ```
+
+## Porosity Distribution Choice
+
+`PorosityField` supports four through-thickness shapes, all renormalized
+so the *specimen-average* void volume fraction equals the input `Vp`:
+
+| `distribution` (+ `cluster_location`) | Through-thickness shape |
+|---|---|
+| `uniform` | Constant `Vp` at every `z`. |
+| `clustered` + `cluster_location='midplane'` | Gaussian peak at the midplane (`sigma = Lz / 6`). |
+| `clustered` + `cluster_location='surface'` | Gaussian peak at the laminate surface. |
+| `interface` | Sum of Gaussians centred on every ply-to-ply interface (`sigma = 0.35 * t_ply`). |
+
+**Note on terminology.** There is no preset literally named `stack`; the
+"stacked / layered" non-uniform shapes are `clustered` (a single Gaussian
+bump) and `interface` (a comb of bumps at every ply interface). The
+issue tracker historically used "stack" informally to refer to either.
+
+### Empirical vs FE: do these distributions give different knockdowns?
+
+The empirical correlations (`judd_wright`, `power_law`, `linear`) were
+calibrated against specimen-average porosity, so
+`EmpiricalSolver.get_failure_load` evaluates them at the *mean* `Vp`
+(`self.mesh.porosity_field.Vp`). At matched `Vp_mean`, all four
+distributions therefore produce **identical** empirical knockdowns:
+
+```
+mode = compression, model = judd_wright, Vp_mean = 3 %
+  uniform               0.813020
+  clustered (midplane)  0.813020
+  clustered (surface)   0.813020
+  interface             0.813020
+```
+
+The FE solver, by contrast, samples `Vp(x, y, z)` at every node and
+degrades the local stiffness pointwise, so it *does* pick up the
+peak-vs-mean difference. Running the same four cases through `FESolver`
+gives distinct compression knockdowns even at matched mean:
+
+```
+mode = compression, FE Tsai-Wu, Vp_mean = 3 %
+  uniform               0.9887
+  clustered (midplane)  0.9882
+  clustered (surface)   0.9883
+  interface             0.9854   (penny voids, sharpest local field)
+```
+
+(Numbers reproduced by `python examples/distribution_comparison.py`;
+exact values depend on mesh resolution — the relative ordering is
+robust.)
+
+### Guidance
+
+- **First-pass screening / NCR validation summary** — use `uniform`.
+  When only a single specimen-average `Vp` from a C-scan / ultrasonic
+  measurement is available, the distribution choice does not change the
+  empirical answer. `uniform` is the default in the NCR validation
+  summary for exactly this reason.
+- **X-ray CT shows a through-thickness gradient** — use
+  `clustered (midplane)` (or `interface` if the voids cluster at ply
+  drops). Then run the FE path so the field solver can resolve the
+  local peak. The empirical row will still be the same as `uniform`;
+  the FE row is where the difference shows up.
+
+A runnable side-by-side comparison (table + two PNGs) lives in
+[`examples/distribution_comparison.py`](examples/distribution_comparison.py).
 
 ## Output Files
 
