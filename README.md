@@ -50,8 +50,14 @@ pip install -e ".[all]"
 
 ### Dependencies only
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt              # core (CLI + library)
+pip install -r requirements-web.txt          # add Streamlit for the web app
 ```
+
+`requirements.txt` covers the CLI and Python library only. Streamlit is an
+optional `web` extra (see `pyproject.toml`); install it via
+`requirements-web.txt` or `pip install -e ".[web]"` if you want to run
+`streamlit run app.py`.
 
 ### Run tests
 ```bash
