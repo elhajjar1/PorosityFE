@@ -2421,6 +2421,70 @@ class TestApiConsistency:
             with pytest.raises(KeyError, match="return_artifacts"):
                 _ = r[legacy_key]
 
+    # --- #148: pin dict-shim and migration-hint behavior --------------
+
+    def _make_failure_result(self):
+        """Build a FailureResult via the same factory the rest of the
+        suite uses (EmpiricalSolver.get_failure_load)."""
+        pf = PorosityField(self.material, 0.02, distribution='uniform')
+        mesh = CompositeMesh(pf, self.material, nx=4, ny=2, nz=2,
+                             ply_angles='QI')
+        emp = EmpiricalSolver(mesh, self.material)
+        return emp.get_failure_load(mode='compression', model='judd_wright')
+
+    def _make_config_result(self):
+        """Build a ConfigResult via compare_configurations with a single
+        small config (matches the factory used elsewhere in the class)."""
+        results = compare_configurations(
+            0.03, configs={'uniform_spherical':
+                           POROSITY_CONFIGS['uniform_spherical']})
+        return results['uniform_spherical']
+
+    def test_failure_result_dict_shim_unknown_key_raises_keyerror(self):
+        """Unknown keys must raise KeyError (NOT AttributeError) so
+        dict-style back-compat (``result['nope']``) keeps the right
+        exception type for legacy callers wrapping ``try/except KeyError``."""
+        r = self._make_failure_result()
+        with pytest.raises(KeyError):
+            _ = r['nope']
+
+    def test_failure_result_get_returns_default_for_missing(self):
+        """``result.get(key, default)`` must return the default for
+        unknown keys rather than raising."""
+        r = self._make_failure_result()
+        assert r.get('nope', 'fallback') == 'fallback'
+        # Sanity: known key still resolves through .get().
+        assert r.get('knockdown') == r.knockdown
+
+    def test_failure_result_keys_includes_documented_fields(self):
+        """``keys()`` must surface the three documented direct fields
+        (``failure_stress``, ``knockdown``, ``model``) so legacy
+        ``for k in result:``-style code sees them."""
+        r = self._make_failure_result()
+        ks = r.keys()
+        assert 'failure_stress' in ks
+        assert 'knockdown' in ks
+        assert 'model' in ks
+
+    def test_failure_result_to_dict_matches_attribute_access(self):
+        """``to_dict()`` must mirror attribute access for the documented
+        direct fields (the legacy dict-returning shape)."""
+        r = self._make_failure_result()
+        d = r.to_dict()
+        assert d['knockdown'] == r.knockdown
+        assert d['failure_stress'] == r.failure_stress
+        assert d['model'] == r.model
+
+    def test_config_result_artifact_keys_hint_at_return_artifacts(self):
+        """The migration-hint KeyError for moved keys
+        (``mesh`` / ``empirical_solver`` / ``porosity_field`` /
+        ``field_results``) must mention ``return_artifacts`` so callers
+        know where their data went."""
+        r = self._make_config_result()
+        for artifact_key in self.ConfigResult._ARTIFACT_KEYS:
+            with pytest.raises(KeyError, match='return_artifacts'):
+                _ = r[artifact_key]
+
 
 class TestEnvironmentalKnockdown:
     """#59: hygrothermal (T/M) and S-N fatigue knockdown surfaces.
@@ -2500,6 +2564,39 @@ class TestEnvironmentalKnockdown:
         env_mild = solver.get_failure_load(mode='ilss', model='judd_wright',
                                             environment={'T': 30.0, 'M': 0.1})
         assert env_mild.details['environment_knockdown'] > 0.95
+
+    # -- Item 1b: defensive branches of MaterialProperties.environment_knockdown
+
+    def test_environment_knockdown_no_op_when_tg_dry_none(self):
+        """No ``T_g_dry`` calibration -> direct call returns 1.0 (no-op)."""
+        # ``self.material_no_tg`` is the preset MaterialProperties with
+        # ``T_g_dry=None`` (the default), so the environment knockdown
+        # short-circuits to the no-op identity even at hot/wet service.
+        mat = self.material_no_tg
+        assert mat.T_g_dry is None
+        factor = mat.environment_knockdown('ilss', T=80.0, M=1.2)
+        assert factor == 1.0
+
+    def test_environment_knockdown_pathological_tref_above_tg(self):
+        """``T_ref >= T_g_dry`` is pathological -> refuse to scale (return 1.0)."""
+        # Force the (T_g_dry - T_ref) denominator to be non-positive by setting
+        # T_g_dry below the default T_ref (=23 C). The code refuses to divide
+        # by zero / negative and returns 1.0 instead.
+        mat = dataclasses.replace(
+            MATERIALS['T800_epoxy'], T_g_dry=20.0,
+        )
+        assert mat.T_ref >= mat.T_g_dry
+        factor = mat.environment_knockdown('ilss', T=10.0, M=0.0)
+        assert factor == 1.0
+
+    def test_environment_knockdown_above_wet_tg_clamps_floor(self):
+        """Service T above the wet T_g -> clamp to the 0.01 floor."""
+        # T_g_wet = T_g_dry - 25 * M = 200 - 25 * 2 = 150 C; service at 200 C
+        # is well above T_g_wet, so the numerator (T_g_wet - T_eff) is
+        # negative and the code clamps to the documented 0.01 floor.
+        mat = self.material  # T_g_dry = 200.0
+        factor = mat.environment_knockdown('ilss', T=200.0, M=2.0)
+        assert factor == pytest.approx(0.01, rel=1e-12)
 
     # -- Item 2: S-N fatigue knockdown ---------------------------------
 
@@ -4474,6 +4571,30 @@ class TestMaterialPropertiesPerturb:
         with pytest.raises(ValueError, match="Unknown distribution"):
             m.perturb({'sigma_1c': 0.1}, {'sigma_1c': ('weibull', 0.1)})
 
+    def test_perturbed_value_zero_cov_lognormal_returns_nominal(self):
+        """Lognormal at CoV=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        # Use a non-zero unit draw to prove the short-circuit returns nominal
+        # without consuming the variate (otherwise exp(0 * 2.5) would still
+        # equal 1.0 and we wouldn't be exercising the guard branch).
+        out = m.perturb({'sigma_1c': 2.5}, {'sigma_1c': ('lognormal', 0.0)})
+        assert out.sigma_1c == m.sigma_1c
+
+    def test_perturbed_value_zero_cov_normal_returns_nominal(self):
+        """Normal at CoV=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        out = m.perturb({'E22': -1.7}, {'E22': ('normal', 0.0)})
+        assert out.E22 == m.E22
+
+    def test_perturbed_value_zero_width_uniform_returns_nominal(self):
+        """Uniform at half-width=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        # ``unit_draw`` is a U(0,1) variate for uniform; pick 0.75 so the
+        # short-circuit (rather than the affine map evaluating to nominal by
+        # coincidence at 0.5) is what enforces the identity.
+        out = m.perturb({'tau_12': 0.75}, {'tau_12': ('uniform', 0.0)})
+        assert out.tau_12 == m.tau_12
+
 
 class TestPropagateUncertainty:
     """Monte Carlo / LHS uncertainty propagation around get_failure_load."""
@@ -4936,3 +5057,51 @@ class TestEmpiricalSolverPlugin:
             assert 'flat' in results[mode]
             assert results[mode]['flat']['knockdown'] == pytest.approx(
                 0.5, rel=1e-12)
+
+
+class TestCoefficientOverrideValidation:
+    """#150: pin the user-facing customization surfaces of EmpiricalSolver.
+
+    Covers (a) the per-mode coefficient-override validation inside
+    :meth:`EmpiricalSolver._merge_coefficient_override` and (b) the
+    user-supplied knockdown callable validation inside
+    :meth:`EmpiricalSolver._validate_user_kd_callable` (which the
+    constructor does not invoke; validation happens at dispatch time via
+    :meth:`apply_loading` / :meth:`get_failure_load`).
+    """
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        self.mesh = CompositeMesh(self.pf, self.material, nx=4, ny=2, nz=2)
+
+    def test_coefficient_override_rejects_non_numeric(self):
+        """Non-numeric override values must raise TypeError naming the key."""
+        with pytest.raises(TypeError, match=r"must be a number"):
+            EmpiricalSolver(self.mesh, self.material,
+                            judd_wright_alpha={'compression': 'invalid'})
+
+    def test_coefficient_override_rejects_negative(self):
+        """Negative coefficients must raise ValueError ('positive finite')."""
+        with pytest.raises(ValueError, match=r"positive finite"):
+            EmpiricalSolver(self.mesh, self.material,
+                            power_law_n={'compression': -0.5})
+
+    def test_coefficient_override_rejects_infinite(self):
+        """Non-finite (inf) coefficients must raise ValueError."""
+        with pytest.raises(ValueError, match=r"positive finite"):
+            EmpiricalSolver(self.mesh, self.material,
+                            linear_beta={'compression': float('inf')})
+
+    def test_user_callable_exception_wrapped_with_context(self):
+        """An exception raised inside a user knockdown callable must be
+        re-raised as ValueError carrying the original exception type name."""
+        solver = EmpiricalSolver(self.mesh, self.material)
+
+        def bad_kd(Vp, mode):
+            raise ZeroDivisionError("oops")
+
+        with pytest.raises(ValueError, match=r"ZeroDivisionError") as exc_info:
+            solver.apply_loading(mode='compression', model=bad_kd)
+        # Validation message should also surface the original message text.
+        assert 'oops' in str(exc_info.value)
