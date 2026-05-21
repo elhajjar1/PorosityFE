@@ -78,13 +78,13 @@ Community Cloud.
 
 ### Command-line analysis
 ```bash
-python porosity_fe_analysis.py
+porosity-analyze
 ```
 Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
 
 ### Python library
 ```python
-from porosity_fe_analysis import *
+from porosity_fe import *
 
 # Quick empirical screening
 material = MATERIALS['T800_epoxy']
@@ -93,7 +93,7 @@ mesh = CompositeMesh(pf, material, nx=50, ny=20, nz=24)
 
 solver = EmpiricalSolver(mesh, material)
 result = solver.get_failure_load(mode='compression', model='judd_wright')
-print(f"Knockdown: {result['knockdown']:.3f}")
+print(f"Knockdown: {result.knockdown:.3f}")
 
 # Compare all configurations at 3% porosity
 results = compare_configurations(0.03, material_name='T800_epoxy')
@@ -107,7 +107,7 @@ set, construct a `MaterialProperties` instance directly and pass it through
 the analysis pipeline — there is no separate registration step required.
 
 ```python
-from porosity_fe_analysis import MaterialProperties, PorosityField, CompositeMesh, EmpiricalSolver
+from porosity_fe import MaterialProperties, PorosityField, CompositeMesh, EmpiricalSolver
 
 # Define a custom T700 / toughened-epoxy system
 my_material = MaterialProperties(
@@ -143,7 +143,7 @@ Notes:
   only plan to run the empirical solver — both paths share the same
   `MaterialProperties` object.
 - To use this material with the included CLI / batch scripts, you can also
-  add it to the `MATERIALS` dict in `porosity_fe_analysis.py` so it can be
+  add it to the `MATERIALS` dict in `porosity_fe/materials.py` so it can be
   selected by name (`compare_configurations(..., material_name='my_system')`).
 - The empirical knockdown coefficients (`alpha`, `n`, `beta`) live on
   `EmpiricalSolver`, not on `MaterialProperties`. To recalibrate them for
@@ -169,6 +169,13 @@ python examples/uniform_spherical.py
 | [`examples/discrete_voids.py`](examples/discrete_voids.py) | Explicit `VoidGeometry` ellipsoids on top of a low-uniform background; renders the SCF field around one void. |
 | [`examples/compute_degraded_clt_moduli.py`](examples/compute_degraded_clt_moduli.py) | CLT path: laminate effective moduli `(Ex, Ey, Gxy)` vs. `Vp` for a quasi-isotropic layup. |
 | [`examples/distribution_comparison.py`](examples/distribution_comparison.py) | Side-by-side `uniform` vs `clustered` vs `interface` at matched `Vp_mean`; shows empirical KDs collapse, FE KDs diverge (#83). |
+
+In addition to the `mode` / `model` kwargs shown above, `EmpiricalSolver.get_failure_load`
+also accepts an `environment=` kwarg (hygrothermal knockdown — temperature
+and moisture; PR #59) and a `cycles=` kwarg (fatigue knockdown). Both
+compose multiplicatively with the porosity knockdown; see the
+`EmpiricalSolver.get_failure_load` docstring for the accepted shapes and
+defaults.
 
 See [`examples/README.md`](examples/README.md) for the full index and the
 conventions reminder. Math conventions (Voigt order, engineering vs. tensor
