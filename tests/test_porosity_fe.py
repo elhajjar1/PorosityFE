@@ -2565,6 +2565,39 @@ class TestEnvironmentalKnockdown:
                                             environment={'T': 30.0, 'M': 0.1})
         assert env_mild.details['environment_knockdown'] > 0.95
 
+    # -- Item 1b: defensive branches of MaterialProperties.environment_knockdown
+
+    def test_environment_knockdown_no_op_when_tg_dry_none(self):
+        """No ``T_g_dry`` calibration -> direct call returns 1.0 (no-op)."""
+        # ``self.material_no_tg`` is the preset MaterialProperties with
+        # ``T_g_dry=None`` (the default), so the environment knockdown
+        # short-circuits to the no-op identity even at hot/wet service.
+        mat = self.material_no_tg
+        assert mat.T_g_dry is None
+        factor = mat.environment_knockdown('ilss', T=80.0, M=1.2)
+        assert factor == 1.0
+
+    def test_environment_knockdown_pathological_tref_above_tg(self):
+        """``T_ref >= T_g_dry`` is pathological -> refuse to scale (return 1.0)."""
+        # Force the (T_g_dry - T_ref) denominator to be non-positive by setting
+        # T_g_dry below the default T_ref (=23 C). The code refuses to divide
+        # by zero / negative and returns 1.0 instead.
+        mat = dataclasses.replace(
+            MATERIALS['T800_epoxy'], T_g_dry=20.0,
+        )
+        assert mat.T_ref >= mat.T_g_dry
+        factor = mat.environment_knockdown('ilss', T=10.0, M=0.0)
+        assert factor == 1.0
+
+    def test_environment_knockdown_above_wet_tg_clamps_floor(self):
+        """Service T above the wet T_g -> clamp to the 0.01 floor."""
+        # T_g_wet = T_g_dry - 25 * M = 200 - 25 * 2 = 150 C; service at 200 C
+        # is well above T_g_wet, so the numerator (T_g_wet - T_eff) is
+        # negative and the code clamps to the documented 0.01 floor.
+        mat = self.material  # T_g_dry = 200.0
+        factor = mat.environment_knockdown('ilss', T=200.0, M=2.0)
+        assert factor == pytest.approx(0.01, rel=1e-12)
+
     # -- Item 2: S-N fatigue knockdown ---------------------------------
 
     def test_fatigue_knockdown_noop_when_cycles_none(self):
@@ -4537,6 +4570,30 @@ class TestMaterialPropertiesPerturb:
         m = MATERIALS['T800_epoxy']
         with pytest.raises(ValueError, match="Unknown distribution"):
             m.perturb({'sigma_1c': 0.1}, {'sigma_1c': ('weibull', 0.1)})
+
+    def test_perturbed_value_zero_cov_lognormal_returns_nominal(self):
+        """Lognormal at CoV=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        # Use a non-zero unit draw to prove the short-circuit returns nominal
+        # without consuming the variate (otherwise exp(0 * 2.5) would still
+        # equal 1.0 and we wouldn't be exercising the guard branch).
+        out = m.perturb({'sigma_1c': 2.5}, {'sigma_1c': ('lognormal', 0.0)})
+        assert out.sigma_1c == m.sigma_1c
+
+    def test_perturbed_value_zero_cov_normal_returns_nominal(self):
+        """Normal at CoV=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        out = m.perturb({'E22': -1.7}, {'E22': ('normal', 0.0)})
+        assert out.E22 == m.E22
+
+    def test_perturbed_value_zero_width_uniform_returns_nominal(self):
+        """Uniform at half-width=0 short-circuits to the exact nominal value."""
+        m = MATERIALS['T800_epoxy']
+        # ``unit_draw`` is a U(0,1) variate for uniform; pick 0.75 so the
+        # short-circuit (rather than the affine map evaluating to nominal by
+        # coincidence at 0.5) is what enforces the identity.
+        out = m.perturb({'tau_12': 0.75}, {'tau_12': ('uniform', 0.0)})
+        assert out.tau_12 == m.tau_12
 
 
 class TestPropagateUncertainty:
