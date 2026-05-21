@@ -3496,6 +3496,71 @@ class TestEmpiricalLayupScaling:
             assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - alpha_qi * 2.0) < 1e-12
 
 
+class TestLayupScaleRegressionPin:
+    """Pin the current ``_layup_scale`` behavior across the intermediate
+    f_md range.
+
+    Snapshot of post-#140 investigation findings. The linear
+    ``f_md / _F_MD_REF`` scaling is preserved pending the validation
+    campaign documented in #140; these values are the current behavior,
+    not an endorsement of correctness. Any future refactor (linear or
+    nonlinear) must explicitly update these snapshots so the change is
+    visible in review.
+
+    Measurement methodology used in #140: relative CLT stiffness
+    retention ratio vs the QI baseline, i.e.
+    ``sqrt(Ex_layup(Vp)/Ex_layup(0)) / sqrt(Ex_QI(Vp)/Ex_QI(0))``,
+    compared against the empirical
+    ``exp(-alpha_QI*(scale_lin - 1)*Vp)`` over Vp in
+    ``[0.005, 0.05]``. Max abs relative error observed across the
+    layups below was 33.5% (UD at Vp=0.05); >5% on UD-heavy, off-axis,
+    and UD layups.
+    """
+
+    def _solver_with_layup(self, ply_angles):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
+        return EmpiricalSolver(mesh, material, ply_angles=ply_angles)
+
+    def test_layup_scale_at_baseline_qi_returns_unity(self):
+        # QI [0,45,-45,90]_s -> f_md = 0.5 -> scale = 1.0 for all modes.
+        solver = self._solver_with_layup([0, 45, -45, 90, 90, -45, 45, 0])
+        for mode in ('compression', 'tension', 'shear', 'ilss',
+                     'transverse_tension'):
+            assert solver._layup_scale(mode) == pytest.approx(1.0, abs=1e-12)
+
+    def test_layup_scale_snapshot_at_intermediate_layups(self):
+        # 4-sig-fig snapshot of the current (linear) layup scale across the
+        # representative layups used in the #140 measurement set.
+        # Update only with an intentional algorithm change.
+        layups = {
+            'qi':       [0, 45, -45, 90, 90, -45, 45, 0],
+            'crossply': [0, 90, 90, 0],
+            'ud_heavy': [0, 0, 90, 90, 0, 0],
+            'off_axis': [0, 15, -15, -15, 15, 0],
+            'ud':       [0, 0, 0, 0, 0, 0],
+        }
+        expected = {
+            # name: (f_md, compression, tension, shear, ilss, transverse_tension)
+            'qi':       (0.5000, 1.000, 1.000, 1.000, 1.000, 1.000),
+            'crossply': (0.5000, 1.000, 1.000, 1.000, 1.000, 1.000),
+            'ud_heavy': (0.3333, 0.6667, 0.6667, 0.6667, 0.8000, 0.8000),
+            'off_axis': (0.3333, 0.6667, 0.6667, 0.6667, 0.8000, 0.8000),
+            'ud':       (0.0000, 0.1500, 0.1500, 0.1500, 0.8000, 0.8000),
+        }
+        for name, ply in layups.items():
+            solver = self._solver_with_layup(ply)
+            exp = expected[name]
+            assert solver.f_md == pytest.approx(exp[0], abs=5e-4), name
+            for i, mode in enumerate(('compression', 'tension', 'shear',
+                                      'ilss', 'transverse_tension'),
+                                     start=1):
+                got = solver._layup_scale(mode)
+                assert got == pytest.approx(exp[i], abs=5e-4), \
+                    f'{name}/{mode}: got {got!r}, expected {exp[i]!r}'
+
+
 class TestEmpiricalLinearSaturation:
     """The linear knockdown clips to 0 once Vp >= 1/beta."""
 
