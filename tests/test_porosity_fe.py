@@ -4755,6 +4755,56 @@ class TestPropagateUncertainty:
             propagate_uncertainty(0.02, 'T800_epoxy',
                                   covs={'not_a_field': 0.1}, n_samples=4)
 
+    # Issue #153: pin the input-validation branches in propagate_uncertainty,
+    # _normalize_uq_spec, and _draw_unit_samples. These are advanced-user
+    # guard rails -- the messages are exactly what someone debugging an
+    # unusual UQ input needs, so a silent regression would hurt.
+
+    def test_invalid_field_raises(self):
+        with pytest.raises(ValueError, match="non-perturbable"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'not_a_field': 0.1},
+                                  n_samples=self._N)
+
+    def test_invalid_sampling_method_raises(self):
+        with pytest.raises(ValueError, match="Unknown sampling method"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'sigma_1c': 0.08},
+                                  n_samples=self._N,
+                                  method='importance_sampling')
+
+    def test_invalid_percentile_raises(self):
+        with pytest.raises(ValueError, match=r"percentiles must lie in \[0, 100\]"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'sigma_1c': 0.08},
+                                  n_samples=self._N,
+                                  percentiles=(5, 150))
+
+    def test_non_positive_n_samples_raises(self):
+        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'sigma_1c': 0.08},
+                                  n_samples=0)
+        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'sigma_1c': 0.08},
+                                  n_samples=-1)
+
+    def test_unknown_material_raises(self):
+        with pytest.raises(ValueError, match="Unknown material"):
+            propagate_uncertainty(0.02, 'nonsense',
+                                  covs={'sigma_1c': 0.08},
+                                  n_samples=self._N)
+
+    def test_malformed_spec_tuple_raises(self):
+        # The (distribution, params) shape check lives on the `spec=` path;
+        # passing a 1-tuple there should fail with the documented message.
+        with pytest.raises(ValueError,
+                           match=r"must be a \(distribution, params\) pair"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  spec={'E11': (0.1,)},
+                                  n_samples=self._N)
+
 
 # Issue #65: closed-form local sensitivities + per-point validation bands.
 class TestLocalSensitivities:
