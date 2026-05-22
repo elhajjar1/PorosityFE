@@ -4234,7 +4234,9 @@ class TestProvenanceInSaveResultsJson:
         save_results_to_json(results, path)
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        assert data['schema_version'] == '1.0'
+        # Track the current envelope version rather than hard-coding it,
+        # so a future additive minor bump doesn't break this assertion (#131).
+        assert data['schema_version'] == JSON_SCHEMA_VERSION
 
 
 class TestJsonEncodingRoundTrip:
@@ -4277,7 +4279,7 @@ class TestProvenanceInFEExportResults:
         assert isinstance(prov['numpy_version'], str) and prov['numpy_version']
         assert isinstance(prov['timestamp_utc'], str) and prov['timestamp_utc']
         assert 'porosity_fe_version' in prov
-        assert data['schema_version'] == '1.0'
+        assert data['schema_version'] == JSON_SCHEMA_VERSION
 
 
 class TestIssue55ProvenanceContract:

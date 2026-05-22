@@ -1,13 +1,14 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Porosity Analysis Results",
-  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit empirical exporter / the NCR exporter. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change. The known top-level format identifiers are listed in the `format` enum (#20).",
+  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit empirical exporter / the NCR exporter. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change. The known top-level format identifiers are listed in the `format` enum (#20). An optional `units` block (#131) documents the physical units of the numeric leaves in the payload so downstream consumers reading only the JSON can interpret values without consulting external docs.",
   "type": "object",
   "required": ["schema_version", "format", "provenance"],
   "properties": {
     "schema_version": {
       "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+$"
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "Envelope schema version (MAJOR.MINOR). Bumped on additive changes; consumers should accept any MINOR within the same MAJOR."
     },
     "format": {
       "type": "string",
@@ -46,7 +47,7 @@
         "scipy_version": {"type": ["string", "null"]},
         "matplotlib_version": {"type": ["string", "null"]},
         "timestamp_utc": {"type": "string"},
-        "seed": {"type": ["integer", "null"]},
+        "seed": {"type": ["integer", "null"], "description": "RNG seed for the run (null when unset or ambiguous). Dimensionless."},
         "git_commit": {"type": ["string", "null"]},
         "package_version": {"type": ["string", "null"]},
         "python": {"type": "string"},
@@ -57,9 +58,54 @@
         "hostname": {"type": ["string", "null"]}
       }
     },
+    "units": {
+      "type": "object",
+      "description": "Optional self-documenting map from payload field name to its physical unit string (#131). Added in schema_version 1.1; consumers on older schemas can safely ignore it. Keys correspond to numeric leaves present in the payload (e.g. 'failure_stress', 'knockdown', 'Vp', 'porosity_percent'); values are human-readable unit strings (e.g. 'MPa', 'dimensionless fraction in (0, 1]', '%').",
+      "additionalProperties": {"type": "string"}
+    },
     "raw_sidecar": {
       "type": "string",
       "description": "Basename of the optional .npz sidecar containing the raw displacement/stress/strain arrays (FESolver.export_results include_raw=True)."
+    },
+    "void_volume_fraction": {
+      "type": "number",
+      "description": "Void volume fraction in [0, 1]. Dimensionless."
+    },
+    "failure_stress_MPa": {
+      "type": "number",
+      "description": "Compressive failure stress in MPa."
+    },
+    "knockdown": {
+      "type": "number",
+      "description": "Strength retained as a fraction of pristine (0 = failed, 1 = pristine). Dimensionless."
+    },
+    "Vp": {
+      "type": "number",
+      "description": "Void volume fraction in [0, 1]. Dimensionless."
+    },
+    "Vp_percent": {
+      "type": "number",
+      "description": "Void volume fraction in percent (%)."
+    },
+    "porosity_percent": {
+      "type": "number",
+      "description": "Value in percent (%)."
+    },
+    "measured_Vp_percent": {
+      "type": "number",
+      "description": "Measured void volume fraction in percent (%)."
+    },
+    "t_ply_mm": {
+      "type": "number",
+      "description": "Ply thickness in millimetres (mm)."
+    },
+    "governing_knockdown": {
+      "type": "number",
+      "description": "Worst-case (lowest) strength retained as a fraction of pristine. Dimensionless."
+    },
+    "governing_residual_strength_MPa": {
+      "type": "number",
+      "description": "Worst-case residual strength in MPa."
     }
   },
   "additionalProperties": true

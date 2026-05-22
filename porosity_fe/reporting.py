@@ -122,10 +122,14 @@ def write_results_json(filepath: str, payload: dict) -> None:
         _build_provenance,
         _json_default,
     )
+    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
     envelope = {
         "schema_version": JSON_SCHEMA_VERSION,
         "format": FORMAT_EMPIRICAL_SWEEP,
         "provenance": _build_provenance(),
+        # Self-documenting units block (#131): documents the physical units
+        # of the numeric leaves in the payload below.
+        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
         **payload,
     }
     with open(filepath, "w", encoding="utf-8") as f:
@@ -174,10 +178,14 @@ def _serialise_payload_json(payload: dict) -> str:
         _build_provenance,
         _json_default,
     )
+    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
     envelope = {
         "schema_version": JSON_SCHEMA_VERSION,
         "format": FORMAT_EMPIRICAL_SWEEP,
         "provenance": _build_provenance(),
+        # Self-documenting units block (#131): documents the physical units
+        # of the numeric leaves in the payload below.
+        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
         **payload,
     }
     return json.dumps(envelope, indent=2, default=_json_default)
@@ -410,10 +418,14 @@ def serialise_ncr_json(ncr: dict) -> str:
         _build_provenance,
         _json_default,
     )
+    from porosity_fe.io import _UNITS_NCR
     envelope = {
         "schema_version": JSON_SCHEMA_VERSION,
         "format": FORMAT_NCR,
         "provenance": _build_provenance(),
+        # Self-documenting units block (#131): documents the physical units
+        # of the numeric leaves in the NCR payload below.
+        "units": dict(_UNITS_NCR),
         **ncr,
     }
     return json.dumps(envelope, indent=2, default=_json_default)

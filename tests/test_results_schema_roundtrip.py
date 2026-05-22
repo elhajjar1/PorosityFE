@@ -208,6 +208,91 @@ def test_save_results_config_name_collision_raises(tmp_path):
         save_results_to_json(colliding, path)
 
 
+def test_save_results_includes_units_block(tmp_path):
+    """#131: save_results_to_json must emit a top-level ``units`` block so
+    consumers reading only the JSON can interpret ambiguous fields like
+    ``knockdown``. The block lives in the envelope (after ``provenance``,
+    before per-config payloads) and maps payload field names to unit
+    strings.
+    """
+    import jsonschema
+
+    path = str(tmp_path / "with_units.json")
+    save_results_to_json(_tiny_results(), path)
+
+    with open(path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+
+    # New envelope contract: units present, schema bumped to 1.1+.
+    assert "units" in on_disk, (
+        "Envelope must carry a self-documenting 'units' block (#131)."
+    )
+    units = on_disk["units"]
+    assert isinstance(units, dict) and units, "units must be a non-empty mapping."
+    # The empirical-sweep payload writes failure_stress (MPa), knockdown
+    # (dimensionless fraction), and void_volume_fraction (dimensionless
+    # fraction) — the three numeric leaves the consumer needs labelled.
+    assert "failure_stress" in units
+    assert units["failure_stress"] == "MPa"
+    assert "knockdown" in units
+    assert "dimensionless" in units["knockdown"].lower()
+    assert "void_volume_fraction" in units
+    assert "dimensionless" in units["void_volume_fraction"].lower()
+
+    # Version bump: this envelope shipped as 1.1.
+    assert on_disk["schema_version"] == JSON_SCHEMA_VERSION
+    assert on_disk["schema_version"] != "1.0"
+    assert on_disk["schema_version"].startswith("1.")
+
+    # Whole envelope must still validate against the schema.
+    jsonschema.validate(instance=on_disk, schema=_load_schema())
+
+
+def test_legacy_json_without_units_block_still_loads(tmp_path):
+    """#131: the ``units`` block is purely additive — consumers reading a
+    file written by an older porosity-fe (no ``units`` key) must still
+    load and validate cleanly. The MAJOR version is unchanged, so the
+    loader accepts both 1.0 and 1.1 envelopes.
+    """
+    import jsonschema
+
+    # Hand-craft a minimal valid 1.0-style envelope (no ``units`` key).
+    legacy = {
+        "schema_version": "1.0",
+        "format": FORMAT_EMPIRICAL_SWEEP,
+        "provenance": {
+            "schema_version": "1.0",
+            "porosity_fe_version": "0.0.0",
+            "python_version": "3.11.0",
+            "platform": "test",
+            "numpy_version": "1.26.0",
+            "scipy_version": "1.11.0",
+            "timestamp_utc": "2026-05-22T00:00:00Z",
+            "seed": None,
+            "git_commit": None,
+            "package_version": "0.0.0",
+            "python": "3.11.0",
+            "numpy": "1.26.0",
+            "scipy": "1.11.0",
+            "generated_utc": "2026-05-22T00:00:00Z",
+            "git_sha": None,
+        },
+        "demo_config": {
+            "void_volume_fraction": 0.03,
+            "empirical": {},
+        },
+    }
+    path = tmp_path / "legacy_no_units.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    # No ``units`` key, but schema validation still passes (additive change).
+    jsonschema.validate(instance=legacy, schema=_load_schema())
+    # And the loader accepts the older minor version (same MAJOR).
+    loaded = load_results_from_json(str(path))
+    assert "units" not in loaded
+    assert loaded["schema_version"] == "1.0"
+
+
 def test_save_results_legacy_dict_shape_still_works(tmp_path):
     """#152: the pre-#103 ``Dict[str, dict]`` shape (raw worker-dict with
     ``porosity_field`` / ``config`` / ``empirical`` keys) must still
