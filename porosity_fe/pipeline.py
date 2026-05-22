@@ -51,9 +51,10 @@ def _analyze_one(Vp: float,
         process doesn't need to pickle the :class:`MaterialProperties`
         dataclass across the boundary (it's keyed by name anyway).
     applied_stress : float
-        Reserved for downstream solver hooks. Accepted for parity with the
-        ``compare_configurations`` signature even though the empirical
-        knockdown does not currently consume it.
+        Reserved for downstream solver hooks; **currently unused**.
+        Accepted for parity with the ``compare_configurations`` signature
+        even though the empirical knockdown does not consume it, so
+        changing this value will not affect the worker's output (#132).
     seed : int, optional
         Recorded into the porosity field for reproducibility provenance.
 
@@ -147,8 +148,10 @@ def compare_configurations(void_volume_fraction: float,
     material_name : str
         Material preset name; validated against :data:`MATERIALS`.
     applied_stress : float
-        Reserved for downstream solver hooks (empirical knockdown does
-        not currently consume it).
+        Reserved for downstream solver hooks; **currently unused**. The
+        empirical knockdown sweep does not consume this value, so passing
+        a different number will not change the returned results. Retained
+        in the signature for forward compatibility (#132).
     configs : dict, optional
         Mapping of configuration name -> :class:`PorosityField` kwargs.
         Defaults to the bundled :data:`POROSITY_CONFIGS`.
