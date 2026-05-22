@@ -3730,7 +3730,8 @@ class TestExportHelpers:
         assert data_lines[0] == "mode,model,failure_stress_MPa,knockdown"
         # Three (mode, model) rows in the sample → header + 3 = 4 lines.
         assert len(data_lines) == 4
-        assert "compression,judd_wright,1234.5,0.823" in data_lines
+        # failure_stress -> 1 dp, knockdown -> 4 dp (#128).
+        assert "compression,judd_wright,1234.5,0.8230" in data_lines
 
     def test_write_results_csv_round_trips_via_csv_module(self, tmp_path):
         import csv as _csv

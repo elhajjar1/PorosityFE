@@ -132,6 +132,23 @@ def write_results_json(filepath: str, payload: dict) -> None:
         json.dump(envelope, f, indent=2, default=_json_default)
 
 
+def _format_csv_row(mode: str, model: str, r: dict) -> list:
+    """Format a single empirical row for CSV export with engineering precision.
+
+    Raw Python floats round-trip with full 15-digit precision through
+    ``csv.writer``, which produces noisy spreadsheet/script-consumer
+    output (#128). Apply explicit per-field precision instead:
+
+    * ``failure_stress_MPa`` -> 1 decimal place (engineering MPa)
+    * ``knockdown`` -> 4 decimal places (dimensionless ratio)
+    """
+    return [
+        mode, model,
+        f"{r['failure_stress_MPa']:.1f}",
+        f"{r['knockdown']:.4f}",
+    ]
+
+
 def write_results_csv(filepath: str, payload: dict) -> None:
     """Write the export payload as a flat CSV.
 
@@ -147,11 +164,7 @@ def write_results_csv(filepath: str, payload: dict) -> None:
         for mode in payload["empirical"]:
             for model in payload["empirical"][mode]:
                 r = payload["empirical"][mode][model]
-                writer.writerow([
-                    mode, model,
-                    r["failure_stress_MPa"],
-                    r["knockdown"],
-                ])
+                writer.writerow(_format_csv_row(mode, model, r))
 
 
 def _serialise_payload_json(payload: dict) -> str:
@@ -179,11 +192,7 @@ def _serialise_payload_csv(payload: dict) -> str:
     for mode in payload["empirical"]:
         for model in payload["empirical"][mode]:
             r = payload["empirical"][mode][model]
-            writer.writerow([
-                mode, model,
-                r["failure_stress_MPa"],
-                r["knockdown"],
-            ])
+            writer.writerow(_format_csv_row(mode, model, r))
     return buf.getvalue()
 
 
