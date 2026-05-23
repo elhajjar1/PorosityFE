@@ -68,6 +68,7 @@ from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401,
 from .cli import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401, E402
 from .cli import _vp_label as _vp_label  # noqa: F401, E402
 from .cli import main as main  # noqa: F401, E402
+from .empirical import Calibration as Calibration  # noqa: F401, E402
 from .empirical import EmpiricalSolver as EmpiricalSolver  # noqa: F401, E402
 from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
 from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
@@ -107,6 +108,7 @@ from .pipeline import _analyze_one as _analyze_one  # noqa: F401, E402
 from .pipeline import _build_config_artifacts as _build_config_artifacts  # noqa: F401, E402
 from .pipeline import _build_config_result as _build_config_result  # noqa: F401, E402
 from .pipeline import _resolve_n_jobs as _resolve_n_jobs  # noqa: F401, E402
+from .pipeline import build_empirical_pipeline as build_empirical_pipeline  # noqa: F401, E402
 from .pipeline import compare_configurations as compare_configurations  # noqa: F401, E402
 from .porosity_field import POROSITY_CONFIGS as POROSITY_CONFIGS  # noqa: F401, E402
 from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
@@ -156,6 +158,7 @@ __all__ = [
     "ConfigResult",
     "FailureResult",
     # Empirical / fatigue / UQ
+    "Calibration",
     "EmpiricalSolver",
     "FatigueModel",
     "propagate_uncertainty",
@@ -187,6 +190,7 @@ __all__ = [
     "load_results_from_json",
     "save_results_to_json",
     # Pipeline / CLI
+    "build_empirical_pipeline",
     "compare_configurations",
     "main",
     # Version

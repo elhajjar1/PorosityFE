@@ -1,5 +1,7 @@
 """JSON / VTK I/O helpers and provenance."""
 
+from __future__ import annotations
+
 import dataclasses
 import datetime
 import json
@@ -8,7 +10,8 @@ import os
 import platform
 import subprocess
 import sys
-from typing import TYPE_CHECKING, Dict, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict
 
 import numpy as np
 
@@ -79,7 +82,7 @@ _UNITS_STREAMLIT_EMPIRICAL = {
 }
 
 
-def _build_provenance(seed: Optional[int] = None) -> dict:
+def _build_provenance(seed: int | None = None) -> dict:
     """Return a provenance metadata dict for JSON output reproducibility.
 
     Captures software versions, platform, timestamp, optional git commit,
@@ -97,7 +100,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
     """
     try:
         import importlib.metadata as _ilm
-        pfe_version: Optional[str] = _ilm.version("porosity-fe")
+        pfe_version: str | None = _ilm.version("porosity-fe")
     except Exception:
         # Source checkout not pip-installed: fall back to the package
         # ``__version__`` attribute (defined in ``porosity_fe/__init__.py``).
@@ -107,7 +110,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
     vi = sys.version_info
     python_version = f"{vi.major}.{vi.minor}.{vi.micro}"
 
-    def _pkg_version(module_name: str) -> Optional[str]:
+    def _pkg_version(module_name: str) -> str | None:
         mod = sys.modules.get(module_name)
         return getattr(mod, "__version__", None) if mod else None
 
@@ -118,9 +121,9 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=5,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=Path(__file__).resolve().parent,
         )
-        git_commit: Optional[str] = result.stdout.strip() if result.returncode == 0 else None
+        git_commit: str | None = result.stdout.strip() if result.returncode == 0 else None
     except (subprocess.CalledProcessError, FileNotFoundError, Exception):
         git_commit = None
 
@@ -165,8 +168,8 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
     return prov
 
 
-def save_results_to_json(results: Dict, filename: str,
-                         artifacts: Optional[Dict[str, 'ConfigArtifacts']] = None):
+def save_results_to_json(results: Dict, filename: str | os.PathLike,
+                         artifacts: Dict[str, ConfigArtifacts] | None = None):
     """Export numerical results to JSON.
 
     Parameters
@@ -176,8 +179,8 @@ def save_results_to_json(results: Dict, filename: str,
         :func:`compare_configurations`, or the legacy worker-dict shape
         (``Dict[str, dict]``). Both keep the same on-disk JSON shape so
         the published JSON schema is unchanged (#44 item 3).
-    filename : str
-        Output JSON path.
+    filename : str or os.PathLike
+        Output JSON path. ``pathlib.Path`` objects are accepted.
     artifacts : dict, optional
         Parallel ``Dict[str, ConfigArtifacts]`` from
         ``compare_configurations(..., return_artifacts=True)``. Used
@@ -206,6 +209,8 @@ def save_results_to_json(results: Dict, filename: str,
             if pf is not None:
                 seeds.add(getattr(pf, 'seed', None))
     seed = seeds.pop() if len(seeds) == 1 else None
+
+    filename = Path(filename)
 
     output = {
         'schema_version': JSON_SCHEMA_VERSION,
@@ -261,13 +266,16 @@ def save_results_to_json(results: Dict, filename: str,
     logger.info("Saved: %s", filename)
 
 
-def load_results_from_json(filename: str) -> Dict:
+def load_results_from_json(filename: str | os.PathLike) -> Dict:
     """Round-trip loader for save_results_to_json / export_results outputs.
 
     Validates schema_version compatibility and format identifier. Raises
     ValueError on missing or incompatible envelope so callers don't silently
     consume the wrong shape.
+
+    Accepts either a ``str`` path or any ``os.PathLike`` (e.g. ``pathlib.Path``).
     """
+    filename = Path(filename)
     with open(filename, encoding='utf-8') as f:
         data = json.load(f)
     if not isinstance(data, dict):

@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from ._ply_angles import _resolve_ply_angles
+from ._ply_angles import _PLY_ANGLES_QI, _PLY_ANGLES_UD, _resolve_ply_angles
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
@@ -13,22 +13,28 @@ from .results import FailureResult
 
 logger = logging.getLogger("porosity_fe_analysis")
 
-class EmpiricalSolver:
-    """Fast analytical solver using empirical porosity-strength models.
 
-    Coefficients are calibrated against quasi-isotropic data and scaled by
-    a layup-dependent matrix-dominated fraction so that fiber-dominated
-    layups (e.g. UD [0]_n) see a smaller porosity penalty than QI layups.
+class Calibration:
+    """All empirical knockdown & fatigue calibration constants in one place.
 
-    Knockdowns are evaluated at the specimen-average porosity (Vp_mean),
-    matching how the original correlations were calibrated — not at the
-    local peak Vp that clustered distributions produce.
+    Single source of truth for tuning surfaces. See issue #121.
+    Override per material by passing kwargs to :class:`EmpiricalSolver`
+    (``judd_wright_alpha``, ``power_law_n``, ``linear_beta``) or to the
+    relevant solver entry points.
+
+    The previously scattered module-level / class-level names
+    (``_JUDD_WRIGHT_ALPHA_QI``, ``_FATIGUE_B_QI``, ``_PLY_ANGLES_QI``,
+    ``_UQ_DEFAULT_PERCENTILES``, etc.) remain available as deprecated
+    aliases pointing back at the attributes defined here.
     """
 
+    # ------------------------------------------------------------------
+    # Empirical Vp -> strength knockdown coefficients (QI-calibrated)
+    # ------------------------------------------------------------------
     # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977).
-    # `_F_MD_REF = 0.5` below is the LAYUP-SCALING reference (scale = 1.0 at
+    # ``F_MD_REF = 0.5`` below is the LAYUP-SCALING reference (scale = 1.0 at
     # f_md = 0.5), NOT a property of the Elhajjar coupon layup itself
-    # (`[0/45/90/-45/0]_s`, which the binning rule below puts at f_md = 0.4).
+    # (``[0/45/90/-45/0]_s``, which the binning rule below puts at f_md = 0.4).
     # The coefficients were tuned with the layup-scaling already applied,
     # so they represent the model's effective f_md = 0.5 baseline rather
     # than the raw fit on a single layup.
@@ -41,31 +47,41 @@ class EmpiricalSolver:
     # 'transverse_tension' (sigma_2t, in-plane transverse, matrix-dominated;
     # alpha matched to ilss because both fail by matrix/interface-dominated
     # mechanisms — see issue #35).
-    _JUDD_WRIGHT_ALPHA_QI = {
+    JUDD_WRIGHT_ALPHA_QI: Dict[str, float] = {
         'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
         'transverse_tension': 10.0,
     }
-    _POWER_LAW_N_QI = {
+    POWER_LAW_N_QI: Dict[str, float] = {
         'compression': 2.8, 'tension': 1.8, 'shear': 3.5, 'ilss': 4.5,
         'transverse_tension': 4.5,
     }
-    _LINEAR_BETA_QI = {
+    LINEAR_BETA_QI: Dict[str, float] = {
         'compression': 5.5, 'tension': 3.5, 'shear': 7.0, 'ilss': 9.0,
         'transverse_tension': 9.0,
     }
-    PRISTINE_STRENGTH_KEY = {
-        'compression': 'sigma_1c', 'tension': 'sigma_1t',
-        'shear': 'tau_12', 'ilss': 'tau_ilss',
-        'transverse_tension': 'sigma_2t',
-    }
+
+    # ------------------------------------------------------------------
+    # Fatigue S-N surface (issue #104 / #59) — mirrored from
+    # :mod:`porosity_fe.fatigue` to keep ``Calibration`` a single
+    # discovery point. The fatigue module remains the implementation
+    # site (FatigueModel uses these); the values here are the same
+    # objects (assigned at the bottom of this module to break the
+    # ``fatigue -> empirical`` import cycle).
+    # ------------------------------------------------------------------
+    FATIGUE_B_QI: Dict[str, float]
+    FATIGUE_KD_FLOOR: float
+
+    # ------------------------------------------------------------------
+    # Layup scaling (matrix-dominated fraction)
+    # ------------------------------------------------------------------
     # Modes whose porosity sensitivity is matrix-/interface-dominated even in
     # UD layups (where the longitudinal-fiber metric would otherwise drive
-    # f_md to ~0).  These modes use the elevated ``_F_MD_FLOOR_ILSS`` floor.
-    _MATRIX_DOMINATED_MODES = frozenset({'ilss', 'transverse_tension'})
+    # f_md to ~0). These modes use the elevated ``F_MD_FLOOR_ILSS`` floor.
+    MATRIX_DOMINATED_MODES = frozenset({'ilss', 'transverse_tension'})
     # QI reference fraction and minimum floor
-    _F_MD_REF = 0.5    # f_md for the QI layup used in calibration
-    # ``_F_MD_FLOOR`` / ``_F_MD_FLOOR_ILSS`` are hard floors on the layup-scale
-    # multiplier ``scale = f_md / _F_MD_REF`` returned by ``_layup_scale``.
+    F_MD_REF: float = 0.5    # f_md for the QI layup used in calibration
+    # ``F_MD_FLOOR`` / ``F_MD_FLOOR_ILSS`` are hard floors on the layup-scale
+    # multiplier ``scale = f_md / F_MD_REF`` returned by ``_layup_scale``.
     # Without them ``scale -> 0`` for pure UD ([0]_n, f_md = 0.0), which would
     # imply zero porosity sensitivity for fiber-dominated layups — physically
     # wrong, since even UD coupons show measurable porosity knockdown at high
@@ -80,19 +96,72 @@ class EmpiricalSolver:
     # refactor (#136). No coupon-dataset regression, optimization, or
     # physical-argument origin has been located for either value — see
     # issue #139 for the calibration gap. A future calibration campaign
-    # should validate ``_F_MD_FLOOR`` against UD coupon data across
+    # should validate ``F_MD_FLOOR`` against UD coupon data across
     # Vp in [0, 5%] (per-mode, since compression vs tension UD sensitivities
-    # differ) and ``_F_MD_FLOOR_ILSS`` against matrix-dominated coupons in
+    # differ) and ``F_MD_FLOOR_ILSS`` against matrix-dominated coupons in
     # the same range. Issue #140 (which already pinned a ~33% linearity gap
     # in ``_layup_scale`` itself) and #139 should be addressed together so
     # the replacement rule and its floors are calibrated against the same
     # reference dataset.
-    _F_MD_FLOOR = 0.15  # even UD retains some matrix sensitivity; empirical, see #139
+    F_MD_FLOOR: float = 0.15  # even UD retains some matrix sensitivity; empirical, see #139
     # ILSS and transverse-tension are matrix-/interface-dominated regardless
     # of fiber-direction layup (the void-dominated stress component is in the
     # matrix), so the floor preserves most of the QI calibration. 0.80 is an
     # empirical tuning constant — not derived from published validation data.
-    _F_MD_FLOOR_ILSS = 0.80  # ILSS / transverse-tension floor; empirical, see #139
+    F_MD_FLOOR_ILSS: float = 0.80  # ILSS / transverse-tension floor; empirical, see #139
+
+    # ------------------------------------------------------------------
+    # Canonical ply-angle baselines (sentinel expansion for 'QI' / 'UD')
+    # ------------------------------------------------------------------
+    #: Canonical QI baseline layup (8-ply symmetric ``[0/90/45/-45]_s``).
+    PLY_ANGLES_QI: Tuple[float, ...] = _PLY_ANGLES_QI
+    #: Canonical UD baseline (4 plies, all 0 deg).
+    PLY_ANGLES_UD: Tuple[float, ...] = _PLY_ANGLES_UD
+
+    # ------------------------------------------------------------------
+    # Numerical floors / reporting defaults
+    # ------------------------------------------------------------------
+    #: Lower clamp on per-element strengths (MPa) inside the FE failure
+    #: index loop. Prevents the 1/X reciprocals in Tsai-Wu / Hashin from
+    #: overflowing to ``inf`` for heavily degraded elements.
+    STRENGTH_FLOOR_MPA: float = 1e-3
+    #: Default percentiles reported by the UQ helpers (5/50/95 band, the
+    #: spread an A-/B-basis workflow typically wants to see first).
+    UQ_DEFAULT_PERCENTILES: Tuple[float, ...] = (5.0, 50.0, 95.0)
+
+
+class EmpiricalSolver:
+    """Fast analytical solver using empirical porosity-strength models.
+
+    Coefficients are calibrated against quasi-isotropic data and scaled by
+    a layup-dependent matrix-dominated fraction so that fiber-dominated
+    layups (e.g. UD [0]_n) see a smaller porosity penalty than QI layups.
+
+    Knockdowns are evaluated at the specimen-average porosity (Vp_mean),
+    matching how the original correlations were calibrated — not at the
+    local peak Vp that clustered distributions produce.
+    """
+
+    # Calibration constants now live on :class:`Calibration` (#121). The
+    # class-level names below are deprecated back-compat aliases preserved
+    # so existing tests and downstream callers that read
+    # ``EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI`` continue to work. New code
+    # should reference ``Calibration.JUDD_WRIGHT_ALPHA_QI`` etc. directly.
+    # See the ``Calibration`` docstring for the full list and the inline
+    # commentary on each constant (Judd-Wright derivation, F_MD floor
+    # provenance, etc.).
+    _JUDD_WRIGHT_ALPHA_QI = Calibration.JUDD_WRIGHT_ALPHA_QI
+    _POWER_LAW_N_QI = Calibration.POWER_LAW_N_QI
+    _LINEAR_BETA_QI = Calibration.LINEAR_BETA_QI
+    PRISTINE_STRENGTH_KEY = {
+        'compression': 'sigma_1c', 'tension': 'sigma_1t',
+        'shear': 'tau_12', 'ilss': 'tau_ilss',
+        'transverse_tension': 'sigma_2t',
+    }
+    _MATRIX_DOMINATED_MODES = Calibration.MATRIX_DOMINATED_MODES
+    _F_MD_REF = Calibration.F_MD_REF
+    _F_MD_FLOOR = Calibration.F_MD_FLOOR
+    _F_MD_FLOOR_ILSS = Calibration.F_MD_FLOOR_ILSS
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  ply_angles: Optional[Union[List[float], str]] = 'QI',
@@ -148,11 +217,11 @@ class EmpiricalSolver:
 
         # Resolve coefficient dicts: per-mode merge of class default with override.
         alpha_qi = self._merge_coefficient_override(
-            self._JUDD_WRIGHT_ALPHA_QI, judd_wright_alpha, 'judd_wright_alpha')
+            Calibration.JUDD_WRIGHT_ALPHA_QI, judd_wright_alpha, 'judd_wright_alpha')
         n_qi = self._merge_coefficient_override(
-            self._POWER_LAW_N_QI, power_law_n, 'power_law_n')
+            Calibration.POWER_LAW_N_QI, power_law_n, 'power_law_n')
         beta_qi = self._merge_coefficient_override(
-            self._LINEAR_BETA_QI, linear_beta, 'linear_beta')
+            Calibration.LINEAR_BETA_QI, linear_beta, 'linear_beta')
 
         # Compute layup-dependent scaling
         self.f_md = self._matrix_dominated_fraction(ply_angles_resolved)
@@ -224,10 +293,10 @@ class EmpiricalSolver:
                 total += 0.5
         return total / len(ply_angles)
 
-    # TODO(#140): The linear f_md / _F_MD_REF scaling is preserved here for
-    # historical compatibility. Investigation in #140 measured a relative
-    # error of up to 33.5% against a CLT-derived stiffness-retention proxy
-    # (sqrt(Ex_layup(Vp)/Ex_layup(0)) / sqrt(Ex_QI(Vp)/Ex_QI(0)) over
+    # TODO(#140): The linear f_md / Calibration.F_MD_REF scaling is preserved
+    # here for historical compatibility. Investigation in #140 measured a
+    # relative error of up to 33.5% against a CLT-derived stiffness-retention
+    # proxy (sqrt(Ex_layup(Vp)/Ex_layup(0)) / sqrt(Ex_QI(Vp)/Ex_QI(0)) over
     # Vp in [0.005, 0.05]) for a UD [0,0,0]_s layup; >5% error also seen
     # on UD-heavy [0_2,90]_s and off-axis [0,15,-15]_s layups. A
     # polynomial or interpolated lookup should be evaluated against an
@@ -243,9 +312,10 @@ class EmpiricalSolver:
         - f_md = 0 (UD) -> scale = floor (0.15 for most modes, 0.80 for ILSS)
         - f_md > f_md_ref -> scale > 1.0 (more matrix-dominated than QI)
         """
-        floor = (self._F_MD_FLOOR_ILSS if mode in self._MATRIX_DOMINATED_MODES
-                 else self._F_MD_FLOOR)
-        ref = self._F_MD_REF
+        floor = (Calibration.F_MD_FLOOR_ILSS
+                 if mode in Calibration.MATRIX_DOMINATED_MODES
+                 else Calibration.F_MD_FLOOR)
+        ref = Calibration.F_MD_REF
         if ref < 1e-12:
             return 1.0
         raw = self.f_md / ref
@@ -842,4 +912,16 @@ class EmpiricalSolver:
             return float((f(Vp0 + h, coef0) - f(Vp0 - h, coef0)) / (2.0 * h))
         # param == 'coef'
         return float((f(Vp0, coef0 + h) - f(Vp0, coef0 - h)) / (2.0 * h))
+
+
+# Wire the fatigue calibration into ``Calibration`` after the fatigue
+# module has finished importing. This breaks the
+# ``fatigue -> empirical -> fatigue`` cycle: ``fatigue.py`` defines the
+# canonical dict/floor, and ``Calibration`` exposes the same objects so
+# callers can discover every tuning surface from one namespace (#121).
+from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI_SRC  # noqa: E402
+from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR_SRC  # noqa: E402
+
+Calibration.FATIGUE_B_QI = _FATIGUE_B_QI_SRC
+Calibration.FATIGUE_KD_FLOOR = _FATIGUE_KD_FLOOR_SRC
 

@@ -21,12 +21,19 @@ import numpy as np
 # WWFE-III fatigue exercise. These are screening-level values; production
 # allowables should use a fully populated S-N matrix per CMH-17 Vol. 2.
 #
+# These are the canonical objects; ``Calibration.FATIGUE_B_QI`` /
+# ``Calibration.FATIGUE_KD_FLOOR`` in :mod:`porosity_fe.empirical`
+# re-export them so every tuning surface is discoverable from one
+# namespace (#121). Update values here; the alias picks them up.
+#
 # References:
 # - Mandell, J. F., "Fatigue Behavior of Fiber-Resin Composites,"
 #   Developments in Reinforced Plastics 2, 1991.
 # - Curtis, P. T., "The fatigue behaviour of fibrous composite materials,"
 #   J. Strain Analysis, 1989.
 # ============================================================
+# Back-compat alias retained for direct importers (tests, downstream code).
+# New code should reference ``Calibration.FATIGUE_B_QI``.
 _FATIGUE_B_QI: Dict[str, float] = {
     'tension': 0.10,
     'compression': 0.10,
@@ -39,6 +46,7 @@ _FATIGUE_B_QI: Dict[str, float] = {
 # extrapolation predicts a negative knockdown. Clamp to 1% of static so
 # downstream multiplications stay well-behaved, and emit a warning so the
 # caller knows they are off the calibration range.
+# Back-compat alias; canonical reference is ``Calibration.FATIGUE_KD_FLOOR``.
 _FATIGUE_KD_FLOOR = 0.01
 
 

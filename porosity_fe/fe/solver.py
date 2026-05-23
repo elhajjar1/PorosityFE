@@ -1,17 +1,21 @@
 """FE solver and FieldResults dataclass."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from pathlib import Path
+from typing import Dict, List, Literal, Tuple
 
 import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
 from .._ply_angles import _resolve_ply_angles
+from ..empirical import Calibration
 from ..homogenization import _mt_effective_stiffness
 from ..io import (
     FORMAT_FE_FIELDS,
@@ -32,7 +36,7 @@ logger = logging.getLogger("porosity_fe_analysis")
 # SECTION 7g: FE SOLVER AND FIELD RESULTS
 # ============================================================
 
-@dataclass
+@dataclass(frozen=True)
 class FieldResults:
     """Results from a finite element solve.
 
@@ -90,9 +94,9 @@ class FieldResults:
     strain_local: np.ndarray
     max_failure_index: float
     knockdown: float
-    per_element_failure_index: Optional[np.ndarray] = None
+    per_element_failure_index: np.ndarray | None = None
     failure_criterion: str = 'tsai_wu'
-    failure_mode_indices: Optional[Dict[str, float]] = None
+    failure_mode_indices: Dict[str, float] | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -101,8 +105,8 @@ class FieldResults:
                 f"max_FI={self.max_failure_index:.4f}, "
                 f"knockdown={self.knockdown:.4f})")
 
-    def summary(self, sigma_pristine: Optional[float] = None,
-                model_label: Optional[str] = None) -> 'FailureResult':
+    def summary(self, sigma_pristine: float | None = None,
+                model_label: str | None = None) -> FailureResult:
         """Distill the field result into a :class:`FailureResult`.
 
         Unifies the FE return shape with the empirical solver (#44 item 1)
@@ -149,7 +153,8 @@ class FieldResults:
             },
         )
 
-    def to_vtk(self, mesh: 'CompositeMesh', filename: str) -> None:
+    def to_vtk(self, mesh: CompositeMesh,
+               filename: str | os.PathLike) -> None:
         """Write the hex mesh and per-element FE fields to a legacy ASCII VTK
         file (``UNSTRUCTURED_GRID``) for inspection in ParaView / VisIt / PyVista.
 
@@ -179,9 +184,10 @@ class FieldResults:
         mesh : CompositeMesh
             The mesh that produced these results (supplies geometry,
             connectivity, porosity and ply metadata).
-        filename : str
-            Output ``.vtk`` file path.
+        filename : str or os.PathLike
+            Output ``.vtk`` file path. ``pathlib.Path`` objects are accepted.
         """
+        filename = Path(filename)
         nodes = np.asarray(mesh.nodes, dtype=float)
         elements = np.asarray(mesh.elements, dtype=np.int64)
         n_nodes = nodes.shape[0]
@@ -378,7 +384,7 @@ class FESolver:
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  porosity_field: PorosityField,
-                 ply_angles: Optional[Union[List[float], str]] = 'QI',
+                 ply_angles: List[float] | str | None = 'QI',
                  failure_criterion: Literal[
                      'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu') -> None:
         self.mesh = mesh
@@ -405,8 +411,7 @@ class FESolver:
               applied_strain: float = -0.01,
               applied_load: float = -10.0,
               verbose: bool = False,
-              failure_criterion: Optional[Literal[
-                  'tsai_wu', 'hashin', 'max_stress']] = None,
+              failure_criterion: Literal['tsai_wu', 'hashin', 'max_stress'] | None = None,
               solver: Literal['direct', 'cg', 'minres'] = 'direct',
               rtol: float = 1e-9,
               diag_scale: bool = False,
@@ -875,8 +880,8 @@ class FESolver:
         # Strengths approaching zero make the 1/X reciprocals overflow to
         # inf; clamp to a numerical floor so a heavily-degraded element
         # produces a large-but-finite failure index instead of poisoning the
-        # global max with inf/NaN.
-        strength_floor = 1e-3  # MPa
+        # global max with inf/NaN. Canonical value in Calibration (#121).
+        strength_floor = Calibration.STRENGTH_FLOOR_MPA  # MPa
         return (max(Xt, strength_floor),
                 max(Xc, strength_floor),
                 max(Yt, strength_floor),
@@ -1206,9 +1211,10 @@ class FESolver:
         }
 
     @staticmethod
-    def export_results(field_results: 'FieldResults', filename: str,
+    def export_results(field_results: FieldResults,
+                       filename: str | os.PathLike,
                        fmt: str = 'json',
-                       mesh: Optional['CompositeMesh'] = None,
+                       mesh: CompositeMesh | None = None,
                        include_raw: bool = False) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1228,8 +1234,9 @@ class FESolver:
         ----------
         field_results : FieldResults
             Results from FESolver.solve().
-        filename : str
-            Output file path (``.json`` or ``.vtk``).
+        filename : str or os.PathLike
+            Output file path (``.json`` or ``.vtk``). ``pathlib.Path``
+            objects are accepted.
         fmt : str
             ``'json'`` (default) or ``'vtk'``.
         mesh : CompositeMesh, optional
@@ -1242,6 +1249,7 @@ class FESolver:
             bloated (#55).
         """
         fmt = str(fmt).lower()
+        filename = Path(filename)
         if fmt == 'vtk':
             if mesh is None:
                 raise ValueError(
@@ -1314,7 +1322,7 @@ class FESolver:
         if include_raw:
             # Sidecar file path lives next to the JSON so users see them
             # together; ``np.savez`` will append ``.npz`` if missing.
-            npz_path = f"{filename}.npz"
+            npz_path = filename.with_name(filename.name + ".npz")
             arrays = {
                 'displacement': np.asarray(field_results.displacement),
                 'stress_global': np.asarray(field_results.stress_global),
@@ -1326,7 +1334,7 @@ class FESolver:
                 arrays['per_element_failure_index'] = np.asarray(
                     field_results.per_element_failure_index)
             np.savez(npz_path, **arrays)
-            output['raw_sidecar'] = os.path.basename(npz_path)
+            output['raw_sidecar'] = npz_path.name
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, default=_json_default)
         logger.info("Saved FE results: %s", filename)

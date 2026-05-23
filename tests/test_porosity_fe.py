@@ -4818,19 +4818,19 @@ class TestCLIMain:
 
     def test_cli_main_output_dir_permission_error(
             self, tmp_path, monkeypatch, capsys):
-        """If ``os.makedirs`` raises OSError (e.g. permission denied or an
-        invalid path), the CLI must surface the failure on stderr and
-        return exit code 2 rather than crashing with a traceback. Covers
-        cli.py lines ~284-287."""
+        """If output-directory creation raises OSError (e.g. permission
+        denied or an invalid path), the CLI must surface the failure on
+        stderr and return exit code 2 rather than crashing with a
+        traceback. Covers cli.py lines ~284-287."""
         def _raise_permission_error(*args, **kwargs):
             raise PermissionError("denied")
 
-        # Patch ``os.makedirs`` on the cli module so the call inside
-        # main() picks up the raising stub. The shim doesn't re-export
-        # the cli submodule, so import it via the package directly.
-        from porosity_fe import cli as _cli_mod
+        # The CLI now uses ``Path.mkdir`` (issue #113 modernisation), so
+        # patch the directory-creation primitive on the Path class so the
+        # call inside main() picks up the raising stub.
+        from pathlib import Path as _Path
         monkeypatch.setattr(
-            _cli_mod.os, 'makedirs',
+            _Path, 'mkdir',
             _raise_permission_error,
         )
         rc = porosity_fe_analysis.main([

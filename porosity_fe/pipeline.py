@@ -3,15 +3,82 @@
 import concurrent.futures
 import logging
 import os
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .empirical import EmpiricalSolver
-from .materials import MATERIALS
+from .materials import MATERIALS, MaterialProperties
 from .mesh import CompositeMesh
 from .porosity_field import POROSITY_CONFIGS, PorosityField
 from .results import ConfigArtifacts, ConfigResult
 
 logger = logging.getLogger("porosity_fe_analysis")
+
+# Layup descriptor accepted by both ``CompositeMesh`` and ``EmpiricalSolver``:
+# either a sentinel string (``'QI'`` / ``'UD'``) or an explicit list of ply
+# angles in degrees. ``tuple`` is included for callers that build the layup
+# from an immutable sequence.
+LayupSpec = Union[str, List[float], Tuple[float, ...]]
+
+# Default mesh resolution used by the production sweep (``_analyze_one``) so
+# every call site picks up the same defaults.
+_DEFAULT_MESH_RES: Tuple[int, int, int] = (30, 10, 12)
+
+
+def build_empirical_pipeline(
+    material: MaterialProperties,
+    void_volume_fraction: float,
+    *,
+    ply_angles: LayupSpec = 'QI',
+    mesh_res: Tuple[int, int, int] = _DEFAULT_MESH_RES,
+    porosity_config: Optional[Dict[str, Any]] = None,
+    seed: Optional[int] = None,
+) -> Tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
+    """Factory: ``(material, Vp) -> (PorosityField, CompositeMesh, EmpiricalSolver)``.
+
+    Single point of change for mesh defaults and ply-angle handling. The
+    three-step construction recurs in :func:`_analyze_one`, the UQ helper
+    in :mod:`porosity_fe.uq`, every script in ``examples/``, and several
+    tests; channeling them through this factory means future tweaks to the
+    mesh defaults or ply-angle handling happen exactly once. See issue
+    #120.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Pristine composite material.
+    void_volume_fraction : float
+        Specimen-average void volume fraction in ``[0, 1]``.
+    ply_angles : str or list of float, optional
+        Layup descriptor passed to both :class:`CompositeMesh` and
+        :class:`EmpiricalSolver`. Defaults to ``'QI'``.
+    mesh_res : (int, int, int), optional
+        ``(nx, ny, nz)`` element counts. Defaults to the production sweep
+        resolution ``(30, 10, 12)``.
+    porosity_config : dict, optional
+        Extra keyword arguments forwarded to :class:`PorosityField` (e.g.
+        ``distribution``, ``void_shape``, ``cluster_location``,
+        ``discrete_voids``). ``seed`` may be set here or via the dedicated
+        ``seed`` parameter — the explicit ``seed=`` argument wins.
+    seed : int, optional
+        Recorded into the porosity field for reproducibility provenance.
+        Overrides any ``seed`` key in ``porosity_config``.
+
+    Returns
+    -------
+    (PorosityField, CompositeMesh, EmpiricalSolver)
+        The fully-constructed pipeline ready for ``get_failure_load`` /
+        ``get_all_failure_loads`` calls.
+    """
+    pf_kwargs: Dict[str, Any] = dict(porosity_config or {})
+    if seed is not None:
+        pf_kwargs['seed'] = seed
+    pf = PorosityField(material, void_volume_fraction, **pf_kwargs)
+    nx, ny, nz = mesh_res
+    mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz,
+                         ply_angles=ply_angles)
+    emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles)
+    return pf, mesh, emp
+
 
 # ============================================================
 # SECTION 8: ANALYSIS PIPELINE
@@ -65,9 +132,9 @@ def _analyze_one(Vp: float,
         re-assemble results even when the worker pool reorders completion.
     """
     material = MATERIALS[material_name]
-    porosity_field = PorosityField(material, Vp, seed=seed, **config)
-    mesh = CompositeMesh(porosity_field, material, nx=30, ny=10, nz=12)
-    empirical = EmpiricalSolver(mesh, material)
+    porosity_field, mesh, empirical = build_empirical_pipeline(
+        material, Vp, porosity_config=config, seed=seed,
+    )
     emp_results = empirical.get_all_failure_loads()
 
     result = {
