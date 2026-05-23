@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Tuple
 
 import numpy as np
 import scipy.sparse
@@ -94,9 +94,9 @@ class FieldResults:
     strain_local: np.ndarray
     max_failure_index: float
     knockdown: float
-    per_element_failure_index: Optional[np.ndarray] = None
+    per_element_failure_index: np.ndarray | None = None
     failure_criterion: str = 'tsai_wu'
-    failure_mode_indices: Optional[Dict[str, float]] = None
+    failure_mode_indices: Dict[str, float] | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -105,8 +105,8 @@ class FieldResults:
                 f"max_FI={self.max_failure_index:.4f}, "
                 f"knockdown={self.knockdown:.4f})")
 
-    def summary(self, sigma_pristine: Optional[float] = None,
-                model_label: Optional[str] = None) -> 'FailureResult':
+    def summary(self, sigma_pristine: float | None = None,
+                model_label: str | None = None) -> FailureResult:
         """Distill the field result into a :class:`FailureResult`.
 
         Unifies the FE return shape with the empirical solver (#44 item 1)
@@ -153,7 +153,7 @@ class FieldResults:
             },
         )
 
-    def to_vtk(self, mesh: 'CompositeMesh',
+    def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:
         """Write the hex mesh and per-element FE fields to a legacy ASCII VTK
         file (``UNSTRUCTURED_GRID``) for inspection in ParaView / VisIt / PyVista.
@@ -384,7 +384,7 @@ class FESolver:
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  porosity_field: PorosityField,
-                 ply_angles: Optional[Union[List[float], str]] = 'QI',
+                 ply_angles: List[float] | str | None = 'QI',
                  failure_criterion: Literal[
                      'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu') -> None:
         self.mesh = mesh
@@ -411,8 +411,7 @@ class FESolver:
               applied_strain: float = -0.01,
               applied_load: float = -10.0,
               verbose: bool = False,
-              failure_criterion: Optional[Literal[
-                  'tsai_wu', 'hashin', 'max_stress']] = None,
+              failure_criterion: Literal['tsai_wu', 'hashin', 'max_stress'] | None = None,
               solver: Literal['direct', 'cg', 'minres'] = 'direct',
               rtol: float = 1e-9,
               diag_scale: bool = False,
@@ -1212,10 +1211,10 @@ class FESolver:
         }
 
     @staticmethod
-    def export_results(field_results: 'FieldResults',
+    def export_results(field_results: FieldResults,
                        filename: str | os.PathLike,
                        fmt: str = 'json',
-                       mesh: Optional['CompositeMesh'] = None,
+                       mesh: CompositeMesh | None = None,
                        include_raw: bool = False) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 

@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from . import __version__
 from .io import save_results_to_json
@@ -35,7 +35,7 @@ def _vp_label(Vp: float) -> str:
     return f"{pct:.4f}".rstrip('0').rstrip('.').replace('.', 'p') + "pct"
 
 
-def _build_arg_parser() -> 'argparse.ArgumentParser':
+def _build_arg_parser() -> argparse.ArgumentParser:
     """Construct the argparse driver for the analysis pipeline."""
     parser = argparse.ArgumentParser(
         prog="porosity-analyze",
@@ -235,7 +235,7 @@ def _resolve_via_shim(name: str, fallback):
     return getattr(shim, name, fallback)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: List[str] | None = None) -> int:
     """Argparse-driven entry point.
 
     Returns

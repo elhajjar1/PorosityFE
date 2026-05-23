@@ -7,7 +7,10 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .empirical import Calibration, EmpiricalSolver  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
+from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
+    Calibration,
+    EmpiricalSolver,
+)
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
 

@@ -11,7 +11,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict
 
 import numpy as np
 
@@ -82,7 +82,7 @@ _UNITS_STREAMLIT_EMPIRICAL = {
 }
 
 
-def _build_provenance(seed: Optional[int] = None) -> dict:
+def _build_provenance(seed: int | None = None) -> dict:
     """Return a provenance metadata dict for JSON output reproducibility.
 
     Captures software versions, platform, timestamp, optional git commit,
@@ -100,7 +100,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
     """
     try:
         import importlib.metadata as _ilm
-        pfe_version: Optional[str] = _ilm.version("porosity-fe")
+        pfe_version: str | None = _ilm.version("porosity-fe")
     except Exception:
         # Source checkout not pip-installed: fall back to the package
         # ``__version__`` attribute (defined in ``porosity_fe/__init__.py``).
@@ -110,7 +110,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
     vi = sys.version_info
     python_version = f"{vi.major}.{vi.minor}.{vi.micro}"
 
-    def _pkg_version(module_name: str) -> Optional[str]:
+    def _pkg_version(module_name: str) -> str | None:
         mod = sys.modules.get(module_name)
         return getattr(mod, "__version__", None) if mod else None
 
@@ -123,7 +123,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
             capture_output=True, text=True, timeout=5,
             cwd=Path(__file__).resolve().parent,
         )
-        git_commit: Optional[str] = result.stdout.strip() if result.returncode == 0 else None
+        git_commit: str | None = result.stdout.strip() if result.returncode == 0 else None
     except (subprocess.CalledProcessError, FileNotFoundError, Exception):
         git_commit = None
 
@@ -169,7 +169,7 @@ def _build_provenance(seed: Optional[int] = None) -> dict:
 
 
 def save_results_to_json(results: Dict, filename: str | os.PathLike,
-                         artifacts: Optional[Dict[str, 'ConfigArtifacts']] = None):
+                         artifacts: Dict[str, ConfigArtifacts] | None = None):
     """Export numerical results to JSON.
 
     Parameters
