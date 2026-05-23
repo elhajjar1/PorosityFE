@@ -68,6 +68,7 @@ from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401,
 from .cli import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401, E402
 from .cli import _vp_label as _vp_label  # noqa: F401, E402
 from .cli import main as main  # noqa: F401, E402
+from .empirical import Calibration as Calibration  # noqa: F401, E402
 from .empirical import EmpiricalSolver as EmpiricalSolver  # noqa: F401, E402
 from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
 from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
@@ -157,6 +158,7 @@ __all__ = [
     "ConfigResult",
     "FailureResult",
     # Empirical / fatigue / UQ
+    "Calibration",
     "EmpiricalSolver",
     "FatigueModel",
     "propagate_uncertainty",

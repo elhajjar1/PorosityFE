@@ -15,6 +15,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 
 from .._ply_angles import _resolve_ply_angles
+from ..empirical import Calibration
 from ..homogenization import _mt_effective_stiffness
 from ..io import (
     FORMAT_FE_FIELDS,
@@ -880,8 +881,8 @@ class FESolver:
         # Strengths approaching zero make the 1/X reciprocals overflow to
         # inf; clamp to a numerical floor so a heavily-degraded element
         # produces a large-but-finite failure index instead of poisoning the
-        # global max with inf/NaN.
-        strength_floor = 1e-3  # MPa
+        # global max with inf/NaN. Canonical value in Calibration (#121).
+        strength_floor = Calibration.STRENGTH_FLOOR_MPA  # MPa
         return (max(Xt, strength_floor),
                 max(Xc, strength_floor),
                 max(Yt, strength_floor),

@@ -10,11 +10,13 @@ from typing import List, Optional, Tuple, Union
 
 #: Canonical QI baseline layup (8-ply symmetric ``[0/90/45/-45]_s``).
 #: Used to expand the ``ply_angles='QI'`` sentinel (#44 item 2).
+#: Also exposed as :attr:`Calibration.PLY_ANGLES_QI` (#121).
 _PLY_ANGLES_QI: Tuple[float, ...] = (0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0)
 
 #: Canonical UD baseline (4 plies, all 0 deg). Used to expand the
 #: ``ply_angles='UD'`` sentinel; the FE / empirical scaling only cares about
 #: the angle distribution, so a short list is fine.
+#: Also exposed as :attr:`Calibration.PLY_ANGLES_UD` (#121).
 _PLY_ANGLES_UD: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
 
 

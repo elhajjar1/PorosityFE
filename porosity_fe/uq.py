@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .empirical import EmpiricalSolver  # noqa: F401 (forward-ref in _build_solver annotation)
+from .empirical import Calibration, EmpiricalSolver  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
 
@@ -15,9 +15,9 @@ from .pipeline import build_empirical_pipeline
 # SECTION 6b: UNCERTAINTY PROPAGATION (MONTE CARLO / LHS)
 # ============================================================
 
-# Default percentiles reported by the UQ helpers (a 5%/50%/95% band, the
-# spread an A-/B-basis workflow typically wants to see first).
-_UQ_DEFAULT_PERCENTILES = (5.0, 50.0, 95.0)
+# Back-compat alias for the default percentiles surface — canonical
+# definition lives on ``Calibration.UQ_DEFAULT_PERCENTILES`` (#121).
+_UQ_DEFAULT_PERCENTILES = Calibration.UQ_DEFAULT_PERCENTILES
 _UQ_METHODS = ('monte_carlo', 'lhs')
 # Distributions that consume a standard-normal unit draw vs. a U(0,1) draw.
 _UQ_NORMAL_DISTS = ('lognormal', 'normal')
@@ -126,7 +126,7 @@ def propagate_uncertainty(void_volume_fraction: float,
                           n_samples: int = 1000,
                           method: str = 'monte_carlo',
                           seed: Optional[int] = None,
-                          percentiles: Tuple[float, ...] = _UQ_DEFAULT_PERCENTILES,
+                          percentiles: Tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
                           ply_angles: Optional[Union[List[float], str]] = 'QI',
                           config: Optional[Dict] = None) -> Dict:
     """Propagate input uncertainty through ``EmpiricalSolver.get_failure_load``.
