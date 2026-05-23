@@ -12,6 +12,9 @@ pip install -e ".[all]"
 pytest tests/ -v                              # full suite
 pytest tests/test_homogenization.py -v        # one module
 pytest tests/test_fe_solver.py::TestName::test_x -v   # one test
+# In Claude Code on the web containers, `pytest` is uv-isolated and
+# cannot see the project deps installed by the SessionStart hook. Use
+# `python -m pytest ...` there.
 
 # Lint / type-check (matches .github/workflows/tests.yml)
 ruff check .
