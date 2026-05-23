@@ -84,6 +84,32 @@ def parse_layup(text: str) -> list:
     return angles
 
 
+def _sanitise_filename_component(value: str) -> str:
+    """Replace filesystem-unfriendly characters in a filename fragment.
+
+    Slashes and spaces are the common offenders in material codes and
+    user-typed NCR references (e.g. ``"T800/epoxy"``, ``"NCR 12"``); both
+    become underscores so the resulting filename is portable across
+    Windows, macOS and Linux.
+    """
+    return str(value).replace("/", "_").replace(" ", "_")
+
+
+def download_filename_stem(payload: dict) -> str:
+    """Build a templated download filename stem from the export payload.
+
+    Encodes material, fibre-volume-porosity and today's date so users who
+    run many analyses do not collide on generic names like
+    ``porosity_results.json`` (#130). The returned stem has no extension —
+    callers append ``.json``/``.csv``/``.pdf`` etc.
+    """
+    cfg = payload["config"]
+    Vp_pct = float(cfg.get("Vp_percent", cfg.get("Vp", 0.0) * 100))
+    material = _sanitise_filename_component(cfg.get("material", "unknown"))
+    today = datetime.date.today().strftime("%Y%m%d")
+    return f"porosity_{material}_Vp{Vp_pct:.1f}pct_{today}"
+
+
 def build_export_payload(result: dict) -> dict:
     """Flatten an analysis result into the export payload structure.
 

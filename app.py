@@ -58,10 +58,12 @@ _configure_matplotlib_style()
 
 from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Streamlit UI
     STRUCTURAL_CLASSES,
+    _sanitise_filename_component,
     _serialise_payload_csv,
     _serialise_payload_json,
     build_export_payload,
     build_ncr_record,
+    download_filename_stem,
     governing_failure,
     parse_layup,
     recommend_disposition,
@@ -667,17 +669,18 @@ def _render():
             _placeholder()
         else:
             payload = build_export_payload(result)
+            export_stem = download_filename_stem(payload)
             st.download_button(
                 "Download JSON",
                 data=_serialise_payload_json(payload),
-                file_name="porosity_results.json",
+                file_name=f"{export_stem}.json",
                 mime="application/json",
                 use_container_width=True,
             )
             st.download_button(
                 "Download CSV",
                 data=_serialise_payload_csv(payload),
-                file_name="porosity_results.csv",
+                file_name=f"{export_stem}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -744,8 +747,8 @@ def _render():
 
                 ncr_md = serialise_ncr_markdown(ncr)
                 stem = (
-                    ncr_reference.strip().replace(" ", "_")
-                    or "porosity_analysis_summary"
+                    _sanitise_filename_component(ncr_reference.strip())
+                    or export_stem
                 )
                 dl1, dl2, dl3 = st.columns(3)
                 with dl1:
