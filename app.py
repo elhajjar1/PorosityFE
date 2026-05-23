@@ -50,6 +50,12 @@ from porosity_fe import (
 # rcParams nudges, so the Streamlit plots match the static PNGs (#53).
 _configure_matplotlib_style()
 
+# Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
+_README_URL = (
+    "https://github.com/ranipdx-glitch/PorosityFE"
+    "#solver-selection-fe-vs-empirical"
+)
+
 
 # ======================================================================
 # Pure helpers (extracted to porosity_fe.reporting so tests can import them
@@ -58,10 +64,12 @@ _configure_matplotlib_style()
 
 from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Streamlit UI
     STRUCTURAL_CLASSES,
+    _sanitise_filename_component,
     _serialise_payload_csv,
     _serialise_payload_json,
     build_export_payload,
     build_ncr_record,
+    download_filename_stem,
     governing_failure,
     parse_layup,
     recommend_disposition,
@@ -532,6 +540,21 @@ def _render():
             nx = st.slider("nx", min_value=2, max_value=200, value=30, step=1)
             ny = st.slider("ny", min_value=2, max_value=100, value=10, step=1)
             nz = st.slider("nz", min_value=2, max_value=100, value=12, step=1)
+            total_elems = nx * ny * nz
+            if total_elems < 100:
+                st.warning(
+                    f"⚠ Mesh is very coarse ({total_elems} elements). "
+                    f"FE results from meshes below ~100 elements are unreliable. "
+                    f"Defaults (30×10×12 = 3600 elements) are recommended."
+                )
+            elif total_elems > 50_000:
+                # Very rough time estimate; tune from real benchmarks if available.
+                est_min = total_elems / 8000
+                st.warning(
+                    f"⚠ Mesh is very fine ({total_elems} elements). "
+                    f"Estimated solve time: ~{est_min:.0f} minutes. "
+                    f"Consider reducing for iteration."
+                )
         else:
             nx, ny, nz = 30, 10, 12
             st.caption(f"Default mesh: {nx} × {ny} × {nz} (enable Expert mode to change).")
@@ -608,7 +631,15 @@ def _render():
                 f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
             )
             if result.get("fe_skipped_reason"):
-                st.warning(f"FE skipped: {result['fe_skipped_reason']}")
+                reason = result["fe_skipped_reason"]
+                st.warning(
+                    f"⚠ FE solve was skipped: {reason}\n\n"
+                    f"**Empirical knockdown results are still valid** and are shown in the "
+                    f"other tabs. FE would have added per-element stress fields; you don't "
+                    f"need it for the headline knockdown numbers.\n\n"
+                    f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
+                    f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
+                )
 
     def _placeholder():
         st.info("Run an analysis to populate this tab.")
@@ -652,17 +683,18 @@ def _render():
             _placeholder()
         else:
             payload = build_export_payload(result)
+            export_stem = download_filename_stem(payload)
             st.download_button(
                 "Download JSON",
                 data=_serialise_payload_json(payload),
-                file_name="porosity_results.json",
+                file_name=f"{export_stem}.json",
                 mime="application/json",
                 use_container_width=True,
             )
             st.download_button(
                 "Download CSV",
                 data=_serialise_payload_csv(payload),
-                file_name="porosity_results.csv",
+                file_name=f"{export_stem}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -729,8 +761,8 @@ def _render():
 
                 ncr_md = serialise_ncr_markdown(ncr)
                 stem = (
-                    ncr_reference.strip().replace(" ", "_")
-                    or "porosity_analysis_summary"
+                    _sanitise_filename_component(ncr_reference.strip())
+                    or export_stem
                 )
                 dl1, dl2, dl3 = st.columns(3)
                 with dl1:

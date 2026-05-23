@@ -3748,6 +3748,23 @@ class TestExportHelpers:
             float(row[2])
             float(row[3])
 
+    def test_download_filename_stem_templates_material_vp_date(self):
+        """Stem encodes material, Vp%, and today's date (#130)."""
+        import datetime as _dt
+        from porosity_fe.reporting import build_export_payload, download_filename_stem
+        stem = download_filename_stem(build_export_payload(self._sample_result()))
+        today = _dt.date.today().strftime("%Y%m%d")
+        assert stem == f"porosity_T800_epoxy_Vp3.0pct_{today}"
+
+    def test_download_filename_stem_sanitizes_material_slashes(self):
+        """Slashes/spaces in material codes become underscores (#130)."""
+        from porosity_fe.reporting import download_filename_stem
+        payload = {"config": {"material": "T800/epoxy", "Vp_percent": 2.5}}
+        stem = download_filename_stem(payload)
+        assert "/" not in stem
+        assert "T800_epoxy" in stem
+        assert "Vp2.5pct" in stem
+
 
 class TestNCRExport:
     """NCR validation-summary attachment for MRB disposition support."""

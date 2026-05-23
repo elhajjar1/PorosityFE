@@ -132,6 +132,55 @@ def _resolve_n_jobs(n_jobs: Optional[int]) -> int:
     return int(n_jobs)
 
 
+def _log_result_summary(name: str, result: Dict, *, is_parallel: bool) -> None:
+    """Emit the per-config result-summary log lines.
+
+    Both branches of :func:`compare_configurations` (serial + parallel)
+    surface the same headline numbers — Judd-Wright compression /ILSS
+    knockdowns and the closed-form local sensitivities (#65). Keeping the
+    formatting in one place means future log-format tweaks happen once
+    (#122).
+
+    Parameters
+    ----------
+    name : str
+        Configuration name (used in the message text).
+    result : dict
+        The raw worker dict returned by :func:`_analyze_one`. Contains the
+        nested ``empirical`` table and the live ``empirical_solver``.
+    is_parallel : bool
+        ``True`` formats a single-line "Configuration X done — ..." line
+        suitable for interleaved parallel completions. ``False`` uses the
+        indented multi-line serial UX. The tornado line is always emitted
+        last when sensitivities are available.
+    """
+    comp_kd = result['empirical']['compression']['judd_wright']['knockdown']
+    ilss_kd = result['empirical']['ilss']['judd_wright']['knockdown']
+    if is_parallel:
+        logger.info("  Configuration %s done — "
+                    "compression KD (J-W) %.3f, ILSS KD (J-W) %.3f",
+                    name, comp_kd, ilss_kd)
+    else:
+        logger.info("    Compression KD (J-W): %.3f", comp_kd)
+        logger.info("    ILSS KD (J-W):        %.3f", ilss_kd)
+
+    # Issue #65: surface the closed-form local sensitivities at the same
+    # Vp_mean used for the headline KD. The empirical solver only lives
+    # on the worker dict (post-#103 it moves to ConfigArtifacts), so when
+    # the caller has stripped artifacts we degrade gracefully rather than
+    # raise.
+    solver = result.get('empirical_solver')
+    if solver is None:
+        logger.info(
+            "    Tornado [%s]: (sensitivities unavailable: "
+            "re-run with return_artifacts=True)", name)
+        return
+    s = solver.local_sensitivities(mode='compression', model='judd_wright')
+    logger.info(
+        "    Tornado [%s]: dKD/dVp=%.3g, dKD/dcoef=%.3g",
+        name, s['dKD_dVp'], s['dKD_dcoef'])
+
+
 def compare_configurations(void_volume_fraction: float,
                            material_name: str = 'T800_epoxy',
                            applied_stress: float = -1500.0,
@@ -221,18 +270,7 @@ def compare_configurations(void_volume_fraction: float,
             Vp_out, name_out, result = _analyze_one(
                 Vp, name, config, mat, stress, sd)
             raw_results[(Vp_out, name_out)] = result
-            comp_kd = result['empirical']['compression']['judd_wright']['knockdown']
-            ilss_kd = result['empirical']['ilss']['judd_wright']['knockdown']
-            logger.info("    Compression KD (J-W): %.3f", comp_kd)
-            logger.info("    ILSS KD (J-W):        %.3f", ilss_kd)
-            # Issue #65: surface the closed-form local sensitivities at
-            # the same Vp_mean used for the headline KD. This is a free
-            # diagnostic — the partials are analytic.
-            s = result['empirical_solver'].local_sensitivities(
-                mode='compression', model='judd_wright')
-            logger.info(
-                "    Tornado [%s]: dKD/dVp=%.3g, dKD/dcoef=%.3g",
-                name_out, s['dKD_dVp'], s['dKD_dcoef'])
+            _log_result_summary(name_out, result, is_parallel=False)
     else:
         logger.info("Parallel sweep: %d task(s) across %d worker process(es)",
                     len(tasks), workers)
@@ -241,16 +279,7 @@ def compare_configurations(void_volume_fraction: float,
             for fut in concurrent.futures.as_completed(futures):
                 Vp_out, name_out, result = fut.result()
                 raw_results[(Vp_out, name_out)] = result
-                comp_kd = result['empirical']['compression']['judd_wright']['knockdown']
-                ilss_kd = result['empirical']['ilss']['judd_wright']['knockdown']
-                logger.info("  Configuration %s done — "
-                            "compression KD (J-W) %.3f, ILSS KD (J-W) %.3f",
-                            name_out, comp_kd, ilss_kd)
-                s = result['empirical_solver'].local_sensitivities(
-                    mode='compression', model='judd_wright')
-                logger.info(
-                    "    Tornado [%s]: dKD/dVp=%.3g, dKD/dcoef=%.3g",
-                    name_out, s['dKD_dVp'], s['dKD_dcoef'])
+                _log_result_summary(name_out, result, is_parallel=True)
 
     # Re-assemble in the original config insertion order so callers see a
     # deterministic dict regardless of which worker finished first.
