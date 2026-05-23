@@ -32,7 +32,7 @@ logger = logging.getLogger("porosity_fe_analysis")
 # SECTION 7g: FE SOLVER AND FIELD RESULTS
 # ============================================================
 
-@dataclass
+@dataclass(frozen=True)
 class FieldResults:
     """Results from a finite element solve.
 
