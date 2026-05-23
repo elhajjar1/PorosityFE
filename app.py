@@ -532,6 +532,21 @@ def _render():
             nx = st.slider("nx", min_value=2, max_value=200, value=30, step=1)
             ny = st.slider("ny", min_value=2, max_value=100, value=10, step=1)
             nz = st.slider("nz", min_value=2, max_value=100, value=12, step=1)
+            total_elems = nx * ny * nz
+            if total_elems < 100:
+                st.warning(
+                    f"⚠ Mesh is very coarse ({total_elems} elements). "
+                    f"FE results from meshes below ~100 elements are unreliable. "
+                    f"Defaults (30×10×12 = 3600 elements) are recommended."
+                )
+            elif total_elems > 50_000:
+                # Very rough time estimate; tune from real benchmarks if available.
+                est_min = total_elems / 8000
+                st.warning(
+                    f"⚠ Mesh is very fine ({total_elems} elements). "
+                    f"Estimated solve time: ~{est_min:.0f} minutes. "
+                    f"Consider reducing for iteration."
+                )
         else:
             nx, ny, nz = 30, 10, 12
             st.caption(f"Default mesh: {nx} × {ny} × {nz} (enable Expert mode to change).")
