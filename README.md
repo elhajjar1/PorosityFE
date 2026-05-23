@@ -397,7 +397,7 @@ alpha_eff(mode) = alpha_QI(mode) * (f_md / 0.5)
 n_eff(mode)     = max(n_QI(mode) * (f_md / 0.5), 0.1)
 ```
 
-A floor of `0.15` is applied to the scale (`0.80` for ILSS, which is always matrix-dominated):
+A floor of `0.15` is applied to the scale (`0.80` for ILSS, which is always matrix-dominated). The `_F_MD_FLOOR` / `_F_MD_FLOOR_ILSS` constants in `EmpiricalSolver` are empirical floors documented inline in the source (see issue #139 for the calibration gap):
 
 | Layup | `f_md` | scale | `alpha_eff` (compression) |
 |---|---|---|---|

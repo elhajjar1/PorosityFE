@@ -93,7 +93,13 @@ def _build_arg_parser() -> 'argparse.ArgumentParser':
         "--applied-stress",
         type=float,
         default=-1500.0,
-        help="Applied stress (MPa) passed to compare_configurations.",
+        help=(
+            "Applied stress (MPa), reserved for downstream solver hooks. "
+            "Accepted for parity with compare_configurations but currently "
+            "unused: the empirical knockdown sweep does not consume it, so "
+            "changing this value will not affect results. Retained as a "
+            "stable CLI surface for future use (#132)."
+        ),
     )
     parser.add_argument(
         "--seed",

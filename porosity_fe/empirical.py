@@ -64,8 +64,35 @@ class EmpiricalSolver:
     _MATRIX_DOMINATED_MODES = frozenset({'ilss', 'transverse_tension'})
     # QI reference fraction and minimum floor
     _F_MD_REF = 0.5    # f_md for the QI layup used in calibration
-    _F_MD_FLOOR = 0.15  # even UD has some matrix sensitivity
-    _F_MD_FLOOR_ILSS = 0.80  # ILSS / transverse-tension are always matrix-dominated
+    # ``_F_MD_FLOOR`` / ``_F_MD_FLOOR_ILSS`` are hard floors on the layup-scale
+    # multiplier ``scale = f_md / _F_MD_REF`` returned by ``_layup_scale``.
+    # Without them ``scale -> 0`` for pure UD ([0]_n, f_md = 0.0), which would
+    # imply zero porosity sensitivity for fiber-dominated layups — physically
+    # wrong, since even UD coupons show measurable porosity knockdown at high
+    # Vp (Judd & Wright 1978 and successors all report a non-zero UD response).
+    # The floor preserves the *shape* of that physically-required behaviour
+    # while keeping the scaling rule simple and monotonic.
+    #
+    # The specific values (0.15 / 0.80) are EMPIRICAL TUNING CONSTANTS with
+    # no published derivation or cross-validation note. They were introduced
+    # together with the layup-scaling rule in commit 55affc0 (#10, a Vp-
+    # validation fix) and carried forward unchanged through the package
+    # refactor (#136). No coupon-dataset regression, optimization, or
+    # physical-argument origin has been located for either value — see
+    # issue #139 for the calibration gap. A future calibration campaign
+    # should validate ``_F_MD_FLOOR`` against UD coupon data across
+    # Vp in [0, 5%] (per-mode, since compression vs tension UD sensitivities
+    # differ) and ``_F_MD_FLOOR_ILSS`` against matrix-dominated coupons in
+    # the same range. Issue #140 (which already pinned a ~33% linearity gap
+    # in ``_layup_scale`` itself) and #139 should be addressed together so
+    # the replacement rule and its floors are calibrated against the same
+    # reference dataset.
+    _F_MD_FLOOR = 0.15  # even UD retains some matrix sensitivity; empirical, see #139
+    # ILSS and transverse-tension are matrix-/interface-dominated regardless
+    # of fiber-direction layup (the void-dominated stress component is in the
+    # matrix), so the floor preserves most of the QI calibration. 0.80 is an
+    # empirical tuning constant — not derived from published validation data.
+    _F_MD_FLOOR_ILSS = 0.80  # ILSS / transverse-tension floor; empirical, see #139
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  ply_angles: Optional[Union[List[float], str]] = 'QI',

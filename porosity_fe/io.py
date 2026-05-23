@@ -44,11 +44,39 @@ def _json_default(o):
 
 # JSON output schema (#20). Bump the major when an incompatible change
 # to the payload structure ships; bump the minor for additive changes.
-JSON_SCHEMA_VERSION = "1.0"
+# 1.1 (#131): added optional top-level ``units`` block documenting the
+# physical units of numeric leaves. Purely additive; consumers on 1.0
+# loaders can safely ignore the new key.
+JSON_SCHEMA_VERSION = "1.1"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR}
+
+
+# Per-format units descriptors for the self-documenting ``units`` envelope
+# block (#131). Keys correspond to the numeric leaves each writer emits,
+# so downstream consumers reading only the JSON can interpret ambiguous
+# fields like ``knockdown`` without consulting external docs.
+_UNITS_EMPIRICAL_SWEEP = {
+    "failure_stress": "MPa",
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "void_volume_fraction": "dimensionless fraction in [0, 1]",
+}
+_UNITS_NCR = {
+    "failure_stress": "MPa",
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "governing_residual_strength": "MPa",
+    "governing_knockdown": "dimensionless fraction in (0, 1]",
+    "measured_Vp_percent": "%",
+    "t_ply_mm": "mm",
+}
+_UNITS_STREAMLIT_EMPIRICAL = {
+    "failure_stress": "MPa",
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "Vp_percent": "%",
+    "t_ply": "mm",
+}
 
 
 def _build_provenance(seed: Optional[int] = None) -> dict:
@@ -183,14 +211,19 @@ def save_results_to_json(results: Dict, filename: str,
         'schema_version': JSON_SCHEMA_VERSION,
         'format': FORMAT_EMPIRICAL_SWEEP,
         'provenance': _build_provenance(seed=seed),
+        # Self-documenting units block (#131): documents the physical units
+        # of the numeric leaves in the payload below so downstream consumers
+        # reading only the JSON can interpret values without external docs.
+        'units': dict(_UNITS_EMPIRICAL_SWEEP),
     }
     for name, data in results.items():
-        if name in ('schema_version', 'format'):
+        if name in ('schema_version', 'format', 'units'):
             # Defensive: a user-named config that collides with envelope
             # keys would silently overwrite them. Skip with a clear error.
+            # (#131 added 'units' to the reserved set.)
             raise ValueError(
                 f"Configuration name {name!r} collides with the JSON "
-                f"envelope keys ('schema_version', 'format')."
+                f"envelope keys ('schema_version', 'format', 'units')."
             )
         # Resolve the void_volume_fraction and config dict for both the
         # legacy dict shape and the new ConfigResult shape. The legacy

@@ -5,6 +5,13 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Self-documenting `units` block in JSON envelopes** (`save_results_to_json`,
+  `write_results_json` / `_serialise_payload_json`, `serialise_ncr_json`) plus
+  per-field `description` entries on numeric leaves in
+  `validation/schemas/porosity_results_schema.json` so downstream consumers
+  reading only the JSON can tell whether `knockdown` is a fraction, a
+  percentage, or a multiplier. `JSON_SCHEMA_VERSION` bumped to `1.1`
+  (additive, backwards-compatible — 1.0 files still load and validate). (#131)
 - **`--jobs N` flag on the `porosity-fe` CLI** parallelises the per-
   configuration sweep in `compare_configurations` over a
   `concurrent.futures.ProcessPoolExecutor`. `N=1` (default) preserves
