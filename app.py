@@ -454,26 +454,17 @@ def _validate_layup_inline():
         st.session_state["_layup_status"] = ("err", str(exc))
 
 
-def _render():
-    st.set_page_config(
-        page_title="PorosityFE",
-        page_icon=None,
-        layout="wide",
-    )
-    st.title("PorosityFE — Composite Laminate Porosity Analysis")
-    st.caption(
-        "Predict strength and stiffness knockdown in porosity-degraded "
-        "composite laminates. Adjust inputs in the sidebar, then click **Run analysis**."
-    )
+def _build_sidebar_inputs() -> dict | None:
+    """Render the sidebar input controls and return the analysis config.
 
-    # ---- Initial layup validation (first render only) ----------------------
-    # Pre-populate so the status badge shows immediately for the default
-    # value, without overwriting any user-typed value on later reruns.
-    if "_layup_status" not in st.session_state:
-        st.session_state.setdefault("layup_input", "[0/45/-45/90]_3s")
-        _validate_layup_inline()
+    Returns a dict with keys:
+        cfg: the analysis config dict (or None if the layup is invalid),
+        layup_str: the raw layup string entered by the user,
+        run: bool, True iff the Run button was pressed this rerun.
 
-    # ---- Sidebar inputs ----------------------------------------------------
+    Returns None if the layup string fails to parse (an st.error has
+    already been emitted, so the caller can `return` immediately).
+    """
     with st.sidebar:
         st.header("Inputs")
         expert = st.toggle(
@@ -611,7 +602,7 @@ def _render():
         angles = parse_layup(layup_str)
     except ValueError as exc:
         st.error(f"Invalid layup: {exc}")
-        return
+        return None
 
     distribution, cluster_location = _DISTRIBUTION_OPTIONS[distribution_label]
     cfg = {
@@ -628,9 +619,235 @@ def _render():
         "ny": int(ny),
         "nz": int(nz),
     }
+    return {"cfg": cfg, "layup_str": layup_str, "run": run}
+
+
+def _placeholder_tab():
+    st.info("Run an analysis to populate this tab.")
+
+
+def _build_overview_tab(result: dict | None, layup_for_title: str):
+    st.markdown(
+        """
+        **PorosityFE** estimates strength and stiffness knockdown in
+        porosity-degraded composite laminates using empirical
+        models (Judd–Wright, power law, linear) and a 3D hex finite-element
+        solve. Configure the laminate and porosity field in the sidebar and
+        press **Run analysis**.
+
+        - **Profile** — through-thickness porosity distribution
+        - **Mesh** — mid-y cross-section of the FE mesh, coloured by stiffness retention
+        - **Results** — empirical knockdown bar chart with the FE stiffness knockdown overlaid
+        - **Stress** — FE stress contour for a chosen component
+        - **Export** — download the empirical knockdown sweep as JSON or
+          CSV, or generate an NCR validation summary (PDF / Markdown /
+          JSON) with a recommended MRB disposition path
+        """
+    )
+    if result is None:
+        st.info("No results yet. Adjust the sidebar and press **Run analysis**.")
+        return
+    cfg_r = result["config"]
+    st.success(
+        f"Last run: {cfg_r['material_name']}, layup {layup_for_title}, "
+        f"Vp = {cfg_r['Vp']:.1f}%, {cfg_r['void_shape']}, "
+        f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
+    )
+    if result.get("fe_skipped_reason"):
+        reason = result["fe_skipped_reason"]
+        st.warning(
+            f"⚠ FE solve was skipped: {reason}\n\n"
+            f"**Empirical knockdown results are still valid** and are shown in the "
+            f"other tabs. FE would have added per-element stress fields; you don't "
+            f"need it for the headline knockdown numbers.\n\n"
+            f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
+            f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
+        )
+
+
+def _build_profile_tab(result: dict | None):
+    if result is None:
+        _placeholder_tab()
+        return
+    st.pyplot(plot_profile(result), clear_figure=True)
+
+
+def _build_mesh_tab(result: dict | None):
+    if result is None:
+        _placeholder_tab()
+        return
+    st.pyplot(plot_mesh(result), clear_figure=True)
+
+
+def _build_results_tab(result: dict | None, layup_for_title: str):
+    if result is None:
+        _placeholder_tab()
+        return
+    st.pyplot(plot_results(result, layup_for_title), clear_figure=True)
+
+
+def _build_stress_tab(result: dict | None):
+    if result is None:
+        _placeholder_tab()
+        return
+    if result.get("fe_field") is None:
+        st.warning(
+            result.get("fe_skipped_reason")
+            or "No FE field available for this configuration."
+        )
+        return
+    comp_name = st.selectbox(
+        "Stress component",
+        options=list(_STRESS_COMPONENTS.keys()),
+        index=0,
+    )
+    st.pyplot(plot_stress(result, comp_name), clear_figure=True)
+
+
+def _build_export_tab(result: dict | None, layup_for_title: str):
+    if result is None:
+        _placeholder_tab()
+        return
+    payload = build_export_payload(result)
+    export_stem = download_filename_stem(payload)
+    st.download_button(
+        "Download JSON",
+        data=_serialise_payload_json(payload),
+        file_name=f"{export_stem}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.download_button(
+        "Download CSV",
+        data=_serialise_payload_csv(payload),
+        file_name=f"{export_stem}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+    with st.expander("Preview JSON"):
+        st.code(_serialise_payload_json(payload), language="json")
+
+    st.divider()
+    st.subheader("NCR validation summary")
+    st.caption(
+        "Generate a concise analysis summary to **attach to an NCR**. "
+        "It carries the porosity validation and a *recommended* "
+        "disposition path for the MRB — it is not a full NCR form and "
+        "does not issue a final disposition. Part/serial/work-order "
+        "identification stays on the parent NCR."
+    )
+
+    with st.form("ncr_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            prepared_by = st.text_input(
+                "Prepared by", value="",
+                help="Engineer preparing this analysis summary.",
+            )
+            ncr_reference = st.text_input(
+                "Parent NCR reference (optional)", value="",
+                help="Cross-reference to the NCR this attaches to.",
+            )
+        with c2:
+            structural_class = st.selectbox(
+                "Structural classification",
+                options=list(STRUCTURAL_CLASSES),
+                index=0,
+                help=(
+                    "Drives required substantiation. Primary "
+                    "structure escalates to customer/DER concurrence "
+                    "for any Use-As-Is."
+                ),
+            )
+        note = st.text_area(
+            "Engineer note (optional)", value="",
+            help="Any observation context to record on the summary.",
+        )
+        make_ncr = st.form_submit_button(
+            "Generate summary", type="primary",
+            use_container_width=True,
+        )
+
+    if not make_ncr:
+        return
+
+    meta = {
+        "prepared_by": prepared_by,
+        "ncr_reference": ncr_reference,
+        "structural_class": structural_class,
+        "note": note,
+        "date": datetime.date.today().isoformat(),
+        "layup": layup_for_title,
+    }
+    ncr = build_ncr_record(result, meta)
+    dp = ncr["recommended_disposition"]
+    st.warning(
+        f"**Recommended disposition path:** {dp['path']}  \n"
+        f"{dp['rationale']}"
+    )
+    st.info(dp["disclaimer"])
+
+    ncr_md = serialise_ncr_markdown(ncr)
+    stem = (
+        _sanitise_filename_component(ncr_reference.strip())
+        or export_stem
+    )
+    dl1, dl2, dl3 = st.columns(3)
+    with dl1:
+        st.download_button(
+            "Download PDF",
+            data=serialise_ncr_pdf(ncr),
+            file_name=f"{stem}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    with dl2:
+        st.download_button(
+            "Download Markdown",
+            data=ncr_md,
+            file_name=f"{stem}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    with dl3:
+        st.download_button(
+            "Download JSON",
+            data=serialise_ncr_json(ncr),
+            file_name=f"{stem}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with st.expander("Preview summary"):
+        st.markdown(ncr_md)
+
+
+def _render():
+    st.set_page_config(
+        page_title="PorosityFE",
+        page_icon=None,
+        layout="wide",
+    )
+    st.title("PorosityFE — Composite Laminate Porosity Analysis")
+    st.caption(
+        "Predict strength and stiffness knockdown in porosity-degraded "
+        "composite laminates. Adjust inputs in the sidebar, then click **Run analysis**."
+    )
+
+    # ---- Initial layup validation (first render only) ----------------------
+    # Pre-populate so the status badge shows immediately for the default
+    # value, without overwriting any user-typed value on later reruns.
+    if "_layup_status" not in st.session_state:
+        st.session_state.setdefault("layup_input", "[0/45/-45/90]_3s")
+        _validate_layup_inline()
+
+    sidebar = _build_sidebar_inputs()
+    if sidebar is None:
+        return
+    cfg = sidebar["cfg"]
+    layup_str = sidebar["layup_str"]
 
     # ---- Run analysis (only when the button is pressed) --------------------
-    if run:
+    if sidebar["run"]:
         with st.spinner("Running porosity analysis…"):
             try:
                 st.session_state["result"] = run_analysis_cached(_config_to_key(cfg))
@@ -643,199 +860,19 @@ def _render():
     result = st.session_state.get("result")
     layup_for_title = st.session_state.get("layup_str", layup_str)
 
-    # ---- Tabs --------------------------------------------------------------
-    tab_overview, tab_profile, tab_mesh, tab_results, tab_stress, tab_export = st.tabs(
-        ["Overview", "Profile", "Mesh", "Results", "Stress", "Export"]
-    )
-
-    with tab_overview:
-        st.markdown(
-            """
-            **PorosityFE** estimates strength and stiffness knockdown in
-            porosity-degraded composite laminates using empirical
-            models (Judd–Wright, power law, linear) and a 3D hex finite-element
-            solve. Configure the laminate and porosity field in the sidebar and
-            press **Run analysis**.
-
-            - **Profile** — through-thickness porosity distribution
-            - **Mesh** — mid-y cross-section of the FE mesh, coloured by stiffness retention
-            - **Results** — empirical knockdown bar chart with the FE stiffness knockdown overlaid
-            - **Stress** — FE stress contour for a chosen component
-            - **Export** — download the empirical knockdown sweep as JSON or
-              CSV, or generate an NCR validation summary (PDF / Markdown /
-              JSON) with a recommended MRB disposition path
-            """
-        )
-        if result is None:
-            st.info("No results yet. Adjust the sidebar and press **Run analysis**.")
-        else:
-            cfg_r = result["config"]
-            st.success(
-                f"Last run: {cfg_r['material_name']}, layup {layup_for_title}, "
-                f"Vp = {cfg_r['Vp']:.1f}%, {cfg_r['void_shape']}, "
-                f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
-            )
-            if result.get("fe_skipped_reason"):
-                reason = result["fe_skipped_reason"]
-                st.warning(
-                    f"⚠ FE solve was skipped: {reason}\n\n"
-                    f"**Empirical knockdown results are still valid** and are shown in the "
-                    f"other tabs. FE would have added per-element stress fields; you don't "
-                    f"need it for the headline knockdown numbers.\n\n"
-                    f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
-                    f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
-                )
-
-    def _placeholder():
-        st.info("Run an analysis to populate this tab.")
-
-    with tab_profile:
-        if result is None:
-            _placeholder()
-        else:
-            st.pyplot(plot_profile(result), clear_figure=True)
-
-    with tab_mesh:
-        if result is None:
-            _placeholder()
-        else:
-            st.pyplot(plot_mesh(result), clear_figure=True)
-
-    with tab_results:
-        if result is None:
-            _placeholder()
-        else:
-            st.pyplot(plot_results(result, layup_for_title), clear_figure=True)
-
-    with tab_stress:
-        if result is None:
-            _placeholder()
-        elif result.get("fe_field") is None:
-            st.warning(
-                result.get("fe_skipped_reason")
-                or "No FE field available for this configuration."
-            )
-        else:
-            comp_name = st.selectbox(
-                "Stress component",
-                options=list(_STRESS_COMPONENTS.keys()),
-                index=0,
-            )
-            st.pyplot(plot_stress(result, comp_name), clear_figure=True)
-
-    with tab_export:
-        if result is None:
-            _placeholder()
-        else:
-            payload = build_export_payload(result)
-            export_stem = download_filename_stem(payload)
-            st.download_button(
-                "Download JSON",
-                data=_serialise_payload_json(payload),
-                file_name=f"{export_stem}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-            st.download_button(
-                "Download CSV",
-                data=_serialise_payload_csv(payload),
-                file_name=f"{export_stem}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-            with st.expander("Preview JSON"):
-                st.code(_serialise_payload_json(payload), language="json")
-
-            st.divider()
-            st.subheader("NCR validation summary")
-            st.caption(
-                "Generate a concise analysis summary to **attach to an NCR**. "
-                "It carries the porosity validation and a *recommended* "
-                "disposition path for the MRB — it is not a full NCR form and "
-                "does not issue a final disposition. Part/serial/work-order "
-                "identification stays on the parent NCR."
-            )
-
-            with st.form("ncr_form"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    prepared_by = st.text_input(
-                        "Prepared by", value="",
-                        help="Engineer preparing this analysis summary.",
-                    )
-                    ncr_reference = st.text_input(
-                        "Parent NCR reference (optional)", value="",
-                        help="Cross-reference to the NCR this attaches to.",
-                    )
-                with c2:
-                    structural_class = st.selectbox(
-                        "Structural classification",
-                        options=list(STRUCTURAL_CLASSES),
-                        index=0,
-                        help=(
-                            "Drives required substantiation. Primary "
-                            "structure escalates to customer/DER concurrence "
-                            "for any Use-As-Is."
-                        ),
-                    )
-                note = st.text_area(
-                    "Engineer note (optional)", value="",
-                    help="Any observation context to record on the summary.",
-                )
-                make_ncr = st.form_submit_button(
-                    "Generate summary", type="primary",
-                    use_container_width=True,
-                )
-
-            if make_ncr:
-                meta = {
-                    "prepared_by": prepared_by,
-                    "ncr_reference": ncr_reference,
-                    "structural_class": structural_class,
-                    "note": note,
-                    "date": datetime.date.today().isoformat(),
-                    "layup": layup_for_title,
-                }
-                ncr = build_ncr_record(result, meta)
-                dp = ncr["recommended_disposition"]
-                st.warning(
-                    f"**Recommended disposition path:** {dp['path']}  \n"
-                    f"{dp['rationale']}"
-                )
-                st.info(dp["disclaimer"])
-
-                ncr_md = serialise_ncr_markdown(ncr)
-                stem = (
-                    _sanitise_filename_component(ncr_reference.strip())
-                    or export_stem
-                )
-                dl1, dl2, dl3 = st.columns(3)
-                with dl1:
-                    st.download_button(
-                        "Download PDF",
-                        data=serialise_ncr_pdf(ncr),
-                        file_name=f"{stem}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-                with dl2:
-                    st.download_button(
-                        "Download Markdown",
-                        data=ncr_md,
-                        file_name=f"{stem}.md",
-                        mime="text/markdown",
-                        use_container_width=True,
-                    )
-                with dl3:
-                    st.download_button(
-                        "Download JSON",
-                        data=serialise_ncr_json(ncr),
-                        file_name=f"{stem}.json",
-                        mime="application/json",
-                        use_container_width=True,
-                    )
-                with st.expander("Preview summary"):
-                    st.markdown(ncr_md)
+    tabs = st.tabs(["Overview", "Profile", "Mesh", "Results", "Stress", "Export"])
+    with tabs[0]:
+        _build_overview_tab(result, layup_for_title)
+    with tabs[1]:
+        _build_profile_tab(result)
+    with tabs[2]:
+        _build_mesh_tab(result)
+    with tabs[3]:
+        _build_results_tab(result, layup_for_title)
+    with tabs[4]:
+        _build_stress_tab(result)
+    with tabs[5]:
+        _build_export_tab(result, layup_for_title)
 
 
 try:
