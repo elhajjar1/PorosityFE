@@ -50,6 +50,12 @@ from porosity_fe import (
 # rcParams nudges, so the Streamlit plots match the static PNGs (#53).
 _configure_matplotlib_style()
 
+# Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
+_README_URL = (
+    "https://github.com/ranipdx-glitch/PorosityFE"
+    "#solver-selection-fe-vs-empirical"
+)
+
 
 # ======================================================================
 # Pure helpers (extracted to porosity_fe.reporting so tests can import them
@@ -625,7 +631,15 @@ def _render():
                 f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
             )
             if result.get("fe_skipped_reason"):
-                st.warning(f"FE skipped: {result['fe_skipped_reason']}")
+                reason = result["fe_skipped_reason"]
+                st.warning(
+                    f"⚠ FE solve was skipped: {reason}\n\n"
+                    f"**Empirical knockdown results are still valid** and are shown in the "
+                    f"other tabs. FE would have added per-element stress fields; you don't "
+                    f"need it for the headline knockdown numbers.\n\n"
+                    f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
+                    f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
+                )
 
     def _placeholder():
         st.info("Run an analysis to populate this tab.")
