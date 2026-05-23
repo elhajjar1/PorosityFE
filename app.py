@@ -435,6 +435,25 @@ _DISTRIBUTION_OPTIONS = {
 }
 
 
+def _validate_layup_inline():
+    """On-change callback: validate the layup string and stash a status tuple.
+
+    Stored as st.session_state["_layup_status"] = (level, message) where
+    level is "ok" or "err". Called by the layup text input's on_change hook
+    so the user gets immediate feedback on typos like '_3z' vs '_3s'
+    (issue #126), instead of waiting for a full analysis run.
+    """
+    raw = st.session_state.get("layup_input", "")
+    if not raw.strip():
+        st.session_state["_layup_status"] = ("err", "Layup string is empty.")
+        return
+    try:
+        parse_layup(raw)
+        st.session_state["_layup_status"] = ("ok", "✓ valid")
+    except ValueError as exc:
+        st.session_state["_layup_status"] = ("err", str(exc))
+
+
 def _render():
     st.set_page_config(
         page_title="PorosityFE",
@@ -446,6 +465,13 @@ def _render():
         "Predict strength and stiffness knockdown in porosity-degraded "
         "composite laminates. Adjust inputs in the sidebar, then click **Run analysis**."
     )
+
+    # ---- Initial layup validation (first render only) ----------------------
+    # Pre-populate so the status badge shows immediately for the default
+    # value, without overwriting any user-typed value on later reruns.
+    if "_layup_status" not in st.session_state:
+        st.session_state.setdefault("layup_input", "[0/45/-45/90]_3s")
+        _validate_layup_inline()
 
     # ---- Sidebar inputs ----------------------------------------------------
     with st.sidebar:
@@ -465,12 +491,18 @@ def _render():
         layup_str = st.text_input(
             "Layup",
             value="[0/45/-45/90]_3s",
+            key="layup_input",
+            on_change=_validate_layup_inline,
             help=(
                 "Ply angles separated by '/'. Use '_Ns' for N repeats and "
                 "trailing 's' for symmetric. Examples: [0/45/-45/90]_3s, "
                 "[0/90]_6s, 0/0/0/90/90/90."
             ),
         )
+        _layup_status = st.session_state.get("_layup_status")
+        if _layup_status:
+            _level, _msg = _layup_status
+            (st.success if _level == "ok" else st.error)(_msg)
         t_ply = st.number_input(
             "Ply thickness (mm)",
             min_value=0.05, max_value=0.50, value=0.183, step=0.01, format="%.3f",
@@ -559,7 +591,20 @@ def _render():
             nx, ny, nz = 30, 10, 12
             st.caption(f"Default mesh: {nx} × {ny} × {nz} (enable Expert mode to change).")
 
-        run = st.button("Run analysis", type="primary", use_container_width=True)
+        _run_disabled = (
+            st.session_state.get("_layup_status", ("ok", None))[0] == "err"
+        )
+        run = st.button(
+            "Run analysis",
+            type="primary",
+            use_container_width=True,
+            disabled=_run_disabled,
+            help=(
+                "Fix the layup string above before running."
+                if _run_disabled
+                else None
+            ),
+        )
 
     # ---- Build config from sidebar state -----------------------------------
     try:

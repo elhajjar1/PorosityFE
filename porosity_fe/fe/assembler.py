@@ -38,6 +38,8 @@ class GlobalAssembler:
         self.material = material
         self.porosity_field = porosity_field
         self._C_base = material.get_stiffness_matrix()
+        # Hoisted from per-call hash; _C_base is set once in __init__ and never mutated.
+        self._c_base_hash = hash(self._C_base.tobytes())
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
         self._void_shape = porosity_field.void_shape_radii
@@ -104,7 +106,7 @@ class GlobalAssembler:
         geom_key = tuple(rel_coords.ravel())
         # Include a hash of C_base so elements with the same geometry but
         # different material stiffness do not share a cached matrix.
-        c_key = hash(self._C_base.tobytes())
+        c_key = self._c_base_hash
         return (ply_angle, porosity_val, is_void, geom_key, c_key)
 
     def _cache_uniform_elements(self) -> None:

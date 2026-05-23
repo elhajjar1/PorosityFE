@@ -1,6 +1,6 @@
 """Mori-Tanaka homogenization, MT-cache, and CLT effective moduli."""
 
-from collections import OrderedDict
+from functools import lru_cache
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -14,27 +14,6 @@ from .void_geometry import VOID_SHAPES
 # ============================================================
 
 _MT_CACHE_MAXSIZE = 4096
-_mt_cache: 'OrderedDict[tuple, np.ndarray]' = OrderedDict()
-
-
-def _mt_cache_key(C_m: np.ndarray, Vp: float, void_shape_radii: Tuple,
-                  nu_m: float) -> tuple:
-    # An isotropic 6x6 stiffness is fully determined by (lam+2mu, mu); use
-    # both diagonal slots as a content fingerprint so different materials
-    # never collide. Rounding tolerances are tighter than typical FP noise
-    # but loose enough that two physically-identical inputs collapse.
-    return (
-        round(float(Vp), 6),
-        tuple(round(float(r), 6) for r in void_shape_radii),
-        round(float(nu_m), 8),
-        round(float(C_m[0, 0]), 4),
-        round(float(C_m[3, 3]), 4),
-    )
-
-
-def _mt_cache_clear() -> None:
-    """Drop the MT effective-stiffness cache. Test/diagnostic helper."""
-    _mt_cache.clear()
 
 
 def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
@@ -42,8 +21,9 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
                             nu_m: float) -> np.ndarray:
     """Mori-Tanaka effective stiffness for void inclusions (C_inclusion = 0).
 
-    Memoized by a content-fingerprint cache (#42). The cached result is
-    copied before return so callers can mutate it freely.
+    Memoized via ``functools.lru_cache`` on a content-fingerprint key (#42,
+    #112). The cached result is copied before return so callers can mutate
+    it freely.
 
     Standalone Eshelby-tensor-based Mori-Tanaka calculation for use inside
     Hex8Element.
@@ -76,13 +56,44 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     if Vp > 0.99:
         return np.zeros((6, 6))
 
-    # Cache check (#42). The compute path below is ~200x more expensive
-    # than the fingerprint+lookup, so the hit case is essentially free.
-    cache_key = _mt_cache_key(C_m, Vp, void_shape_radii, nu_m)
-    cached = _mt_cache.get(cache_key)
-    if cached is not None:
-        _mt_cache.move_to_end(cache_key)  # LRU touch
-        return cached.copy()
+    # Build a hashable content fingerprint (same rounding rules as the
+    # pre-#112 manual cache key) and dispatch to the lru_cache'd inner
+    # function. An isotropic 6x6 stiffness is fully determined by
+    # (lam+2mu, mu); both diagonal slots act as a content fingerprint so
+    # different materials never collide.
+    radii_key = tuple(round(float(r), 6) for r in void_shape_radii)
+    C00 = round(float(C_m[0, 0]), 4)
+    C33 = round(float(C_m[3, 3]), 4)
+    Vp_key = round(float(Vp), 6)
+    nu_key = round(float(nu_m), 8)
+
+    cached = _mt_effective_stiffness_cached(C00, C33, Vp_key, radii_key, nu_key)
+    # The cache stores the canonical result; return a defensive copy so
+    # callers can mutate freely without poisoning the cache.
+    return cached.copy()
+
+
+@lru_cache(maxsize=_MT_CACHE_MAXSIZE)
+def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
+                                   void_shape_radii: Tuple[float, ...],
+                                   nu_m: float) -> np.ndarray:
+    """LRU-cached core of :func:`_mt_effective_stiffness` (#112).
+
+    All arguments are hashable (floats / tuples of floats), so this is a
+    drop-in for ``functools.lru_cache``. The matrix stiffness ``C_m`` is
+    reconstructed from its two independent isotropic components
+    (``C[0,0] = lam + 2mu`` and ``C[3,3] = mu``); see the wrapper for the
+    fingerprint rationale.
+    """
+    # Reconstruct the isotropic 6x6 matrix stiffness from its two
+    # independent components. C[0,0] = lam + 2mu, C[3,3] = mu, so
+    # lam = C[0,0] - 2*C[3,3]; off-diagonal C[i!=j] = lam.
+    mu = C_m_33
+    lam = C_m_00 - 2.0 * mu
+    C_m = np.zeros((6, 6))
+    C_m[0, 0] = C_m[1, 1] = C_m[2, 2] = lam + 2.0 * mu
+    C_m[0, 1] = C_m[0, 2] = C_m[1, 0] = C_m[1, 2] = C_m[2, 0] = C_m[2, 1] = lam
+    C_m[3, 3] = C_m[4, 4] = C_m[5, 5] = mu
 
     nu = nu_m
     r = list(void_shape_radii)
@@ -175,16 +186,14 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     C_eff = C_m @ (I6 - Vp * inner_inv)
     if not np.all(np.isfinite(C_eff)):
         # Last-ditch: return the void-saturated zero stiffness rather than
-        # silently emitting NaN/inf from a near-singular inner. Skip the
-        # cache for this path — it's a defensive fallback, not a result
-        # we want to look up later.
+        # silently emitting NaN/inf from a near-singular inner. The wrapper
+        # always returns a defensive copy of whatever this inner returns,
+        # so callers stay safe from mutation either way.
         return np.zeros((6, 6))
 
-    # Store in the LRU cache (#42); evict the oldest entry if full. Cache
-    # a defensive copy so callers can mutate the returned array.
-    _mt_cache[cache_key] = C_eff.copy()
-    if len(_mt_cache) > _MT_CACHE_MAXSIZE:
-        _mt_cache.popitem(last=False)
+    # The lru_cache decorator handles storage + LRU eviction; the outer
+    # wrapper takes a defensive copy on return so callers can mutate the
+    # returned array without poisoning the cached value.
     return C_eff
 
 

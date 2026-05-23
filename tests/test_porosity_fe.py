@@ -1115,25 +1115,27 @@ class TestMTEffectiveStiffness:
         assert abs(deg_yy - deg_zz) < 1e-6
 
     def test_cache_hit_returns_identical_result(self):
-        # #42: a repeated call with the same key must come from the cache
-        # and return a numerically identical result (within fp tolerance
-        # of the original computation, which here is exact equality since
-        # the cache stores the actual array).
-        from porosity_fe_analysis import _mt_cache, _mt_cache_clear
-        _mt_cache_clear()
+        # #42, #112: a repeated call with the same key must come from the
+        # cache and return a numerically identical result (within fp
+        # tolerance of the original computation, which here is exact
+        # equality since the cache stores the actual array).
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
         first = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
-        assert len(_mt_cache) == 1
+        assert _mt_effective_stiffness_cached.cache_info().currsize == 1
         second = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
         # Still one entry — no duplication.
-        assert len(_mt_cache) == 1
+        info = _mt_effective_stiffness_cached.cache_info()
+        assert info.currsize == 1
+        assert info.hits >= 1
         np.testing.assert_array_equal(first, second)
 
     def test_cache_returns_defensive_copy(self):
         # Callers may mutate the returned array (e.g. callers in the FE
         # path build derived ratios). The cache must not be poisoned by
         # that mutation — the next call must still return the original.
-        from porosity_fe_analysis import _mt_cache_clear
-        _mt_cache_clear()
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
         first = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
         first[0, 0] = -999.0  # mutate the returned array
         second = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
@@ -1142,12 +1144,12 @@ class TestMTEffectiveStiffness:
     def test_cache_distinguishes_materials(self):
         # Two materials with different C_m[0,0] must NOT collide in the
         # cache even at identical (Vp, shape, nu_m).
-        from porosity_fe_analysis import _mt_cache, _mt_cache_clear
-        _mt_cache_clear()
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
         C_m2 = self.C_m * 2.0  # different fingerprint
         a = _mt_effective_stiffness(self.C_m, 0.04, (1, 1, 1), 0.35)
         b = _mt_effective_stiffness(C_m2, 0.04, (1, 1, 1), 0.35)
-        assert len(_mt_cache) == 2
+        assert _mt_effective_stiffness_cached.cache_info().currsize == 2
         # The stiffer matrix should give a stiffer effective stiffness.
         assert b[0, 0] > a[0, 0]
 
@@ -1195,14 +1197,14 @@ class TestOblateMTValidation:
         eps = 0.011  # just outside the 1% sphere shortcut
         # Compute the sphere baseline via the function's sphere shortcut
         # (radii all equal => short-circuit branch).
-        from porosity_fe_analysis import _mt_cache_clear
-        _mt_cache_clear()
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
         C_sphere = _mt_effective_stiffness(
             self.C_m, 0.05, (1.0, 1.0, 1.0), self.nu_m)
-        _mt_cache_clear()
+        _mt_effective_stiffness_cached.cache_clear()
         C_prolate = _mt_effective_stiffness(
             self.C_m, 0.05, (1.0, 1.0, 1.0 + eps), self.nu_m)
-        _mt_cache_clear()
+        _mt_effective_stiffness_cached.cache_clear()
         C_oblate = _mt_effective_stiffness(
             self.C_m, 0.05, (1.0, 1.0, 1.0 - eps), self.nu_m)
 
@@ -1227,8 +1229,8 @@ class TestOblateMTValidation:
         Voigt permutation that maps the canonical-frame Eshelby tensor
         onto the actual axis.
         """
-        from porosity_fe_analysis import _mt_cache_clear
-        _mt_cache_clear()
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
         C_eff = _mt_effective_stiffness(
             self.C_m, 0.05, (1.0, 1.0, 0.01), self.nu_m)
         # Snapshot to ~5 significant figures; rtol=1e-4 catches numerically
@@ -1244,11 +1246,11 @@ class TestOblateMTValidation:
         """Increasing porosity must monotonically reduce transverse stiffness
         for an oblate (penny) void at fixed aspect ratio.
         """
-        from porosity_fe_analysis import _mt_cache_clear
+        from porosity_fe import _mt_effective_stiffness_cached
         Vps = [0.001, 0.01, 0.03, 0.05]
         C22_values = []
         for Vp in Vps:
-            _mt_cache_clear()
+            _mt_effective_stiffness_cached.cache_clear()
             C = _mt_effective_stiffness(
                 self.C_m, Vp, (1.0, 1.0, 0.01), self.nu_m)
             C22_values.append(C[1, 1])
@@ -1283,12 +1285,12 @@ class TestOblateMTValidation:
         less. We pin the actual (correct) physics here rather than the
         issue's predicted inequality.
         """
-        from porosity_fe_analysis import _mt_cache_clear
+        from porosity_fe import _mt_effective_stiffness_cached
         Vp = 0.05
-        _mt_cache_clear()
+        _mt_effective_stiffness_cached.cache_clear()
         C_oblate = _mt_effective_stiffness(
             self.C_m, Vp, (1.0, 1.0, 0.01), self.nu_m)
-        _mt_cache_clear()
+        _mt_effective_stiffness_cached.cache_clear()
         C_prolate = _mt_effective_stiffness(
             self.C_m, Vp, (1.0, 1.0, 100.0), self.nu_m)
 

@@ -83,10 +83,8 @@ from .gauss import gauss_points_hex as gauss_points_hex  # noqa: F401, E402
 from .homogenization import _MT_CACHE_MAXSIZE as _MT_CACHE_MAXSIZE  # noqa: F401, E402
 from .homogenization import _build_clt_abd as _build_clt_abd  # noqa: F401, E402
 from .homogenization import _degraded_composite_stiffness as _degraded_composite_stiffness  # noqa: F401, E402
-from .homogenization import _mt_cache as _mt_cache  # noqa: F401, E402
-from .homogenization import _mt_cache_clear as _mt_cache_clear  # noqa: F401, E402
-from .homogenization import _mt_cache_key as _mt_cache_key  # noqa: F401, E402
 from .homogenization import _mt_effective_stiffness as _mt_effective_stiffness  # noqa: F401, E402
+from .homogenization import _mt_effective_stiffness_cached as _mt_effective_stiffness_cached  # noqa: F401, E402
 from .homogenization import compute_clt_effective_modulus as compute_clt_effective_modulus  # noqa: F401, E402
 from .homogenization import (  # noqa: F401, E402
     compute_degraded_clt_flexural_modulus as compute_degraded_clt_flexural_modulus,

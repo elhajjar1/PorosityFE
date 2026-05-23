@@ -122,14 +122,11 @@ class Hex8Element:
         np.ndarray
             Shape (8,).
         """
-        N = np.empty(8)
-        for i in range(8):
-            N[i] = (
-                0.125
-                * (1.0 + _NODE_COORDS_REF[i, 0] * xi)
-                * (1.0 + _NODE_COORDS_REF[i, 1] * eta)
-                * (1.0 + _NODE_COORDS_REF[i, 2] * zeta)
-            )
+        N = 0.125 * (
+            (1.0 + _NODE_COORDS_REF[:, 0] * xi)
+            * (1.0 + _NODE_COORDS_REF[:, 1] * eta)
+            * (1.0 + _NODE_COORDS_REF[:, 2] * zeta)
+        )
         return N
 
     @staticmethod
@@ -141,13 +138,15 @@ class Hex8Element:
         np.ndarray
             Shape (3, 8): dN[i, j] = dN_j / d(xi_i).
         """
-        dN = np.empty((3, 8))
-        for j in range(8):
-            xi_j, eta_j, zeta_j = _NODE_COORDS_REF[j]
-            dN[0, j] = 0.125 * xi_j * (1.0 + eta_j * eta) * (1.0 + zeta_j * zeta)
-            dN[1, j] = 0.125 * (1.0 + xi_j * xi) * eta_j * (1.0 + zeta_j * zeta)
-            dN[2, j] = 0.125 * (1.0 + xi_j * xi) * (1.0 + eta_j * eta) * zeta_j
-        return dN
+        xi_node = _NODE_COORDS_REF[:, 0]
+        eta_node = _NODE_COORDS_REF[:, 1]
+        zeta_node = _NODE_COORDS_REF[:, 2]
+
+        dN_dxi = 0.125 * xi_node * (1.0 + eta_node * eta) * (1.0 + zeta_node * zeta)
+        dN_deta = 0.125 * (1.0 + xi_node * xi) * eta_node * (1.0 + zeta_node * zeta)
+        dN_dzeta = 0.125 * (1.0 + xi_node * xi) * (1.0 + eta_node * eta) * zeta_node
+
+        return np.stack([dN_dxi, dN_deta, dN_dzeta], axis=0)
 
     def jacobian(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Jacobian matrix (3x3) mapping natural to physical coordinates."""

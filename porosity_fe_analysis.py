@@ -47,9 +47,6 @@ from porosity_fe import _degraded_composite_stiffness as _degraded_composite_sti
 from porosity_fe import _draw_unit_samples as _draw_unit_samples  # noqa: F401
 from porosity_fe import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401
 from porosity_fe import _json_default as _json_default  # noqa: F401
-from porosity_fe import _mt_cache as _mt_cache  # noqa: F401
-from porosity_fe import _mt_cache_clear as _mt_cache_clear  # noqa: F401
-from porosity_fe import _mt_cache_key as _mt_cache_key  # noqa: F401
 from porosity_fe import _mt_effective_stiffness as _mt_effective_stiffness  # noqa: F401
 from porosity_fe import _normalize_uq_spec as _normalize_uq_spec  # noqa: F401
 from porosity_fe import _resolve_n_jobs as _resolve_n_jobs  # noqa: F401
