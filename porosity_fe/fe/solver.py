@@ -1,10 +1,13 @@
 """FE solver and FieldResults dataclass."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
@@ -149,7 +152,8 @@ class FieldResults:
             },
         )
 
-    def to_vtk(self, mesh: 'CompositeMesh', filename: str) -> None:
+    def to_vtk(self, mesh: 'CompositeMesh',
+               filename: str | os.PathLike) -> None:
         """Write the hex mesh and per-element FE fields to a legacy ASCII VTK
         file (``UNSTRUCTURED_GRID``) for inspection in ParaView / VisIt / PyVista.
 
@@ -179,9 +183,10 @@ class FieldResults:
         mesh : CompositeMesh
             The mesh that produced these results (supplies geometry,
             connectivity, porosity and ply metadata).
-        filename : str
-            Output ``.vtk`` file path.
+        filename : str or os.PathLike
+            Output ``.vtk`` file path. ``pathlib.Path`` objects are accepted.
         """
+        filename = Path(filename)
         nodes = np.asarray(mesh.nodes, dtype=float)
         elements = np.asarray(mesh.elements, dtype=np.int64)
         n_nodes = nodes.shape[0]
@@ -1206,7 +1211,8 @@ class FESolver:
         }
 
     @staticmethod
-    def export_results(field_results: 'FieldResults', filename: str,
+    def export_results(field_results: 'FieldResults',
+                       filename: str | os.PathLike,
                        fmt: str = 'json',
                        mesh: Optional['CompositeMesh'] = None,
                        include_raw: bool = False) -> None:
@@ -1228,8 +1234,9 @@ class FESolver:
         ----------
         field_results : FieldResults
             Results from FESolver.solve().
-        filename : str
-            Output file path (``.json`` or ``.vtk``).
+        filename : str or os.PathLike
+            Output file path (``.json`` or ``.vtk``). ``pathlib.Path``
+            objects are accepted.
         fmt : str
             ``'json'`` (default) or ``'vtk'``.
         mesh : CompositeMesh, optional
@@ -1242,6 +1249,7 @@ class FESolver:
             bloated (#55).
         """
         fmt = str(fmt).lower()
+        filename = Path(filename)
         if fmt == 'vtk':
             if mesh is None:
                 raise ValueError(
@@ -1314,7 +1322,7 @@ class FESolver:
         if include_raw:
             # Sidecar file path lives next to the JSON so users see them
             # together; ``np.savez`` will append ``.npz`` if missing.
-            npz_path = f"{filename}.npz"
+            npz_path = filename.with_name(filename.name + ".npz")
             arrays = {
                 'displacement': np.asarray(field_results.displacement),
                 'stress_global': np.asarray(field_results.stress_global),
@@ -1326,7 +1334,7 @@ class FESolver:
                 arrays['per_element_failure_index'] = np.asarray(
                     field_results.per_element_failure_index)
             np.savez(npz_path, **arrays)
-            output['raw_sidecar'] = os.path.basename(npz_path)
+            output['raw_sidecar'] = npz_path.name
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(output, f, indent=2, default=_json_default)
         logger.info("Saved FE results: %s", filename)

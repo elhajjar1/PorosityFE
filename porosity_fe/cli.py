@@ -1,9 +1,11 @@
 """argparse-driven CLI (``porosity-analyze``)."""
 
+from __future__ import annotations
+
 import argparse
 import logging
-import os
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
@@ -284,11 +286,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"{hint}"
             )
 
-    output_dir = args.output_dir
+    output_dir = Path(args.output_dir)
     try:
-        os.makedirs(output_dir, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        print(f"ERROR: cannot create output directory {output_dir!r}: {exc}",
+        print(f"ERROR: cannot create output directory {str(output_dir)!r}: {exc}",
               file=sys.stderr)
         return 2
 
@@ -334,34 +336,28 @@ def main(argv: Optional[List[str]] = None) -> int:
                 art = artifacts[name]
                 viz.plot_porosity_field(
                     art.porosity_field,
-                    save_path=os.path.join(
-                        output_dir, f"porosity_profile_{name}_{Vp_label}.png"))
+                    save_path=output_dir / f"porosity_profile_{name}_{Vp_label}.png")
                 viz.plot_mesh_3d(
                     art.mesh,
-                    save_path=os.path.join(
-                        output_dir, f"porosity_mesh_3d_{name}_{Vp_label}.png"))
+                    save_path=output_dir / f"porosity_mesh_3d_{name}_{Vp_label}.png")
                 viz.plot_mesh_detail(
                     art.mesh,
-                    save_path=os.path.join(
-                        output_dir, f"porosity_mesh_detail_{name}_{Vp_label}.png"))
+                    save_path=output_dir / f"porosity_mesh_detail_{name}_{Vp_label}.png")
                 viz.plot_damage_contour(
                     art.mesh,
                     art.empirical_solver,
-                    save_path=os.path.join(
-                        output_dir, f"porosity_damage_{name}_{Vp_label}.png"))
+                    save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
             viz.plot_model_comparison(
                 results,
-                save_path=os.path.join(
-                    output_dir, f"porosity_comparison_{Vp_label}.png"))
+                save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
 
-        out_path = os.path.join(
-            output_dir, f"porosity_analysis_results_{Vp_label}.json")
+        out_path = output_dir / f"porosity_analysis_results_{Vp_label}.json"
         save_fn(results, out_path, artifacts=artifacts)
 
     if args.plots and all_results:
         viz.plot_knockdown_curves(
             all_results,
-            save_path=os.path.join(output_dir, "porosity_knockdown_curves.png"))
+            save_path=output_dir / "porosity_knockdown_curves.png")
 
     _bar = "=" * 70
     logger.info("\n%s", _bar)
@@ -371,5 +367,5 @@ def main(argv: Optional[List[str]] = None) -> int:
     logger.info("Porosity levels analyzed: %s",
                 [f"{v*100:.2f}%" for v in args.vp])
     logger.info("Configurations: %s", list(porosity_configs.keys()))
-    logger.info("Output directory: %s", os.path.abspath(output_dir))
+    logger.info("Output directory: %s", output_dir.resolve())
     return 0

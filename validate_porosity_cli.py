@@ -11,11 +11,14 @@ Usage:
     validate_porosity --quiet            # suppress per-dataset output
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 def _resolve_version() -> str:
@@ -45,31 +48,32 @@ def _resolve_bundled_datasets_dir() -> str:
     if getattr(sys, 'frozen', False):
         # Running inside a PyInstaller bundle
         base = sys._MEIPASS
-        return os.path.join(base, 'validation', 'datasets')
+        return str(Path(base) / 'validation' / 'datasets')
     # Running from source
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, 'validation', 'datasets')
+    here = Path(__file__).resolve().parent
+    return str(here / 'validation' / 'datasets')
 
 
 def _resolve_bundled_schema_dir() -> str:
     """Return path to the bundled schemas directory."""
     if getattr(sys, 'frozen', False):
         base = sys._MEIPASS
-        return os.path.join(base, 'validation', 'schemas')
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, 'validation', 'schemas')
+        return str(Path(base) / 'validation' / 'schemas')
+    here = Path(__file__).resolve().parent
+    return str(here / 'validation' / 'schemas')
 
 
-def _configure_debug_logging(output_dir: str) -> str:
+def _configure_debug_logging(output_dir: str | os.PathLike) -> str:
     """Attach a DEBUG file handler so a failed run leaves a diagnosable log.
 
     Returns the path of the log file. The validation pipeline already calls
     ``logger.exception(...)`` on swallowed errors (#19); without a handler at
     DEBUG those tracebacks go nowhere.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    log_path = os.path.join(output_dir, f'validate_porosity_{stamp}.log')
+    log_path = output_dir / f'validate_porosity_{stamp}.log'
     handler = logging.FileHandler(log_path, encoding='utf-8')
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(logging.Formatter(
@@ -82,7 +86,7 @@ def _configure_debug_logging(output_dir: str) -> str:
     # validation-pipeline tracebacks this log exists to capture (#19).
     for noisy in ('matplotlib', 'PIL', 'fontTools'):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    return log_path
+    return str(log_path)
 
 
 def _ensure_validation_imports():
@@ -97,7 +101,7 @@ def _ensure_validation_imports():
         # Append, not insert(0, ...): a file dropped next to this script
         # must not be able to shadow a stdlib / site-packages module of the
         # same name on import (#29).
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = str(Path(__file__).resolve().parent)
         if here not in sys.path:
             sys.path.append(here)
 
@@ -157,7 +161,7 @@ def main(argv=None) -> int:
 
     # Resolve dataset directory
     datasets_dir = args.datasets or _resolve_bundled_datasets_dir()
-    if not os.path.isdir(datasets_dir):
+    if not Path(datasets_dir).is_dir():
         print(f"ERROR: Datasets directory not found: {datasets_dir}",
               file=sys.stderr)
         return 2
@@ -175,7 +179,7 @@ def main(argv=None) -> int:
         print(f"Loaded {len(results)} datasets. Generating report...")
 
     # Ensure output dir exists
-    os.makedirs(args.output_dir, exist_ok=True)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Generate report
     plot_path, md_path = generate_master_report(results,
