@@ -27,10 +27,8 @@ matplotlib.use("Agg")
 
 from porosity_fe import (  # noqa: E402
     MATERIALS,
-    CompositeMesh,
-    EmpiricalSolver,
     FEVisualizer,
-    PorosityField,
+    build_empirical_pipeline,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -39,12 +37,13 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 def main() -> None:
     material = MATERIALS["T800_epoxy"]
-    pf = PorosityField(material, void_volume_fraction=0.03,
-                       distribution="clustered",
-                       void_shape="spherical",
-                       cluster_location="midplane")
-    mesh = CompositeMesh(pf, material, nx=30, ny=10, nz=24)
-    solver = EmpiricalSolver(mesh, material)
+    pf, mesh, solver = build_empirical_pipeline(
+        material, 0.03,
+        mesh_res=(30, 10, 24),
+        porosity_config=dict(distribution="clustered",
+                             void_shape="spherical",
+                             cluster_location="midplane"),
+    )
     result = solver.get_failure_load(mode="ilss", model="judd_wright")
 
     z, Vp_z = pf.effective_porosity_profile(nz=100)

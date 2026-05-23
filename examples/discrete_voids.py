@@ -25,11 +25,9 @@ matplotlib.use("Agg")
 
 from porosity_fe import (  # noqa: E402
     MATERIALS,
-    CompositeMesh,
-    EmpiricalSolver,
     FEVisualizer,
-    PorosityField,
     VoidGeometry,
+    build_empirical_pipeline,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -46,11 +44,12 @@ def main() -> None:
         VoidGeometry(center=(35.0,  6.0, 2.20),
                      radii=(2.5, 2.0, 0.6)),
     ]
-    pf = PorosityField(material, void_volume_fraction=0.005,
-                       distribution="uniform", void_shape="spherical",
-                       discrete_voids=voids)
-    mesh = CompositeMesh(pf, material, nx=40, ny=15, nz=12)
-    solver = EmpiricalSolver(mesh, material)
+    pf, mesh, solver = build_empirical_pipeline(
+        material, 0.005,
+        mesh_res=(40, 15, 12),
+        porosity_config=dict(distribution="uniform", void_shape="spherical",
+                             discrete_voids=voids),
+    )
     result = solver.get_failure_load(mode="compression", model="judd_wright")
 
     print("Material:        T800_epoxy")

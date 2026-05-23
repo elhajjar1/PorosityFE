@@ -7,10 +7,9 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .empirical import EmpiricalSolver
+from .empirical import EmpiricalSolver  # noqa: F401 (forward-ref in _build_solver annotation)
 from .materials import MATERIALS, MaterialProperties
-from .mesh import CompositeMesh
-from .porosity_field import PorosityField
+from .pipeline import build_empirical_pipeline
 
 # ============================================================
 # SECTION 6b: UNCERTAINTY PROPAGATION (MONTE CARLO / LHS)
@@ -225,10 +224,14 @@ def propagate_uncertainty(void_volume_fraction: float,
         # builds one mesh per draw, so silence it (additive: we do not touch
         # CompositeMesh itself).
         with contextlib.redirect_stdout(io.StringIO()):
-            pf = PorosityField(material_obj, vp_value, **config)
-            msh = CompositeMesh(pf, material_obj, nx=4, ny=3, nz=3,
-                                ply_angles=ply_angles)
-            return EmpiricalSolver(msh, material_obj, ply_angles=ply_angles)
+            _pf, _mesh, emp = build_empirical_pipeline(
+                material_obj,
+                vp_value,
+                ply_angles=ply_angles,
+                mesh_res=(4, 3, 3),
+                porosity_config=config,
+            )
+            return emp
 
     # Deterministic nominal (no perturbation): the mean must land near this.
     nominal = _build_solver(mat, float(void_volume_fraction)).get_failure_load(

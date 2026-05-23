@@ -47,9 +47,9 @@ import numpy as np  # noqa: E402
 from porosity_fe import (  # noqa: E402
     MATERIALS,
     CompositeMesh,
-    EmpiricalSolver,
     FESolver,
     PorosityField,
+    build_empirical_pipeline,
 )
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -88,8 +88,11 @@ def _empirical_table(material):
     """Empirical KD for every (distribution, mode, model) at VP_MEAN."""
     rows = []
     for label, kwargs in DISTRIBUTIONS:
-        pf, mesh = _build(material, kwargs)
-        solver = EmpiricalSolver(mesh, material)
+        _pf, _mesh, solver = build_empirical_pipeline(
+            material, VP_MEAN,
+            mesh_res=(12, 4, 12),
+            porosity_config=kwargs,
+        )
         kds = solver.get_all_failure_loads()
         for mode in MODES:
             for model in MODELS:
