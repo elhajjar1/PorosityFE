@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .mesh import CompositeMesh
     from .porosity_field import PorosityField
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FailureResult:
     """Unified failure-load summary returned by empirical and FE solvers.
 
@@ -129,7 +129,7 @@ class ConfigArtifacts:
     field_results: Optional['FieldResults'] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ConfigResult:
     """Lightweight (numbers-only) per-configuration result from
     :func:`compare_configurations`.
