@@ -9,8 +9,10 @@ __pycache__/
 # Unpublished manuscript
 JOSS/
 
-# Claude Code project files
-CLAUDE.md
+# Claude Code project files. CLAUDE.md and the tracked bits of .claude/
+# (skills, hooks, settings.json) are shared with collaborators and fresh
+# web-session containers; session metadata under .claude/ is excluded
+# at the bottom of this file.
 docs/superpowers/
 
 # Validation data (digitized from published figures)
@@ -48,5 +50,9 @@ validation_master_report.png
 docs/_build/
 docs/api/
 
-# Claude worktrees and session metadata
-.claude/
+# Claude worktrees and session metadata. Skills, hooks, and project
+# settings.json are shared; everything else under .claude/ stays local.
+.claude/*
+!.claude/skills/
+!.claude/hooks/
+!.claude/settings.json
