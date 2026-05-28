@@ -169,6 +169,57 @@ class TestPropagateUncertainty:
                                   n_samples=self._N)
 
 
+class TestUQInputValidationBranches:
+    """Remaining input-validation guards in _normalize_uq_spec /
+    propagate_uncertainty / _draw_unit_samples that lacked direct tests."""
+
+    _N = 8
+
+    def test_negative_cov_rejected(self):
+        with pytest.raises(ValueError, match=r"CoV"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  covs={'E11': -0.1}, n_samples=self._N)
+
+    def test_spec_unknown_distribution_rejected(self):
+        with pytest.raises(ValueError, match=r"unknown distribution"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  spec={'E11': ('weird', 0.1)},
+                                  n_samples=self._N)
+
+    def test_spec_negative_params_rejected(self):
+        with pytest.raises(ValueError, match=r"params must be"):
+            propagate_uncertainty(0.02, 'T800_epoxy',
+                                  spec={'E11': ('normal', -0.1)},
+                                  n_samples=self._N)
+
+    def test_spec_zero_params_drops_field(self):
+        """A zero-params spec entry is dropped (deterministic), not an
+        error — exercises the ``resolved.pop`` else-branch."""
+        r = propagate_uncertainty(0.02, 'T800_epoxy',
+                                  spec={'E11': ('normal', 0.0)},
+                                  n_samples=self._N, seed=0)
+        assert 'E11' not in r['spec']
+
+    def test_negative_vp_cov_rejected(self):
+        with pytest.raises(ValueError, match=r"vp_cov"):
+            propagate_uncertainty(0.02, 'T800_epoxy', covs={'E11': 0.05},
+                                  vp_cov=-0.2, n_samples=self._N)
+
+    def test_accepts_material_instance(self):
+        """A ``MaterialProperties`` instance (not a preset name) is accepted
+        directly (covers the non-string material branch)."""
+        from porosity_fe_analysis import MATERIALS
+        r = propagate_uncertainty(0.02, MATERIALS['T800_epoxy'],
+                                  covs={'E11': 0.05}, n_samples=self._N, seed=0)
+        assert r['samples']['knockdown'].shape == (self._N,)
+
+    def test_draw_unit_samples_unknown_method_rejected(self):
+        from porosity_fe.uq import _draw_unit_samples
+        rng = np.random.default_rng(0)
+        with pytest.raises(ValueError, match=r"Unknown sampling method"):
+            _draw_unit_samples(2, 4, 'bogus', rng)
+
+
 # Issue #65: closed-form local sensitivities + per-point validation bands.
 
 

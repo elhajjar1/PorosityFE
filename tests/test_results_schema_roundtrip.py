@@ -330,3 +330,21 @@ def test_save_results_legacy_dict_shape_still_works(tmp_path):
         ["knockdown"]
         == cr.empirical["compression"]["judd_wright"]["knockdown"]
     )
+
+
+def test_config_result_dict_shim_unknown_key_get_and_keys():
+    """ConfigResult's dict back-compat shim: an unknown (non-artifact) key
+    raises KeyError, ``get`` swallows that into its default, and ``keys``
+    enumerates the documented fields (results.py)."""
+    r = next(iter(_tiny_results().values()))
+
+    with pytest.raises(KeyError, match="not a known ConfigResult field"):
+        r["no_such_field"]
+
+    assert r.get("no_such_field", "fallback") == "fallback"
+    assert r.get("Vp") == r["Vp"]
+
+    assert set(r.keys()) == {
+        "Vp", "config_name", "config", "failure_stress",
+        "knockdown", "model", "empirical", "seed",
+    }
