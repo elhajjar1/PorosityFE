@@ -19,6 +19,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pytest
 
+# app.py imports streamlit at module scope; the CI `test` matrix installs
+# only the core deps (streamlit lives in the `web` extra), so skip the whole
+# module when it is unavailable rather than erroring at collection.
+pytest.importorskip("streamlit")
+
 import app
 
 
@@ -114,6 +119,15 @@ class TestPlots:
 
     def test_plot_results_with_fe(self, comp_result):
         fig = app.plot_results(comp_result, "0/90/90/0")
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_results_fiber_dominated_footnote(self, comp_result):
+        """A low matrix-dominated fraction (f_md < 0.49) adds the
+        layup-scaling footnote to the knockdown chart."""
+        skewed = dict(comp_result)
+        skewed["f_md"] = 0.3
+        fig = app.plot_results(skewed, "0/0/0/0")
         assert fig is not None
         plt.close(fig)
 
