@@ -747,3 +747,30 @@ class TestLocalSensitivities:
         with pytest.raises(ValueError, match=r"param must be"):
             self.solver.sensitivity_fd(mode='compression',
                                        model='judd_wright', param='nope')
+
+    def test_power_law_sensitivity_degenerate_at_full_porosity(self):
+        """At Vp=1 the power-law knockdown collapses to 0 and both partials
+        are pinned to 0 (the ``1 - Vp <= 0`` guard branch)."""
+        s = self.solver.local_sensitivities(mode='compression',
+                                            model='power_law', Vp=1.0)
+        assert s['KD'] == 0.0
+        assert s['dKD_dVp'] == 0.0
+        assert s['dKD_dcoef'] == 0.0
+
+    def test_linear_sensitivity_in_clipped_regime(self):
+        """Once the linear law has clipped to 0 (raw <= 0) its gradients are
+        zero. ILSS beta (~9) clips well before Vp=1, so Vp=0.2 is past the
+        knee."""
+        s = self.solver.local_sensitivities(mode='ilss', model='linear',
+                                            Vp=0.2)
+        assert s['KD'] == 0.0
+        assert s['dKD_dVp'] == 0.0
+        assert s['dKD_dcoef'] == 0.0
+
+    def test_sensitivity_fd_unknown_mode(self):
+        with pytest.raises(ValueError, match=r"Unknown loading mode"):
+            self.solver.sensitivity_fd(mode='flexure', model='judd_wright')
+
+    def test_sensitivity_fd_unknown_model(self):
+        with pytest.raises(ValueError, match=r"Unknown knockdown model"):
+            self.solver.sensitivity_fd(mode='compression', model='bogus')

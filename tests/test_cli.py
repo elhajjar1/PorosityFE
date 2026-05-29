@@ -8,6 +8,8 @@ Split out of the monolithic tests/test_porosity_fe.py for issue #124.
 import numpy as np
 import pytest
 import os
+import logging
+from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')
@@ -32,6 +34,151 @@ class TestValidateCLISmoke:
         with pytest.raises(SystemExit) as exc:
             main(['--help'])
         assert exc.value.code == 0
+
+
+# A schema-valid dataset whose (fiber, matrix) maps to the
+# AS4_3501_6_epoxy preset, so the whole validate pipeline (load ->
+# predict -> MAE -> report) runs end to end against a single tiny file.
+_MIN_VALID_DATASET = {
+    "reference": "Synthetic (2026). Minimal dataset for validate-CLI coverage.",
+    "material": {
+        "fiber": "AS4 fabric",
+        "matrix": "3501-6 epoxy",
+        "fiber_volume_fraction": 0.55,
+        "n_plies": 16,
+        "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "layup_name": "woven (0)16",
+    },
+    "baseline_porosity_pct": 0.3,
+    "properties": {
+        "ilss": {
+            "test_standard": "ASTM D2344",
+            "void_content_pct": [0.3, 1.0, 2.0, 3.0],
+            "normalized_values": [1.000, 0.930, 0.850, 0.770],
+            "digitization_method": "tabulated",
+        }
+    },
+}
+
+
+def _write_min_datasets(dest: Path, *, include_invalid: bool = False) -> Path:
+    """Write a minimal datasets directory for the validate CLI."""
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "synthetic_valid.json").write_text(
+        json.dumps(_MIN_VALID_DATASET), encoding="utf-8")
+    if include_invalid:
+        # Fails schema validation (reference too short, no material/
+        # properties) so the pipeline records a dataset-level error the CLI
+        # must count and survive rather than crash on.
+        (dest / "synthetic_invalid.json").write_text(
+            json.dumps({"reference": "x"}), encoding="utf-8")
+    return dest
+
+
+class TestValidatePorosityCLIRun:
+    """End-to-end exercise of ``validate_porosity_cli.main``.
+
+    Previously only ``main(['--help'])`` was covered; the real run path
+    (dataset load -> report generation -> summary) had no test, leaving the
+    shipped standalone executable at ~24% coverage.
+    """
+
+    def test_run_writes_reports(self, tmp_path):
+        from validate_porosity_cli import main
+        ds = _write_min_datasets(tmp_path / "ds")
+        out = tmp_path / "out"
+        rc = main(['--datasets', str(ds), '--output-dir', str(out), '--quiet'])
+        assert rc == 0
+        assert (out / "validation_master_report.png").exists()
+        assert (out / "validation_detail_report.md").exists()
+
+    def test_run_non_quiet_prints_summary(self, tmp_path, capsys):
+        from validate_porosity_cli import main
+        ds = _write_min_datasets(tmp_path / "ds")
+        out = tmp_path / "out"
+        rc = main(['--datasets', str(ds), '--output-dir', str(out)])
+        assert rc == 0
+        printed = capsys.readouterr().out
+        assert "Report:" in printed
+        assert "Datasets processed:" in printed
+        assert "Overall MAE" in printed
+
+    def test_missing_datasets_dir_returns_2(self, tmp_path, capsys):
+        from validate_porosity_cli import main
+        missing = tmp_path / "does_not_exist"
+        rc = main(['--datasets', str(missing),
+                   '--output-dir', str(tmp_path / "out")])
+        assert rc == 2
+        assert "not found" in capsys.readouterr().err.lower()
+
+    def test_failed_dataset_is_counted_not_fatal(self, tmp_path, capsys):
+        from validate_porosity_cli import main
+        ds = _write_min_datasets(tmp_path / "ds", include_invalid=True)
+        out = tmp_path / "out"
+        rc = main(['--datasets', str(ds), '--output-dir', str(out)])
+        # A single bad dataset must not sink the whole run.
+        assert rc == 0
+        assert "1 succeeded, 1 failed" in capsys.readouterr().out
+
+    def test_debug_writes_log(self, tmp_path):
+        from validate_porosity_cli import main
+        ds = _write_min_datasets(tmp_path / "ds")
+        out = tmp_path / "out"
+        # --debug attaches a DEBUG file handler to the root logger; snapshot
+        # and restore it so the handler/level can't leak into later tests.
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        saved_level = root.level
+        try:
+            rc = main(['--datasets', str(ds), '--output-dir', str(out),
+                       '--quiet', '--debug'])
+            assert rc == 0
+            logs = list(out.glob("validate_porosity_*.log"))
+            assert len(logs) == 1
+            assert logs[0].stat().st_size > 0
+        finally:
+            for h in root.handlers[:]:
+                if h not in saved_handlers:
+                    root.removeHandler(h)
+                    h.close()
+            root.setLevel(saved_level)
+
+
+class TestValidatePorosityCLIHelpers:
+    """Unit coverage for the version / bundled-path resolution helpers."""
+
+    def test_resolve_version_returns_nonempty_string(self):
+        from validate_porosity_cli import _resolve_version
+        v = _resolve_version()
+        assert isinstance(v, str) and v
+
+    def test_resolve_bundled_dirs_source(self):
+        from validate_porosity_cli import (_resolve_bundled_datasets_dir,
+                                            _resolve_bundled_schema_dir)
+        assert _resolve_bundled_datasets_dir().endswith(
+            os.path.join('validation', 'datasets'))
+        assert _resolve_bundled_schema_dir().endswith(
+            os.path.join('validation', 'schemas'))
+
+    def test_resolve_bundled_dirs_frozen(self, tmp_path, monkeypatch):
+        import validate_porosity_cli as vc
+        monkeypatch.setattr(vc.sys, 'frozen', True, raising=False)
+        monkeypatch.setattr(vc.sys, '_MEIPASS', str(tmp_path), raising=False)
+        assert vc._resolve_bundled_datasets_dir() == os.path.join(
+            str(tmp_path), 'validation', 'datasets')
+        assert vc._resolve_bundled_schema_dir() == os.path.join(
+            str(tmp_path), 'validation', 'schemas')
+
+    def test_ensure_validation_imports_frozen_prepends_meipass(
+            self, tmp_path, monkeypatch):
+        import sys as _sys
+        import validate_porosity_cli as vc
+        # Mutate a throwaway copy of sys.path so monkeypatch restores it.
+        monkeypatch.setattr(_sys, 'path', list(_sys.path))
+        monkeypatch.setattr(vc.sys, 'frozen', True, raising=False)
+        monkeypatch.setattr(vc.sys, '_MEIPASS', str(tmp_path), raising=False)
+        vc._ensure_validation_imports()
+        assert _sys.path[0] == str(tmp_path)
 
 
 def _extract_knockdowns(results: dict) -> dict:
@@ -462,3 +609,60 @@ class TestCLIMain:
         # Error message should mention the underlying failure so the user
         # knows what went wrong.
         assert 'denied' in err.lower() or 'permission' in err.lower()
+
+    # --plots rendering path + solver-failure exit codes -----------------
+
+    def test_plots_flag_writes_all_figures(self, tmp_path, monkeypatch):
+        """``--plots`` must render the per-config figures, the per-Vp model
+        comparison, and the cross-Vp knockdown curves. Covers the cli.py
+        --plots branch and, transitively, viz.plot_model_comparison /
+        plot_knockdown_curves (both previously uncovered)."""
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            _TINY_CONFIGS)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02',
+            '--output-dir', str(tmp_path),
+            '--plots',
+            '--quiet',
+        ])
+        assert rc == 0
+        for fname in (
+            'porosity_profile_uniform_spherical_2pct.png',
+            'porosity_mesh_3d_uniform_spherical_2pct.png',
+            'porosity_mesh_detail_uniform_spherical_2pct.png',
+            'porosity_damage_uniform_spherical_2pct.png',
+            'porosity_comparison_2pct.png',
+            'porosity_knockdown_curves.png',
+        ):
+            assert (tmp_path / fname).exists(), f"missing {fname}"
+
+    def test_compare_value_error_returns_2(self, tmp_path, monkeypatch, capsys):
+        """A ``ValueError`` from the sweep is surfaced as a bad-input exit
+        (return code 2)."""
+        def _bad_input(*args, **kwargs):
+            raise ValueError("bad Vp")
+
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            _TINY_CONFIGS)
+        monkeypatch.setattr(porosity_fe_analysis,
+                            'compare_configurations', _bad_input)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet'])
+        assert rc == 2
+        assert 'bad input' in capsys.readouterr().err.lower()
+
+    def test_compare_solver_failure_returns_3(self, tmp_path, monkeypatch,
+                                              capsys):
+        """Any other exception from the sweep is surfaced as a solver
+        failure (return code 3)."""
+        def _crash(*args, **kwargs):
+            raise RuntimeError("singular stiffness matrix")
+
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            _TINY_CONFIGS)
+        monkeypatch.setattr(porosity_fe_analysis,
+                            'compare_configurations', _crash)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet'])
+        assert rc == 3
+        assert 'solver failure' in capsys.readouterr().err.lower()

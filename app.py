@@ -716,6 +716,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         file_name=f"{export_stem}.json",
         mime="application/json",
         use_container_width=True,
+        key="dl_export_json",
     )
     st.download_button(
         "Download CSV",
@@ -723,6 +724,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         file_name=f"{export_stem}.csv",
         mime="text/csv",
         use_container_width=True,
+        key="dl_export_csv",
     )
     with st.expander("Preview JSON"):
         st.code(_serialise_payload_json(payload), language="json")
@@ -800,6 +802,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             file_name=f"{stem}.pdf",
             mime="application/pdf",
             use_container_width=True,
+            key="dl_ncr_pdf",
         )
     with dl2:
         st.download_button(
@@ -808,6 +811,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             file_name=f"{stem}.md",
             mime="text/markdown",
             use_container_width=True,
+            key="dl_ncr_md",
         )
     with dl3:
         st.download_button(
@@ -816,6 +820,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             file_name=f"{stem}.json",
             mime="application/json",
             use_container_width=True,
+            key="dl_ncr_json",
         )
     with st.expander("Preview summary"):
         st.markdown(ncr_md)

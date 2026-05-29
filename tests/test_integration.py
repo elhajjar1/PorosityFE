@@ -65,6 +65,69 @@ class TestFEVisualizer:
         assert fig is not None
         plt.close(fig)
 
+    def _two_vp_results(self):
+        """A ``{Vp_label: {config: ConfigResult}}`` map for the curve plot."""
+        cfgs = {'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']}
+        return {
+            '2pct': compare_configurations(0.02, configs=cfgs),
+            '3pct': compare_configurations(0.03, configs=cfgs),
+        }
+
+    def test_plot_knockdown_curves_returns_fig(self):
+        fig = FEVisualizer.plot_knockdown_curves(self._two_vp_results())
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_knockdown_curves_saves(self, tmp_path):
+        path = str(tmp_path / "knockdown.png")
+        FEVisualizer.plot_knockdown_curves(self._two_vp_results(),
+                                           save_path=path)
+        assert os.path.exists(path)
+        plt.close('all')
+
+    def test_plot_model_comparison_returns_fig(self):
+        results = compare_configurations(
+            0.03,
+            configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
+        fig = FEVisualizer.plot_model_comparison(results)
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_model_comparison_saves(self, tmp_path):
+        results = compare_configurations(
+            0.03,
+            configs={'uniform_spherical': POROSITY_CONFIGS['uniform_spherical']})
+        path = str(tmp_path / "comparison.png")
+        FEVisualizer.plot_model_comparison(results, save_path=path)
+        assert os.path.exists(path)
+        plt.close('all')
+
+    def test_plot_damage_contour_falls_back_to_mesh_reduction(self):
+        """Before ``apply_loading`` populates ``nodal_knockdown`` the
+        midplane map must fall back to ``mesh.stiffness_reduction`` (the
+        else-branch in plot_damage_contour)."""
+        solver = EmpiricalSolver(self.mesh, self.material)
+        assert solver.nodal_knockdown is None
+        fig = FEVisualizer.plot_damage_contour(self.mesh, solver)
+        assert fig is not None
+        plt.close(fig)
+
+    def test_plot_mesh_3d_highlights_voids_and_saves(self, tmp_path):
+        """A field carrying discrete voids yields void elements that the 3D
+        plot highlights in red; also exercises the save_path branch."""
+        lo = self.mesh.nodes.min(axis=0)
+        hi = self.mesh.nodes.max(axis=0)
+        void = VoidGeometry(center=tuple((lo + hi) / 2),
+                            radii=tuple((hi - lo) / 4))
+        pf = PorosityField(self.material, 0.03, distribution='uniform',
+                           discrete_voids=[void])
+        mesh = CompositeMesh(pf, self.material, nx=10, ny=5, nz=6)
+        assert len(mesh.void_elements) > 0
+        path = str(tmp_path / "mesh3d.png")
+        FEVisualizer.plot_mesh_3d(mesh, save_path=path)
+        assert os.path.exists(path)
+        plt.close('all')
+
 
 class TestAnalysisPipeline:
     def test_compare_configurations_returns_all_configs(self):
@@ -254,6 +317,60 @@ class TestCoordinateTransforms:
     def test_rotate_stiffness_wrong_shape(self):
         with pytest.raises(ValueError):
             rotate_stiffness_3d(np.eye(3), 0.0)
+
+    # y-axis transforms (wrinkle/waviness misalignment) were untested ----
+
+    @staticmethod
+    def _voigt_from_tensor(t, *, engineering=False):
+        """Pack a symmetric 3x3 tensor into Voigt order
+        [11, 22, 33, 23, 13, 12]. ``engineering`` doubles the shear terms
+        (engineering strain convention)."""
+        f = 2.0 if engineering else 1.0
+        return np.array([t[0, 0], t[1, 1], t[2, 2],
+                         f * t[1, 2], f * t[0, 2], f * t[0, 1]])
+
+    @pytest.mark.parametrize('axis', ['z', 'y'])
+    @pytest.mark.parametrize('angle', [np.pi / 6, np.pi / 3, -np.pi / 4])
+    def test_stress_transform_matches_tensor_rotation(self, axis, angle):
+        """``T_sigma @ voigt(sigma)`` must equal ``voigt(R sigma R^T)`` for
+        the matching 3x3 rotation R. This pins the hand-written y-axis 6x6
+        against the rotation it is supposed to encode (a transcription error
+        there would otherwise go unnoticed)."""
+        rng = np.random.default_rng(0)
+        a = rng.standard_normal((3, 3))
+        sigma = a + a.T
+        R = rotation_matrix_3d(angle, axis=axis)
+        expected = self._voigt_from_tensor(R @ sigma @ R.T)
+        got = stress_transformation_3d(angle, axis=axis) @ \
+            self._voigt_from_tensor(sigma)
+        np.testing.assert_allclose(got, expected, atol=1e-12)
+
+    @pytest.mark.parametrize('axis', ['z', 'y'])
+    @pytest.mark.parametrize('angle', [np.pi / 6, np.pi / 3, -np.pi / 4])
+    def test_strain_transform_matches_tensor_rotation(self, axis, angle):
+        rng = np.random.default_rng(1)
+        a = rng.standard_normal((3, 3))
+        eps = a + a.T
+        R = rotation_matrix_3d(angle, axis=axis)
+        expected = self._voigt_from_tensor(R @ eps @ R.T, engineering=True)
+        got = strain_transformation_3d(angle, axis=axis) @ \
+            self._voigt_from_tensor(eps, engineering=True)
+        np.testing.assert_allclose(got, expected, atol=1e-12)
+
+    def test_stress_transform_invalid_axis(self):
+        with pytest.raises(ValueError):
+            stress_transformation_3d(0.1, axis='x')
+
+    def test_strain_transform_invalid_axis(self):
+        with pytest.raises(ValueError):
+            strain_transformation_3d(0.1, axis='x')
+
+    def test_rotate_stiffness_y_axis_identity_and_symmetry(self):
+        C = MATERIALS['T800_epoxy'].get_stiffness_matrix()
+        np.testing.assert_allclose(rotate_stiffness_3d(C, 0.0, axis='y'),
+                                   C, atol=1e-6)
+        C_rot = rotate_stiffness_3d(C, np.pi / 5, axis='y')
+        np.testing.assert_allclose(C_rot, C_rot.T, atol=1e-6)
 
 
 class TestGaussQuadrature:

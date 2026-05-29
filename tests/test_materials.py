@@ -16,6 +16,35 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, PorosityField, 
                                    EmpiricalSolver)
 
 
+class TestMaterialPropertiesValidation:
+    """Hygrothermal-field guards in ``__post_init__`` and the additive
+    ('normal') perturbation branch — previously-untested error/edge paths."""
+
+    def test_non_finite_T_service_rejected(self):
+        with pytest.raises(ValueError, match=r"T_service"):
+            dataclasses.replace(MATERIALS['T800_epoxy'], T_service=float('nan'))
+
+    def test_non_finite_T_ref_rejected(self):
+        with pytest.raises(ValueError, match=r"T_ref"):
+            dataclasses.replace(MATERIALS['T800_epoxy'], T_ref=float('inf'))
+
+    def test_negative_M_service_rejected(self):
+        with pytest.raises(ValueError, match=r"M_service"):
+            dataclasses.replace(MATERIALS['T800_epoxy'], M_service=-1.0)
+
+    def test_negative_M_ref_rejected(self):
+        with pytest.raises(ValueError, match=r"M_ref"):
+            dataclasses.replace(MATERIALS['T800_epoxy'], M_ref=-0.5)
+
+    def test_perturbed_value_normal_distribution(self):
+        """Additive-Gaussian perturbation: value = nominal + cov*|nominal|*draw
+        when cov>0, and a short-circuit to nominal when cov<=0."""
+        mat = MATERIALS['T800_epoxy']
+        got = mat._perturbed_value('E11', 1.0, 'normal', 0.1)
+        assert got == pytest.approx(mat.E11 + 0.1 * abs(mat.E11) * 1.0)
+        assert mat._perturbed_value('E11', 1.0, 'normal', 0.0) == mat.E11
+
+
 class TestMaterialProperties:
     def test_dataclass_creation(self):
         mat = MATERIALS['T800_epoxy']
