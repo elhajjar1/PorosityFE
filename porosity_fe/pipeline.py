@@ -5,7 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
-from typing import Any, Union
+from typing import Any
 
 from .empirical import EmpiricalSolver
 from .materials import MATERIALS, MaterialProperties
@@ -19,7 +19,7 @@ logger = logging.getLogger("porosity_fe_analysis")
 # either a sentinel string (``'QI'`` / ``'UD'``) or an explicit list of ply
 # angles in degrees. ``tuple`` is included for callers that build the layup
 # from an immutable sequence.
-LayupSpec = Union[str, list[float], tuple[float, ...]]
+LayupSpec = str | list[float] | tuple[float, ...]
 
 # Default mesh resolution used by the production sweep (``_analyze_one``) so
 # every call site picks up the same defaults.

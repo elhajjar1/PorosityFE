@@ -262,7 +262,7 @@ class TestValidationBands:
         band = prop['predicted_band']
         pred = prop['predicted']
         assert len(band) == len(pred)
-        for (lo, hi), p in zip(band, pred):
+        for (lo, hi), p in zip(band, pred, strict=True):
             # The band must be ordered and must straddle the central point.
             assert lo <= p <= hi, (
                 f"Band [{lo}, {hi}] does not straddle central prediction {p}"

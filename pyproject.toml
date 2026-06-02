@@ -102,17 +102,6 @@ ignore = [
     # separately.
     "UP006",
     "UP035",
-    # UP007: rewriting `typing.Union[...]` -> `X | Y`. Same py310-gated
-    # pyupgrade family as UP006/UP035; the remaining `Union` alias is part
-    # of the separate typing-modernization slice and is kept out of scope
-    # for the match/case readability refactor (#108).
-    "UP007",
-    # B905: `zip()` without `strict=`. This rule only activates once the
-    # ruff target is py310+ (bumped here so `match`/`case` parses). The
-    # flagged call sites are pre-existing and span unrelated modules/tests;
-    # adding `strict=` is a separate behavior-touching slice, kept out of
-    # scope for the match/case readability refactor (#108).
-    "B905",
 ]
 
 [tool.ruff.lint.per-file-ignores]

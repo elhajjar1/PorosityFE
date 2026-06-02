@@ -75,7 +75,7 @@ class FEVisualizer:
                 corners = mesh.nodes[mesh.elements[eidx]]  # (8, 3)
                 for i1, i2 in hex_edges:
                     ax.plot3D(
-                        *zip(corners[i1], corners[i2]),
+                        *zip(corners[i1], corners[i2], strict=True),
                         color='red', linewidth=1.5, alpha=0.8, zorder=6,
                     )
 
