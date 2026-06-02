@@ -370,7 +370,7 @@ class TestDegradedCompositeStiffness:
             C = _degraded_composite_stiffness(Vp, (1, 1, 1), self.mat)
             S = np.linalg.inv(C)
             E22_seq.append(1.0 / S[1, 1])
-        for a, b in zip(E22_seq, E22_seq[1:]):
+        for a, b in zip(E22_seq, E22_seq[1:], strict=False):
             assert b < a, f"E22 should drop monotonically with Vp: got {E22_seq}"
 
     def test_monotonic_degradation(self):
@@ -388,9 +388,9 @@ class TestDegradedCompositeStiffness:
             S = np.linalg.inv(C)
             E22_seq.append(1.0 / S[1, 1])
             G12_seq.append(1.0 / S[5, 5])
-        for a, b in zip(E22_seq, E22_seq[1:]):
+        for a, b in zip(E22_seq, E22_seq[1:], strict=False):
             assert b < a, f"E22 should drop monotonically with Vp: got {E22_seq}"
-        for a, b in zip(G12_seq, G12_seq[1:]):
+        for a, b in zip(G12_seq, G12_seq[1:], strict=False):
             assert b < a, f"G12 should drop monotonically with Vp: got {G12_seq}"
 
     def test_returned_stiffness_positive_definite(self):

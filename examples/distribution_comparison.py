@@ -172,7 +172,7 @@ def _plot_profiles(material, save_path):
     """Plot the through-thickness Vp profile for each distribution."""
     fig, ax = plt.subplots(1, 1, figsize=(7, 6))
     colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
-    for (label, kwargs), c in zip(DISTRIBUTIONS, colors):
+    for (label, kwargs), c in zip(DISTRIBUTIONS, colors, strict=True):
         pf = PorosityField(material, VP_MEAN, **kwargs)
         z, Vp = pf.effective_porosity_profile(nz=400)
         ax.plot(Vp * 100.0, z, label=label, color=c, linewidth=2)

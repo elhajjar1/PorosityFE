@@ -195,47 +195,49 @@ class PorosityField:
     def _compute_normalization(self, distribution: str, cluster_location: str) -> float:
         """Compute normalization factor over the full domain so average equals Vp."""
         z_ref = np.linspace(0, self.Lz, 1000)
-        if distribution == 'clustered':
-            z0 = self.Lz * self._CLUSTER_OFFSETS[cluster_location]
-            sigma = self.Lz / 6
-            profile_ref = np.exp(-0.5 * ((z_ref - z0) / sigma)**2)
-        elif distribution == 'interface':
-            t = self.material.t_ply
-            n = self.material.n_plies
-            profile_ref = np.zeros_like(z_ref)
-            for k in range(1, n):
-                z_int = k * t
-                profile_ref += np.exp(-0.5 * ((z_ref - z_int) / (t * 0.35))**2)
-        else:
-            return 1.0
+        match distribution:
+            case 'clustered':
+                z0 = self.Lz * self._CLUSTER_OFFSETS[cluster_location]
+                sigma = self.Lz / 6
+                profile_ref = np.exp(-0.5 * ((z_ref - z0) / sigma)**2)
+            case 'interface':
+                t = self.material.t_ply
+                n = self.material.n_plies
+                profile_ref = np.zeros_like(z_ref)
+                for k in range(1, n):
+                    z_int = k * t
+                    profile_ref += np.exp(-0.5 * ((z_ref - z_int) / (t * 0.35))**2)
+            case _:
+                return 1.0
         mean_val = np.mean(profile_ref)
         return mean_val if mean_val > 0 else 1.0
 
     def _distributed_porosity(self, z: np.ndarray) -> np.ndarray:
         """Through-thickness distributed porosity profile."""
         z = np.asarray(z, dtype=float)
-        if self.distribution == 'uniform':
-            return np.full_like(z, self.Vp)
-        elif self.distribution == 'clustered':
-            z0 = self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
-            sigma = self.Lz / 6
-            profile = np.exp(-0.5 * ((z - z0) / sigma)**2)
-            norm = self._compute_normalization('clustered', self.cluster_location)
-            return self.Vp * profile / norm
-        elif self.distribution == 'interface':
-            t = self.material.t_ply
-            n = self.material.n_plies
-            profile = np.zeros_like(z)
-            for k in range(1, n):
-                z_int = k * t
-                profile += np.exp(-0.5 * ((z - z_int) / (t * 0.35))**2)
-            norm = self._compute_normalization('interface', self.cluster_location)
-            return self.Vp * profile / norm
-        else:
-            raise ValueError(
-                f"Unknown distribution {self.distribution!r}. "
-                f"Use one of {list(self._DISTRIBUTIONS)}."
-            )
+        match self.distribution:
+            case 'uniform':
+                return np.full_like(z, self.Vp)
+            case 'clustered':
+                z0 = self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
+                sigma = self.Lz / 6
+                profile = np.exp(-0.5 * ((z - z0) / sigma)**2)
+                norm = self._compute_normalization('clustered', self.cluster_location)
+                return self.Vp * profile / norm
+            case 'interface':
+                t = self.material.t_ply
+                n = self.material.n_plies
+                profile = np.zeros_like(z)
+                for k in range(1, n):
+                    z_int = k * t
+                    profile += np.exp(-0.5 * ((z - z_int) / (t * 0.35))**2)
+                norm = self._compute_normalization('interface', self.cluster_location)
+                return self.Vp * profile / norm
+            case _:
+                raise ValueError(
+                    f"Unknown distribution {self.distribution!r}. "
+                    f"Use one of {list(self._DISTRIBUTIONS)}."
+                )
 
     def local_porosity(self, x, y, z) -> np.ndarray:
         x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)

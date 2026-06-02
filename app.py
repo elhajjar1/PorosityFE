@@ -301,7 +301,7 @@ def plot_results(result: dict, layup_str: str):
     width = 0.8 / n_models
 
     for i, (model_key, label, color, hatch) in enumerate(
-        zip(models, model_labels, colors, hatches)
+        zip(models, model_labels, colors, hatches, strict=True)
     ):
         vals = []
         for mode in modes:
@@ -310,7 +310,7 @@ def plot_results(result: dict, layup_str: str):
             else:
                 vals.append(emp[mode][model_key]["knockdown"])
         bar_x = x + i * width - (n_models - 1) * width / 2
-        for bx, bv in zip(bar_x, vals):
+        for bx, bv in zip(bar_x, vals, strict=True):
             if not np.isnan(bv):
                 ax.bar(bx, bv, width, color=color, hatch=hatch,
                        edgecolor="white" if hatch is None else "0.3",

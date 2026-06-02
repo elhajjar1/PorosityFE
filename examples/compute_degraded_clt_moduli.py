@@ -50,7 +50,7 @@ def main() -> None:
 
     print("Layup: [0/45/-45/90]_s   (8 plies, T800_epoxy)")
     print(f"{'Vp(%)':>7s} {'Ex/Ex0':>9s} {'Ey/Ey0':>9s} {'Gxy/Gxy0':>11s}")
-    for v, ex, ey, g in zip(Vps, Ex / Ex[0], Ey / Ey[0], Gxy / Gxy[0]):
+    for v, ex, ey, g in zip(Vps, Ex / Ex[0], Ey / Ey[0], Gxy / Gxy[0], strict=True):
         print(f"{v*100:7.2f} {ex:9.4f} {ey:9.4f} {g:11.4f}")
 
     fig, ax = plt.subplots(figsize=(7, 5))
