@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from typing import Any, Callable
 
 import numpy as np
@@ -16,6 +17,15 @@ from .mesh import CompositeMesh
 from .results import FailureResult
 
 logger = logging.getLogger("porosity_fe_analysis")
+
+#: Upper porosity bound (as a fraction) over which the empirical knockdown
+#: coefficients were calibrated (Elhajjar 2025, ``Vp ≲ 0.05``). Evaluating a
+#: built-in knockdown model at a larger specimen-average ``Vp`` extrapolates
+#: beyond the validated range, so :meth:`EmpiricalSolver.apply_loading` emits a
+#: single :class:`UserWarning` flagging the extrapolation (CLAUDE.md: "flag
+#: extrapolations explicitly"). User-supplied callables own their own
+#: calibration contract and are exempt from the warning.
+_VP_CALIBRATION_MAX = 0.05
 
 
 class Calibration:
@@ -337,6 +347,28 @@ class EmpiricalSolver:
         raw = self.f_md / ref
         return max(raw, floor)
 
+    def _warn_if_extrapolated(self, model: object) -> None:
+        """Emit a single ``UserWarning`` when ``Vp`` exceeds the calibration bound.
+
+        The built-in empirical coefficients are calibrated to
+        ``Vp ≲ _VP_CALIBRATION_MAX`` (Elhajjar 2025); evaluating them at a
+        larger specimen-average porosity extrapolates beyond the validated
+        range. We warn once per :meth:`apply_loading` call (never per node),
+        naming the offending ``Vp``. User-supplied callables own their own
+        calibration contract (#62), so a non-string ``model`` is exempt.
+        """
+        if not isinstance(model, str):
+            return
+        vp_max = float(self.mesh.porosity_field.Vp)
+        if vp_max > _VP_CALIBRATION_MAX:
+            warnings.warn(
+                f"Empirical knockdown evaluated beyond calibration bound "
+                f"(Vp <= {_VP_CALIBRATION_MAX}): max Vp = {vp_max:.4g}. "
+                f"Results are extrapolated and may be inaccurate.",
+                UserWarning,
+                stacklevel=3,
+            )
+
     @staticmethod
     def _check_internal_Vp(Vp: float) -> float:
         # Defensive: tolerate fp overshoot (~1e-15) from element-mean averaging
@@ -612,6 +644,10 @@ class EmpiricalSolver:
                 f"Unknown loading mode {mode!r}. "
                 f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
             )
+        # Flag extrapolation past the empirical calibration bound (#184).
+        # One warning per call, built-in models only — user callables are
+        # exempt (they own their own calibration contract, #62).
+        self._warn_if_extrapolated(model)
         # #115: vectorize the built-in knockdown evaluation. The scalar list
         # comprehension was ~60x slower than NumPy on the per-node Vp array
         # (4400-element typical mesh). User-supplied callables still get the

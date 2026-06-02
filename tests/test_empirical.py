@@ -5,6 +5,8 @@ Split out of the monolithic tests/test_porosity_fe.py for issue #124.
 """
 
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -901,3 +903,66 @@ class TestDiscreteVoidScfCache:
             fr = solver.get_failure_load(mode, model)
             np.testing.assert_allclose(fr.failure_stress, fs, rtol=1e-12)
             np.testing.assert_allclose(fr.knockdown, kd, rtol=1e-12)
+
+
+class TestExtrapolationWarning:
+    """#184: warn when the empirical knockdown is evaluated beyond the
+    ``Vp <= 0.05`` calibration bound. The warning is informational only —
+    numerical results are unchanged.
+    """
+
+    def _build_solver(self, Vp):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, Vp, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=2, nz=2)
+        return EmpiricalSolver(mesh, material)
+
+    def test_warns_when_vp_exceeds_bound(self):
+        """A built-in model at Vp > 0.05 must emit exactly one UserWarning
+        naming the offending Vp."""
+        solver = self._build_solver(0.08)
+        with pytest.warns(
+            UserWarning,
+            match=r"beyond calibration bound.*max Vp = 0\.08",
+        ) as record:
+            solver.apply_loading('compression', 'judd_wright')
+        # Exactly one warning per call — never per node.
+        extrap = [w for w in record
+                  if issubclass(w.category, UserWarning)
+                  and 'calibration bound' in str(w.message)]
+        assert len(extrap) == 1
+
+    def test_get_failure_load_warns_once(self):
+        """``get_failure_load`` (which routes through ``apply_loading``) must
+        also emit exactly one extrapolation warning."""
+        solver = self._build_solver(0.08)
+        with pytest.warns(UserWarning, match=r"beyond calibration bound") as record:
+            solver.get_failure_load('compression', 'judd_wright')
+        extrap = [w for w in record
+                  if issubclass(w.category, UserWarning)
+                  and 'calibration bound' in str(w.message)]
+        assert len(extrap) == 1
+
+    def test_no_warning_within_bound(self):
+        """At Vp <= 0.05 no extrapolation warning is emitted."""
+        solver = self._build_solver(0.05)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            solver.apply_loading('compression', 'judd_wright')
+        extrap = [w for w in record
+                  if issubclass(w.category, UserWarning)
+                  and 'calibration bound' in str(w.message)]
+        assert extrap == []
+
+    def test_no_warning_for_user_callable(self):
+        """User-supplied callables own their own calibration contract (#62),
+        so they are exempt from the extrapolation warning even past the
+        bound."""
+        solver = self._build_solver(0.08)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            solver.apply_loading('compression', model=lambda Vp, mode: 0.5)
+        extrap = [w for w in record
+                  if issubclass(w.category, UserWarning)
+                  and 'calibration bound' in str(w.message)]
+        assert extrap == []
