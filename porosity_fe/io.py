@@ -11,7 +11,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -168,8 +168,8 @@ def _build_provenance(seed: int | None = None) -> dict:
     return prov
 
 
-def save_results_to_json(results: Dict, filename: str | os.PathLike,
-                         artifacts: Dict[str, ConfigArtifacts] | None = None):
+def save_results_to_json(results: dict, filename: str | os.PathLike,
+                         artifacts: dict[str, ConfigArtifacts] | None = None):
     """Export numerical results to JSON.
 
     Parameters
@@ -266,7 +266,7 @@ def save_results_to_json(results: Dict, filename: str | os.PathLike,
     logger.info("Saved: %s", filename)
 
 
-def load_results_from_json(filename: str | os.PathLike) -> Dict:
+def load_results_from_json(filename: str | os.PathLike) -> dict:
     """Round-trip loader for save_results_to_json / export_results outputs.
 
     Validates schema_version compatibility and format identifier. Raises

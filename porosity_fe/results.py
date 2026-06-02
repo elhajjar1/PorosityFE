@@ -5,8 +5,10 @@ Lives in its own module so :mod:`porosity_fe.empirical`,
 consume them without importing each other (#119).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .empirical import EmpiricalSolver
@@ -123,10 +125,10 @@ class ConfigArtifacts:
         (``compare_configurations`` is empirical-only today, so this is
         ``None`` from that path).
     """
-    mesh: 'CompositeMesh'
-    empirical_solver: 'EmpiricalSolver'
-    porosity_field: 'PorosityField'
-    field_results: Optional['FieldResults'] = None
+    mesh: CompositeMesh
+    empirical_solver: EmpiricalSolver
+    porosity_field: PorosityField
+    field_results: FieldResults | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +193,7 @@ class ConfigResult:
     knockdown: float
     model: str
     empirical: dict
-    seed: Optional[int] = None
+    seed: int | None = None
 
     _DICT_KEYS_DIRECT = (
         'Vp', 'config_name', 'config', 'failure_stress',

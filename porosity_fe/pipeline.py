@@ -1,9 +1,11 @@
 """Sweep orchestrator: ``_analyze_one`` worker + ``compare_configurations``."""
 
+from __future__ import annotations
+
 import concurrent.futures
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Union
 
 from .empirical import EmpiricalSolver
 from .materials import MATERIALS, MaterialProperties
@@ -17,11 +19,11 @@ logger = logging.getLogger("porosity_fe_analysis")
 # either a sentinel string (``'QI'`` / ``'UD'``) or an explicit list of ply
 # angles in degrees. ``tuple`` is included for callers that build the layup
 # from an immutable sequence.
-LayupSpec = Union[str, List[float], Tuple[float, ...]]
+LayupSpec = Union[str, list[float], tuple[float, ...]]
 
 # Default mesh resolution used by the production sweep (``_analyze_one``) so
 # every call site picks up the same defaults.
-_DEFAULT_MESH_RES: Tuple[int, int, int] = (30, 10, 12)
+_DEFAULT_MESH_RES: tuple[int, int, int] = (30, 10, 12)
 
 
 def build_empirical_pipeline(
@@ -29,10 +31,10 @@ def build_empirical_pipeline(
     void_volume_fraction: float,
     *,
     ply_angles: LayupSpec = 'QI',
-    mesh_res: Tuple[int, int, int] = _DEFAULT_MESH_RES,
-    porosity_config: Optional[Dict[str, Any]] = None,
-    seed: Optional[int] = None,
-) -> Tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
+    mesh_res: tuple[int, int, int] = _DEFAULT_MESH_RES,
+    porosity_config: dict[str, Any] | None = None,
+    seed: int | None = None,
+) -> tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
     """Factory: ``(material, Vp) -> (PorosityField, CompositeMesh, EmpiricalSolver)``.
 
     Single point of change for mesh defaults and ply-angle handling. The
@@ -69,7 +71,7 @@ def build_empirical_pipeline(
         The fully-constructed pipeline ready for ``get_failure_load`` /
         ``get_all_failure_loads`` calls.
     """
-    pf_kwargs: Dict[str, Any] = dict(porosity_config or {})
+    pf_kwargs: dict[str, Any] = dict(porosity_config or {})
     if seed is not None:
         pf_kwargs['seed'] = seed
     pf = PorosityField(material, void_volume_fraction, **pf_kwargs)
@@ -86,10 +88,10 @@ def build_empirical_pipeline(
 
 def _analyze_one(Vp: float,
                  name: str,
-                 config: Dict,
+                 config: dict,
                  material_name: str,
                  applied_stress: float,
-                 seed: Optional[int] = None) -> Tuple[float, str, Dict]:
+                 seed: int | None = None) -> tuple[float, str, dict]:
     """Build PorosityField/CompositeMesh/EmpiricalSolver for one (Vp, config).
 
     Top-level (picklable) helper so this can be dispatched to a
@@ -147,7 +149,7 @@ def _analyze_one(Vp: float,
     return (Vp, name, result)
 
 
-def _build_config_result(name: str, Vp: float, raw: Dict) -> 'ConfigResult':
+def _build_config_result(name: str, Vp: float, raw: dict) -> ConfigResult:
     """Distill the worker-dict shape into a lightweight :class:`ConfigResult`.
 
     Reads the headline compression / Judd-Wright knockdown from the inner
@@ -177,7 +179,7 @@ def _build_config_result(name: str, Vp: float, raw: Dict) -> 'ConfigResult':
     )
 
 
-def _build_config_artifacts(raw: Dict) -> 'ConfigArtifacts':
+def _build_config_artifacts(raw: dict) -> ConfigArtifacts:
     """Bundle the live worker objects into a :class:`ConfigArtifacts`."""
     return ConfigArtifacts(
         mesh=raw['mesh'],
@@ -187,7 +189,7 @@ def _build_config_artifacts(raw: Dict) -> 'ConfigArtifacts':
     )
 
 
-def _resolve_n_jobs(n_jobs: Optional[int]) -> int:
+def _resolve_n_jobs(n_jobs: int | None) -> int:
     """Normalise ``n_jobs`` to a positive worker count.
 
     ``None``/``0``/``-1`` map to ``os.cpu_count() or 1`` so callers can
@@ -199,7 +201,7 @@ def _resolve_n_jobs(n_jobs: Optional[int]) -> int:
     return int(n_jobs)
 
 
-def _log_result_summary(name: str, result: Dict, *, is_parallel: bool) -> None:
+def _log_result_summary(name: str, result: dict, *, is_parallel: bool) -> None:
     """Emit the per-config result-summary log lines.
 
     Both branches of :func:`compare_configurations` (serial + parallel)
@@ -251,8 +253,8 @@ def _log_result_summary(name: str, result: Dict, *, is_parallel: bool) -> None:
 def compare_configurations(void_volume_fraction: float,
                            material_name: str = 'T800_epoxy',
                            applied_stress: float = -1500.0,
-                           configs: Optional[Dict] = None,
-                           seed: Optional[int] = None,
+                           configs: dict | None = None,
+                           seed: int | None = None,
                            n_jobs: int = 1,
                            return_artifacts: bool = False):
     """Main analysis function — loops through porosity configurations.
@@ -326,7 +328,7 @@ def compare_configurations(void_volume_fraction: float,
         for name, config in configs.items()
     ]
 
-    raw_results: Dict[Tuple[float, str], Dict] = {}
+    raw_results: dict[tuple[float, str], dict] = {}
     if workers == 1 or len(tasks) <= 1:
         # Serial path — preserves the legacy behaviour byte-for-byte and
         # avoids the ProcessPoolExecutor fork cost for trivially small
@@ -353,8 +355,8 @@ def compare_configurations(void_volume_fraction: float,
     # Split the worker dict into the public-facing lightweight
     # ConfigResult (numbers + nested empirical table) and the parallel
     # ConfigArtifacts (live mesh / solver / field), per #44 item 3.
-    results: Dict[str, ConfigResult] = {}
-    artifacts: Dict[str, ConfigArtifacts] = {}
+    results: dict[str, ConfigResult] = {}
+    artifacts: dict[str, ConfigArtifacts] = {}
     for name in configs:
         raw = raw_results[(void_volume_fraction, name)]
         results[name] = _build_config_result(name, void_volume_fraction, raw)

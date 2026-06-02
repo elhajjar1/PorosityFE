@@ -1,8 +1,9 @@
 """Structured hex mesh and quality checks."""
 
+from __future__ import annotations
+
 import logging
 import warnings
-from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -128,7 +129,7 @@ class CompositeMesh:
 
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
                  nx: int = 50, ny: int = 20, nz: int = 24,
-                 ply_angles: Optional[Union[List[float], str]] = 'QI'):
+                 ply_angles: list[float] | str | None = 'QI'):
         for axis_name, value in (('nx', nx), ('ny', ny), ('nz', nz)):
             if not isinstance(value, (int, np.integer)) or value <= 0:
                 raise ValueError(
@@ -258,7 +259,7 @@ class CompositeMesh:
         return self.n_nodes * 3
 
     @property
-    def domain_size(self) -> Tuple[float, float, float]:
+    def domain_size(self) -> tuple[float, float, float]:
         return (self.L_x, self.L_y, self.L_z)
 
     def nodes_on_face(self, face: str) -> np.ndarray:
@@ -291,10 +292,10 @@ class CompositeMesh:
         else:
             raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
 
-    def find_nodes_near(self, x: Optional[float] = None,
-                        y: Optional[float] = None,
-                        z: Optional[float] = None,
-                        tol: Optional[float] = None) -> np.ndarray:
+    def find_nodes_near(self, x: float | None = None,
+                        y: float | None = None,
+                        z: float | None = None,
+                        tol: float | None = None) -> np.ndarray:
         """Return node indices within ``tol`` of the specified target coords.
 
         Any of ``x``, ``y``, ``z`` may be ``None``, in which case that axis
@@ -359,7 +360,7 @@ class CompositeMesh:
                 f"void_elements={len(self.void_elements)})")
 
 
-def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> Dict:
+def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     """Check mesh quality: element aspect ratios and Jacobian determinants.
 
     Parameters

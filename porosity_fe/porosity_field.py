@@ -1,6 +1,6 @@
 """Continuous porosity field with optional discrete-void superposition."""
 
-from typing import List, Optional, Tuple, Union
+from __future__ import annotations
 
 import numpy as np
 
@@ -131,10 +131,10 @@ class PorosityField:
     _DISTRIBUTIONS = ('uniform', 'clustered', 'interface')
 
     def __init__(self, material: MaterialProperties, void_volume_fraction: float,
-                 distribution: str = 'uniform', void_shape: Union[str, Tuple] = 'spherical',
+                 distribution: str = 'uniform', void_shape: str | tuple = 'spherical',
                  cluster_location: str = 'midplane',
-                 discrete_voids: Optional[List[VoidGeometry]] = None,
-                 seed: Optional[int] = None):
+                 discrete_voids: list[VoidGeometry] | None = None,
+                 seed: int | None = None):
         if void_volume_fraction is None:
             raise ValueError("void_volume_fraction is None; expected a finite float in [0, 1].")
         if not isinstance(void_volume_fraction, (int, float, np.floating, np.integer)):

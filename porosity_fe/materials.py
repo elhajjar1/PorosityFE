@@ -1,7 +1,8 @@
 """Material properties dataclass and built-in presets."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -151,16 +152,16 @@ class MaterialProperties:
     # ``T_service`` / ``M_service`` / ``T_g_dry`` is ``None``,
     # :meth:`environment_knockdown` returns 1.0 (back-compat no-op).
     # ----------------------------------------------------------------
-    T_service: Optional[float] = None   # Service temperature (deg C)
-    M_service: Optional[float] = None   # Service moisture content (wt %)
+    T_service: float | None = None   # Service temperature (deg C)
+    M_service: float | None = None   # Service moisture content (wt %)
     T_ref: float = 23.0                 # Reference / RT (deg C); RTD baseline
     M_ref: float = 0.0                  # Reference moisture (wt %)
-    T_g_dry: Optional[float] = None     # Dry glass-transition temperature (deg C)
+    T_g_dry: float | None = None     # Dry glass-transition temperature (deg C)
 
     # Tsai-Wu interaction coefficient. None (default) -> use Tsai's
     # recommendation F_12 = -0.5 * sqrt(F_11 * F_22). For critical
     # applications, calibrate against biaxial coupon data.
-    tsai_wu_F12: Optional[float] = None
+    tsai_wu_F12: float | None = None
 
     def __post_init__(self):
         # Stiffness moduli must be positive finite (non-zero for 1/E in compliance).
@@ -327,8 +328,8 @@ class MaterialProperties:
     _SPRINGER_MOISTURE_TG_SLOPE = 25.0  # deg C per wt% moisture
 
     def environment_knockdown(self, mode: str,
-                              T: Optional[float] = None,
-                              M: Optional[float] = None) -> float:
+                              T: float | None = None,
+                              M: float | None = None) -> float:
         """Hygrothermal (T / M) knockdown factor for the requested mode.
 
         Implements the standard Chamis / Springer matrix-property ratio::
@@ -467,8 +468,8 @@ class MaterialProperties:
             f"Use one of 'lognormal', 'normal', 'uniform'."
         )
 
-    def perturb(self, draws: Dict[str, float],
-                spec: Dict[str, Tuple[str, float]]) -> "MaterialProperties":
+    def perturb(self, draws: dict[str, float],
+                spec: dict[str, tuple[str, float]]) -> MaterialProperties:
         """Return a new ``MaterialProperties`` with the fields in ``spec``
         perturbed using the per-field unit draws in ``draws``.
 

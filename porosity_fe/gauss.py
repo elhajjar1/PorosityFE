@@ -1,6 +1,6 @@
 """Gauss quadrature points and weights."""
 
-from typing import Tuple
+from __future__ import annotations
 
 import numpy as np
 
@@ -8,7 +8,7 @@ import numpy as np
 # SECTION 7c: GAUSS QUADRATURE
 # ============================================================
 
-def gauss_points_1d(n: int) -> Tuple[np.ndarray, np.ndarray]:
+def gauss_points_1d(n: int) -> tuple[np.ndarray, np.ndarray]:
     """1D Gauss-Legendre points and weights on [-1, 1].
 
     Parameters
@@ -33,7 +33,7 @@ def gauss_points_1d(n: int) -> Tuple[np.ndarray, np.ndarray]:
         raise ValueError(f"Only n=1, 2, 3 supported, got n={n}.")
 
 
-def gauss_points_hex(order: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+def gauss_points_hex(order: int = 2) -> tuple[np.ndarray, np.ndarray]:
     """3D Gauss-Legendre quadrature for a hexahedron [-1,1]^3.
 
     Parameters

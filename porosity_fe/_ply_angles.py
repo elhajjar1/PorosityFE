@@ -5,27 +5,28 @@ Extracted into its own module so :mod:`porosity_fe.mesh`,
 consume the same sentinel-resolution logic without an import cycle.
 """
 
+from __future__ import annotations
+
 import warnings
-from typing import List, Optional, Tuple, Union
 
 #: Canonical QI baseline layup (8-ply symmetric ``[0/90/45/-45]_s``).
 #: Used to expand the ``ply_angles='QI'`` sentinel (#44 item 2).
 #: Also exposed as :attr:`Calibration.PLY_ANGLES_QI` (#121).
-_PLY_ANGLES_QI: Tuple[float, ...] = (0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0)
+_PLY_ANGLES_QI: tuple[float, ...] = (0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0)
 
 #: Canonical UD baseline (4 plies, all 0 deg). Used to expand the
 #: ``ply_angles='UD'`` sentinel; the FE / empirical scaling only cares about
 #: the angle distribution, so a short list is fine.
 #: Also exposed as :attr:`Calibration.PLY_ANGLES_UD` (#121).
-_PLY_ANGLES_UD: Tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+_PLY_ANGLES_UD: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
 
 
 def _resolve_ply_angles(
-    ply_angles: Optional[Union[List[float], Tuple[float, ...], str]],
+    ply_angles: list[float] | tuple[float, ...] | str | None,
     *,
     none_means: str = 'QI',
     caller: str = 'ply_angles',
-) -> Optional[List[float]]:
+) -> list[float] | None:
     """Resolve the ``ply_angles`` sentinel to a concrete list of angles.
 
     Unifies the three previously divergent ``ply_angles=None`` defaults

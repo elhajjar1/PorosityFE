@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Tuple
+from typing import Literal
 
 import numpy as np
 import scipy.sparse
@@ -96,7 +96,7 @@ class FieldResults:
     knockdown: float
     per_element_failure_index: np.ndarray | None = None
     failure_criterion: str = 'tsai_wu'
-    failure_mode_indices: Dict[str, float] | None = None
+    failure_mode_indices: dict[str, float] | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -379,12 +379,12 @@ class FESolver:
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime
     #: (for validation) and as the documented enumeration.
-    SUPPORTED_FAILURE_CRITERIA: Tuple[str, ...] = (
+    SUPPORTED_FAILURE_CRITERIA: tuple[str, ...] = (
         'tsai_wu', 'hashin', 'max_stress')
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  porosity_field: PorosityField,
-                 ply_angles: List[float] | str | None = 'QI',
+                 ply_angles: list[float] | str | None = 'QI',
                  failure_criterion: Literal[
                      'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu') -> None:
         self.mesh = mesh
@@ -785,7 +785,7 @@ class FESolver:
 
     #: Empty per-mode failure-index dict used when an element is skipped
     #: (void) or for criteria that do not populate a particular mode.
-    _EMPTY_MODE_FI: Dict[str, float] = {
+    _EMPTY_MODE_FI: dict[str, float] = {
         'max_fi': 0.0,
         'fiber_t': 0.0,
         'fiber_c': 0.0,
@@ -795,7 +795,7 @@ class FESolver:
     }
 
     def _degraded_strengths(self, elem_Vp: float
-                            ) -> Tuple[float, float, float, float, float, float]:
+                            ) -> tuple[float, float, float, float, float, float]:
         """Return per-element porosity-degraded ply strengths.
 
         Implements the strength-degradation block shared by all failure
@@ -891,7 +891,7 @@ class FESolver:
 
     def _evaluate_failure(self, stress_local: np.ndarray,
                           criterion: str = 'tsai_wu'
-                          ) -> Tuple[float, np.ndarray, Dict[str, float]]:
+                          ) -> tuple[float, np.ndarray, dict[str, float]]:
         """Evaluate the chosen failure criterion at every Gauss point.
 
         Dispatches to :meth:`_evaluate_tsai_wu`, :meth:`_evaluate_hashin`,
@@ -945,7 +945,7 @@ class FESolver:
         )
 
         max_fi = 0.0
-        best_mode_indices: Dict[str, float] = dict(self._EMPTY_MODE_FI)
+        best_mode_indices: dict[str, float] = dict(self._EMPTY_MODE_FI)
         if criterion == 'tsai_wu':
             # Tsai-Wu polynomial couples all components — per-mode breakdown
             # is undefined. Surface NaN sentinels so downstream consumers see
@@ -1007,7 +1007,7 @@ class FESolver:
         return float(max_fi), per_elem_fi, best_mode_indices
 
     def _evaluate_tsai_wu(self, s_all: np.ndarray,
-                          strengths: Tuple[float, float, float, float, float, float],
+                          strengths: tuple[float, float, float, float, float, float],
                           e: int, elem_Vp: float) -> np.ndarray:
         """Tsai-Wu polynomial evaluated for one element's Gauss points.
 
@@ -1084,8 +1084,8 @@ class FESolver:
         return fi_per_gp
 
     def _evaluate_hashin(self, s_all: np.ndarray,
-                         strengths: Tuple[float, float, float, float, float, float]
-                         ) -> Dict[str, np.ndarray]:
+                         strengths: tuple[float, float, float, float, float, float]
+                         ) -> dict[str, np.ndarray]:
         """2D Hashin failure indices for unidirectional plies.
 
         Implements the Hashin (1980) 2D criterion with separate fiber/matrix
@@ -1163,8 +1163,8 @@ class FESolver:
         }
 
     def _evaluate_max_stress(self, s_all: np.ndarray,
-                             strengths: Tuple[float, float, float, float, float, float]
-                             ) -> Dict[str, np.ndarray]:
+                             strengths: tuple[float, float, float, float, float, float]
+                             ) -> dict[str, np.ndarray]:
         """Maximum-stress failure indices.
 
         ``FI_i = |σ_i| / X_i_allowable`` per component (signed split for

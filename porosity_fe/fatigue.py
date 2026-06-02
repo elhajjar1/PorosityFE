@@ -1,8 +1,9 @@
 """S-N (fatigue) knockdown model (#59)."""
 
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 import numpy as np
 
@@ -34,7 +35,7 @@ import numpy as np
 # ============================================================
 # Back-compat alias retained for direct importers (tests, downstream code).
 # New code should reference ``Calibration.FATIGUE_B_QI``.
-_FATIGUE_B_QI: Dict[str, float] = {
+_FATIGUE_B_QI: dict[str, float] = {
     'tension': 0.10,
     'compression': 0.10,
     'shear': 0.08,
@@ -82,7 +83,7 @@ class FatigueModel:
     come from a fully populated test matrix per the applicable spec
     (e.g. CMH-17 Vol. 2 fatigue protocols).
     """
-    b: Optional[Dict[str, float]] = None
+    b: dict[str, float] | None = None
 
     def _slope(self, mode: str) -> float:
         if mode not in _FATIGUE_B_QI:
