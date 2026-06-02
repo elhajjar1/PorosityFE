@@ -1,7 +1,9 @@
 """Empirical (analytical) porosity-strength knockdown solver."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable
 
 import numpy as np
 
@@ -47,15 +49,15 @@ class Calibration:
     # 'transverse_tension' (sigma_2t, in-plane transverse, matrix-dominated;
     # alpha matched to ilss because both fail by matrix/interface-dominated
     # mechanisms — see issue #35).
-    JUDD_WRIGHT_ALPHA_QI: Dict[str, float] = {
+    JUDD_WRIGHT_ALPHA_QI: dict[str, float] = {
         'compression': 6.9, 'tension': 3.9, 'shear': 8.0, 'ilss': 10.0,
         'transverse_tension': 10.0,
     }
-    POWER_LAW_N_QI: Dict[str, float] = {
+    POWER_LAW_N_QI: dict[str, float] = {
         'compression': 2.8, 'tension': 1.8, 'shear': 3.5, 'ilss': 4.5,
         'transverse_tension': 4.5,
     }
-    LINEAR_BETA_QI: Dict[str, float] = {
+    LINEAR_BETA_QI: dict[str, float] = {
         'compression': 5.5, 'tension': 3.5, 'shear': 7.0, 'ilss': 9.0,
         'transverse_tension': 9.0,
     }
@@ -68,7 +70,7 @@ class Calibration:
     # objects (assigned at the bottom of this module to break the
     # ``fatigue -> empirical`` import cycle).
     # ------------------------------------------------------------------
-    FATIGUE_B_QI: Dict[str, float]
+    FATIGUE_B_QI: dict[str, float]
     FATIGUE_KD_FLOOR: float
 
     # ------------------------------------------------------------------
@@ -114,9 +116,9 @@ class Calibration:
     # Canonical ply-angle baselines (sentinel expansion for 'QI' / 'UD')
     # ------------------------------------------------------------------
     #: Canonical QI baseline layup (8-ply symmetric ``[0/90/45/-45]_s``).
-    PLY_ANGLES_QI: Tuple[float, ...] = _PLY_ANGLES_QI
+    PLY_ANGLES_QI: tuple[float, ...] = _PLY_ANGLES_QI
     #: Canonical UD baseline (4 plies, all 0 deg).
-    PLY_ANGLES_UD: Tuple[float, ...] = _PLY_ANGLES_UD
+    PLY_ANGLES_UD: tuple[float, ...] = _PLY_ANGLES_UD
 
     # ------------------------------------------------------------------
     # Numerical floors / reporting defaults
@@ -127,7 +129,7 @@ class Calibration:
     STRENGTH_FLOOR_MPA: float = 1e-3
     #: Default percentiles reported by the UQ helpers (5/50/95 band, the
     #: spread an A-/B-basis workflow typically wants to see first).
-    UQ_DEFAULT_PERCENTILES: Tuple[float, ...] = (5.0, 50.0, 95.0)
+    UQ_DEFAULT_PERCENTILES: tuple[float, ...] = (5.0, 50.0, 95.0)
 
 
 class EmpiricalSolver:
@@ -164,11 +166,11 @@ class EmpiricalSolver:
     _F_MD_FLOOR_ILSS = Calibration.F_MD_FLOOR_ILSS
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
-                 ply_angles: Optional[Union[List[float], str]] = 'QI',
+                 ply_angles: list[float] | str | None = 'QI',
                  *,
-                 judd_wright_alpha: Optional[Dict[str, float]] = None,
-                 power_law_n: Optional[Dict[str, float]] = None,
-                 linear_beta: Optional[Dict[str, float]] = None):
+                 judd_wright_alpha: dict[str, float] | None = None,
+                 power_law_n: dict[str, float] | None = None,
+                 linear_beta: dict[str, float] | None = None):
         """Empirical knockdown solver.
 
         Parameters
@@ -229,9 +231,9 @@ class EmpiricalSolver:
         # Build scaled coefficient dicts. Explicit annotations let static
         # checkers narrow `self.JUDD_WRIGHT_ALPHA[mode]` etc. to `float`
         # at the vectorized call sites in `apply_loading` (#114/#115).
-        self.JUDD_WRIGHT_ALPHA: Dict[str, float] = {}
-        self.POWER_LAW_N: Dict[str, float] = {}
-        self.LINEAR_BETA: Dict[str, float] = {}
+        self.JUDD_WRIGHT_ALPHA: dict[str, float] = {}
+        self.POWER_LAW_N: dict[str, float] = {}
+        self.LINEAR_BETA: dict[str, float] = {}
         for mode in ['compression', 'tension', 'shear', 'ilss',
                      'transverse_tension']:
             s = self._layup_scale(mode)
@@ -240,9 +242,9 @@ class EmpiricalSolver:
             self.LINEAR_BETA[mode] = beta_qi[mode] * s
 
     @classmethod
-    def _merge_coefficient_override(cls, defaults: Dict[str, float],
-                                    override: Optional[Dict[str, float]],
-                                    name: str) -> Dict[str, float]:
+    def _merge_coefficient_override(cls, defaults: dict[str, float],
+                                    override: dict[str, float] | None,
+                                    name: str) -> dict[str, float]:
         """Validate ``override`` and merge it onto ``defaults``."""
         if override is None:
             return dict(defaults)
@@ -271,7 +273,7 @@ class EmpiricalSolver:
         return {**defaults, **override}
 
     @staticmethod
-    def _matrix_dominated_fraction(ply_angles: Optional[List[float]]) -> float:
+    def _matrix_dominated_fraction(ply_angles: list[float] | None) -> float:
         """Fraction of matrix-dominated plies in the layup (0 to 1).
 
         - 0-degree plies contribute 0 (fiber-dominated)
@@ -416,7 +418,7 @@ class EmpiricalSolver:
         return getattr(self.material, self.PRISTINE_STRENGTH_KEY[mode])
 
     def _environment_knockdown_factor(self, mode: str,
-                                      environment: Optional[Dict[str, float]]
+                                      environment: dict[str, float] | None
                                       ) -> float:
         """Resolve the hygrothermal knockdown factor (issue #59).
 
@@ -445,8 +447,8 @@ class EmpiricalSolver:
         return float(self.material.environment_knockdown(mode, T=T, M=M))
 
     def _fatigue_knockdown_factor(self, mode: str,
-                                  cycles: Optional[float],
-                                  R: Optional[float]) -> float:
+                                  cycles: float | None,
+                                  R: float | None) -> float:
         """Resolve the S-N fatigue knockdown factor (issue #59).
 
         Returns ``1.0`` (back-compat no-op) when ``cycles`` is ``None``.
@@ -472,8 +474,8 @@ class EmpiricalSolver:
         return kd
 
     def _resolve_knockdown_model(
-            self, model: Union[str, Callable[[float, str], float]], mode: str
-    ) -> Tuple[Callable[[float, str], float], bool]:
+            self, model: str | Callable[[float, str], float], mode: str
+    ) -> tuple[Callable[[float, str], float], bool]:
         """Resolve ``model`` to a ``(callable, is_user_supplied)`` pair.
 
         Built-in string names dispatch to the corresponding ``_judd_wright``
@@ -500,11 +502,11 @@ class EmpiricalSolver:
         return model, True
 
     def apply_loading(self, mode: str = 'compression',
-                      model: Union[str, Callable[[float, str], float]] = 'judd_wright',
+                      model: str | Callable[[float, str], float] = 'judd_wright',
                       *,
-                      cycles: Optional[float] = None,
-                      environment: Optional[Dict[str, float]] = None,
-                      R: Optional[float] = None):
+                      cycles: float | None = None,
+                      environment: dict[str, float] | None = None,
+                      R: float | None = None):
         """Compute per-node knockdown for a given loading mode and model.
 
         Populates ``self.nodal_knockdown`` (shape ``(n_nodes,)``, values in
@@ -602,12 +604,12 @@ class EmpiricalSolver:
         self.nodal_knockdown = kd  # type: ignore[assignment]  # lazy-init attr starts None
 
     def get_failure_load(self, mode: str = 'compression',
-                         model: Union[str, Callable[[float, str], float]]
+                         model: str | Callable[[float, str], float]
                          = 'judd_wright',
                          *,
-                         cycles: Optional[float] = None,
-                         environment: Optional[Dict[str, float]] = None,
-                         R: Optional[float] = None) -> 'FailureResult':
+                         cycles: float | None = None,
+                         environment: dict[str, float] | None = None,
+                         R: float | None = None) -> FailureResult:
         """Compute failure load using specimen-average porosity.
 
         The knockdown is evaluated at the mean Vp (matching how the original
@@ -681,7 +683,7 @@ class EmpiricalSolver:
         model_label = model if isinstance(model, str) else getattr(
             model, '__name__', 'user_callable')
 
-        details: Dict[str, Any] = {
+        details: dict[str, Any] = {
             'critical_location': [0.0, 0.0, 0.0],
             'mode': mode,
         }
@@ -701,11 +703,11 @@ class EmpiricalSolver:
 
     def get_all_failure_loads(
             self,
-            extra_models: Optional[Dict[str, Callable[[float, str], float]]] = None,
+            extra_models: dict[str, Callable[[float, str], float]] | None = None,
             *,
-            cycles: Optional[float] = None,
-            environment: Optional[Dict[str, float]] = None,
-            R: Optional[float] = None,
+            cycles: float | None = None,
+            environment: dict[str, float] | None = None,
+            R: float | None = None,
     ) -> dict:
         """Compute failure loads for all modes against all built-in models.
 
@@ -728,8 +730,8 @@ class EmpiricalSolver:
         R : float, optional
             Stress ratio for the fatigue knockdown (informational).
         """
-        results: Dict[str, Dict[str, FailureResult]] = {}
-        all_models: List[Tuple[str, Union[str, Callable[[float, str], float]]]] = [
+        results: dict[str, dict[str, FailureResult]] = {}
+        all_models: list[tuple[str, str | Callable[[float, str], float]]] = [
             ('judd_wright', 'judd_wright'),
             ('power_law', 'power_law'),
             ('linear', 'linear'),
@@ -749,7 +751,7 @@ class EmpiricalSolver:
 
     def local_sensitivities(self, mode: str = 'compression',
                             model: str = 'judd_wright',
-                            Vp: Optional[float] = None) -> Dict[str, float]:
+                            Vp: float | None = None) -> dict[str, float]:
         """Closed-form local sensitivities of the empirical knockdown.
 
         Returns the analytic partials ``dKD/dVp`` and ``dKD/dcoef`` (the

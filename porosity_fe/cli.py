@@ -6,7 +6,6 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List
 
 from . import __version__
 from .io import save_results_to_json
@@ -235,7 +234,7 @@ def _resolve_via_shim(name: str, fallback):
     return getattr(shim, name, fallback)
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Argparse-driven entry point.
 
     Returns

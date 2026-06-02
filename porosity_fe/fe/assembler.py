@@ -1,7 +1,8 @@
 """Global FE assembler + boundary handler."""
 
+from __future__ import annotations
+
 import logging
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 import scipy.sparse
@@ -43,7 +44,7 @@ class GlobalAssembler:
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
         self._void_shape = porosity_field.void_shape_radii
-        self._ke_cache: Dict[tuple, np.ndarray] = {}
+        self._ke_cache: dict[tuple, np.ndarray] = {}
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -71,7 +72,7 @@ class GlobalAssembler:
             material=self.material,
         )
 
-    def _element_cache_key(self, elem_idx: int) -> Optional[tuple]:
+    def _element_cache_key(self, elem_idx: int) -> tuple | None:
         """Return a cache key if this element can reuse a cached Ke.
 
         Elements can share stiffness matrices when they have:
@@ -249,7 +250,7 @@ class BoundaryHandler:
         return self.mesh.nodes_on_face(face)
 
     def compression_bcs(self, applied_strain: float = -0.01
-                        ) -> Tuple[Dict[int, float], np.ndarray]:
+                        ) -> tuple[dict[int, float], np.ndarray]:
         """Standard uniaxial compression boundary conditions.
 
         - x_min: ux = 0
@@ -273,7 +274,7 @@ class BoundaryHandler:
         Lx = self.mesh.L_x
         prescribed_disp = applied_strain * Lx
 
-        constrained: Dict[int, float] = {}
+        constrained: dict[int, float] = {}
 
         # Fix ux on x_min
         for nid in self.mesh.nodes_on_face('x_min'):
@@ -301,12 +302,12 @@ class BoundaryHandler:
         return constrained, F
 
     def tension_bcs(self, applied_strain: float = 0.01
-                    ) -> Tuple[Dict[int, float], np.ndarray]:
+                    ) -> tuple[dict[int, float], np.ndarray]:
         """Uniaxial tension boundary conditions (same structure, positive strain)."""
         return self.compression_bcs(applied_strain=applied_strain)
 
     def shear_bcs(self, applied_strain: float = 0.01
-                  ) -> Tuple[Dict[int, float], np.ndarray]:
+                  ) -> tuple[dict[int, float], np.ndarray]:
         """Pure shear boundary conditions for engineering shear strain gamma_12.
 
         Prescribes the deformation field consistent with pure shear on ALL four
@@ -336,7 +337,7 @@ class BoundaryHandler:
         gamma = applied_strain
         nodes = self.mesh.nodes  # shape (n_nodes, 3)
 
-        constrained: Dict[int, float] = {}
+        constrained: dict[int, float] = {}
 
         # ±x faces: u = gamma/2 * y_node,  v = gamma/2 * x_node
         for face in ('x_min', 'x_max'):
@@ -370,7 +371,7 @@ class BoundaryHandler:
         return constrained, F
 
     def ilss_bcs(self, applied_load: float = -10.0
-                 ) -> Tuple[Dict[int, float], np.ndarray]:
+                 ) -> tuple[dict[int, float], np.ndarray]:
         """ILSS (interlaminar short-beam shear) boundary conditions, ASTM D2344.
 
         Three-point short-beam-shear setup:
@@ -431,7 +432,7 @@ class BoundaryHandler:
                 "Check mesh generation."
             )
 
-        constrained: Dict[int, float] = {}
+        constrained: dict[int, float] = {}
         for nid in np.concatenate([support_left, support_right]):
             nid = int(nid)
             constrained[3 * nid]     = 0.0  # ux
@@ -456,9 +457,9 @@ class BoundaryHandler:
 
     @staticmethod
     def apply_penalty(K: scipy.sparse.csc_matrix, F: np.ndarray,
-                      constrained_dofs: Dict[int, float],
+                      constrained_dofs: dict[int, float],
                       penalty_factor: float = 1e6
-                      ) -> Tuple[scipy.sparse.csc_matrix, np.ndarray]:
+                      ) -> tuple[scipy.sparse.csc_matrix, np.ndarray]:
         """Apply penalty method for prescribed displacements.
 
         For each constrained DOF ``i`` with value ``v``,

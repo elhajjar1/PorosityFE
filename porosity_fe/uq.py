@@ -1,9 +1,10 @@
 """Uncertainty propagation (Monte Carlo / LHS) over the empirical solver."""
 
+from __future__ import annotations
+
 import contextlib
 import io
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -27,10 +28,10 @@ _UQ_NORMAL_DISTS = ('lognormal', 'normal')
 _UQ_UNIFORM_DISTS = ('uniform',)
 
 
-def _normalize_uq_spec(material: 'MaterialProperties',
-                       covs: Optional[Dict[str, float]],
-                       spec: Optional[Dict[str, Tuple[str, float]]]
-                       ) -> "OrderedDict":
+def _normalize_uq_spec(material: MaterialProperties,
+                       covs: dict[str, float] | None,
+                       spec: dict[str, tuple[str, float]] | None
+                       ) -> OrderedDict:
     """Resolve the user-facing uncertainty description into a canonical
     ``OrderedDict{field: (dist, params)}``.
 
@@ -119,19 +120,19 @@ def _unit_to_draw(u: np.ndarray, dist: str) -> np.ndarray:
 
 
 def propagate_uncertainty(void_volume_fraction: float,
-                          material: Union[str, 'MaterialProperties'] = 'T800_epoxy',
+                          material: str | MaterialProperties = 'T800_epoxy',
                           mode: str = 'compression',
                           model: str = 'judd_wright',
                           *,
-                          covs: Optional[Dict[str, float]] = None,
-                          spec: Optional[Dict[str, Tuple[str, float]]] = None,
+                          covs: dict[str, float] | None = None,
+                          spec: dict[str, tuple[str, float]] | None = None,
                           vp_cov: float = 0.0,
                           n_samples: int = 1000,
                           method: str = 'monte_carlo',
-                          seed: Optional[int] = None,
-                          percentiles: Tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
-                          ply_angles: Optional[Union[List[float], str]] = 'QI',
-                          config: Optional[Dict] = None) -> Dict:
+                          seed: int | None = None,
+                          percentiles: tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
+                          ply_angles: list[float] | str | None = 'QI',
+                          config: dict | None = None) -> dict:
     """Propagate input uncertainty through ``EmpiricalSolver.get_failure_load``.
 
     Perturbs uncertain ``MaterialProperties`` fields (and, optionally, the
@@ -221,8 +222,8 @@ def propagate_uncertainty(void_volume_fraction: float,
 
     config = config or {}
 
-    def _build_solver(material_obj: 'MaterialProperties',
-                      vp_value: float) -> 'EmpiricalSolver':
+    def _build_solver(material_obj: MaterialProperties,
+                      vp_value: float) -> EmpiricalSolver:
         # CompositeMesh prints a banner on construction; the sampling loop
         # builds one mesh per draw, so silence it (additive: we do not touch
         # CompositeMesh itself).
@@ -273,7 +274,7 @@ def propagate_uncertainty(void_volume_fraction: float,
         fs_samples[s] = res['failure_stress']
         kd_samples[s] = res['knockdown']
 
-    def _summary(arr: np.ndarray) -> Dict:
+    def _summary(arr: np.ndarray) -> dict:
         return {
             'mean': float(np.mean(arr)),
             'std': float(np.std(arr)),

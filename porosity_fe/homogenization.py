@@ -1,7 +1,8 @@
 """Mori-Tanaka homogenization, MT-cache, and CLT effective moduli."""
 
+from __future__ import annotations
+
 from functools import lru_cache
-from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -17,7 +18,7 @@ _MT_CACHE_MAXSIZE = 4096
 
 
 def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
-                            void_shape_radii: Tuple,
+                            void_shape_radii: tuple,
                             nu_m: float) -> np.ndarray:
     """Mori-Tanaka effective stiffness for void inclusions (C_inclusion = 0).
 
@@ -75,7 +76,7 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
 
 @lru_cache(maxsize=_MT_CACHE_MAXSIZE)
 def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
-                                   void_shape_radii: Tuple[float, ...],
+                                   void_shape_radii: tuple[float, ...],
                                    nu_m: float) -> np.ndarray:
     """LRU-cached core of :func:`_mt_effective_stiffness` (#112).
 
@@ -197,8 +198,8 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
     return C_eff
 
 
-def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
-                                  mat: 'MaterialProperties') -> np.ndarray:
+def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
+                                  mat: MaterialProperties) -> np.ndarray:
     """Build porosity-degraded composite stiffness via component-wise micromechanics.
 
     Rather than applying a single scalar degradation ratio, this function:
@@ -320,7 +321,7 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: Tuple,
 # ============================================================
 
 def compute_clt_effective_modulus(material: MaterialProperties,
-                                  ply_angles: List[float]) -> float:
+                                  ply_angles: list[float]) -> float:
     """Compute effective laminate longitudinal modulus using CLT (ABD matrix).
 
     Builds the full A-matrix (in-plane stiffness) from Classical Lamination
@@ -373,8 +374,8 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     return float(E_x)
 
 
-def _build_clt_abd(material: MaterialProperties, ply_angles: List[float],
-                   C_base: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _build_clt_abd(material: MaterialProperties, ply_angles: list[float],
+                   C_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Build CLT A (membrane) and D (bending) matrices from a 6x6 stiffness."""
     n_plies = len(ply_angles)
     t_ply = material.t_ply
@@ -415,9 +416,9 @@ def _build_clt_abd(material: MaterialProperties, ply_angles: List[float],
 
 
 def compute_degraded_clt_moduli(material: MaterialProperties,
-                                ply_angles: List[float],
+                                ply_angles: list[float],
                                 Vp: float,
-                                method: str = 'mori_tanaka') -> Dict[str, float]:
+                                method: str = 'mori_tanaka') -> dict[str, float]:
     """Compute effective laminate in-plane moduli (Ex, Ey, Gxy) with porosity.
 
     Uses Mori-Tanaka-degraded ply stiffness via _degraded_composite_stiffness,
@@ -452,9 +453,9 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
 
 
 def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
-                                          ply_angles: List[float],
+                                          ply_angles: list[float],
                                           Vp: float,
-                                          method: str = 'mori_tanaka') -> Dict[str, float]:
+                                          method: str = 'mori_tanaka') -> dict[str, float]:
     """Compute effective laminate flexural modulus Ef_x with porosity.
 
     Uses the CLT D-matrix (bending stiffness) to compute the flexural modulus.

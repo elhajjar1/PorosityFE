@@ -1,6 +1,6 @@
 """Hex8 isoparametric element with porosity degradation."""
 
-from typing import Tuple
+from __future__ import annotations
 
 import numpy as np
 
@@ -56,9 +56,9 @@ class Hex8Element:
 
     def __init__(self, node_coords: np.ndarray, C_base: np.ndarray,
                  ply_angle_deg: float, node_porosities: np.ndarray,
-                 void_shape_radii: Tuple, nu_m: float,
+                 void_shape_radii: tuple, nu_m: float,
                  C_m: np.ndarray, is_void: bool = False,
-                 material: 'MaterialProperties' = None) -> None:
+                 material: MaterialProperties = None) -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")

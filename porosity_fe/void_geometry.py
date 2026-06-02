@@ -1,6 +1,6 @@
 """Discrete ellipsoidal void geometry."""
 
-from typing import Tuple
+from __future__ import annotations
 
 import numpy as np
 
@@ -81,7 +81,7 @@ class VoidGeometry:
     10.0
     """
 
-    def __init__(self, center: Tuple, radii: Tuple, orientation: float = 0.0):
+    def __init__(self, center: tuple, radii: tuple, orientation: float = 0.0):
         self.center = np.array(center, dtype=float)
         self.radii = np.array(radii, dtype=float)
         if self.center.shape != (3,):
