@@ -15,6 +15,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 
 from .._ply_angles import _resolve_ply_angles
+from .._types import FELoadingMode
 from ..empirical import Calibration
 from ..homogenization import _mt_effective_stiffness
 from ..io import (
@@ -407,7 +408,7 @@ class FESolver:
             )
         self.failure_criterion = failure_criterion
 
-    def solve(self, loading: str = 'compression',
+    def solve(self, loading: FELoadingMode = 'compression',
               applied_strain: float = -0.01,
               applied_load: float = -10.0,
               verbose: bool = False,

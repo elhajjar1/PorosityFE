@@ -8,6 +8,7 @@ from typing import Any, Callable
 import numpy as np
 
 from ._ply_angles import _PLY_ANGLES_QI, _PLY_ANGLES_UD, _resolve_ply_angles
+from ._types import KnockdownModel, LoadingMode
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
@@ -501,8 +502,8 @@ class EmpiricalSolver:
         self._validate_user_kd_callable(model, mode)
         return model, True
 
-    def apply_loading(self, mode: str = 'compression',
-                      model: str | Callable[[float, str], float] = 'judd_wright',
+    def apply_loading(self, mode: LoadingMode = 'compression',
+                      model: KnockdownModel | Callable[[float, str], float] = 'judd_wright',
                       *,
                       cycles: float | None = None,
                       environment: dict[str, float] | None = None,
@@ -603,8 +604,8 @@ class EmpiricalSolver:
             kd = kd * fat_kd
         self.nodal_knockdown = kd  # type: ignore[assignment]  # lazy-init attr starts None
 
-    def get_failure_load(self, mode: str = 'compression',
-                         model: str | Callable[[float, str], float]
+    def get_failure_load(self, mode: LoadingMode = 'compression',
+                         model: KnockdownModel | Callable[[float, str], float]
                          = 'judd_wright',
                          *,
                          cycles: float | None = None,

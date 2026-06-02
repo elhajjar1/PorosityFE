@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._types import ClusterLocation, Distribution
 from .materials import MaterialProperties
 from .void_geometry import VOID_SHAPES, VoidGeometry
 
@@ -131,8 +132,8 @@ class PorosityField:
     _DISTRIBUTIONS = ('uniform', 'clustered', 'interface')
 
     def __init__(self, material: MaterialProperties, void_volume_fraction: float,
-                 distribution: str = 'uniform', void_shape: str | tuple = 'spherical',
-                 cluster_location: str = 'midplane',
+                 distribution: Distribution = 'uniform', void_shape: str | tuple = 'spherical',
+                 cluster_location: ClusterLocation = 'midplane',
                  discrete_voids: list[VoidGeometry] | None = None,
                  seed: int | None = None):
         if void_volume_fraction is None:
