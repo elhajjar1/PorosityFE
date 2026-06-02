@@ -77,6 +77,49 @@ class TestCompositeMesh:
         with pytest.raises(ValueError, match=r"exhaust memory|exceeds"):
             CompositeMesh(self.pf, self.material, nx=20_000, ny=5, nz=6)
 
+    @pytest.mark.parametrize("nx,ny,nz", [(1, 1, 1), (4, 3, 2), (5, 3, 4),
+                                          (2, 7, 3), (10, 5, 6)])
+    def test_mesh_ordering_matches_reference_loop(self, nx, ny, nz):
+        """Pin the exact node ordering and hex8 corner ordering.
+
+        The FE solver's DOF/BC indexing depends on the precise node id
+        formula ``node_id = k*(ny+1)*(nx+1) + j*(nx+1) + i`` and the
+        per-element 8-corner order. This regression test reproduces both
+        with a self-contained triple-nested reference loop so the
+        contract is pinned independently of the (vectorized)
+        implementation. See issue #178.
+        """
+        mesh = CompositeMesh(self.pf, self.material, nx=nx, ny=ny, nz=nz)
+
+        x = np.linspace(0, mesh.L_x, nx + 1)
+        y = np.linspace(0, mesh.L_y, ny + 1)
+        z = np.linspace(0, mesh.L_z, nz + 1)
+
+        ref_nodes = []
+        for zk in z:
+            for yj in y:
+                for xi in x:
+                    ref_nodes.append([xi, yj, zk])
+        ref_nodes = np.array(ref_nodes)
+
+        ref_elements = []
+        for k in range(nz):
+            for j in range(ny):
+                for i in range(nx):
+                    n0 = k * (ny + 1) * (nx + 1) + j * (nx + 1) + i
+                    n1 = n0 + 1
+                    n2 = n0 + (nx + 1) + 1
+                    n3 = n0 + (nx + 1)
+                    n4 = n0 + (ny + 1) * (nx + 1)
+                    n5 = n4 + 1
+                    n6 = n4 + (nx + 1) + 1
+                    n7 = n4 + (nx + 1)
+                    ref_elements.append([n0, n1, n2, n3, n4, n5, n6, n7])
+        ref_elements = np.array(ref_elements)
+
+        np.testing.assert_array_equal(mesh.nodes, ref_nodes)
+        np.testing.assert_array_equal(mesh.elements, ref_elements)
+
 
 class TestCompositeMeshFE:
     """Tests for the FE-related additions to CompositeMesh."""
