@@ -8,7 +8,7 @@ version = "1.2.0"
 description = "Streamlit web app for porosity-degraded composite laminate analysis"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "Rani Elhajjar", email = "elhajjar@uwm.edu"},
 ]
@@ -26,7 +26,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -88,7 +87,7 @@ testpaths = ["tests"]
 [tool.ruff]
 # Match the existing wide-format scientific code; nothing reflows.
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 # Pragmatic baseline: pyflakes (F), pycodestyle errors (E),
@@ -103,6 +102,17 @@ ignore = [
     # separately.
     "UP006",
     "UP035",
+    # UP007: rewriting `typing.Union[...]` -> `X | Y`. Same py310-gated
+    # pyupgrade family as UP006/UP035; the remaining `Union` alias is part
+    # of the separate typing-modernization slice and is kept out of scope
+    # for the match/case readability refactor (#108).
+    "UP007",
+    # B905: `zip()` without `strict=`. This rule only activates once the
+    # ruff target is py310+ (bumped here so `match`/`case` parses). The
+    # flagged call sites are pre-existing and span unrelated modules/tests;
+    # adding `strict=` is a separate behavior-touching slice, kept out of
+    # scope for the match/case readability refactor (#108).
+    "B905",
 ]
 
 [tool.ruff.lint.per-file-ignores]

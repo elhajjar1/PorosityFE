@@ -579,18 +579,19 @@ class EmpiricalSolver:
         if isinstance(model, str):
             # Mode validation already done above; this picks built-ins or
             # raises a clear error before we touch the array.
-            if model == 'judd_wright':
-                kd = np.exp(-self.JUDD_WRIGHT_ALPHA[mode] * Vp_arr)
-            elif model == 'power_law':
-                kd = (1.0 - Vp_arr) ** self.POWER_LAW_N[mode]
-            elif model == 'linear':
-                kd = np.maximum(1.0 - self.LINEAR_BETA[mode] * Vp_arr, 0.0)
-            else:
-                raise ValueError(
-                    f"Unknown knockdown model {model!r}. "
-                    f"Use one of ['judd_wright', 'power_law', 'linear'] "
-                    f"or pass a callable."
-                )
+            match model:
+                case 'judd_wright':
+                    kd = np.exp(-self.JUDD_WRIGHT_ALPHA[mode] * Vp_arr)
+                case 'power_law':
+                    kd = (1.0 - Vp_arr) ** self.POWER_LAW_N[mode]
+                case 'linear':
+                    kd = np.maximum(1.0 - self.LINEAR_BETA[mode] * Vp_arr, 0.0)
+                case _:
+                    raise ValueError(
+                        f"Unknown knockdown model {model!r}. "
+                        f"Use one of ['judd_wright', 'power_law', 'linear'] "
+                        f"or pass a callable."
+                    )
         else:
             self._validate_user_kd_callable(model, mode)
             kd = np.array([model(Vp, mode) for Vp in Vp_arr])
@@ -801,54 +802,56 @@ class EmpiricalSolver:
         if Vp is None:
             Vp = self.mesh.porosity_field.Vp
         Vp = self._check_internal_Vp(Vp)
-        if model == 'judd_wright':
-            alpha = self.JUDD_WRIGHT_ALPHA[mode]
-            kd = float(np.exp(-alpha * Vp))
-            return {
-                'KD': kd,
-                'dKD_dVp': float(-alpha * kd),
-                'dKD_dcoef': float(-Vp * kd),
-            }
-        if model == 'power_law':
-            n = self.POWER_LAW_N[mode]
-            one_minus = 1.0 - Vp
-            kd = float(one_minus**n)
-            # Guard the log when Vp = 1 (degenerate edge): KD is 0 there
-            # and the d/dn partial collapses to 0 because KD * ln(1-Vp)
-            # is 0 * (-inf) in the limit.  We pin it to 0.0 explicitly so
-            # callers see a finite value.
-            if one_minus <= 0.0:
-                d_dcoef = 0.0
-                d_dVp = 0.0
-            else:
-                d_dcoef = float(kd * np.log(one_minus))
-                d_dVp = float(-n * one_minus**(n - 1.0))
-            return {
-                'KD': kd,
-                'dKD_dVp': d_dVp,
-                'dKD_dcoef': d_dcoef,
-            }
-        if model == 'linear':
-            beta = self.LINEAR_BETA[mode]
-            raw = 1.0 - beta * Vp
-            kd = float(max(raw, 0.0))
-            # The linear law is clipped at 0: once raw < 0, the
-            # piecewise-constant 0 floor has zero gradient.
-            if raw <= 0.0:
-                d_dVp = 0.0
-                d_dcoef = 0.0
-            else:
-                d_dVp = float(-beta)
-                d_dcoef = float(-Vp)
-            return {
-                'KD': kd,
-                'dKD_dVp': d_dVp,
-                'dKD_dcoef': d_dcoef,
-            }
-        raise ValueError(
-            f"Unknown knockdown model {model!r}. "
-            f"Use one of ['judd_wright', 'linear', 'power_law']."
-        )
+        match model:
+            case 'judd_wright':
+                alpha = self.JUDD_WRIGHT_ALPHA[mode]
+                kd = float(np.exp(-alpha * Vp))
+                return {
+                    'KD': kd,
+                    'dKD_dVp': float(-alpha * kd),
+                    'dKD_dcoef': float(-Vp * kd),
+                }
+            case 'power_law':
+                n = self.POWER_LAW_N[mode]
+                one_minus = 1.0 - Vp
+                kd = float(one_minus**n)
+                # Guard the log when Vp = 1 (degenerate edge): KD is 0 there
+                # and the d/dn partial collapses to 0 because KD * ln(1-Vp)
+                # is 0 * (-inf) in the limit.  We pin it to 0.0 explicitly so
+                # callers see a finite value.
+                if one_minus <= 0.0:
+                    d_dcoef = 0.0
+                    d_dVp = 0.0
+                else:
+                    d_dcoef = float(kd * np.log(one_minus))
+                    d_dVp = float(-n * one_minus**(n - 1.0))
+                return {
+                    'KD': kd,
+                    'dKD_dVp': d_dVp,
+                    'dKD_dcoef': d_dcoef,
+                }
+            case 'linear':
+                beta = self.LINEAR_BETA[mode]
+                raw = 1.0 - beta * Vp
+                kd = float(max(raw, 0.0))
+                # The linear law is clipped at 0: once raw < 0, the
+                # piecewise-constant 0 floor has zero gradient.
+                if raw <= 0.0:
+                    d_dVp = 0.0
+                    d_dcoef = 0.0
+                else:
+                    d_dVp = float(-beta)
+                    d_dcoef = float(-Vp)
+                return {
+                    'KD': kd,
+                    'dKD_dVp': d_dVp,
+                    'dKD_dcoef': d_dcoef,
+                }
+            case _:
+                raise ValueError(
+                    f"Unknown knockdown model {model!r}. "
+                    f"Use one of ['judd_wright', 'linear', 'power_law']."
+                )
 
     def sensitivity_fd(self, mode: str = 'compression',
                        model: str = 'judd_wright',
@@ -897,18 +900,19 @@ class EmpiricalSolver:
 
         # Select the analytic functional form so we can perturb the
         # parameter without mutating solver state.
-        if model == 'judd_wright':
-            coef0 = float(self.JUDD_WRIGHT_ALPHA[mode])
-            def f(Vp_val, coef_val):
-                return float(np.exp(-coef_val * Vp_val))
-        elif model == 'power_law':
-            coef0 = float(self.POWER_LAW_N[mode])
-            def f(Vp_val, coef_val):
-                return float((1.0 - Vp_val)**coef_val)
-        else:  # linear
-            coef0 = float(self.LINEAR_BETA[mode])
-            def f(Vp_val, coef_val):
-                return float(max(1.0 - coef_val * Vp_val, 0.0))
+        match model:
+            case 'judd_wright':
+                coef0 = float(self.JUDD_WRIGHT_ALPHA[mode])
+                def f(Vp_val, coef_val):
+                    return float(np.exp(-coef_val * Vp_val))
+            case 'power_law':
+                coef0 = float(self.POWER_LAW_N[mode])
+                def f(Vp_val, coef_val):
+                    return float((1.0 - Vp_val)**coef_val)
+            case _:  # linear
+                coef0 = float(self.LINEAR_BETA[mode])
+                def f(Vp_val, coef_val):
+                    return float(max(1.0 - coef_val * Vp_val, 0.0))
 
         if param == 'Vp':
             return float((f(Vp0 + h, coef0) - f(Vp0 - h, coef0)) / (2.0 * h))

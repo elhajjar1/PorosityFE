@@ -277,20 +277,21 @@ class CompositeMesh:
         """
         tol = 1e-8
         coords = self.nodes
-        if face == 'x_min':
-            return np.where(np.abs(coords[:, 0] - coords[:, 0].min()) < tol)[0]
-        elif face == 'x_max':
-            return np.where(np.abs(coords[:, 0] - coords[:, 0].max()) < tol)[0]
-        elif face == 'y_min':
-            return np.where(np.abs(coords[:, 1] - coords[:, 1].min()) < tol)[0]
-        elif face == 'y_max':
-            return np.where(np.abs(coords[:, 1] - coords[:, 1].max()) < tol)[0]
-        elif face == 'z_min':
-            return np.where(np.abs(coords[:, 2] - coords[:, 2].min()) < tol)[0]
-        elif face == 'z_max':
-            return np.where(np.abs(coords[:, 2] - coords[:, 2].max()) < tol)[0]
-        else:
-            raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
+        match face:
+            case 'x_min':
+                return np.where(np.abs(coords[:, 0] - coords[:, 0].min()) < tol)[0]
+            case 'x_max':
+                return np.where(np.abs(coords[:, 0] - coords[:, 0].max()) < tol)[0]
+            case 'y_min':
+                return np.where(np.abs(coords[:, 1] - coords[:, 1].min()) < tol)[0]
+            case 'y_max':
+                return np.where(np.abs(coords[:, 1] - coords[:, 1].max()) < tol)[0]
+            case 'z_min':
+                return np.where(np.abs(coords[:, 2] - coords[:, 2].min()) < tol)[0]
+            case 'z_max':
+                return np.where(np.abs(coords[:, 2] - coords[:, 2].max()) < tol)[0]
+            case _:
+                raise ValueError(f"Unknown face '{face}'. Use x_min/x_max/y_min/y_max/z_min/z_max.")
 
     def find_nodes_near(self, x: float | None = None,
                         y: float | None = None,
