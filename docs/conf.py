@@ -69,6 +69,29 @@ intersphinx_mapping = {
     "matplotlib": ("https://matplotlib.org/stable/", None),
 }
 
+# Bound how long each inventory fetch may hang. Without this, an
+# unreachable remote inventory (e.g. a docs.scipy.org blip) makes the
+# default socket wait ~2 minutes before Sphinx gives up -- and under the
+# CI ``-W`` flag the resulting warning is a hard build failure, which has
+# already reddened the docs build once with no code change. A short
+# timeout aborts the request fast so transient outages cause at most a
+# brief delay instead of a multi-minute hang.
+#
+# Supported by ``sphinx.ext.intersphinx`` since Sphinx 2.0; pyproject
+# pins ``sphinx>=7.0``, so this is always available here.
+#
+# Note on the ``-W`` tradeoff: even with a fast timeout, a transient
+# unreachable inventory still emits a fetch warning, which ``-W`` would
+# escalate to an error. We deliberately do NOT add it to
+# ``suppress_warnings`` -- intersphinx logs the "failed to reach any of
+# the inventories" message via a plain ``logger.warning`` with no warning
+# subtype, so there is no stable category that targets *only* the fetch
+# failure. Suppressing it would require a broad filter that could also
+# hide genuine cross-reference warnings, defeating ``-W``. The timeout
+# alone shrinks the failure window to seconds while keeping every real
+# documentation warning fatal.
+intersphinx_timeout = 5
+
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
