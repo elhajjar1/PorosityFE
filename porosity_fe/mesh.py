@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 
 from ._ply_angles import _resolve_ply_angles
+from ._types import MeshFace
 from .materials import MaterialProperties
 from .porosity_field import PorosityField
 
@@ -262,7 +263,7 @@ class CompositeMesh:
     def domain_size(self) -> tuple[float, float, float]:
         return (self.L_x, self.L_y, self.L_z)
 
-    def nodes_on_face(self, face: str) -> np.ndarray:
+    def nodes_on_face(self, face: MeshFace) -> np.ndarray:
         """Return node indices on the specified face.
 
         Parameters
