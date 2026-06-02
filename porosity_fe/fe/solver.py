@@ -507,7 +507,101 @@ class FESolver:
             t1 = time.perf_counter()
             logger.info("  Assembly time: %.2f s", t1 - t0)
 
-        # 2. Build BCs
+        # 2. Build BCs and the force vector for the requested loading mode.
+        constrained, F = self._apply_boundary_conditions(
+            loading, applied_strain, applied_load, verbose=verbose)
+
+        # 3-4. Penalty/diag-scaling, conditioning diagnostics, solver
+        #      dispatch and the solve itself. Returns the unscaled physical
+        #      displacement vector ``u``.
+        u, _rel_res = self._modify_system_and_solve(
+            K, F, constrained, solver=solver, rtol=rtol,
+            diag_scale=diag_scale, penalty_factor=penalty_factor,
+            verbose=verbose,
+        )
+
+        if verbose:
+            t2 = time.perf_counter()
+            logger.info(
+                "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
+            t1 = t2
+
+        # 5. Recover stresses and strains (global + local frames).
+        if verbose:
+            logger.info("Recovering element stresses and strains...")
+        (stress_global, stress_local,
+         strain_global, strain_local) = self._recover_stresses(u, verbose=verbose)
+
+        # 6. Evaluate the selected failure criterion at each GP.
+        #    per_elem_fi[e] is the max-over-GP failure index for element e
+        #    (0.0 for skipped void elements); the scalar max_fi is its
+        #    overall maximum. mode_indices captures the per-mode breakdown
+        #    (NaN entries for Tsai-Wu, which does not separate modes).
+        max_fi, per_elem_fi, mode_indices = self._evaluate_failure(
+            stress_local, criterion=criterion)
+
+        # 7. Compute knockdown as average-stress ratio (porous / pristine).
+        knockdown = self._compute_knockdown(
+            loading, stress_global, strain_global)
+
+        displacement = u.reshape(-1, 3)
+
+        if verbose:
+            t3 = time.perf_counter()
+            logger.info("  Post-processing time: %.2f s", t3 - t1)
+            logger.info("Total solve time: %.2f s", t3 - t0)
+            logger.info("  Max %s FI: %.4f", criterion, max_fi)
+            logger.info("  Knockdown factor: %.4f", knockdown)
+
+        return FieldResults(
+            displacement=displacement,
+            stress_global=stress_global,
+            stress_local=stress_local,
+            strain_global=strain_global,
+            strain_local=strain_local,
+            max_failure_index=max_fi,
+            knockdown=knockdown,
+            per_element_failure_index=per_elem_fi,
+            failure_criterion=criterion,
+            failure_mode_indices=mode_indices,
+        )
+
+    def _apply_boundary_conditions(
+        self, loading: str, applied_strain: float, applied_load: float,
+        *, verbose: bool = False,
+    ) -> tuple[dict[int, float], np.ndarray]:
+        """Build the Dirichlet BCs and force vector for a loading mode.
+
+        Dispatches to the matching :class:`BoundaryHandler` builder for the
+        requested ``loading`` ('compression', 'tension', 'shear', 'ilss').
+        The displacement-controlled modes use ``applied_strain``; the
+        force-controlled ILSS short-beam-shear mode uses ``applied_load``.
+
+        Parameters
+        ----------
+        loading : str
+            'compression', 'tension', 'shear', or 'ilss'.
+        applied_strain : float
+            Applied nominal strain (used by the displacement-controlled
+            modes).
+        applied_load : float
+            Total midspan load (used by the ILSS mode; ignored otherwise).
+        verbose : bool
+            Log the number of applied BCs.
+
+        Returns
+        -------
+        constrained : dict[int, float]
+            Map of constrained DOF index -> prescribed value, as returned
+            by the :class:`BoundaryHandler` builders.
+        F : np.ndarray
+            Global force vector.
+
+        Raises
+        ------
+        ValueError
+            If ``loading`` is not one of the four supported modes.
+        """
         if loading == 'compression':
             constrained, F = self.bc_handler.compression_bcs(applied_strain)
         elif loading == 'tension':
@@ -525,6 +619,57 @@ class FESolver:
         if verbose:
             logger.info("  Applied %d displacement BCs", len(constrained))
 
+        return constrained, F
+
+    def _modify_system_and_solve(
+        self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
+        *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
+        rtol: float = 1e-9, diag_scale: bool = False,
+        penalty_factor: float = 1e6, verbose: bool = False,
+    ) -> tuple[np.ndarray, float]:
+        """Apply BCs to the system, condition it, and solve ``K u = F``.
+
+        Enforces Dirichlet BCs via :meth:`BoundaryHandler.apply_penalty`,
+        logs the diagonal-conditioning diagnostic (issue #60), optionally
+        applies symmetric Jacobi pre-scaling, dispatches to the requested
+        linear solver, validates the residual, and unscales the solution.
+
+        Parameters
+        ----------
+        K : scipy.sparse matrix
+            Assembled (pre-penalty) global stiffness matrix.
+        F : np.ndarray
+            Global force vector.
+        constrained : dict[int, float]
+            Constrained-DOF map from :meth:`_apply_boundary_conditions`.
+        solver : {'direct', 'cg', 'minres'}
+            Linear solver to use. See :meth:`solve` for details.
+        rtol : float
+            Relative-residual tolerance for the iterative solvers.
+        diag_scale : bool
+            Symmetric Jacobi pre-scaling toggle (issue #60).
+        penalty_factor : float
+            Penalty multiplier for the Dirichlet enforcement.
+        verbose : bool
+            Log progress information.
+
+        Returns
+        -------
+        u : np.ndarray
+            Physical displacement vector (already unscaled if
+            ``diag_scale`` was applied).
+        rel_res : float
+            Achieved relative residual of the solve.
+
+        Raises
+        ------
+        ValueError
+            If ``solver`` is not one of 'direct', 'cg', 'minres'.
+        RuntimeError
+            On a non-positive diagonal for the scaling/preconditioner, a
+            non-finite or non-converged solution, or a residual above
+            tolerance.
+        """
         # 3. Apply penalty
         K_mod, F_mod = BoundaryHandler.apply_penalty(
             K, F, constrained, penalty_factor=penalty_factor,
@@ -665,16 +810,32 @@ class FESolver:
         else:
             u = y
 
-        if verbose:
-            t2 = time.perf_counter()
-            logger.info(
-                "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
-            t1 = t2
+        return u, float(_rel_res)
 
-        # 5. Recover stresses and strains
-        if verbose:
-            logger.info("Recovering element stresses and strains...")
+    def _recover_stresses(
+        self, u: np.ndarray, *, verbose: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Recover element stresses and strains in global and local frames.
 
+        Loops over every element, evaluates stress/strain at the 8 Gauss
+        points from the recovered displacement field, and rotates each into
+        the ply-local frame (stress via ``T_sigma``, engineering strain via
+        ``T_epsilon``).
+
+        Parameters
+        ----------
+        u : np.ndarray
+            Flat global displacement vector.
+        verbose : bool
+            Log per-element post-processing progress.
+
+        Returns
+        -------
+        (stress_global, stress_local, strain_global, strain_local) :
+            tuple of np.ndarray
+            Each shape ``(n_elem, n_gp, 6)`` in Voigt order
+            ``[11, 22, 33, 23, 13, 12]``.
+        """
         n_elem = self.mesh.n_elements
         n_gp = 8  # 2x2x2
 
@@ -712,23 +873,39 @@ class FESolver:
                 stress_local[e, g] = T_sigma @ sig_g[g]
                 strain_local[e, g] = T_eps @ eps_g[g]
 
-        # 6. Evaluate the selected failure criterion at each GP.
-        #    per_elem_fi[e] is the max-over-GP failure index for element e
-        #    (0.0 for skipped void elements); the scalar max_fi is its
-        #    overall maximum. mode_indices captures the per-mode breakdown
-        #    (NaN entries for Tsai-Wu, which does not separate modes).
-        max_fi, per_elem_fi, mode_indices = self._evaluate_failure(
-            stress_local, criterion=criterion)
+        return stress_global, stress_local, strain_global, strain_local
 
-        # 7. Compute knockdown as average-stress ratio (porous / pristine)
-        # Both numerator and denominator use the same 3D FE framework so that
-        # dimensional/mesh effects cancel.  For each element we compute what
-        # the dominant stress component *would* be with pristine stiffness
-        # at the same strain, then average. This avoids the CLT-vs-3D
-        # mismatch that caused knockdown > 1.
-        #
-        # For ILSS short-beam shear the dominant component is tau_xz
-        # (Voigt index 4); for the other modes it is sigma_xx (index 0).
+    def _compute_knockdown(
+        self, loading: str, stress_global: np.ndarray, strain_global: np.ndarray,
+    ) -> float:
+        """Compute the stiffness knockdown as a porous/pristine stress ratio.
+
+        Both numerator and denominator use the same 3D FE framework so that
+        dimensional/mesh effects cancel. For each element we compute what the
+        dominant stress component *would* be with pristine stiffness at the
+        same strain, then average. This avoids the CLT-vs-3D mismatch that
+        caused knockdown > 1.
+
+        For ILSS short-beam shear the dominant component is ``tau_xz``
+        (Voigt index 4); for the other modes it is ``sigma_xx`` (index 0).
+
+        Parameters
+        ----------
+        loading : str
+            Loading mode (selects the dominant stress component).
+        stress_global : np.ndarray
+            Shape ``(n_elem, n_gp, 6)`` recovered global stresses.
+        strain_global : np.ndarray
+            Shape ``(n_elem, n_gp, 6)`` recovered global strains.
+
+        Returns
+        -------
+        knockdown : float
+            Modulus ratio ``E_porous / E_pristine``, clamped to ``<= 1.0``.
+        """
+        n_elem = self.mesh.n_elements
+        n_gp = 8  # 2x2x2
+
         if loading == 'ilss':
             comp_idx = 4
         else:
@@ -759,29 +936,7 @@ class FESolver:
             knockdown = abs(avg_sigma) / abs(pristine_avg)
         else:
             knockdown = 1.0
-        knockdown = min(knockdown, 1.0)
-
-        displacement = u.reshape(-1, 3)
-
-        if verbose:
-            t3 = time.perf_counter()
-            logger.info("  Post-processing time: %.2f s", t3 - t1)
-            logger.info("Total solve time: %.2f s", t3 - t0)
-            logger.info("  Max %s FI: %.4f", criterion, max_fi)
-            logger.info("  Knockdown factor: %.4f", knockdown)
-
-        return FieldResults(
-            displacement=displacement,
-            stress_global=stress_global,
-            stress_local=stress_local,
-            strain_global=strain_global,
-            strain_local=strain_local,
-            max_failure_index=max_fi,
-            knockdown=knockdown,
-            per_element_failure_index=per_elem_fi,
-            failure_criterion=criterion,
-            failure_mode_indices=mode_indices,
-        )
+        return min(knockdown, 1.0)
 
     #: Empty per-mode failure-index dict used when an element is skipped
     #: (void) or for criteria that do not populate a particular mode.
