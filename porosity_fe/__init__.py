@@ -62,6 +62,12 @@ _configure_matplotlib_style()
 from ._ply_angles import _PLY_ANGLES_QI as _PLY_ANGLES_QI  # noqa: F401, E402
 from ._ply_angles import _PLY_ANGLES_UD as _PLY_ANGLES_UD  # noqa: F401, E402
 from ._ply_angles import _resolve_ply_angles as _resolve_ply_angles  # noqa: F401, E402
+from ._types import ClusterLocation as ClusterLocation  # noqa: F401, E402
+from ._types import Distribution as Distribution  # noqa: F401, E402
+from ._types import FELoadingMode as FELoadingMode  # noqa: F401, E402
+from ._types import KnockdownModel as KnockdownModel  # noqa: F401, E402
+from ._types import LoadingMode as LoadingMode  # noqa: F401, E402
+from ._types import MeshFace as MeshFace  # noqa: F401, E402
 from .cli import DEFAULT_POROSITY_LEVELS as DEFAULT_POROSITY_LEVELS  # noqa: F401, E402
 from .cli import _build_arg_parser as _build_arg_parser  # noqa: F401, E402
 from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401, E402
@@ -193,6 +199,13 @@ __all__ = [
     "build_empirical_pipeline",
     "compare_configurations",
     "main",
+    # Closed-set string type aliases (#109)
+    "ClusterLocation",
+    "Distribution",
+    "FELoadingMode",
+    "KnockdownModel",
+    "LoadingMode",
+    "MeshFace",
     # Version
     "__version__",
 ]
