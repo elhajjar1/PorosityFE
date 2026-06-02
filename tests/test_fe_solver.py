@@ -673,6 +673,90 @@ class TestFESolver:
         assert max_tau_xz > 1e-6 * max(max_sigma_xx, 1.0)
 
 
+class TestFESolverNonFiniteGuards:
+    """Cover the two defensive ValueError guards in
+    ``FESolver._evaluate_failure`` (issue #185):
+
+    1. the non-finite porosity guard, and
+    2. the non-finite failure-index guard (a Gauss-point criterion value
+       coming out NaN/Inf).
+
+    Both guards live inside ``_evaluate_failure``. Neither is reachable
+    through a *valid* ``solve()`` call (porosity is range-validated by
+    ``PorosityField`` and the criterion polynomials are finite for finite
+    stresses), so these tests reach the guards by corrupting the realized
+    mesh porosity field / monkeypatching the per-criterion evaluator and
+    then calling ``_evaluate_failure`` directly. That method is internal
+    but is the same one ``solve()`` invokes and takes a plain
+    ``stress_local`` array, so driving it directly mirrors the real call
+    path."""
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        self.pf = PorosityField(self.material, 0.03, distribution='uniform')
+        self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
+        self.solver = FESolver(self.mesh, self.material, self.pf)
+        # Benign all-zero stress field of the right shape (n_elem, n_gp, 6).
+        # Zero stresses give finite (zero) failure indices, so the
+        # failure-index guard does NOT fire unless we force it.
+        self.stress_local = np.zeros((self.mesh.n_elements, 8, 6), dtype=float)
+
+    def test_nonfinite_porosity_guard_nan(self):
+        """A NaN injected into ``mesh.porosity`` trips the porosity guard
+        before any per-element work. ``PorosityField`` forbids this at
+        construction, so we corrupt the realized field directly."""
+        self.mesh.porosity[0] = np.nan
+        with pytest.raises(ValueError, match="porosity contains non-finite"):
+            self.solver._evaluate_failure(self.stress_local, criterion='tsai_wu')
+
+    def test_nonfinite_porosity_guard_inf(self):
+        """+Inf in the porosity field trips the same guard (message tail)."""
+        self.mesh.porosity[-1] = np.inf
+        with pytest.raises(ValueError, match="corrupted porosity field"):
+            self.solver._evaluate_failure(self.stress_local, criterion='hashin')
+
+    def test_nonfinite_failure_index_guard_hashin(self, monkeypatch):
+        """Force the Hashin evaluator to emit a NaN ``max_fi`` so the
+        per-Gauss-point failure-index guard fires. Porosity is left finite,
+        so the only non-finite value is the injected criterion result.
+        Patched because finite stresses never yield a non-finite Hashin
+        index through the public path."""
+        n_gp = self.stress_local.shape[1]
+
+        def fake_hashin(s_all, strengths):
+            bad = np.zeros(n_gp, dtype=float)
+            bad[0] = np.nan
+            zeros = np.zeros(n_gp, dtype=float)
+            return {
+                'max_fi': bad,
+                'fiber_t': zeros, 'fiber_c': zeros,
+                'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
+            }
+
+        monkeypatch.setattr(self.solver, '_evaluate_hashin', fake_hashin)
+        with pytest.raises(ValueError, match="hashin failure index is non-finite"):
+            self.solver._evaluate_failure(self.stress_local, criterion='hashin')
+
+    def test_nonfinite_failure_index_guard_max_stress(self, monkeypatch):
+        """Same guard via the ``max_stress`` branch: a monkeypatched
+        evaluator returns an Inf ``max_fi``."""
+        n_gp = self.stress_local.shape[1]
+
+        def fake_max_stress(s_all, strengths):
+            bad = np.zeros(n_gp, dtype=float)
+            bad[0] = np.inf
+            zeros = np.zeros(n_gp, dtype=float)
+            return {
+                'max_fi': bad,
+                'fiber_t': zeros, 'fiber_c': zeros,
+                'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
+            }
+
+        monkeypatch.setattr(self.solver, '_evaluate_max_stress', fake_max_stress)
+        with pytest.raises(ValueError, match="max_stress failure index is non-finite"):
+            self.solver._evaluate_failure(self.stress_local, criterion='max_stress')
+
+
 class TestFESolverIterative:
     """Regression tests for the iterative solver path and K-symmetrization
     added in issue #57.
