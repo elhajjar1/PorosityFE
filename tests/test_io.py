@@ -374,6 +374,53 @@ class TestBuildProvenance:
         prov = _build_provenance()
         assert prov['git_commit'] is None or isinstance(prov['git_commit'], str)
 
+    def test_version_lookup_failure_falls_back_to_package_attr(self, monkeypatch):
+        """io.py:101-108: if importlib.metadata.version() raises (source
+        checkout not pip-installed), the version fields fall back to the
+        package ``__version__`` attribute, never silently None."""
+        import importlib.metadata as ilm
+
+        from porosity_fe import __version__ as pkg_version
+
+        def _boom(_dist_name):
+            raise ilm.PackageNotFoundError("porosity-fe")
+
+        # _build_provenance does ``import importlib.metadata as _ilm`` then
+        # calls ``_ilm.version(...)``; patch the symbol at its real home.
+        monkeypatch.setattr(ilm, "version", _boom)
+        prov = _build_provenance()
+        assert prov['porosity_fe_version'] == pkg_version
+        assert prov['package_version'] == pkg_version
+
+    def test_git_subprocess_filenotfound_yields_none_sha(self, monkeypatch):
+        """io.py:117-128: a missing ``git`` binary (FileNotFoundError) must
+        degrade gracefully to a None git SHA, not propagate."""
+        from porosity_fe import io as io_mod
+
+        def _no_git(*_args, **_kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(io_mod.subprocess, "run", _no_git)
+        prov = _build_provenance()
+        assert prov['git_commit'] is None
+        assert prov['git_sha'] is None
+
+    def test_git_subprocess_timeout_yields_none_sha(self, monkeypatch):
+        """io.py:117-128: a hung ``git`` (TimeoutExpired) must also degrade
+        gracefully to a None git SHA."""
+        import subprocess as _subprocess
+
+        from porosity_fe import io as io_mod
+
+        def _timeout(*_args, **_kwargs):
+            raise _subprocess.TimeoutExpired(cmd="git rev-parse HEAD",
+                                             timeout=5)
+
+        monkeypatch.setattr(io_mod.subprocess, "run", _timeout)
+        prov = _build_provenance()
+        assert prov['git_commit'] is None
+        assert prov['git_sha'] is None
+
 
 class TestProvenanceInSaveResultsJson:
     """Integration: provenance is present and valid in save_results_to_json output."""
