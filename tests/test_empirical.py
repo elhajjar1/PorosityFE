@@ -826,3 +826,78 @@ class TestCheckInternalVpScalarFastPath:
         with pytest.raises(ValueError, match="non-finite"):
             EmpiricalSolver._check_internal_Vp(np.array(float('nan')))
         assert EmpiricalSolver._check_internal_Vp(np.array(2.0)) == 1.0
+
+
+class TestDiscreteVoidScfCache:
+    """#179: caching the per-void influence field / SCF dict in
+    ``_apply_discrete_void_scf`` must be a pure performance refactor —
+    knockdowns and failure loads stay numerically identical.
+
+    These pins live in a self-contained class (separate from #180's
+    additions to this file) so the merge stays mechanical.
+    """
+
+    def _build_solver(self):
+        material = MATERIALS['T800_epoxy']
+        v1 = VoidGeometry(center=(25, 10, material.total_thickness / 2),
+                          radii=(2, 2, 0.5))
+        v2 = VoidGeometry(center=(10, 5, material.total_thickness / 3),
+                          radii=(3, 1, 1))
+        pf = PorosityField(material, 0.03, distribution='clustered',
+                           cluster_location='midplane',
+                           discrete_voids=[v1, v2])
+        mesh = CompositeMesh(pf, material, nx=20, ny=10, nz=12,
+                             ply_angles='QI')
+        return EmpiricalSolver(mesh, material), mesh
+
+    def test_cache_matches_independent_inline_computation(self):
+        """The cached SCF post-step must equal an independently-recomputed
+        inline influence field across every mode (the cache must not change
+        results)."""
+        solver, mesh = self._build_solver()
+        nodes = mesh.nodes
+        base = np.linspace(0.4, 0.95, mesh.porosity.shape[0])
+        for mode in ('compression', 'tension', 'shear', 'ilss',
+                     'transverse_tension'):
+            # Independent reference: recompute distance_field / SCF inline,
+            # exactly as the pre-#179 implementation did.
+            expected = base.copy()
+            for void in mesh.porosity_field.discrete_voids:
+                scf = void.stress_concentration_factor().get(mode, 1.0)
+                dist = void.distance_field(nodes[:, 0], nodes[:, 1],
+                                           nodes[:, 2])
+                influence = np.exp(-np.maximum(dist, 0) / max(void.radii))
+                expected = expected * (1.0 - influence * (1.0 - 1.0 / scf))
+            got = solver._apply_discrete_void_scf(base, mode)
+            np.testing.assert_allclose(got, expected, rtol=0, atol=1e-15)
+
+    def test_cache_invariant_across_repeated_calls(self):
+        """Repeated loadings (which reuse the cache after the first build)
+        must yield identical knockdown arrays — no drift from caching."""
+        solver, _ = self._build_solver()
+        solver.apply_loading('compression', 'judd_wright')
+        first = solver.nodal_knockdown.copy()
+        # Exercise other (mode, model) pairs so the cache is reused, then
+        # return to the original combination.
+        for mode in ('tension', 'shear', 'ilss', 'transverse_tension'):
+            for model in ('judd_wright', 'power_law', 'linear'):
+                solver.apply_loading(mode, model)
+        solver.apply_loading('compression', 'judd_wright')
+        np.testing.assert_array_equal(solver.nodal_knockdown, first)
+
+    def test_failure_loads_match_reference_values(self):
+        """Hardcoded reference failure loads captured on the pre-cache code.
+        Pins numerical identity for a two-void clustered config."""
+        solver, _ = self._build_solver()
+        # (failure_stress, knockdown) per (mode, model), captured on the
+        # unmodified pre-#179 implementation.
+        expected = {
+            ('compression', 'judd_wright'): (1219.5294749813565, 0.813019649987571),
+            ('tension', 'judd_wright'): (2490.838540857552, 0.8895851931634113),
+            ('shear', 'judd_wright'): (78.66278610665533, 0.7866278610665534),
+            ('ilss', 'power_law'): (78.47210698778247, 0.8719122998642496),
+        }
+        for (mode, model), (fs, kd) in expected.items():
+            fr = solver.get_failure_load(mode, model)
+            np.testing.assert_allclose(fr.failure_stress, fs, rtol=1e-12)
+            np.testing.assert_allclose(fr.knockdown, kd, rtol=1e-12)

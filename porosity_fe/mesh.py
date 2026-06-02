@@ -175,14 +175,14 @@ class CompositeMesh:
         y = np.linspace(0, self.L_y, self.ny + 1)
         z = np.linspace(0, self.L_z, self.nz + 1)
 
-        nodes = []
-
-        for zk in z:
-            for yj in y:
-                for xi in x:
-                    nodes.append([xi, yj, zk])
-
-        self.nodes = np.array(nodes)
+        # Vectorized node construction. Node ordering is z (outer) ->
+        # y (middle) -> x (inner), i.e. node_id = k*(ny+1)*(nx+1)
+        # + j*(nx+1) + i. ``indexing='ij'`` with axis order (z, y, x)
+        # then C-order ravel reproduces that exact ordering, matching the
+        # original triple-nested ``for zk: for yj: for xi`` loop.
+        zz, yy, xx = np.meshgrid(z, y, x, indexing='ij')
+        self.nodes = np.column_stack(
+            (xx.ravel(), yy.ravel(), zz.ravel()))
 
         # Sample porosity at all nodes
         self.porosity = self.porosity_field.local_porosity(
@@ -195,22 +195,26 @@ class CompositeMesh:
         self.ply_ids = np.clip((z_normalized * self.material.n_plies).astype(int),
                                0, self.material.n_plies - 1)
 
-        # Hex element connectivity
-        elements = []
-        for k in range(self.nz):
-            for j in range(self.ny):
-                for i in range(self.nx):
-                    n0 = k * (self.ny + 1) * (self.nx + 1) + j * (self.nx + 1) + i
-                    n1 = n0 + 1
-                    n2 = n0 + (self.nx + 1) + 1
-                    n3 = n0 + (self.nx + 1)
-                    n4 = n0 + (self.ny + 1) * (self.nx + 1)
-                    n5 = n4 + 1
-                    n6 = n4 + (self.nx + 1) + 1
-                    n7 = n4 + (self.nx + 1)
-                    elements.append([n0, n1, n2, n3, n4, n5, n6, n7])
-
-        self.elements = np.array(elements)
+        # Vectorized hex element connectivity. Element ordering is
+        # k (outer) -> j (middle) -> i (inner), matching the original
+        # triple-nested loop. ``indexing='ij'`` with axis order
+        # (k, j, i) then a C-order ravel of each corner offset array
+        # reproduces that exact element ordering and per-element corner
+        # ordering.
+        nx1 = self.nx + 1
+        layer = (self.ny + 1) * nx1
+        k, j, i = np.meshgrid(
+            np.arange(self.nz), np.arange(self.ny), np.arange(self.nx),
+            indexing='ij')
+        n0 = (k * layer + j * nx1 + i).ravel()
+        n1 = n0 + 1
+        n2 = n0 + nx1 + 1
+        n3 = n0 + nx1
+        n4 = n0 + layer
+        n5 = n4 + 1
+        n6 = n4 + nx1 + 1
+        n7 = n4 + nx1
+        self.elements = np.column_stack((n0, n1, n2, n3, n4, n5, n6, n7))
 
         # Identify void elements: check if element centroid falls inside
         # any discrete void geometry (explicit inclusion modeling)
