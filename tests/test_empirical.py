@@ -774,3 +774,55 @@ class TestLocalSensitivities:
     def test_sensitivity_fd_unknown_model(self):
         with pytest.raises(ValueError, match=r"Unknown knockdown model"):
             self.solver.sensitivity_fd(mode='compression', model='bogus')
+
+
+class TestCheckInternalVpScalarFastPath:
+    """Regression: scalar fast-path in EmpiricalSolver._check_internal_Vp (#180).
+
+    Kept in its own class so it merges mechanically alongside #179, which
+    also touches this file.
+    """
+
+    @staticmethod
+    def _numpy_ref(Vp):
+        # The pre-#180 reference implementation (numpy-only path).
+        if not np.isfinite(Vp):
+            raise ValueError(f"Internal Vp is non-finite: {Vp!r}")
+        return float(np.clip(Vp, 0.0, 1.0))
+
+    def test_scalar_matches_numpy_ref_in_range(self):
+        values = [0.0, 0.001, 0.05, 0.5, 0.999, 1.0,
+                  1.0 + 1e-15, 1.0 - 1e-15, -1e-16]
+        for v in values:
+            got = EmpiricalSolver._check_internal_Vp(v)
+            ref = self._numpy_ref(v)
+            assert got == ref, f"mismatch at {v!r}: {got!r} != {ref!r}"
+            assert isinstance(got, float)
+
+    def test_out_of_range_clamps(self):
+        assert EmpiricalSolver._check_internal_Vp(-0.5) == 0.0
+        assert EmpiricalSolver._check_internal_Vp(2.0) == 1.0
+        assert EmpiricalSolver._check_internal_Vp(1e9) == 1.0
+        assert EmpiricalSolver._check_internal_Vp(-1e9) == 0.0
+
+    @pytest.mark.parametrize("bad", [float('nan'), float('inf'), float('-inf')])
+    def test_non_finite_raises(self, bad):
+        with pytest.raises(ValueError, match="non-finite"):
+            EmpiricalSolver._check_internal_Vp(bad)
+
+    def test_np_float64_handled(self):
+        # Element-mean averaging yields np.float64, not builtin float.
+        v = np.float64(0.5)
+        got = EmpiricalSolver._check_internal_Vp(v)
+        assert got == 0.5
+        assert isinstance(got, float)
+        # Clamping and rejection also hold for np.float64.
+        assert EmpiricalSolver._check_internal_Vp(np.float64(1.0 + 1e-15)) == 1.0
+        with pytest.raises(ValueError, match="non-finite"):
+            EmpiricalSolver._check_internal_Vp(np.float64('nan'))
+
+    def test_array_fallback_still_works(self):
+        # Genuine arrays must still route through the numpy path unchanged.
+        with pytest.raises(ValueError, match="non-finite"):
+            EmpiricalSolver._check_internal_Vp(np.array(float('nan')))
+        assert EmpiricalSolver._check_internal_Vp(np.array(2.0)) == 1.0

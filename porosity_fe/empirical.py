@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable
 
 import numpy as np
@@ -328,6 +329,17 @@ class EmpiricalSolver:
     def _check_internal_Vp(Vp: float) -> float:
         # Defensive: tolerate fp overshoot (~1e-15) from element-mean averaging
         # by clipping to [0, 1]; reject non-finite outright.
+        #
+        # Scalar fast-path (#180): the sweep calls this ~1440x on plain
+        # Python / numpy scalars; routing those through math.isfinite +
+        # builtin max/min avoids per-call numpy dispatch overhead. The
+        # numpy fallback below preserves behavior for genuine arrays.
+        # math.isfinite and max/min work on np.floating; float(...) on the
+        # result yields the same bytes as the np.clip path for scalars.
+        if isinstance(Vp, (int, float, np.floating)):
+            if not math.isfinite(Vp):
+                raise ValueError(f"Internal Vp is non-finite: {Vp!r}")
+            return float(min(max(Vp, 0.0), 1.0))
         if not np.isfinite(Vp):
             raise ValueError(f"Internal Vp is non-finite: {Vp!r}")
         return float(np.clip(Vp, 0.0, 1.0))
