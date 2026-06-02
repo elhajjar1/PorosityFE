@@ -569,7 +569,7 @@ class FESolver:
     def _apply_boundary_conditions(
         self, loading: str, applied_strain: float, applied_load: float,
         *, verbose: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[dict[int, float], np.ndarray]:
         """Build the Dirichlet BCs and force vector for a loading mode.
 
         Dispatches to the matching :class:`BoundaryHandler` builder for the
@@ -591,8 +591,8 @@ class FESolver:
 
         Returns
         -------
-        constrained : np.ndarray
-            Constrained DOF indices / prescribed-value structure as returned
+        constrained : dict[int, float]
+            Map of constrained DOF index -> prescribed value, as returned
             by the :class:`BoundaryHandler` builders.
         F : np.ndarray
             Global force vector.
@@ -622,7 +622,7 @@ class FESolver:
         return constrained, F
 
     def _modify_system_and_solve(
-        self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: np.ndarray,
+        self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
         *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, diag_scale: bool = False,
         penalty_factor: float = 1e6, verbose: bool = False,
@@ -640,8 +640,8 @@ class FESolver:
             Assembled (pre-penalty) global stiffness matrix.
         F : np.ndarray
             Global force vector.
-        constrained : np.ndarray
-            Constrained-DOF structure from :meth:`_apply_boundary_conditions`.
+        constrained : dict[int, float]
+            Constrained-DOF map from :meth:`_apply_boundary_conditions`.
         solver : {'direct', 'cg', 'minres'}
             Linear solver to use. See :meth:`solve` for details.
         rtol : float
