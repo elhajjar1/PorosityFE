@@ -211,6 +211,18 @@ class EmpiricalSolver:
         self.mesh = mesh
         self.material = material
         self.nodal_knockdown = None
+        # Per-void cache for the discrete-void SCF post-step (#179). Each
+        # entry is a ``(influence_array, scf_dict)`` tuple keyed by the void's
+        # index in ``mesh.porosity_field.discrete_voids``. Both the influence
+        # field (from ``distance_field`` / ``radii``) and the SCF dict are
+        # independent of loading mode and knockdown model — only the scalar
+        # ``scf_dict[mode]`` differs at use time — so they are computed once
+        # and reused across all ``apply_loading`` calls. The mesh, porosity
+        # field, and voids are fixed for a solver instance, so lazy
+        # first-use caching is safe. ``None`` => not yet populated.
+        self._void_scf_cache: (
+            list[tuple[np.ndarray, dict[str, float]]] | None
+        ) = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -462,15 +474,35 @@ class EmpiricalSolver:
         R_eff = 0.1 if R is None else float(R)
         return float(FatigueModel().knockdown_factor(mode, cycles, R_eff))
 
-    def _apply_discrete_void_scf(self, base_knockdown: np.ndarray, mode: str) -> np.ndarray:
-        kd = base_knockdown.copy()
+    def _build_void_scf_cache(self) -> list[tuple[np.ndarray, dict[str, float]]]:
+        """Precompute each discrete void's influence field and SCF dict (#179).
+
+        The per-void influence array (derived from ``distance_field`` and the
+        void radii) and the stress-concentration-factor dict are independent
+        of the loading mode and the knockdown model — only the scalar
+        ``scf_dict[mode]`` selected at use time varies. Computing them once
+        and caching avoids recomputing ``distance_field`` /
+        ``stress_concentration_factor`` on every ``apply_loading`` call
+        (~15x per solver: once per mode x model). The values are byte-for-byte
+        identical to the previous inline computation; this only removes
+        redundant work.
+        """
+        cache: list[tuple[np.ndarray, dict[str, float]]] = []
         for void in self.mesh.porosity_field.discrete_voids:
             scf_dict = void.stress_concentration_factor()
-            scf = scf_dict.get(mode, 1.0)
             dist = void.distance_field(self.mesh.nodes[:, 0],
                                         self.mesh.nodes[:, 1],
                                         self.mesh.nodes[:, 2])
             influence = np.exp(-np.maximum(dist, 0) / max(void.radii))
+            cache.append((influence, scf_dict))
+        return cache
+
+    def _apply_discrete_void_scf(self, base_knockdown: np.ndarray, mode: str) -> np.ndarray:
+        if self._void_scf_cache is None:
+            self._void_scf_cache = self._build_void_scf_cache()
+        kd = base_knockdown.copy()
+        for influence, scf_dict in self._void_scf_cache:
+            scf = scf_dict.get(mode, 1.0)
             kd *= (1.0 - influence * (1.0 - 1.0 / scf))
         return kd
 
