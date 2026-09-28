@@ -51,6 +51,28 @@ All notable changes to PorosityFE will be documented in this file.
 - **App: `run_analysis` builds the field, mesh, and empirical solver
   through `build_empirical_pipeline`**, so changes to mesh defaults or
   ply-angle handling reach the GUI.
+- **`FEVisualizer` closes figures after saving them.** The CLI `--plots`
+  sweep no longer accumulates 100+ open figures. The `Figure` is still
+  returned; without `save_path` it is left open for the caller as before.
+- **Provenance timestamps no longer use the deprecated
+  `datetime.utcnow()`** (Python 3.12+). The `...Z` string format is
+  unchanged.
+- **`validate_porosity --version` falls back to `porosity_fe.__version__`**
+  instead of its own hard-coded version string, leaving
+  `porosity_fe/__init__.py` as the only literal to bump at release.
+
+### Changed
+- **Internal: one implementation per empirical knockdown law.** The
+  Judd-Wright, power-law, and linear forms were each written out in four
+  places in `EmpiricalSolver`; they now live in one table, and every entry
+  point raises the same "Unknown knockdown model" message. Results are
+  bit-identical.
+- **Internal: each `apply_loading()` / `get_failure_load()` call validates
+  a user knockdown callable, and evaluates the hygrothermal and fatigue
+  factors, once** instead of twice.
+- **Internal: the porosity profile normalization is memoized**, and the git
+  commit used in JSON provenance is looked up once per process instead of
+  once per file written.
 
 ## [1.2.0] - 2026-05-11
 
