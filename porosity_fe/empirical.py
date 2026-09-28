@@ -20,8 +20,10 @@ logger = logging.getLogger("porosity_fe_analysis")
 
 #: Upper porosity bound (as a fraction) over which the empirical knockdown
 #: coefficients were calibrated (Elhajjar 2025, ``Vp ≲ 0.05``). Evaluating a
-#: built-in knockdown model at a larger specimen-average ``Vp`` extrapolates
-#: beyond the validated range, so :meth:`EmpiricalSolver.apply_loading` emits a
+#: built-in knockdown model at a larger specimen-average ``Vp``, or at a larger
+#: local ``Vp`` in the per-node field, extrapolates beyond the validated range,
+#: so :meth:`EmpiricalSolver.apply_loading` (local peak) and
+#: :meth:`EmpiricalSolver.get_failure_load` (specimen average) each emit a
 #: single :class:`UserWarning` flagging the extrapolation (CLAUDE.md: "flag
 #: extrapolations explicitly"). User-supplied callables own their own
 #: calibration contract and are exempt from the warning.
@@ -234,6 +236,10 @@ class EmpiricalSolver:
         self._void_scf_cache: (
             list[tuple[np.ndarray, dict[str, float]]] | None
         ) = None
+        # Peak of the distributed porosity over the mesh nodes, for the
+        # extrapolation warning. Lazily cached on the same fixed-mesh
+        # argument as ``_void_scf_cache``. ``None`` => not yet populated.
+        self._local_vp_peak_cache: float | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -347,27 +353,69 @@ class EmpiricalSolver:
         raw = self.f_md / ref
         return max(raw, floor)
 
-    def _warn_if_extrapolated(self, model: object) -> None:
+    def _local_vp_peak(self) -> float:
+        """Peak of the distributed porosity field over the mesh nodes.
+
+        Nodes inside a discrete void carry ``Vp = 1.0`` in
+        ``mesh.porosity``; those are represented by the SCF post-step rather
+        than the empirical law, so they are excluded by sampling only the
+        distributed (through-thickness) component of the field.
+        """
+        if self._local_vp_peak_cache is None:
+            z = self.mesh.nodes[:, 2]
+            dist = self.mesh.porosity_field._distributed_porosity(z)
+            self._local_vp_peak_cache = float(np.max(dist))
+        return self._local_vp_peak_cache
+
+    def _warn_if_extrapolated(self, model: object, *, nodal: bool) -> None:
         """Emit a single ``UserWarning`` when ``Vp`` exceeds the calibration bound.
 
         The built-in empirical coefficients are calibrated to
-        ``Vp ≲ _VP_CALIBRATION_MAX`` (Elhajjar 2025); evaluating them at a
-        larger specimen-average porosity extrapolates beyond the validated
-        range. We warn once per :meth:`apply_loading` call (never per node),
-        naming the offending ``Vp``. User-supplied callables own their own
-        calibration contract (#62), so a non-string ``model`` is exempt.
+        ``Vp ≲ _VP_CALIBRATION_MAX`` (Elhajjar 2025). Two regimes are
+        flagged:
+
+        - the specimen-average ``Vp`` exceeds the bound, so both the
+          specimen-level failure load and the per-node field are
+          extrapolated;
+        - the average is within the bound but the local peak of a
+          ``clustered`` / ``interface`` distribution is not, so the per-node
+          knockdown field is extrapolated near the peak while the
+          specimen-level result is not.
+
+        ``nodal`` says whether the caller's product is the per-node field
+        (:meth:`apply_loading`) or the specimen-average failure load
+        (:meth:`get_failure_load`); only the former checks the local peak.
+        We warn once per public call (never per node). User-supplied
+        callables own their own calibration contract (#62), so a non-string
+        ``model`` is exempt.
         """
         if not isinstance(model, str):
             return
-        vp_max = float(self.mesh.porosity_field.Vp)
-        if vp_max > _VP_CALIBRATION_MAX:
-            warnings.warn(
+        vp_mean = float(self.mesh.porosity_field.Vp)
+        bound = _VP_CALIBRATION_MAX
+        if vp_mean <= bound and not nodal:
+            return
+        vp_peak = self._local_vp_peak() if nodal else vp_mean
+        if vp_mean > bound:
+            peak_note = (f" (local peak Vp = {vp_peak:.4g})"
+                         if vp_peak > vp_mean * (1 + 1e-9) else "")
+            message = (
                 f"Empirical knockdown evaluated beyond calibration bound "
-                f"(Vp <= {_VP_CALIBRATION_MAX}): max Vp = {vp_max:.4g}. "
-                f"Results are extrapolated and may be inaccurate.",
-                UserWarning,
-                stacklevel=3,
+                f"(Vp <= {bound}): specimen-average Vp = {vp_mean:.4g}"
+                f"{peak_note}. Results are extrapolated and may be inaccurate."
             )
+        elif vp_peak > bound:
+            message = (
+                f"Empirical knockdown evaluated beyond calibration bound "
+                f"(Vp <= {bound}) in the per-node field: local peak "
+                f"Vp = {vp_peak:.4g} (specimen-average Vp = {vp_mean:.4g} is "
+                f"within the bound). Per-node knockdowns where Vp > {bound} "
+                f"are extrapolated; get_failure_load() uses the average and "
+                f"is not."
+            )
+        else:
+            return
+        warnings.warn(message, UserWarning, stacklevel=3)
 
     @staticmethod
     def _check_internal_Vp(Vp: float) -> float:
@@ -639,15 +687,23 @@ class EmpiricalSolver:
         **signed** FE stresses and strains in Voigt order
         ``[11, 22, 33, 23, 13, 12]`` (engineering shear).
         """
+        self._populate_nodal_knockdown(mode, model, cycles=cycles,
+                                       environment=environment, R=R)
+        # Flag extrapolation past the empirical calibration bound (#184).
+        # The per-node field is this method's product, so local peaks count.
+        self._warn_if_extrapolated(model, nodal=True)
+
+    def _populate_nodal_knockdown(
+            self, mode: str,
+            model: KnockdownModel | Callable[[float, str], float], *,
+            cycles: float | None, environment: dict[str, float] | None,
+            R: float | None) -> None:
+        """Body of :meth:`apply_loading`, without the extrapolation warning."""
         if mode not in self.PRISTINE_STRENGTH_KEY:
             raise ValueError(
                 f"Unknown loading mode {mode!r}. "
                 f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
             )
-        # Flag extrapolation past the empirical calibration bound (#184).
-        # One warning per call, built-in models only — user callables are
-        # exempt (they own their own calibration contract, #62).
-        self._warn_if_extrapolated(model)
         # #115: vectorize the built-in knockdown evaluation. The scalar list
         # comprehension was ~60x slower than NumPy on the per-node Vp array
         # (4400-element typical mesh). User-supplied callables still get the
@@ -696,7 +752,10 @@ class EmpiricalSolver:
 
         The knockdown is evaluated at the mean Vp (matching how the original
         correlations were calibrated), not at the local peak.  Per-node
-        knockdown is still computed for visualization via apply_loading().
+        knockdown is still populated on ``nodal_knockdown`` for
+        visualization, as :meth:`apply_loading` would. The extrapolation
+        warning checks only the specimen-average ``Vp`` here; call
+        :meth:`apply_loading` directly to be warned about local peaks.
         Optional hygrothermal (``environment``) and S-N fatigue
         (``cycles`` / ``R``) knockdowns compose multiplicatively with the
         porosity knockdown (issue #59).
@@ -743,8 +802,11 @@ class EmpiricalSolver:
             ``__getitem__`` shim and will be removed in a future major
             version — prefer attribute access.
         """
-        self.apply_loading(mode, model,
-                           cycles=cycles, environment=environment, R=R)
+        self._populate_nodal_knockdown(mode, model, cycles=cycles,
+                                       environment=environment, R=R)
+        # The returned failure load uses the specimen-average Vp, so only
+        # the average is checked against the calibration bound here.
+        self._warn_if_extrapolated(model, nodal=False)
         sigma_0 = self._get_pristine_strength(mode)
 
         # Use specimen-average Vp for knockdown (matches calibration basis)

@@ -30,6 +30,28 @@ All notable changes to PorosityFE will be documented in this file.
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
 
+### Fixed
+- **Empirical extrapolation warning now reports the right value and sees
+  local peaks.** The message labelled the specimen-average `Vp` as
+  "max Vp"; it now says "specimen-average Vp". `apply_loading()` also
+  warns when the mean is within the `Vp <= 0.05` calibration bound but a
+  `clustered` / `interface` distribution's local peak is not, since the
+  per-node knockdown field is then extrapolated near the peak.
+  `get_failure_load()` still checks only the mean, because its result uses
+  the mean. Nodes inside discrete voids (`Vp = 1.0`, handled by the SCF
+  step) are excluded from the peak. The warning is now attributed to the
+  caller's line for both entry points.
+- **App: the FE legend entry no longer disappears** for tension, shear,
+  and ILSS runs. It was attached only to a bar in the first (compression)
+  group, where the FE series is not drawn.
+- **App: an FE solver failure no longer discards the empirical results.**
+  Only the FE solve is guarded; on failure `fe_field` is `None` and
+  `fe_skipped_reason` names the exception, which activates the existing
+  "FE solve was skipped" notice.
+- **App: `run_analysis` builds the field, mesh, and empirical solver
+  through `build_empirical_pipeline`**, so changes to mesh defaults or
+  ply-angle handling reach the GUI.
+
 ## [1.2.0] - 2026-05-11
 
 ### Fixed
