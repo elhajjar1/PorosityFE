@@ -617,8 +617,11 @@ class TestCLIMain:
         comparison, and the cross-Vp knockdown curves. Covers the cli.py
         --plots branch and, transitively, viz.plot_model_comparison /
         plot_knockdown_curves (both previously uncovered)."""
+        import matplotlib.pyplot as plt
+
         monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
                             _TINY_CONFIGS)
+        open_before = set(plt.get_fignums())
         rc = porosity_fe_analysis.main([
             '--vp', '0.02',
             '--output-dir', str(tmp_path),
@@ -626,6 +629,8 @@ class TestCLIMain:
             '--quiet',
         ])
         assert rc == 0
+        # Every saved figure is closed (IMPROVEMENT_PLAN 4.5).
+        assert set(plt.get_fignums()) == open_before
         for fname in (
             'porosity_profile_uniform_spherical_2pct.png',
             'porosity_mesh_3d_uniform_spherical_2pct.png',

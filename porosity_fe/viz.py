@@ -24,8 +24,28 @@ logger = logging.getLogger("porosity_fe_analysis")
 # SECTION 7: VISUALIZATION
 # ============================================================
 
+def _finish(fig, save_path):
+    """Save ``fig`` when ``save_path`` is given, then close it.
+
+    Closing detaches the figure from pyplot so batch runs (the CLI
+    ``--plots`` sweep draws 100+) do not accumulate open figures; the
+    returned ``Figure`` can still be saved again. Without ``save_path`` the
+    caller owns the figure and is responsible for closing it.
+    """
+    if save_path:
+        fig.savefig(save_path)
+        logger.info("Saved: %s", save_path)
+        plt.close(fig)
+    return fig
+
+
 class FEVisualizer:
-    """Publication-quality plotting for porosity analysis."""
+    """Publication-quality plotting for porosity analysis.
+
+    Every method returns its ``Figure``. When ``save_path`` is given the
+    figure is written there and closed; otherwise it is left open for the
+    caller.
+    """
 
     @staticmethod
     def plot_porosity_field(porosity_field: PorosityField, save_path: str = None):
@@ -40,10 +60,7 @@ class FEVisualizer:
         ax.set_xlim(left=0)
 
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_mesh_3d(mesh: CompositeMesh, save_path: str = None):
@@ -84,10 +101,7 @@ class FEVisualizer:
         ax.set_zlabel(LABEL_Z_MM)
         ax.set_title('3D Mesh with Porosity')
 
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_mesh_detail(mesh: CompositeMesh, save_path: str = None):
@@ -139,10 +153,7 @@ class FEVisualizer:
         ax.set_aspect('equal')
 
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_damage_contour(mesh: CompositeMesh, solver, save_path: str = None):
@@ -176,10 +187,7 @@ class FEVisualizer:
         ax.set_aspect('equal')
 
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_void_scf(void_geometry: VoidGeometry, save_path: str = None):
@@ -209,10 +217,7 @@ class FEVisualizer:
         ax.set_aspect('equal')
 
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_knockdown_curves(results_by_porosity: dict, save_path: str = None):
@@ -244,10 +249,7 @@ class FEVisualizer:
 
         plt.suptitle('Porosity Knockdown Curves')
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)
 
     @staticmethod
     def plot_model_comparison(results: dict, save_path: str = None):
@@ -287,7 +289,4 @@ class FEVisualizer:
 
         plt.suptitle('Model Comparison')
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path)
-            logger.info("Saved: %s", save_path)
-        return fig
+        return _finish(fig, save_path)

@@ -128,6 +128,45 @@ class TestFEVisualizer:
         assert os.path.exists(path)
         plt.close('all')
 
+    _PLOTS = {
+        'porosity_field': lambda s: (FEVisualizer.plot_porosity_field, (s.pf,)),
+        'mesh_3d': lambda s: (FEVisualizer.plot_mesh_3d, (s.mesh,)),
+        'mesh_detail': lambda s: (FEVisualizer.plot_mesh_detail, (s.mesh,)),
+        'damage_contour': lambda s: (FEVisualizer.plot_damage_contour,
+                                     (s.mesh, s.solver)),
+        'void_scf': lambda s: (FEVisualizer.plot_void_scf,
+                               (VoidGeometry(center=(0, 0, 0), radii=(1, 1, 1)),)),
+        'knockdown_curves': lambda s: (FEVisualizer.plot_knockdown_curves,
+                                       (s._two_vp_results(),)),
+        'model_comparison': lambda s: (
+            FEVisualizer.plot_model_comparison,
+            (compare_configurations(
+                0.03, configs={'uniform_spherical':
+                               POROSITY_CONFIGS['uniform_spherical']}),)),
+    }
+
+    @pytest.mark.parametrize("name", sorted(_PLOTS))
+    def test_saving_closes_the_figure(self, name, tmp_path):
+        """IMPROVEMENT_PLAN 4.5: a saved figure is closed so batch runs do
+        not accumulate open figures; the returned Figure stays usable."""
+        plot, args = self._PLOTS[name](self)
+        plt.close('all')
+        path = tmp_path / f"{name}.png"
+        fig = plot(*args, save_path=str(path))
+        assert path.exists()
+        assert plt.get_fignums() == []
+        again = tmp_path / f"{name}_again.png"
+        fig.savefig(again)
+        assert again.exists()
+
+    @pytest.mark.parametrize("name", sorted(_PLOTS))
+    def test_unsaved_figure_is_left_open(self, name):
+        plot, args = self._PLOTS[name](self)
+        plt.close('all')
+        fig = plot(*args)
+        assert plt.get_fignums() == [fig.number]
+        plt.close(fig)
+
 
 class TestAnalysisPipeline:
     def test_compare_configurations_returns_all_configs(self):
