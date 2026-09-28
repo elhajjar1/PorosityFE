@@ -313,6 +313,16 @@ class TestResultsSchemaAndReproducibility:
             0.0, 90.0, 45.0]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_git_sha_cache():
+    """``_git_commit_sha`` is cached per process; tests that mock
+    ``subprocess.run`` need a cold cache and must not leak their result."""
+    from porosity_fe import io as io_mod
+    io_mod._git_commit_sha.cache_clear()
+    yield
+    io_mod._git_commit_sha.cache_clear()
+
+
 class TestBuildProvenance:
     """Tests for the _build_provenance() reproducibility helper."""
 
@@ -359,6 +369,36 @@ class TestBuildProvenance:
         import datetime
         ts = prov['timestamp_utc'].rstrip('Z')
         datetime.datetime.fromisoformat(ts)  # raises if malformed
+
+    def test_timestamp_format_is_naive_iso_plus_z(self):
+        """The stamp keeps its original ``YYYY-MM-DDTHH:MM:SS[.ffffff]Z``
+        shape; a timezone-aware isoformat() would add ``+00:00``."""
+        import re
+        prov = _build_provenance()
+        pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?Z"
+        assert re.fullmatch(pattern, prov['timestamp_utc'])
+
+    def test_no_deprecation_warning(self):
+        """``datetime.utcnow()`` is deprecated on Python 3.12+."""
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', DeprecationWarning)
+            _build_provenance()
+
+    def test_git_is_queried_once_per_process(self, monkeypatch):
+        from porosity_fe import io as io_mod
+        calls = []
+        real_run = io_mod.subprocess.run
+
+        def _counting_run(*args, **kwargs):
+            calls.append(args)
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(io_mod.subprocess, "run", _counting_run)
+        first = _build_provenance()
+        second = _build_provenance()
+        assert len(calls) == 1
+        assert first['git_commit'] == second['git_commit']
 
     def test_platform_is_non_null_string(self):
         prov = _build_provenance()

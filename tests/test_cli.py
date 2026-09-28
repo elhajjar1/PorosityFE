@@ -35,6 +35,21 @@ class TestValidateCLISmoke:
             main(['--help'])
         assert exc.value.code == 0
 
+    def test_version_fallback_uses_package_version(self, monkeypatch):
+        """Without installed metadata the CLI reports
+        ``porosity_fe.__version__`` rather than its own literal."""
+        import importlib.metadata as ilm
+
+        import porosity_fe
+        from validate_porosity_cli import _resolve_version
+
+        def _missing(_name):
+            raise ilm.PackageNotFoundError("porosity-fe")
+
+        monkeypatch.setattr(ilm, "version", _missing)
+        monkeypatch.setattr(porosity_fe, "__version__", "9.9.9-test")
+        assert _resolve_version() == "9.9.9-test"
+
 
 # A schema-valid dataset whose (fiber, matrix) maps to the
 # AS4_3501_6_epoxy preset, so the whole validate pipeline (load ->
