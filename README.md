@@ -60,7 +60,9 @@ optional `web` extra (see `pyproject.toml`); install it via
 `streamlit run app.py`.
 
 ### Run tests
+The tests import the installed package, so install it first:
 ```bash
+pip install -e ".[dev]"     # or ".[all]" to include the Streamlit app tests
 pytest tests/ -v
 ```
 

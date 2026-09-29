@@ -123,10 +123,10 @@ for `app.py`. Don't reorder those imports.
 
 ### Test conftest layout
 
-The repo-root `conftest.py` adjusts `sys.path` so tests can find
-`porosity_fe`, `app`, `validate_porosity_cli`, and `validation` without an
-editable install (CI installs deps but historically not the package
-itself). `tests/conftest.py` adds the `_restore_porosity_logger`
+Tests import `porosity_fe`, `app`, `validate_porosity_cli`, and
+`validation` from the installed package, so run them after
+`pip install -e ".[dev]"` (CI does the same; there is no repo-root
+`sys.path` shim). `tests/conftest.py` adds the `_restore_porosity_logger`
 autouse fixture that undoes `_configure_cli_logging`'s
 `propagate = False` between tests — required because alphabetical
 collection puts `test_cli.py` first.
@@ -148,7 +148,8 @@ collection puts `test_cli.py` first.
 
 `.github/workflows/tests.yml` runs three jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
-`{3.10, 3.11, 3.12, 3.13}`), and `streamlit_smoke` (decoupled
+`{3.10, 3.11, 3.12, 3.13}` against an editable install; the ubuntu/3.12
+cell also measures coverage and uploads `coverage.xml` as an artifact), and `streamlit_smoke` (decoupled
 single-OS/Python import-only check — Streamlit wheel availability on 3.13
 can't be allowed to drop the whole library matrix red, see issue #157).
 `security.yml` runs `pip-audit` weekly. Match the matrix when adding

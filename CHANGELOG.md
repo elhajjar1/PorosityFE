@@ -62,6 +62,15 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **CI installs the package** (`pip install -e ".[dev]"`) in the lint, test
+  and Streamlit jobs, so tests exercise the real packaging, and the
+  repo-root `conftest.py` `sys.path` shim is removed. Run tests after an
+  editable install.
+- **CI measures coverage** on the ubuntu / Python 3.12 test cell and uploads
+  `coverage.xml` as a workflow artifact. `pytest-cov` joins the `dev` extra.
+- **CI caches pip downloads** in the test, security and executable-build
+  workflows, and the executable build installs its runtime dependencies
+  from `requirements.txt` instead of a hand-written list.
 - **Internal: one implementation per empirical knockdown law.** The
   Judd-Wright, power-law, and linear forms were each written out in four
   places in `EmpiricalSolver`; they now live in one table, and every entry
