@@ -69,7 +69,12 @@ different numerical answers for the same inputs**, not the same answer:
   floors `_F_MD_FLOOR` / `_F_MD_FLOOR_ILSS`).
 - `FESolver` (`porosity_fe/fe/solver.py`) — builds a hex8 mesh and
   applies stiffness degradation **per element** via Eshelby/Mori-Tanaka
-  micromechanics on the local `Vp(x, y, z)`. Strength degradation uses a
+  micromechanics on the local `Vp(x, y, z)`. Assembly and stress recovery
+  run on batched per-element arrays (`porosity_fe/fe/batch.py`), not
+  per-element `Hex8Element` objects (kept as the public reference
+  implementation and tested for agreement); the assembled `K` and its LU
+  factorization are cached on the assembler / solver and reused across
+  solves until the mesh, material or porosity change. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
   `_degraded_strengths`). The FE path **does** pick up distribution-shape
   differences.
@@ -149,7 +154,8 @@ collection puts `test_cli.py` first.
 `.github/workflows/tests.yml` runs three jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
 `{3.10, 3.11, 3.12, 3.13}` against an editable install; the ubuntu/3.12
-cell also measures coverage and uploads `coverage.xml` as an artifact), and `streamlit_smoke` (decoupled
+cell also measures coverage, uploads `coverage.xml` as an artifact, and
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`), and `streamlit_smoke` (decoupled
 single-OS/Python import-only check — Streamlit wheel availability on 3.13
 can't be allowed to drop the whole library matrix red, see issue #157).
 `security.yml` runs `pip-audit` weekly. Match the matrix when adding

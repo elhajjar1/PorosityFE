@@ -62,6 +62,17 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **FE solves are ~5x faster, and repeat solves ~60x faster.** On the
+  production mesh (30x10x12, 3,600 elements) a first solve went from
+  14 s (clustered porosity) / 9.6 s (uniform) to ~2.6 s / ~2.1 s, now
+  bound by the sparse LU factorization. Assembly and stress recovery use
+  batched per-element arrays instead of per-element Python objects, and
+  recovery reuses what assembly computed. The FE knockdown, penalty BCs
+  and mesh-quality check are vectorized. The assembled stiffness and its
+  factorization are reused across solves with the same constraints
+  (e.g. compression after tension: ~0.23 s), and are rebuilt
+  automatically if the mesh, material or porosity change. Results agree
+  with the previous implementation to ~1e-11 relative.
 - **The validation datasets are tracked in git like any other file.**
   `.gitignore` used to ignore the whole `validation/` tree even though the
   datasets were committed, so `git add` silently skipped a newly added
