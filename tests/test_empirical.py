@@ -1142,3 +1142,15 @@ class TestKnockdownDispatch:
         msg = str(exc.value)
         assert msg.startswith(expected)
         assert msg.endswith(" or pass a callable.") is callable_ok
+
+    def test_new_law_without_derivatives_is_not_treated_as_linear(self, monkeypatch):
+        """A law added to _KNOCKDOWN_LAWS must not silently inherit the
+        linear law's analytic derivatives."""
+        from porosity_fe import empirical as emp_mod
+        laws = dict(emp_mod._KNOCKDOWN_LAWS)
+        laws['quadratic'] = (lambda Vp, c: (1.0 - c * Vp) ** 2, 'LINEAR_BETA')
+        monkeypatch.setattr(emp_mod, '_KNOCKDOWN_LAWS', laws)
+        with pytest.raises(NotImplementedError, match="sensitivity_fd"):
+            self.solver.local_sensitivities('compression', 'quadratic')
+        # The finite-difference path still works for such a law.
+        assert np.isfinite(self.solver.sensitivity_fd('compression', 'quadratic'))

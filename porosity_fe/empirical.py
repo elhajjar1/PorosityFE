@@ -1004,7 +1004,7 @@ class EmpiricalSolver:
                 else:
                     d_dcoef = float(kd * np.log(one_minus))
                     d_dVp = float(-coef * one_minus**(coef - 1.0))
-            case _:  # linear
+            case 'linear':
                 # The linear law is clipped at 0: once 1 - beta*Vp <= 0 the
                 # piecewise-constant 0 floor has zero gradient.
                 if kd <= 0.0:
@@ -1013,6 +1013,11 @@ class EmpiricalSolver:
                 else:
                     d_dVp = float(-coef)
                     d_dcoef = float(-Vp)
+            case _:
+                raise NotImplementedError(
+                    f"No analytic sensitivities for knockdown model {model!r}; "
+                    f"use sensitivity_fd() instead."
+                )
         return {'KD': kd, 'dKD_dVp': d_dVp, 'dKD_dcoef': d_dcoef}
 
     def sensitivity_fd(self, mode: str = 'compression',
