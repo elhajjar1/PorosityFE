@@ -15,9 +15,9 @@ through the empirical pipeline to produce `validation_master_report.png`
 `validation/datasets/` into the distributed executable, so a new dataset
 ships automatically with the next release build.
 
-The whole `validation/` tree is gitignored (the digitized values come
-from published figures and stay out of the repo). New datasets are
-shared via the bundled executable or by hand-off, not via git.
+The datasets are tracked in the GitHub repository, which is also where
+they are backed up. Commit a new dataset JSON together with any test or
+README MAE updates it causes.
 
 ## Required information from the user
 
@@ -107,6 +107,6 @@ reject it.
 - **Schema changes.** If the user has data that doesn't fit any of the
   nine `patternProperties` keys, that's a schema edit, not a dataset
   add — surface it as a follow-up and don't widen the schema silently.
-- **Committing or pushing the JSON.** The `validation/` tree is
-  gitignored on purpose (digitized data from published figures). The
-  dataset travels with the next PyInstaller build, not via git.
+- **Leaving the JSON uncommitted.** The datasets live in git; an
+  uncommitted dataset is not backed up and doesn't reach CI or the next
+  release build.

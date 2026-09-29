@@ -15,9 +15,6 @@ JOSS/
 # at the bottom of this file.
 docs/superpowers/
 
-# Validation data (digitized from published figures)
-validation/
-
 # OS files
 .DS_Store
 Thumbs.db

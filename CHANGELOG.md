@@ -62,6 +62,11 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The validation datasets are tracked in git like any other file.**
+  `.gitignore` used to ignore the whole `validation/` tree even though the
+  datasets were committed, so `git add` silently skipped a newly added
+  dataset. The blanket rule is removed; the generated
+  `validation_*_report` files stay ignored.
 - **`elhajjar1/PorosityFE` is the canonical repository.** The PyPI project
   URLs (homepage, repository, issues, documentation), the app's README
   link, the docs and the Streamlit deployment guide now point there, in
