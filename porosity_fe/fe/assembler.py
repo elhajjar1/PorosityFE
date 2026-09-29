@@ -397,17 +397,18 @@ class BoundaryHandler:
         if not constrained_dofs:
             return K, F
 
-        # Ensure K is in a sparse format that supports conversion to LIL
         if not scipy.sparse.issparse(K):
             K = scipy.sparse.csc_matrix(K)
-        K_lil = K.tolil()
         F_mod = F.copy()
 
         diag_max = np.abs(K.diagonal()).max()
         alpha = penalty_factor * max(diag_max, 1.0)
 
-        for dof, val in constrained_dofs.items():
-            K_lil[dof, dof] += alpha
-            F_mod[dof] = alpha * val
+        n = len(constrained_dofs)
+        dofs = np.fromiter(constrained_dofs.keys(), dtype=np.intp, count=n)
+        vals = np.fromiter(constrained_dofs.values(), dtype=float, count=n)
+        penalty = scipy.sparse.csc_matrix(
+            (np.full(n, alpha), (dofs, dofs)), shape=K.shape)
+        F_mod[dofs] = alpha * vals
 
-        return K_lil.tocsc(), F_mod
+        return (K + penalty).tocsc(), F_mod

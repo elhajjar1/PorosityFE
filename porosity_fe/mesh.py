@@ -393,30 +393,21 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     from .fe.element import Hex8Element
 
     n_elem = mesh.n_elements
-    aspect_ratios = np.empty(n_elem)
-    min_detJ_per_elem = np.empty(n_elem)
+    coords = mesh.nodes[mesh.elements]  # (n_elem, 8, 3)
 
-    for e in range(n_elem):
-        node_ids = mesh.elements[e]
-        coords = mesh.nodes[node_ids]  # (8, 3)
+    # Aspect ratio: ratio of max edge length to min edge length over the
+    # 12 edges of each hexahedron.
+    edge_a = np.array([0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3])  # bottom, top,
+    edge_b = np.array([1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7])  # vertical
+    edge_lengths = np.linalg.norm(coords[:, edge_a] - coords[:, edge_b], axis=2)
+    min_len = edge_lengths.min(axis=1)
+    max_len = edge_lengths.max(axis=1)
+    with np.errstate(divide='ignore'):
+        aspect_ratios = np.where(min_len > 1e-15, max_len / min_len, np.inf)
 
-        # Aspect ratio: ratio of max edge length to min edge length
-        # Check all 12 edges of a hexahedron
-        edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),  # bottom face
-            (4, 5), (5, 6), (6, 7), (7, 4),  # top face
-            (0, 4), (1, 5), (2, 6), (3, 7),  # vertical edges
-        ]
-        edge_lengths = np.array([np.linalg.norm(coords[a] - coords[b])
-                                  for a, b in edges])
-        min_len = edge_lengths.min()
-        max_len = edge_lengths.max()
-        aspect_ratios[e] = max_len / min_len if min_len > 1e-15 else np.inf
-
-        # Jacobian at element center
-        dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
-        J = dN @ coords
-        min_detJ_per_elem[e] = np.linalg.det(J)
+    # Jacobian at element center
+    dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
+    min_detJ_per_elem = np.linalg.det(np.einsum('ij,ejk->eik', dN, coords))
 
     n_inverted = int(np.sum(min_detJ_per_elem < 0))
     n_distorted = int(np.sum(aspect_ratios > 20.0))
