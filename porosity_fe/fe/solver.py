@@ -887,9 +887,6 @@ class FESolver:
         knockdown : float
             Modulus ratio ``E_porous / E_pristine``, clamped to ``<= 1.0``.
         """
-        n_elem = self.mesh.n_elements
-        n_gp = 8  # 2x2x2
-
         if loading == 'ilss':
             comp_idx = 4
         else:
@@ -898,23 +895,19 @@ class FESolver:
         avg_sigma = np.mean(stress_global[:, :, comp_idx])
 
         # Pristine reference: compute the same Voigt component using the
-        # rotated pristine stiffness applied to the recovered strain field.
+        # rotated pristine stiffness applied to the recovered strain field,
+        # with one rotation per distinct ply angle.
         C_base = self.material.get_stiffness_matrix()
-        pristine_sigma_sum = 0.0
-        pristine_count = 0
-        for e in range(n_elem):
-            ply_rad = np.radians(float(self.mesh.ply_angles[e]))
-            if abs(ply_rad) > 1e-15:
-                C_prist_rot = rotate_stiffness_3d(C_base, ply_rad, axis='z')
-            else:
-                C_prist_rot = C_base
-            for g in range(n_gp):
-                eps = strain_global[e, g]
-                pristine_sig = float(C_prist_rot[comp_idx, :] @ eps)
-                pristine_sigma_sum += pristine_sig
-                pristine_count += 1
-
-        pristine_avg = pristine_sigma_sum / pristine_count if pristine_count > 0 else 1.0
+        angles, angle_idx = np.unique(
+            np.asarray(self.mesh.ply_angles, dtype=float), return_inverse=True)
+        rows = np.empty((len(angles), 6))
+        for k, angle in enumerate(angles):
+            ply_rad = np.radians(angle)
+            C_rot = (rotate_stiffness_3d(C_base, ply_rad, axis='z')
+                     if abs(ply_rad) > 1e-15 else C_base)
+            rows[k] = C_rot[comp_idx, :]
+        pristine_sig = np.einsum('ej,egj->eg', rows[angle_idx], strain_global)
+        pristine_avg = float(pristine_sig.mean()) if pristine_sig.size else 1.0
 
         if abs(pristine_avg) > 1e-12:
             knockdown = abs(avg_sigma) / abs(pristine_avg)

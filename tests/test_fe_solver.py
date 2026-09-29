@@ -1640,3 +1640,31 @@ class TestElementBatchMatchesHex8Element:
         mesh.porosity[0] = 3.0
         with pytest.raises(ValueError, match="not a percent"):
             build_element_batch(mesh, mat, pf.void_shape_radii)
+
+
+class TestComputeKnockdownVectorized:
+    """IMPROVEMENT_PLAN 1.3: the vectorized knockdown matches the original
+    per-element / per-Gauss-point loop."""
+
+    @pytest.mark.parametrize("loading", ["compression", "ilss"])
+    def test_matches_reference_loop(self, loading):
+        from porosity_fe.transforms import rotate_stiffness_3d
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.04, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=6,
+                             ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
+        solver = FESolver(mesh, mat, pf)
+        rng = np.random.default_rng(1)
+        strain = rng.normal(size=(mesh.n_elements, 8, 6))
+        stress = rng.normal(size=(mesh.n_elements, 8, 6))
+        comp = 4 if loading == 'ilss' else 0
+        C_base = mat.get_stiffness_matrix()
+        total = 0.0
+        for e in range(mesh.n_elements):
+            rad = np.radians(float(mesh.ply_angles[e]))
+            C = rotate_stiffness_3d(C_base, rad, axis='z') if abs(rad) > 1e-15 else C_base
+            for g in range(8):
+                total += float(C[comp, :] @ strain[e, g])
+        ref = abs(np.mean(stress[:, :, comp])) / abs(total / (mesh.n_elements * 8))
+        got = solver._compute_knockdown(loading, stress, strain)
+        assert got == pytest.approx(min(ref, 1.0), rel=1e-12)
