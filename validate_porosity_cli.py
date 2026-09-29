@@ -165,10 +165,7 @@ def main(argv=None) -> int:
     # Resolve dataset directory
     datasets_dir = args.datasets or _resolve_bundled_datasets_dir()
     if not Path(datasets_dir).is_dir():
-        print(f"ERROR: Datasets directory not found: {datasets_dir}\n"
-              f"The validation datasets are not distributed with the source "
-              f"repository. Pass --datasets DIR pointing at a folder of "
-              f"dataset JSON files.",
+        print(f"ERROR: Datasets directory not found: {datasets_dir}",
               file=sys.stderr)
         return 2
 

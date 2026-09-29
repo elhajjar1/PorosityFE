@@ -1,0 +1,46 @@
+{
+  "reference": "Liu, H., Cui, H., Wen, W., Su, X., Kang, H., & Engler-Pinto, C. (2018). The effect of voids on the quasi-static tensile properties of carbon fiber/polymer-laminated composites. Journal of Composite Materials, 52(6), 755-771.",
+  "doi": "10.1177/0021998317737827",
+  "data_source": "Tables 2-3",
+  "material": {
+    "fiber": "T300",
+    "matrix": "924 epoxy",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 8,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)8"
+  },
+  "porosity_measurement": "digital microscopy + density",
+  "baseline_porosity_pct": 0.2,
+  "properties": {
+    "tensile_strength": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.2, 0.5, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.985, 0.965, 0.940, 0.910, 0.875],
+      "digitization_method": "tabulated"
+    },
+    "tensile_modulus": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 0, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.2, 0.5, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.998, 0.995, 0.990, 0.985, 0.980],
+      "digitization_method": "tabulated"
+    },
+    "transverse_tensile_strength": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.2, 0.5, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.970, 0.920, 0.860, 0.790, 0.710],
+      "digitization_method": "tabulated"
+    },
+    "transverse_tensile_modulus": {
+      "test_standard": "ASTM D3039",
+      "test_config": {"loading_direction_deg": 90, "temperature_C": 23, "n_specimens_per_point": 5},
+      "void_content_pct": [0.2, 0.5, 1.0, 1.5, 2.0, 2.5],
+      "normalized_values": [1.000, 0.990, 0.970, 0.950, 0.925, 0.895],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "6 porosity levels controlled via molding pressure. Both longitudinal and transverse measurements."
+}

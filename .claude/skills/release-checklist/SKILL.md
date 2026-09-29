@@ -10,12 +10,10 @@ PorosityFE has two version sources of truth and one bundled binary:
 - `pyproject.toml` → `[project] version` — the canonical version.
 - `porosity_fe/__init__.py:__version__` — the fallback used in source
   checkouts that aren't pip-installed. **Keep these two in lockstep.**
-- `dist/validate_porosity/validate_porosity` — the PyInstaller-built CLI.
-  CI builds it per push (see `.github/workflows/build-executables.yml`),
-  but the validation datasets are not in the repository, so CI builds
-  bundle **no** datasets. An executable with the bundled validation
-  database has to be built locally on a machine that has
-  `validation/datasets/*.json`.
+- `dist/validate_porosity/validate_porosity` — the PyInstaller-built CLI
+  with the bundled validation database. CI builds this automatically per
+  push (see `.github/workflows/build-executables.yml`), but a local
+  rebuild verifies the spec still works before tagging.
 
 The CI matrix (`.github/workflows/tests.yml`) runs on Ubuntu/macOS/Windows
 × Python 3.10/3.11/3.12/3.13 plus a decoupled Streamlit smoke job and a
@@ -65,9 +63,7 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    ```
 
 5. **Rebuild the standalone CLI** to verify the PyInstaller spec still
-   works and the validation datasets bundle cleanly. This needs the
-   datasets present locally in `validation/datasets/`; the spec prints how
-   many it bundled, and warns if it found none:
+   works and the validation datasets bundle cleanly:
    ```bash
    pip install pyinstaller
    python -m PyInstaller ValidatePorosity.spec --noconfirm --clean

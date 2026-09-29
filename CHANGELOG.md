@@ -66,14 +66,6 @@ All notable changes to PorosityFE will be documented in this file.
   URLs (homepage, repository, issues, documentation), the app's README
   link, the docs and the Streamlit deployment guide now point there, in
   line with the README, `CITATION.cff` and `CONTRIBUTING.md`.
-- **The validation datasets are no longer in the GitHub repository.** The
-  13 digitized dataset JSONs and the generated validation reports are
-  untracked, and `.gitignore` now ignores `validation/datasets/` (the
-  validation code and schemas stay tracked). Tests that read the datasets
-  skip when they are absent, so CI no longer runs the validation suite,
-  and CI-built `validate_porosity` executables bundle no datasets (pass
-  `--datasets DIR`, or build locally with the datasets present). The CLI's
-  missing-datasets error now says so.
 - **CI installs the package** (`pip install -e ".[dev]"`) in the lint, test
   and Streamlit jobs, so tests exercise the real packaging, and the
   repo-root `conftest.py` `sys.path` shim is removed. Run tests after an

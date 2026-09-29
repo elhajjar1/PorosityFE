@@ -1,0 +1,25 @@
+{
+  "reference": "Bowles, K.J., & Frimpong, S. (1992). Voids effects on the interlaminar shear strength of unidirectional graphite-fiber-reinforced composites. Journal of Composite Materials, 26(10), 1487-1509.",
+  "doi": "10.1177/002199839202601005",
+  "data_source": "Tables + Figs. 5-6",
+  "material": {
+    "fiber": "IM7",
+    "matrix": "8551-7 epoxy",
+    "fiber_volume_fraction": 0.60,
+    "n_plies": 24,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "(0)24"
+  },
+  "porosity_measurement": "density + cross-section",
+  "baseline_porosity_pct": 0.2,
+  "properties": {
+    "ilss": {
+      "test_standard": "ASTM D2344",
+      "test_config": {"temperature_C": 23, "n_specimens_per_point": 6},
+      "void_content_pct": [0.2, 0.8, 1.5, 2.5, 4.0, 6.0],
+      "normalized_values": [1.000, 0.950, 0.890, 0.810, 0.700, 0.580],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "Different fiber system (IM7 toughened epoxy) from T-series. Classic ILSS-vs-voids reference."
+}

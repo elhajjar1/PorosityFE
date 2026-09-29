@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Tests for validation dataset schema and loader."""
 
-import glob
 import json
 import os
 import tempfile
@@ -12,17 +11,6 @@ import pytest
 
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            'validation', 'schemas', 'validation_dataset_schema.json')
-
-# The digitized literature datasets are kept out of the GitHub repository;
-# tests that read them run only where validation/datasets/*.json exists
-# locally, and are skipped in CI.
-_DATASETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             'validation', 'datasets')
-requires_datasets = pytest.mark.skipif(
-    not glob.glob(os.path.join(_DATASETS_DIR, '*.json')),
-    reason="validation datasets are not in the repository; "
-           "copy them into validation/datasets/ to run these tests",
-)
 
 
 def test_schema_file_exists():
@@ -55,7 +43,6 @@ def test_load_dataset_rejects_invalid_json():
         os.unlink(tmppath)
 
 
-@requires_datasets
 def test_elhajjar_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -66,7 +53,6 @@ def test_elhajjar_dataset_loads():
     assert data['material']['n_plies'] == 10
 
 
-@requires_datasets
 def test_liu_2006_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -76,7 +62,6 @@ def test_liu_2006_dataset_loads():
     assert data['material']['layup_name'] == '[0/90]3s'
 
 
-@requires_datasets
 def test_stamopoulos_2016_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -85,7 +70,6 @@ def test_stamopoulos_2016_dataset_loads():
     assert len(data['properties']) == 6
 
 
-@requires_datasets
 def test_ghiorse_1993_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -94,7 +78,6 @@ def test_ghiorse_1993_dataset_loads():
     assert 'ilss' in data['properties']
 
 
-@requires_datasets
 def test_olivier_1995_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -103,7 +86,6 @@ def test_olivier_1995_dataset_loads():
     assert 'tensile_strength' in data['properties']
 
 
-@requires_datasets
 def test_almeida_1994_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -112,7 +94,6 @@ def test_almeida_1994_dataset_loads():
     assert 'ilss' in data['properties']
 
 
-@requires_datasets
 def test_tang_1987_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -121,7 +102,6 @@ def test_tang_1987_dataset_loads():
     assert 'ilss' in data['properties']
 
 
-@requires_datasets
 def test_bowles_1992_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -130,7 +110,6 @@ def test_bowles_1992_dataset_loads():
     assert 'ilss' in data['properties']
 
 
-@requires_datasets
 def test_jeong_1997_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -139,7 +118,6 @@ def test_jeong_1997_dataset_loads():
     assert 'ilss' in data['properties']
 
 
-@requires_datasets
 def test_liu_2018_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -148,7 +126,6 @@ def test_liu_2018_dataset_loads():
     assert 'tensile_strength' in data['properties']
 
 
-@requires_datasets
 def test_zhang_peek_2025_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -157,7 +134,6 @@ def test_zhang_peek_2025_dataset_loads():
     assert 'transverse_tensile_strength' in data['properties']
 
 
-@requires_datasets
 def test_wen_2023_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -166,7 +142,6 @@ def test_wen_2023_dataset_loads():
     assert 'compression_strength' in data['properties']
 
 
-@requires_datasets
 def test_wang_2022_dataset_loads():
     from validation.validate_all import load_dataset
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -274,7 +249,6 @@ def test_summarize_mae_handles_empty():
     assert math.isnan(s['point_weighted_mae'])
 
 
-@requires_datasets
 def test_run_all_produces_per_dataset_mae():
     from validation.validate_all import run_all_datasets
     results = run_all_datasets()
@@ -285,7 +259,6 @@ def test_run_all_produces_per_dataset_mae():
     assert 0 <= liu['ilss']['mae'] <= 100
 
 
-@requires_datasets
 def test_elhajjar_validation_matches_existing():
     """Regression: Elhajjar compression MAE is in expected range."""
     from validation.validate_all import run_all_datasets
@@ -296,7 +269,6 @@ def test_elhajjar_validation_matches_existing():
     assert abs(elh['compression_strength']['mae'] - 6.9) < 1.5
 
 
-@requires_datasets
 def test_liu_2006_validation_matches_existing():
     from validation.validate_all import run_all_datasets
     results = run_all_datasets()
@@ -446,7 +418,6 @@ def test_transverse_tensile_strength_is_routed_to_transverse_tension_mode():
     assert _PROPERTY_TO_MODE['transverse_tensile_strength'] == 'transverse_tension'
 
 
-@requires_datasets
 def test_transverse_tensile_strength_predicts_in_run_all():
     """Datasets with transverse_tensile_strength must now produce a real MAE
     (no longer skipped — see issue #35).  The MAE must be below the
@@ -563,7 +534,6 @@ def _all_results():
         return run_all_datasets()
 
 
-@requires_datasets
 @pytest.mark.parametrize("key", sorted(_MAE_BASELINES),
                          ids=lambda k: f"{k[0]}:{k[1]}")
 def test_per_dataset_mae_regression_pinned(key, _all_results):
@@ -591,14 +561,12 @@ def serial_results():
     return run_all_datasets(n_jobs=1)
 
 
-@requires_datasets
 def test_n_jobs_default_is_serial_path(serial_results):
     """n_jobs=1 (default) must equal an explicit serial run — back-compat."""
     from validation.validate_all import run_all_datasets
     assert run_all_datasets() == serial_results
 
 
-@requires_datasets
 def test_run_all_datasets_parallel_matches_serial(serial_results):
     """run_all_datasets(n_jobs=2) must return a result *equal* to the serial
     path: same keys, same order, same values (issue #56)."""
@@ -610,7 +578,6 @@ def test_run_all_datasets_parallel_matches_serial(serial_results):
     assert parallel_results == serial_results
 
 
-@requires_datasets
 def test_run_all_datasets_n_jobs_all_cores_matches_serial(serial_results):
     """n_jobs=-1 (all cores) must also be identical to the serial path."""
     from validation.validate_all import run_all_datasets

@@ -107,15 +107,10 @@ handling, change it here, not at the call sites.
 
 `validation/datasets/*.json` holds 13 peer-reviewed experimental
 datasets, schema-validated against
-`validation/schemas/validation_dataset_schema.json`. The datasets are
-digitized from published figures and are **not in the GitHub repository**:
-`validation/datasets/` is gitignored, and only machines that have a copy
-can run the validation suite. Tests that read them
-(`tests/test_validation_database.py`, marked `requires_datasets`) skip
-when the files are absent, so CI does not run them. The PyInstaller spec
-bundles whatever datasets are present, so an executable with the
-database must be built locally; CI builds bundle none. The validation
-code and schemas under `validation/` are tracked normally. `validate_porosity_cli.py` calls
+`validation/schemas/validation_dataset_schema.json`. The whole tree is
+gitignored (digitized from published figures, kept out of the repo); the
+PyInstaller spec bundles it into the CLI executable so end users get an
+offline-runnable validator. `validate_porosity_cli.py` calls
 `validation/validate_all.py` to run every dataset through the empirical
 pipeline and emit `validation_master_report.png` + `validation_detail_report.md`.
 
