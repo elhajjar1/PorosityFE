@@ -97,10 +97,8 @@ select = ["E", "F", "I", "B", "UP"]
 ignore = [
     # UP006/UP035: rewriting `typing.Tuple/Dict/List` -> builtin generics
     # across ~50 public signatures is a separate, behavior-touching slice
-    # (see issue #54 item 2) and the project supports Python 3.9 without
-    # `from __future__ import annotations`, so annotations are evaluated at
-    # runtime. Kept out of scope here; tightening signatures is tracked
-    # separately.
+    # (see issue #54 item 2). Kept out of scope here; tightening signatures
+    # is tracked separately.
     "UP006",
     "UP035",
 ]

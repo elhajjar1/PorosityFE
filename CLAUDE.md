@@ -163,7 +163,10 @@ version-sensitive code.
   micromechanics path and the empirical path read from the same dataclass,
   so populate constituent fields (`matrix_modulus`, `fiber_volume_fraction`,
   etc.) even if you only plan to exercise the empirical solver.
-- **New empirical correlation**: add to `EmpiricalSolver`. Take `Vp` as a
+- **New empirical correlation**: register the law function in
+  `_KNOCKDOWN_LAWS` (`porosity_fe/empirical.py`), the one place every
+  solver path looks laws up; add its QI table to `Calibration`, its name to
+  `KnockdownModel`, and a `local_sensitivities` branch. Take `Vp` as a
   fraction in `[0, 1]`, return `KD ∈ (0, 1]`. Document the calibration
   set, the regression form (`ln(KD)` vs `Vp` for Judd-Wright,
   `ln(KD)` vs `ln(1-Vp)` for power law), and the validity bound. Custom

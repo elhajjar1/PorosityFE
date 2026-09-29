@@ -12,7 +12,7 @@ All notable changes to PorosityFE will be documented in this file.
   reading only the JSON can tell whether `knockdown` is a fraction, a
   percentage, or a multiplier. `JSON_SCHEMA_VERSION` bumped to `1.1`
   (additive, backwards-compatible — 1.0 files still load and validate). (#131)
-- **`--jobs N` flag on the `porosity-fe` CLI** parallelises the per-
+- **`--jobs N` flag on the `porosity-analyze` CLI** parallelises the per-
   configuration sweep in `compare_configurations` over a
   `concurrent.futures.ProcessPoolExecutor`. `N=1` (default) preserves
   the deterministic serial path byte-for-byte; `N>1` dispatches the

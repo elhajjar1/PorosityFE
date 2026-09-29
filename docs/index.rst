@@ -15,7 +15,7 @@ in the project README on GitHub.
 Installation
 ------------
 
-PorosityFE targets Python 3.9 or newer. The recommended install (from a
+PorosityFE targets Python 3.10 or newer. The recommended install (from a
 fresh clone of the repository) is an editable install with the ``docs``
 extra so this site can be rebuilt locally:
 
