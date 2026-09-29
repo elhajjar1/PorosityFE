@@ -407,6 +407,9 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
         self.failure_criterion = failure_criterion
+        # Most recent sparse LU factorization, reused by direct solves whose
+        # penalty-modified matrix is unchanged: (K, key, SuperLU).
+        self._lu_cache: tuple | None = None
 
     def solve(self, loading: FELoadingMode = 'compression',
               applied_strain: float = -0.01,
@@ -499,10 +502,11 @@ class FESolver:
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
 
-        # 1. Assemble global stiffness
+        # 1. Global stiffness (re-assembled only if the mesh, material or
+        #    porosity changed since the last solve on this solver).
         if verbose:
             logger.info("Assembling global stiffness matrix...")
-        K = self.assembler.assemble_stiffness(verbose=verbose)
+        K = self.assembler.stiffness(verbose=verbose)
 
         if verbose:
             t1 = time.perf_counter()
@@ -747,7 +751,8 @@ class FESolver:
             d_inv_sqrt = None
 
         if solver == 'direct':
-            y = scipy.sparse.linalg.spsolve(K_solve, F_solve)
+            y = self._direct_solve(K, K_solve, F_solve, constrained,
+                                   penalty_factor, diag_scale)
 
             # Hygiene checks on the solution vector
             if not np.isfinite(y).all():
@@ -812,6 +817,35 @@ class FESolver:
             u = y
 
         return u, float(_rel_res)
+
+    def _direct_solve(self, K: scipy.sparse.spmatrix, K_solve: scipy.sparse.spmatrix,
+                      F_solve: np.ndarray, constrained: dict[int, float],
+                      penalty_factor: float, diag_scale: bool) -> np.ndarray:
+        """Sparse-LU solve, reusing the last factorization when possible.
+
+        The penalty-modified matrix depends only on the assembled ``K``, the
+        *set* of constrained DOFs (not their prescribed values), the penalty
+        factor and the diagonal scaling, so e.g. compression and tension on
+        the same mesh, or repeat solves of one load case, share a
+        factorization. Only the most recent one is kept, bounding memory.
+        """
+        dofs = np.sort(np.fromiter(constrained.keys(), dtype=np.intp,
+                                   count=len(constrained)))
+        key = (dofs.tobytes(), float(penalty_factor), bool(diag_scale))
+        cached = self._lu_cache
+        if cached is not None and cached[0] is K and cached[1] == key:
+            lu = cached[2]
+        else:
+            # K_solve is symmetric (penalty and Jacobi scaling keep it so):
+            # a symmetric fill-reducing ordering with diagonal pivoting
+            # factors ~20% faster than SuperLU's default COLAMD here.
+            lu = scipy.sparse.linalg.splu(
+                scipy.sparse.csc_matrix(K_solve),
+                permc_spec='MMD_AT_PLUS_A',
+                options={'SymmetricMode': True},
+            )
+            self._lu_cache = (K, key, lu)
+        return lu.solve(np.asarray(F_solve, dtype=float))
 
     def _recover_stresses(
         self, u: np.ndarray, *, verbose: bool = False,

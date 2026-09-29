@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import numpy as np
@@ -43,7 +44,10 @@ class GlobalAssembler:
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
         self._void_shape = porosity_field.void_shape_radii
+        # Assembly results, valid while _state_key() still returns _key.
+        self._key: tuple | None = None
         self._batch: ElementBatch | None = None
+        self._K: scipy.sparse.csc_matrix | None = None
 
     def create_element(self, elem_idx: int) -> Hex8Element:
         """Create a Hex8Element for the given element index.
@@ -73,26 +77,58 @@ class GlobalAssembler:
         """Global DOF indices (24,) for an element's 8 nodes."""
         return element_dofs(self.mesh.elements[elem_idx:elem_idx + 1])[0]
 
+    def _state_key(self) -> tuple:
+        """Fingerprint of every input the stiffness depends on.
+
+        Hashes the mesh arrays by content (so in-place edits are seen) and
+        the material and void shape by value.
+        """
+        h = hashlib.blake2b(digest_size=16)
+        mesh = self.mesh
+        for arr in (mesh.nodes, mesh.elements, mesh.porosity,
+                    mesh.ply_angles, mesh.void_elements):
+            a = np.ascontiguousarray(arr)
+            h.update(f"{a.dtype}{a.shape}".encode())
+            h.update(a.tobytes())
+        return (h.hexdigest(), repr(self.material),
+                tuple(self.porosity_field.void_shape_radii))
+
     def element_batch(self) -> ElementBatch:
         """Per-element, per-Gauss-point ``B``, ``C`` and ``det(J) w`` arrays.
 
-        Built by :meth:`assemble_stiffness` and reused by stress recovery;
-        built on demand if recovery runs first.
+        Reuses the batch from the last assembly while the mesh, material and
+        porosity inputs are unchanged; rebuilds it otherwise.
         """
-        if self._batch is None:
+        key = self._state_key()
+        if self._batch is None or key != self._key:
             self._batch = build_element_batch(
-                self.mesh, self.material, self._void_shape)
+                self.mesh, self.material, self.porosity_field.void_shape_radii)
+            self._key = key
+            self._K = None
         return self._batch
+
+    def stiffness(self, verbose: bool = False) -> scipy.sparse.csc_matrix:
+        """Global K, re-assembled only when its inputs have changed.
+
+        The returned matrix is shared with later calls; treat it as
+        read-only (``BoundaryHandler.apply_penalty`` returns a new matrix).
+        """
+        if self._K is None or self._state_key() != self._key:
+            self.assemble_stiffness(verbose=verbose)
+        assert self._K is not None
+        return self._K
 
     def assemble_stiffness(self, verbose: bool = False) -> scipy.sparse.csc_matrix:
         """Assemble global stiffness matrix K in CSC format.
 
         All element stiffness matrices are computed together from an
         :class:`ElementBatch` (see :mod:`porosity_fe.fe.batch`) and scattered
-        into a COO matrix of ``n_elem * 576`` entries.
+        into a COO matrix of ``n_elem * 576`` entries. Always assembles;
+        :meth:`stiffness` returns the cached result when inputs are unchanged.
         """
         self._batch = build_element_batch(
-            self.mesh, self.material, self._void_shape)
+            self.mesh, self.material, self.porosity_field.void_shape_radii)
+        self._key = self._state_key()
         batch = self._batch
         Ke = batch.stiffness_matrices()
 
@@ -134,7 +170,8 @@ class GlobalAssembler:
                 K_csc.nnz, K_csc.nnz / n_dof,
             )
 
-        return K_csc
+        self._K = K_csc
+        return K_csc.copy()
 
 
 # ============================================================

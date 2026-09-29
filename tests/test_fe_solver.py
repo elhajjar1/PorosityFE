@@ -1668,3 +1668,85 @@ class TestComputeKnockdownVectorized:
         ref = abs(np.mean(stress[:, :, comp])) / abs(total / (mesh.n_elements * 8))
         got = solver._compute_knockdown(loading, stress, strain)
         assert got == pytest.approx(min(ref, 1.0), rel=1e-12)
+
+
+class TestStiffnessAndFactorizationReuse:
+    """IMPROVEMENT_PLAN 1.2: K and its LU factorization are reused across
+    solves when valid, and rebuilt when inputs change."""
+
+    @staticmethod
+    def _problem(Vp=0.03):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, Vp, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=4)
+        return mat, pf, mesh
+
+    @pytest.fixture
+    def counters(self, monkeypatch):
+        import scipy.sparse.linalg as sla
+        from porosity_fe.fe import assembler as asm_mod
+        counts = {'batch': 0, 'splu': 0}
+        real_batch, real_splu = asm_mod.build_element_batch, sla.splu
+
+        def batch(*a, **k):
+            counts['batch'] += 1
+            return real_batch(*a, **k)
+
+        def splu(*a, **k):
+            counts['splu'] += 1
+            return real_splu(*a, **k)
+
+        monkeypatch.setattr(asm_mod, 'build_element_batch', batch)
+        monkeypatch.setattr(sla, 'splu', splu)
+        return counts
+
+    @staticmethod
+    def _assert_same(r1, r2):
+        np.testing.assert_allclose(r1.displacement, r2.displacement, rtol=1e-10,
+                                   atol=1e-12 * np.abs(r2.displacement).max())
+        np.testing.assert_allclose(r1.stress_global, r2.stress_global, rtol=1e-10,
+                                   atol=1e-10 * np.abs(r2.stress_global).max())
+        assert r1.knockdown == pytest.approx(r2.knockdown, rel=1e-12)
+        assert r1.max_failure_index == pytest.approx(r2.max_failure_index, rel=1e-10)
+
+    def test_same_constraint_set_reuses_k_and_lu(self, counters):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('tension', applied_strain=0.01)
+        r = solver.solve('compression', applied_strain=-0.005)
+        assert counters == {'batch': 1, 'splu': 1}
+        fresh = FESolver(mesh, mat, pf).solve('compression', applied_strain=-0.005)
+        self._assert_same(r, fresh)
+
+    def test_new_constraint_set_refactors_but_keeps_k(self, counters):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('tension', applied_strain=0.01)
+        r = solver.solve('shear', applied_strain=0.01)
+        assert counters == {'batch': 1, 'splu': 2}
+        self._assert_same(r, FESolver(mesh, mat, pf).solve('shear', applied_strain=0.01))
+
+    def test_penalty_factor_change_refactors(self, counters):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('tension', applied_strain=0.01)
+        solver.solve('tension', applied_strain=0.01, penalty_factor=1e7)
+        assert counters['splu'] == 2
+
+    def test_in_place_porosity_edit_triggers_reassembly(self, counters):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        before = solver.solve('tension', applied_strain=0.01)
+        mesh.porosity *= 2.0   # in place, same array object
+        after = solver.solve('tension', applied_strain=0.01)
+        assert counters['batch'] == 2
+        assert after.knockdown < before.knockdown
+        self._assert_same(after, FESolver(mesh, mat, pf).solve('tension', applied_strain=0.01))
+
+    def test_assemble_stiffness_returns_independent_copy(self):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        ref = solver.solve('tension', applied_strain=0.01)
+        K = solver.assembler.assemble_stiffness()
+        K.data[:] = 0.0
+        self._assert_same(solver.solve('tension', applied_strain=0.01), ref)
