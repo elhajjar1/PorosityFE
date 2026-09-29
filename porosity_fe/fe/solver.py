@@ -818,9 +818,10 @@ class FESolver:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Recover element stresses and strains in global and local frames.
 
-        Loops over every element, evaluates stress/strain at the 8 Gauss
-        points from the recovered displacement field, and rotates each into
-        the ply-local frame (stress via ``T_sigma``, engineering strain via
+        Evaluates stress/strain at the 8 Gauss points of every element from
+        the recovered displacement field, reusing the ``B`` and ``C`` arrays
+        the assembler already computed, and rotates each into the ply-local
+        frame (stress via ``T_sigma``, engineering strain via
         ``T_epsilon``).
 
         Parameters
@@ -837,42 +838,24 @@ class FESolver:
             Each shape ``(n_elem, n_gp, 6)`` in Voigt order
             ``[11, 22, 33, 23, 13, 12]``.
         """
-        n_elem = self.mesh.n_elements
-        n_gp = 8  # 2x2x2
+        batch = self.assembler.element_batch()
+        strain_global = batch.strains(u)
+        stress_global = batch.stresses(strain_global)
+        if verbose:
+            logger.info("  Post-processed %d elements", self.mesh.n_elements)
 
-        stress_global = np.empty((n_elem, n_gp, 6))
-        stress_local = np.empty((n_elem, n_gp, 6))
-        strain_global = np.empty((n_elem, n_gp, 6))
-        strain_local = np.empty((n_elem, n_gp, 6))
-
-        for e in range(n_elem):
-            if verbose and e % 500 == 0:
-                logger.info(
-                    "  Post-processing element %d/%d (%.1f%%)",
-                    e, n_elem, 100.0 * e / n_elem,
-                )
-
-            dofs = self.assembler.element_dof_indices(e)
-            u_elem = u[dofs]
-            elem = self.assembler.create_element(e)
-
-            sig_g = elem.stress_at_gauss_points(u_elem)
-            eps_g = elem.strain_at_gauss_points(u_elem)
-
-            stress_global[e] = sig_g
-            strain_global[e] = eps_g
-
-            # Transform to local coordinates. Stress uses T_sigma; engineering
-            # strain (with gamma_ij = 2*eps_ij in slots 3-5) uses T_epsilon —
-            # T_sigma applied to engineering strain leaves the shear components
-            # off by 2x.
-            ply_rad = np.radians(float(self.mesh.ply_angles[e]))
-            T_sigma = stress_transformation_3d(ply_rad, axis='z')
-            T_eps = strain_transformation_3d(ply_rad, axis='z')
-
-            for g in range(n_gp):
-                stress_local[e, g] = T_sigma @ sig_g[g]
-                strain_local[e, g] = T_eps @ eps_g[g]
+        # Transform to local coordinates, one pair of matrices per distinct
+        # ply angle. Stress uses T_sigma; engineering strain (with
+        # gamma_ij = 2*eps_ij in slots 3-5) uses T_epsilon — T_sigma applied
+        # to engineering strain leaves the shear components off by 2x.
+        angles, angle_idx = np.unique(
+            np.asarray(self.mesh.ply_angles, dtype=float), return_inverse=True)
+        T_sigma = np.stack([stress_transformation_3d(np.radians(a), axis='z')
+                            for a in angles])[angle_idx]
+        T_eps = np.stack([strain_transformation_3d(np.radians(a), axis='z')
+                          for a in angles])[angle_idx]
+        stress_local = np.einsum('eij,egj->egi', T_sigma, stress_global)
+        strain_local = np.einsum('eij,egj->egi', T_eps, strain_global)
 
         return stress_global, stress_local, strain_global, strain_local
 

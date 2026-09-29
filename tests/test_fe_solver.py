@@ -16,7 +16,7 @@ matplotlib.use('Agg')
 from porosity_fe_analysis import (MaterialProperties, MATERIALS, PorosityField,
                                    CompositeMesh, strain_transformation_3d,
                                    Hex8Element, GlobalAssembler,
-                                   BoundaryHandler, FESolver, FieldResults)
+                                   BoundaryHandler, FESolver, FieldResults, VoidGeometry)
 
 
 class TestHex8Element:
@@ -1561,3 +1561,82 @@ class TestFailureCriteria:
         # NaN / inf must also be rejected.
         with pytest.raises(ValueError, match="tsai_wu_F12"):
             dataclasses.replace(base, tsai_wu_F12=float('nan'))
+
+
+# ============================================================
+# IMPROVEMENT_PLAN 1.1 / 1.4: batched element quantities
+# ============================================================
+
+class TestElementBatchMatchesHex8Element:
+    """The vectorized assembly/recovery path must reproduce Hex8Element
+    element by element, including void elements, non-uniform porosity and
+    rotated plies."""
+
+    @pytest.fixture(scope="class")
+    def setup(self):
+        from porosity_fe.fe.batch import build_element_batch
+        mat = MATERIALS['T800_epoxy']
+        void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
+                            radii=(6, 4, mat.total_thickness / 3))
+        pf = PorosityField(mat, 0.04, distribution='clustered',
+                           discrete_voids=[void])
+        mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=6,
+                             ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
+        assert len(mesh.void_elements) > 0, "fixture must contain void elements"
+        assembler = GlobalAssembler(mesh, mat, pf)
+        batch = build_element_batch(mesh, mat, pf.void_shape_radii)
+        return mesh, assembler, batch
+
+    def test_element_stiffness_matches(self, setup):
+        mesh, assembler, batch = setup
+        Ke_batch = batch.stiffness_matrices()
+        for e in range(mesh.n_elements):
+            Ke = assembler.create_element(e).stiffness_matrix()
+            Ke = 0.5 * (Ke + Ke.T)
+            np.testing.assert_allclose(
+                Ke_batch[e], Ke, rtol=1e-10, atol=1e-10 * np.abs(Ke).max(),
+                err_msg=f"element {e}")
+
+    def test_gauss_point_strain_and_stress_match(self, setup):
+        mesh, assembler, batch = setup
+        rng = np.random.default_rng(0)
+        u = rng.normal(scale=1e-3, size=mesh.n_dof)
+        strain = batch.strains(u)
+        stress = batch.stresses(strain)
+        for e in range(mesh.n_elements):
+            elem = assembler.create_element(e)
+            u_e = u[assembler.element_dof_indices(e)]
+            eps = elem.strain_at_gauss_points(u_e)
+            sig = elem.stress_at_gauss_points(u_e)
+            np.testing.assert_allclose(strain[e], eps, rtol=1e-10,
+                                       atol=1e-12 * np.abs(eps).max())
+            np.testing.assert_allclose(stress[e], sig, rtol=1e-10,
+                                       atol=1e-10 * np.abs(sig).max())
+
+    def test_dof_indices_match(self, setup):
+        mesh, assembler, batch = setup
+        for e in (0, mesh.n_elements // 2, mesh.n_elements - 1):
+            node_ids = mesh.elements[e]
+            expected = np.array([3 * n + k for n in node_ids for k in range(3)])
+            np.testing.assert_array_equal(batch.dofs[e], expected)
+            np.testing.assert_array_equal(assembler.element_dof_indices(e), expected)
+
+    def test_inverted_element_is_rejected(self, setup):
+        from porosity_fe.fe.batch import build_element_batch
+        mesh, _, _ = setup
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        bad = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        bad.elements = bad.elements[:, [1, 0, 3, 2, 5, 4, 7, 6]]
+        with pytest.raises(ValueError, match="non-positive Jacobian"):
+            build_element_batch(bad, mat, pf.void_shape_radii)
+
+    def test_out_of_range_porosity_is_rejected(self, setup):
+        from porosity_fe.fe.batch import build_element_batch
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        mesh.porosity = mesh.porosity.copy()
+        mesh.porosity[0] = 3.0
+        with pytest.raises(ValueError, match="not a percent"):
+            build_element_batch(mesh, mat, pf.void_shape_radii)
