@@ -12,12 +12,14 @@ The validation database is a directory of per-paper JSON files under
 through the empirical pipeline to produce `validation_master_report.png`
 + `validation_detail_report.md`. The PyInstaller spec
 (`ValidatePorosity.spec`) bundles every `*.json` under
-`validation/datasets/` into the distributed executable, so a new dataset
-ships automatically with the next release build.
+`validation/datasets/` into the executable, so a new dataset ships with
+the next release build made on a machine that has the datasets.
 
-The whole `validation/` tree is gitignored (the digitized values come
-from published figures and stay out of the repo). New datasets are
-shared via the bundled executable or by hand-off, not via git.
+`validation/datasets/` is gitignored and the datasets are not in the
+GitHub repository (the digitized values come from published figures).
+New datasets are shared via a locally built executable or by hand-off,
+not via git. The validation code and schemas elsewhere under
+`validation/` are tracked normally.
 
 ## Required information from the user
 
@@ -107,6 +109,7 @@ reject it.
 - **Schema changes.** If the user has data that doesn't fit any of the
   nine `patternProperties` keys, that's a schema edit, not a dataset
   add — surface it as a follow-up and don't widen the schema silently.
-- **Committing or pushing the JSON.** The `validation/` tree is
-  gitignored on purpose (digitized data from published figures). The
-  dataset travels with the next PyInstaller build, not via git.
+- **Committing or pushing the JSON.** `validation/datasets/` is
+  gitignored on purpose (digitized data from published figures), and CI
+  does not run the validation suite. The dataset travels with the next
+  locally built executable, not via git. Never `git add -f` it.

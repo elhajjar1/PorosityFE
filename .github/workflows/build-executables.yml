@@ -49,10 +49,10 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
+      # The validation datasets are not in the repository, so CI builds and
+      # smoke-tests the executable without running the validation suite.
       - name: Verify CLI runs from source
-        run: |
-          python validate_porosity_cli.py --help
-          python validate_porosity_cli.py --quiet --output-dir test_output
+        run: python validate_porosity_cli.py --help
         shell: bash
 
       - name: Build executable
@@ -63,20 +63,12 @@ jobs:
         run: |
           ./dist/validate_porosity/validate_porosity --version
           ./dist/validate_porosity/validate_porosity --help
-          mkdir -p /tmp/validate_out
-          ./dist/validate_porosity/validate_porosity --quiet --output-dir /tmp/validate_out
-          test -f /tmp/validate_out/validation_master_report.png
-          test -f /tmp/validate_out/validation_detail_report.md
 
       - name: Smoke-test executable (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           .\dist\validate_porosity\validate_porosity.exe --version
           .\dist\validate_porosity\validate_porosity.exe --help
-          New-Item -ItemType Directory -Force -Path validate_out
-          .\dist\validate_porosity\validate_porosity.exe --quiet --output-dir validate_out
-          if (!(Test-Path validate_out\validation_master_report.png)) { exit 1 }
-          if (!(Test-Path validate_out\validation_detail_report.md)) { exit 1 }
         shell: pwsh
 
       - name: Upload executable as artifact

@@ -107,6 +107,11 @@ ignore = [
 # app.py intentionally calls matplotlib.use("Agg") and bootstraps sys.path
 # before importing pyplot / sibling modules, which trips E402/I001.
 "app.py" = ["E402", "I001"]
+# validation/validate_all.py bootstraps sys.path and imports in several
+# sections through the file. It was outside ruff's view while the whole
+# validation/ tree was gitignored; consolidating its imports is tracked as
+# IMPROVEMENT_PLAN.md item 5.4.
+"validation/validate_all.py" = ["E402", "I001"]
 # Tests use explicit `== True/False` assertions for readability, a single
 # ply-angle loop label `l`, deliberately-unused locals, and in-function
 # imports interleaved with assertions; none warrant churning test logic.

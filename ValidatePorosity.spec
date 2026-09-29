@@ -1,8 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the standalone validate_porosity CLI.
 
-Bundles all 13 validation dataset JSONs and the schema file so the
-executable can run predictions offline against the reference database.
+Bundles the validation dataset JSONs found in validation/datasets/ (kept
+out of git; present only on machines that have them) and the schema file,
+so a locally built executable can run offline against the reference
+database.
 
 Build:
     pyinstaller ValidatePorosity.spec
@@ -23,12 +25,19 @@ block_cipher = None
 
 _spec_dir = os.path.dirname(os.path.abspath(SPEC))
 
-# Bundle all validation dataset JSONs under validation/datasets/
+# Bundle all validation dataset JSONs under validation/datasets/. They are
+# not in the git repository, so a build from a plain clone (including CI)
+# bundles none; the executable then needs --datasets DIR at run time.
 _dataset_files = [
     (path, 'validation/datasets')
     for path in glob.glob(os.path.join(_spec_dir, 'validation', 'datasets',
                                         '*.json'))
 ]
+if _dataset_files:
+    print(f"ValidatePorosity.spec: bundling {len(_dataset_files)} validation datasets")
+else:
+    print("ValidatePorosity.spec: WARNING: no validation/datasets/*.json found; "
+          "building without bundled datasets (run with --datasets DIR)")
 
 # Bundle the schema
 _schema_files = [

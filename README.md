@@ -193,14 +193,15 @@ python -m PyInstaller ValidatePorosity.spec --noconfirm --clean
 # Windows:     dist\validate_porosity\validate_porosity.exe
 ```
 
-Pre-built executables for all three platforms are produced automatically
-by GitHub Actions on every push; download them from the Actions tab
-(artifact names: `validate_porosity-linux`, `-macos`, `-windows`) or
-from the Releases page for tagged versions.
+The validation datasets are not included in this repository. A build
+bundles whatever dataset JSON files are present in `validation/datasets/`;
+the executables GitHub Actions builds on each push therefore bundle none
+and need `--datasets DIR` at run time.
 
 CLI usage:
 ```bash
 validate_porosity --help             # show all options
+validate_porosity --datasets DIR     # run against dataset JSONs in DIR
 validate_porosity                    # run against bundled datasets, write to cwd
 validate_porosity --output-dir /tmp  # write reports elsewhere
 validate_porosity --quiet            # suppress progress output
@@ -467,9 +468,10 @@ closed envelope).
 
 PorosityFE is validated against **13 peer-reviewed experimental datasets**
 covering carbon/epoxy, IM7/toughened epoxy, T300/epoxy systems, and
-CF/PEEK thermoplastic. Validation is automated via `validate_porosity`
-CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
-or in-process via `validation/validate_all.py`.
+CF/PEEK thermoplastic. Validation is automated via the `validate_porosity`
+CLI or in-process via `validation/validate_all.py`. The datasets are
+digitized from published figures and are not distributed with this
+repository.
 
 **Model scope (validated properties):**
 

@@ -15,8 +15,9 @@ JOSS/
 # at the bottom of this file.
 docs/superpowers/
 
-# Validation data (digitized from published figures)
-validation/
+# Validation data: digitized from published figures, kept out of the
+# repository. The validation code and schemas under validation/ are tracked.
+validation/datasets/
 
 # OS files
 .DS_Store
