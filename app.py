@@ -50,7 +50,7 @@ _configure_matplotlib_style()
 
 # Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
 _README_URL = (
-    "https://github.com/ranipdx-glitch/PorosityFE"
+    "https://github.com/elhajjar1/PorosityFE"
     "#solver-selection-fe-vs-empirical"
 )
 

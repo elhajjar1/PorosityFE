@@ -28,8 +28,8 @@ and **Stress** tabs populate after pressing **Run analysis** in the sidebar.
 
 ## 2. Push to GitHub
 
-Commit the branch (typically `main`) to `ranipdx-glitch/porosityfe`. Streamlit
-Cloud can deploy either `main` or a feature branch.
+Commit the branch (typically `master`) to `elhajjar1/PorosityFE`. Streamlit
+Cloud can deploy either `master` or a feature branch.
 
 ## 3. Authenticate with Streamlit Cloud
 
@@ -40,8 +40,8 @@ to the GitHub organisation that owns the repository.
 
 Click **Create app → Deploy a public app from GitHub** and enter:
 
-- Repository: `ranipdx-glitch/porosityfe`
-- Branch: `main` (or a feature branch)
+- Repository: `elhajjar1/PorosityFE`
+- Branch: `master` (or a feature branch)
 - Main file: `app.py`
 - App URL: choose a subdomain like `porosityfe.streamlit.app`
 
