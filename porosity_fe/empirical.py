@@ -200,6 +200,8 @@ class EmpiricalSolver:
     _JUDD_WRIGHT_ALPHA_QI = Calibration.JUDD_WRIGHT_ALPHA_QI
     _POWER_LAW_N_QI = Calibration.POWER_LAW_N_QI
     _LINEAR_BETA_QI = Calibration.LINEAR_BETA_QI
+    # No 'transverse_compression' mode: sigma_2c has no porosity dataset to
+    # calibrate against (IMPROVEMENT_PLAN 3.1). The FE criteria still use it.
     PRISTINE_STRENGTH_KEY = {
         'compression': 'sigma_1c', 'tension': 'sigma_1t',
         'shear': 'tau_12', 'ilss': 'tau_ilss',

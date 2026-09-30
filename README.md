@@ -485,6 +485,8 @@ or in-process via `validation/validate_all.py`.
 | Shear strength | 2 | 13.5% |
 | Shear modulus (A-matrix CLT) | 1 | 14.7% |
 
+Transverse compression strength (`sigma_2c`) has no empirical loading mode because no dataset measures it against porosity. The FE failure criteria still use it.
+
 Overall MAE:
 - Property-weighted: **7.05%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
 - Point-weighted: **6.53%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).

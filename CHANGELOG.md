@@ -156,6 +156,13 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **`sigma_2c` scope documented (IMPROVEMENT_PLAN 3.1).** The plan asked
+  to add a `transverse_compression` empirical mode or document why not.
+  There is no porosity dataset for transverse compression to calibrate a
+  coefficient on, so the mode is left out. `MaterialProperties`, the
+  README scope table and `EmpiricalSolver.PRISTINE_STRENGTH_KEY` now say
+  so, and note that the FE criteria already use `sigma_2c` (Tsai-Wu `Y_c`,
+  Hashin matrix compression).
 - **FE solves are ~5x faster, and repeat solves ~60x faster.** On the
   production mesh (30x10x12, 3,600 elements) a first solve went from
   14 s (clustered porosity) / 9.6 s (uniform) to ~2.6 s / ~2.1 s, now
