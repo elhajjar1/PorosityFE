@@ -686,3 +686,68 @@ class TestCLIMain:
             '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet'])
         assert rc == 3
         assert 'solver failure' in capsys.readouterr().err.lower()
+
+
+class TestSweepAcrossPorosityLevels:
+    """IMPROVEMENT_PLAN 4.6: one pool for every (Vp, config) pair."""
+
+    def test_sweep_matches_per_vp_calls(self):
+        from porosity_fe import sweep_configurations
+        swept = sweep_configurations([0.02, 0.04], configs=_TINY_CONFIGS, n_jobs=2)
+        assert list(swept) == [0.02, 0.04]
+        for Vp, results in swept.items():
+            single = compare_configurations(Vp, configs=_TINY_CONFIGS)
+            s_flat, w_flat = _extract_knockdowns(single), _extract_knockdowns(results)
+            assert set(s_flat) == set(w_flat)
+            for k in s_flat:
+                np.testing.assert_allclose(w_flat[k], s_flat[k], rtol=1e-10, atol=0.0)
+
+    def test_sweep_returns_artifacts_and_collapses_duplicates(self):
+        from porosity_fe import sweep_configurations
+        swept = sweep_configurations([0.03, 0.03], configs=_TINY_CONFIGS,
+                                     return_artifacts=True)
+        assert list(swept) == [0.03]
+        results, artifacts = swept[0.03]
+        assert set(results) == set(artifacts) == set(_TINY_CONFIGS)
+
+    def test_cli_uses_one_sweep_for_several_levels(self, tmp_path, monkeypatch):
+        from porosity_fe import pipeline
+        calls = []
+        real = pipeline.sweep_configurations
+
+        def spy(vps, **kwargs):
+            calls.append((list(vps), kwargs.get('n_jobs')))
+            return real(vps, **kwargs)
+
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        # The CLI resolves it through the compatibility shim, like
+        # compare_configurations, so patch it there.
+        monkeypatch.setattr(porosity_fe_analysis, 'sweep_configurations', spy,
+                            raising=False)
+        monkeypatch.setattr('porosity_fe.cli.sweep_configurations', spy)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '0.04', '--output-dir', str(tmp_path),
+            '--quiet', '--jobs', '2'])
+        assert rc == 0
+        assert calls == [([0.02, 0.04], 2)]
+        assert len(list(tmp_path.glob('porosity_analysis_results_*.json'))) == 2
+
+
+class TestCLIOutputExitCodes:
+    """IMPROVEMENT_PLAN 4.6: output failures honor the 0/2/3 contract."""
+
+    def _run(self, tmp_path, monkeypatch, exc):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        monkeypatch.setattr(porosity_fe_analysis, 'save_results_to_json', boom)
+        return porosity_fe_analysis.main([
+            '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet'])
+
+    def test_unwritable_output_exits_2(self, tmp_path, monkeypatch, capsys):
+        assert self._run(tmp_path, monkeypatch, PermissionError("denied")) == 2
+        assert "cannot write output" in capsys.readouterr().err
+
+    def test_other_output_failure_exits_3(self, tmp_path, monkeypatch, capsys):
+        assert self._run(tmp_path, monkeypatch, RuntimeError("broken")) == 3
+        assert "writing output" in capsys.readouterr().err

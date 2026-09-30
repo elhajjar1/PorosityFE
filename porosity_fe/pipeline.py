@@ -250,6 +250,67 @@ def _log_result_summary(name: str, result: dict, *, is_parallel: bool) -> None:
         name, s['dKD_dVp'], s['dKD_dcoef'])
 
 
+def _run_config_tasks(tasks: list[tuple], workers: int
+                      ) -> dict[tuple[float, str], dict]:
+    """Run ``_analyze_one`` over ``tasks``, serially or in one process pool.
+
+    Returns the raw worker dicts keyed by ``(Vp, name)``.
+    """
+    raw_results: dict[tuple[float, str], dict] = {}
+    if workers == 1 or len(tasks) <= 1:
+        # Serial path — preserves the legacy behaviour byte-for-byte and
+        # avoids the ProcessPoolExecutor fork cost for trivially small
+        # sweeps. The per-config "Configuration: ..." log lines fire here
+        # too, mirroring the original CLI UX.
+        for Vp, name, config, mat, stress, sd in tasks:
+            logger.info("\n  Configuration: %s", name)
+            Vp_out, name_out, result = _analyze_one(
+                Vp, name, config, mat, stress, sd)
+            raw_results[(Vp_out, name_out)] = result
+            _log_result_summary(name_out, result, is_parallel=False)
+    else:
+        logger.info("Parallel sweep: %d task(s) across %d worker process(es)",
+                    len(tasks), workers)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_analyze_one, *task) for task in tasks]
+            for fut in concurrent.futures.as_completed(futures):
+                Vp_out, name_out, result = fut.result()
+                raw_results[(Vp_out, name_out)] = result
+                _log_result_summary(name_out, result, is_parallel=True)
+    return raw_results
+
+
+def _assemble_vp_results(void_volume_fraction: float, configs: dict,
+                         raw_results: dict[tuple[float, str], dict]
+                         ) -> tuple[dict[str, ConfigResult], dict[str, ConfigArtifacts]]:
+    """Split one Vp's raw worker dicts into results and artifacts, and log
+    the ranking."""
+    # Re-assemble in the original config insertion order so callers see a
+    # deterministic dict regardless of which worker finished first.
+    # Split the worker dict into the public-facing lightweight
+    # ConfigResult (numbers + nested empirical table) and the parallel
+    # ConfigArtifacts (live mesh / solver / field), per #44 item 3.
+    results: dict[str, ConfigResult] = {}
+    artifacts: dict[str, ConfigArtifacts] = {}
+    for name in configs:
+        raw = raw_results[(void_volume_fraction, name)]
+        results[name] = _build_config_result(name, void_volume_fraction, raw)
+        artifacts[name] = _build_config_artifacts(raw)
+
+    _bar = '=' * 70
+    logger.info("\n%s", _bar)
+    logger.info("RANKINGS (by compression strength, Judd-Wright)")
+    logger.info("%s", _bar)
+    ranked = sorted(
+        results.keys(),
+        key=lambda c: results[c].failure_stress,
+        reverse=True,
+    )
+    for i, name in enumerate(ranked, 1):
+        logger.info("  %d. %s: %.1f MPa", i, name, results[name].failure_stress)
+    return results, artifacts
+
+
 def compare_configurations(void_volume_fraction: float,
                            material_name: str = 'T800_epoxy',
                            applied_stress: float = -1500.0,
@@ -327,52 +388,51 @@ def compare_configurations(void_volume_fraction: float,
         (void_volume_fraction, name, config, material_name, applied_stress, seed)
         for name, config in configs.items()
     ]
-
-    raw_results: dict[tuple[float, str], dict] = {}
-    if workers == 1 or len(tasks) <= 1:
-        # Serial path — preserves the legacy behaviour byte-for-byte and
-        # avoids the ProcessPoolExecutor fork cost for trivially small
-        # sweeps. The per-config "Configuration: ..." log lines fire here
-        # too, mirroring the original CLI UX.
-        for Vp, name, config, mat, stress, sd in tasks:
-            logger.info("\n  Configuration: %s", name)
-            Vp_out, name_out, result = _analyze_one(
-                Vp, name, config, mat, stress, sd)
-            raw_results[(Vp_out, name_out)] = result
-            _log_result_summary(name_out, result, is_parallel=False)
-    else:
-        logger.info("Parallel sweep: %d task(s) across %d worker process(es)",
-                    len(tasks), workers)
-        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_analyze_one, *task) for task in tasks]
-            for fut in concurrent.futures.as_completed(futures):
-                Vp_out, name_out, result = fut.result()
-                raw_results[(Vp_out, name_out)] = result
-                _log_result_summary(name_out, result, is_parallel=True)
-
-    # Re-assemble in the original config insertion order so callers see a
-    # deterministic dict regardless of which worker finished first.
-    # Split the worker dict into the public-facing lightweight
-    # ConfigResult (numbers + nested empirical table) and the parallel
-    # ConfigArtifacts (live mesh / solver / field), per #44 item 3.
-    results: dict[str, ConfigResult] = {}
-    artifacts: dict[str, ConfigArtifacts] = {}
-    for name in configs:
-        raw = raw_results[(void_volume_fraction, name)]
-        results[name] = _build_config_result(name, void_volume_fraction, raw)
-        artifacts[name] = _build_config_artifacts(raw)
-
-    logger.info("\n%s", _bar)
-    logger.info("RANKINGS (by compression strength, Judd-Wright)")
-    logger.info("%s", _bar)
-    ranked = sorted(
-        results.keys(),
-        key=lambda c: results[c].failure_stress,
-        reverse=True,
-    )
-    for i, name in enumerate(ranked, 1):
-        logger.info("  %d. %s: %.1f MPa", i, name, results[name].failure_stress)
+    raw_results = _run_config_tasks(tasks, workers)
+    results, artifacts = _assemble_vp_results(void_volume_fraction, configs,
+                                              raw_results)
 
     if return_artifacts:
         return results, artifacts
     return results
+
+
+def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy',
+                         applied_stress: float = -1500.0,
+                         configs: dict | None = None,
+                         seed: int | None = None,
+                         n_jobs: int = 1,
+                         return_artifacts: bool = False) -> dict:
+    """:func:`compare_configurations` for several porosity levels at once.
+
+    Every ``(Vp, config)`` pair goes into one task list, so with
+    ``n_jobs > 1`` a single process pool stays busy across porosity levels
+    instead of being rebuilt, and drained, once per level
+    (IMPROVEMENT_PLAN 4.6). Results equal a loop of
+    :func:`compare_configurations` calls.
+
+    Returns
+    -------
+    dict
+        ``{Vp: results}``, or ``{Vp: (results, artifacts)}`` with
+        ``return_artifacts=True``, in the order of
+        ``void_volume_fractions`` (duplicates collapse).
+    """
+    if material_name not in MATERIALS:
+        raise ValueError(
+            f"Unknown material {material_name!r}. "
+            f"Available presets: {sorted(MATERIALS)}."
+        )
+    configs = configs or POROSITY_CONFIGS
+    vps = list(dict.fromkeys(float(v) for v in void_volume_fractions))
+    tasks = [
+        (Vp, name, config, material_name, applied_stress, seed)
+        for Vp in vps for name, config in configs.items()
+    ]
+    raw_results = _run_config_tasks(tasks, _resolve_n_jobs(n_jobs))
+    out: dict = {}
+    for Vp in vps:
+        logger.info("\nPOROSITY ANALYSIS: Vp = %.1f%%", Vp * 100)
+        results, artifacts = _assemble_vp_results(Vp, configs, raw_results)
+        out[Vp] = (results, artifacts) if return_artifacts else results
+    return out

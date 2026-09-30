@@ -5,6 +5,13 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **`sweep_configurations(void_volume_fractions, ...)`** runs
+  `compare_configurations` for several porosity levels with every
+  `(Vp, config)` pair in one task list, so `n_jobs > 1` keeps one process
+  pool busy across levels. `porosity-analyze --jobs N` uses it when more
+  than one `--vp` is given. Results equal the per-level calls.
+- **PNG download per figure in the Streamlit app** (profile, mesh,
+  results, stress tabs).
 - **First-ply-failure load factor.** `FieldResults.first_ply_failure_load_factor`
   is the multiplier on the applied load at which the selected criterion
   first reaches 1 (linear scaling; margin of safety = factor - 1), solved
@@ -43,6 +50,13 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **`porosity-analyze` output failures honor the exit-code contract.**
+  An `OSError` while writing a JSON result or a plot exited with a
+  traceback (code 1); it now returns 2, and any other output failure
+  returns 3, as documented.
+- **Bounded app result cache.** `run_analysis_cached` kept every analysis
+  (mesh and fields included) for the life of the server; it now holds at
+  most 16. The export JSON is also serialized once per rerun, not twice.
 - **Void stress concentration factors from elasticity.**
   `VoidGeometry.stress_concentration_factor` used uncited
   piecewise-linear rules in aspect ratio, with shape classes that

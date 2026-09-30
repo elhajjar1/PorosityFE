@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .io import save_results_to_json
 from .materials import MATERIALS
-from .pipeline import compare_configurations
+from .pipeline import _resolve_n_jobs, compare_configurations, sweep_configurations
 from .porosity_field import POROSITY_CONFIGS
 from .viz import FEVisualizer
 
@@ -234,6 +234,29 @@ def _resolve_via_shim(name: str, fallback):
     return getattr(shim, name, fallback)
 
 
+def _write_vp_plots(viz, results: dict, artifacts: dict, output_dir: Path,
+                    Vp_label: str) -> None:
+    """Write the per-configuration and comparison PNGs for one porosity level."""
+    for name in results:
+        art = artifacts[name]
+        viz.plot_porosity_field(
+            art.porosity_field,
+            save_path=output_dir / f"porosity_profile_{name}_{Vp_label}.png")
+        viz.plot_mesh_3d(
+            art.mesh,
+            save_path=output_dir / f"porosity_mesh_3d_{name}_{Vp_label}.png")
+        viz.plot_mesh_detail(
+            art.mesh,
+            save_path=output_dir / f"porosity_mesh_detail_{name}_{Vp_label}.png")
+        viz.plot_damage_contour(
+            art.mesh,
+            art.empirical_solver,
+            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
+    viz.plot_model_comparison(
+        results,
+        save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Argparse-driven entry point.
 
@@ -307,56 +330,81 @@ def main(argv: list[str] | None = None) -> int:
     viz = _resolve_via_shim('FEVisualizer', FEVisualizer)
     porosity_configs = _resolve_via_shim('POROSITY_CONFIGS', POROSITY_CONFIGS)
 
-    all_results = {}
-    for Vp in args.vp:
-        Vp_label = _vp_label(Vp)
+    # With several workers and several porosity levels, send every
+    # (Vp, config) pair to one process pool (IMPROVEMENT_PLAN 4.6) instead
+    # of draining a fresh pool per level.
+    precomputed: dict = {}
+    if _resolve_n_jobs(args.jobs) > 1 and len(set(args.vp)) > 1:
+        sweep_fn = _resolve_via_shim('sweep_configurations', sweep_configurations)
         try:
-            # ``return_artifacts=True`` because the --plots path needs the
-            # live mesh / empirical_solver / porosity_field objects for
-            # the FEVisualizer calls below (#44 item 3 migration).
-            results, artifacts = cmp_fn(
-                Vp,
+            precomputed = sweep_fn(
+                args.vp,
                 material_name=args.material,
                 applied_stress=args.applied_stress,
+                configs=porosity_configs,
                 seed=args.seed,
                 n_jobs=args.jobs,
                 return_artifacts=True,
             )
         except ValueError as exc:
-            print(f"ERROR: bad input for Vp={Vp}: {exc}", file=sys.stderr)
+            print(f"ERROR: bad input: {exc}", file=sys.stderr)
             return 2
         except Exception as exc:  # noqa: BLE001 - surface as solver failure
-            print(f"ERROR: solver failure for Vp={Vp}: {exc}", file=sys.stderr)
+            print(f"ERROR: solver failure: {exc}", file=sys.stderr)
             return 3
+
+    all_results = {}
+    for Vp in args.vp:
+        Vp_label = _vp_label(Vp)
+        if precomputed:
+            results, artifacts = precomputed[float(Vp)]
+        else:
+            try:
+                # ``return_artifacts=True`` because the --plots path needs the
+                # live mesh / empirical_solver / porosity_field objects for
+                # the FEVisualizer calls below (#44 item 3 migration).
+                results, artifacts = cmp_fn(
+                    Vp,
+                    material_name=args.material,
+                    applied_stress=args.applied_stress,
+                    configs=porosity_configs,
+                    seed=args.seed,
+                    n_jobs=args.jobs,
+                    return_artifacts=True,
+                )
+            except ValueError as exc:
+                print(f"ERROR: bad input for Vp={Vp}: {exc}", file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as solver failure
+                print(f"ERROR: solver failure for Vp={Vp}: {exc}", file=sys.stderr)
+                return 3
         all_results[Vp_label] = results
 
-        if args.plots:
-            for name in results:
-                art = artifacts[name]
-                viz.plot_porosity_field(
-                    art.porosity_field,
-                    save_path=output_dir / f"porosity_profile_{name}_{Vp_label}.png")
-                viz.plot_mesh_3d(
-                    art.mesh,
-                    save_path=output_dir / f"porosity_mesh_3d_{name}_{Vp_label}.png")
-                viz.plot_mesh_detail(
-                    art.mesh,
-                    save_path=output_dir / f"porosity_mesh_detail_{name}_{Vp_label}.png")
-                viz.plot_damage_contour(
-                    art.mesh,
-                    art.empirical_solver,
-                    save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
-            viz.plot_model_comparison(
-                results,
-                save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
-
-        out_path = output_dir / f"porosity_analysis_results_{Vp_label}.json"
-        save_fn(results, out_path, artifacts=artifacts)
+        # Writing outputs keeps the 0/2/3 contract: an unwritable file is
+        # an input/environment problem (2), anything else a failure (3).
+        try:
+            if args.plots:
+                _write_vp_plots(viz, results, artifacts, output_dir, Vp_label)
+            out_path = output_dir / f"porosity_analysis_results_{Vp_label}.json"
+            save_fn(results, out_path, artifacts=artifacts)
+        except OSError as exc:
+            print(f"ERROR: cannot write output for Vp={Vp}: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # noqa: BLE001 - surface as a failure
+            print(f"ERROR: writing output for Vp={Vp} failed: {exc}", file=sys.stderr)
+            return 3
 
     if args.plots and all_results:
-        viz.plot_knockdown_curves(
-            all_results,
-            save_path=output_dir / "porosity_knockdown_curves.png")
+        try:
+            viz.plot_knockdown_curves(
+                all_results,
+                save_path=output_dir / "porosity_knockdown_curves.png")
+        except OSError as exc:
+            print(f"ERROR: cannot write knockdown curves: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # noqa: BLE001 - surface as a failure
+            print(f"ERROR: plotting knockdown curves failed: {exc}", file=sys.stderr)
+            return 3
 
     _bar = "=" * 70
     logger.info("\n%s", _bar)
