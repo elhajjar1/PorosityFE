@@ -26,6 +26,14 @@ pip install -e ".[all]"
 pytest tests/ -v
 ```
 
+To catch lint and type errors before CI does, install the pre-commit hooks
+(they run `ruff check` and the same `mypy` command as the CI lint job):
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
 ## Pull Requests
 
 1. Fork the repository
@@ -33,6 +41,18 @@ pytest tests/ -v
 3. Write tests for new functionality
 4. Ensure all tests pass (`pytest tests/ -v`)
 5. Submit a pull request with a clear description
+
+## Releasing
+
+1. Bump `version` in `pyproject.toml` and the fallback `__version__` in
+   `porosity_fe/__init__.py`.
+2. Move the `## [Unreleased]` entries in `CHANGELOG.md` under
+   `## [X.Y.Z] - <date>`, leaving `[Unreleased]` empty.
+3. Tag `vX.Y.Z` and push the tag. `.github/workflows/publish.yml` checks
+   steps 1-2 (`.github/scripts/check_release.py`), builds the sdist and
+   wheel, smoke-tests the wheel and publishes to PyPI via trusted
+   publishing. `build-executables.yml` attaches the frozen
+   `validate_porosity` CLIs to the GitHub release.
 
 ## Code Style
 

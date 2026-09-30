@@ -5,6 +5,31 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **PyPI release automation (IMPROVEMENT_PLAN 6.4).** A new
+  `.github/workflows/publish.yml` runs on `v*` tags:
+  - `.github/scripts/check_release.py` checks that the tag matches both
+    version literals, that `[Unreleased]` is empty and that the release
+    has its own CHANGELOG section;
+  - the sdist and wheel are built and pass `twine check --strict`, and
+    the wheel is smoke-tested;
+  - the packages are published through PyPI trusted publishing (no
+    stored token).
+
+  A `.pre-commit-config.yaml` runs the CI lint checks (ruff, mypy)
+  locally. The license metadata moves to an SPDX expression
+  (`license = "MIT"`, setuptools >= 77), which removes the deprecation
+  that breaks builds after 2027-02-18.
+- **Property-based tests (IMPROVEMENT_PLAN 6.6).** `tests/test_properties.py`
+  uses `hypothesis` (new dev dependency) to check that:
+  - stiffness rotation round-trips;
+  - stress transforms compose as a group;
+  - work is frame-invariant, which guards the engineering-shear factor 2;
+  - the Tsai-Wu index is frame-invariant;
+  - every knockdown law stays a monotone fraction on `Vp in [0, 0.05]`,
+    at QI and after layup scaling.
+
+  The headline validation MAE (7.05% property-weighted, 6.53%
+  point-weighted, 35 entries, 239 points) is now pinned.
 - **Uncertainty propagation in the CLI and app (IMPROVEMENT_PLAN 3.4).**
   - `porosity-analyze --uq` writes `porosity_uq_<Vp>.json` (new
     `porosity-fe.uq` format, `FORMAT_UQ`) for every loading mode. The

@@ -600,3 +600,21 @@ def test_run_one_dataset_is_picklable():
     import pickle
     from validation.validate_all import _run_one_dataset
     assert pickle.loads(pickle.dumps(_run_one_dataset)) is _run_one_dataset
+
+
+# ---------------------------------------------------------------------------
+# IMPROVEMENT_PLAN 6.6 — golden pin on the headline validation metric
+#
+# The per-entry pins above tolerate 10% drift each; this catches a small
+# drift spread across many entries, and a dataset or property silently
+# appearing or disappearing. Re-pin (and update README "Overall MAE") only
+# on an intentional model or dataset change.
+# ---------------------------------------------------------------------------
+
+def test_headline_mae_pinned(_all_results):
+    from validation.validate_all import summarize_mae
+    s = summarize_mae(_all_results)
+    assert s['n_entries'] == 35
+    assert s['n_points'] == 239
+    assert s['property_weighted_mae'] == pytest.approx(7.050, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(6.531, abs=0.05)
