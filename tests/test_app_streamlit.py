@@ -72,8 +72,11 @@ class TestAppRender:
         assert result["fe_field"] is not None
         # With a result present the Stress tab renders its component selector.
         assert any(sb.label == "Stress component" for sb in at.selectbox)
-        # Export tab offers the JSON/CSV downloads.
-        assert len(at.get("download_button")) >= 2
+        # Export tab offers the JSON/CSV downloads, and each of the four
+        # figures (profile, mesh, results, stress) a PNG download.
+        labels = [b.proto.label for b in at.get("download_button")]
+        assert labels.count("Download PNG") == 4
+        assert len(labels) == 6
 
     def test_ncr_form_submit_generates_summary(self):
         """Submitting the NCR form with a blank parent reference must not
@@ -85,5 +88,5 @@ class TestAppRender:
         assert not at.exception
         # Recommended-disposition guidance is surfaced...
         assert any("disposition" in w.value.lower() for w in at.warning)
-        # ...and all five download buttons (2 export + 3 NCR) coexist.
-        assert len(at.get("download_button")) == 5
+        # ...and all nine download buttons (4 PNG + 2 export + 3 NCR) coexist.
+        assert len(at.get("download_button")) == 9

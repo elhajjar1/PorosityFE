@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import io
 import logging
 import sys
 from pathlib import Path
@@ -100,7 +101,9 @@ def _config_to_key(cfg: dict) -> tuple:
                  for k in _CFG_KEYS)
 
 
-@st.cache_data(show_spinner=False)
+# Each entry pickles a mesh and its fields (a few MB), so bound the cache
+# instead of letting it grow for the life of the server process.
+@st.cache_data(show_spinner=False, max_entries=16)
 def run_analysis_cached(cfg_key: tuple) -> dict:
     """Cached wrapper around :func:`run_analysis`. ``cfg_key`` must be hashable."""
     cfg = {}
@@ -638,6 +641,18 @@ def _build_sidebar_inputs() -> dict | None:
     return {"cfg": cfg, "layup_str": layup_str, "run": run}
 
 
+def _show_figure(fig, file_stem: str, key: str) -> None:
+    """Render ``fig`` in the page and offer it as a PNG download."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    st.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+    st.download_button(
+        "Download PNG", data=buf.getvalue(), file_name=f"{file_stem}.png",
+        mime="image/png", key=key,
+    )
+
+
 def _placeholder_tab():
     st.info("Run an analysis to populate this tab.")
 
@@ -685,21 +700,22 @@ def _build_profile_tab(result: dict | None):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_profile(result), clear_figure=True)
+    _show_figure(plot_profile(result), "porosity_profile", "dl_png_profile")
 
 
 def _build_mesh_tab(result: dict | None):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_mesh(result), clear_figure=True)
+    _show_figure(plot_mesh(result), "mesh_section", "dl_png_mesh")
 
 
 def _build_results_tab(result: dict | None, layup_for_title: str):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_results(result, layup_for_title), clear_figure=True)
+    _show_figure(plot_results(result, layup_for_title), "knockdown_results",
+                 "dl_png_results")
 
 
 def _build_stress_tab(result: dict | None):
@@ -718,7 +734,10 @@ def _build_stress_tab(result: dict | None):
         options=list(_STRESS_COMPONENTS.keys()),
         index=0,
     )
-    st.pyplot(plot_stress(result, comp_name), clear_figure=True)
+    comp_idx = _STRESS_COMPONENTS[comp_name][0]
+    slug = ("s11", "s22", "s33", "t23", "t13", "t12")[comp_idx] \
+        if comp_idx >= 0 else "von_mises"
+    _show_figure(plot_stress(result, comp_name), f"stress_{slug}", "dl_png_stress")
 
 
 def _build_export_tab(result: dict | None, layup_for_title: str):
@@ -727,9 +746,10 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         return
     payload = build_export_payload(result)
     export_stem = download_filename_stem(payload)
+    payload_json = _serialise_payload_json(payload)
     st.download_button(
         "Download JSON",
-        data=_serialise_payload_json(payload),
+        data=payload_json,
         file_name=f"{export_stem}.json",
         mime="application/json",
         use_container_width=True,
@@ -744,7 +764,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         key="dl_export_csv",
     )
     with st.expander("Preview JSON"):
-        st.code(_serialise_payload_json(payload), language="json")
+        st.code(payload_json, language="json")
 
     st.divider()
     st.subheader("NCR validation summary")
