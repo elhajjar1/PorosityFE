@@ -435,3 +435,11 @@ class TestSweepConfigurations:
         """No porosity levels -> empty result, no work."""
         assert sweep_configurations([], configs=TWO_CONFIGS) == {}
 
+
+
+def test_empty_configs_run_nothing():
+    """An explicit empty ``configs`` means no configurations, not the
+    bundled five (``configs or POROSITY_CONFIGS`` used to swap them in)."""
+    from porosity_fe import compare_configurations, sweep_configurations
+    assert compare_configurations(0.02, configs={}) == {}
+    assert sweep_configurations([0.02, 0.04], configs={}) == {0.02: {}, 0.04: {}}

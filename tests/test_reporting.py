@@ -223,9 +223,12 @@ class TestFilenames:
         ("a / b", "a___b"),
         ("clean-name_1.0", "clean-name_1.0"),
         ("", ""),
+        ('NCR\\12:rev*2?"a"<b>|c', "NCR_12_rev_2__a__b__c"),
+        ("tab\there\nnew", "tab_here_new"),
+        ("σ₁₁ (fiber)", "σ₁₁_(fiber)"),
     ])
     def test_sanitise_replaces_slashes_and_spaces(self, raw, expected):
-        """Forward slashes and spaces become underscores; other characters are kept."""
+        """Characters Windows forbids and whitespace become underscores; others are kept."""
         assert _sanitise_filename_component(raw) == expected
 
     def test_sanitise_stringifies_non_strings(self):

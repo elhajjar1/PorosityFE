@@ -27,6 +27,11 @@ logger = logging.getLogger("porosity_fe_analysis")
 # SECTION 7: VISUALIZATION
 # ============================================================
 
+def _label_to_pct(label: str) -> float:
+    """Porosity percent from a CLI label: ``'3pct'`` -> 3.0, ``'2p5pct'`` -> 2.5."""
+    return float(label.removesuffix('pct').replace('p', '.'))
+
+
 def _finish(fig, save_path):
     """Save ``fig`` when ``save_path`` is given, then close it.
 
@@ -222,15 +227,20 @@ class FEVisualizer:
         modes = ['compression', 'tension', 'shear', 'ilss']
         colors = {'judd_wright': 'blue', 'power_law': 'red', 'linear': 'green'}
 
+        # Keys are the CLI's porosity labels ('3pct', '2p5pct'). Order them
+        # numerically once and use that order for both axes; sorting the
+        # labels as text put '10pct' before '2pct' against sorted x values.
+        labels = sorted(results_by_porosity, key=_label_to_pct)
+        Vp_vals = [_label_to_pct(k) for k in labels]
+
         for idx, mode in enumerate(modes):
             ax = axes[idx]
-            Vp_vals = sorted([float(k.replace('pct', '')) for k in results_by_porosity.keys()])
 
             for config_name in list(list(results_by_porosity.values())[0].keys()):
                 # Empirical models
                 for model in ['judd_wright', 'power_law', 'linear']:
                     kd_vals = []
-                    for Vp_label in sorted(results_by_porosity.keys()):
+                    for Vp_label in labels:
                         r = results_by_porosity[Vp_label][config_name]['empirical']
                         kd_vals.append(r[mode][model]['knockdown'])
                     ax.plot(Vp_vals, kd_vals, color=colors[model],

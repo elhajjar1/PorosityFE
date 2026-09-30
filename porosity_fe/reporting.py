@@ -23,6 +23,7 @@ import csv
 import datetime
 import io
 import json
+import re
 import textwrap
 
 
@@ -84,15 +85,19 @@ def parse_layup(text: str) -> list:
     return angles
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]')
+
+
 def _sanitise_filename_component(value: str) -> str:
     """Replace filesystem-unfriendly characters in a filename fragment.
 
     Slashes and spaces are the common offenders in material codes and
-    user-typed NCR references (e.g. ``"T800/epoxy"``, ``"NCR 12"``); both
-    become underscores so the resulting filename is portable across
-    Windows, macOS and Linux.
+    user-typed NCR references (e.g. ``"T800/epoxy"``, ``"NCR 12"``). They,
+    the other characters Windows forbids (``\\ : * ? " < > |``), other
+    whitespace and control characters all become underscores, so the
+    resulting filename is portable across Windows, macOS and Linux.
     """
-    return str(value).replace("/", "_").replace(" ", "_")
+    return _UNSAFE_FILENAME_CHARS.sub("_", str(value))
 
 
 def download_filename_stem(payload: dict) -> str:

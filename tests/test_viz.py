@@ -316,6 +316,25 @@ class TestKnockdownCurvesPlot:
                 np.testing.assert_allclose(line.get_ydata(),
                                            [self._kd(v, mode, model) for v in (1, 3, 5)])
 
+    def test_two_digit_and_fractional_labels_stay_paired(self):
+        """Labels as the CLI writes them ('2pct', '10pct', '2p5pct'): x sorted
+        numerically and y from the same level. '10pct' used to sort before
+        '2pct' as text, and '2p5pct' raised."""
+        from porosity_fe.cli import _vp_label
+        levels = (0.02, 0.10, 0.025)
+        results = {
+            _vp_label(vp): {'uniform_spherical': _fake_result(
+                lambda mode, model, pct=vp * 100: self._kd(pct, mode, model))}
+            for vp in levels
+        }
+        fig = FEVisualizer.plot_knockdown_curves(results)
+        expected_x = sorted(vp * 100 for vp in levels)
+        for mode, ax in zip(MODES, fig.axes, strict=True):
+            for model, line in zip(MODELS, ax.lines, strict=True):
+                np.testing.assert_allclose(line.get_xdata(), expected_x)
+                np.testing.assert_allclose(line.get_ydata(),
+                                           [self._kd(x, mode, model) for x in expected_x])
+
     def test_linestyle_and_colour_encoding(self):
         """Solid for 'uniform*' configs, dashed otherwise; one colour per model."""
         fig = FEVisualizer.plot_knockdown_curves(self._results())

@@ -377,7 +377,8 @@ def compare_configurations(void_volume_fraction: float,
             f"Unknown material {material_name!r}. "
             f"Available presets: {sorted(MATERIALS)}."
         )
-    configs = configs or POROSITY_CONFIGS
+    # ``None`` means the bundled set; an explicit empty dict runs nothing.
+    configs = POROSITY_CONFIGS if configs is None else configs
     workers = _resolve_n_jobs(n_jobs)
 
     _bar = '=' * 70
@@ -429,7 +430,8 @@ def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy
             f"Unknown material {material_name!r}. "
             f"Available presets: {sorted(MATERIALS)}."
         )
-    configs = configs or POROSITY_CONFIGS
+    # ``None`` means the bundled set; an explicit empty dict runs nothing.
+    configs = POROSITY_CONFIGS if configs is None else configs
     vps = list(dict.fromkeys(float(v) for v in void_volume_fractions))
     tasks = [
         (Vp, name, config, material_name, applied_stress, seed)

@@ -91,6 +91,17 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **Knockdown-curve plot paired the wrong points.** `FEVisualizer.plot_knockdown_curves`
+  sorted the x values numerically but read the y values in label text
+  order. With `--vp 0.02 0.10 --plots` the 10% knockdowns were drawn at
+  2% and the reverse. Labels such as `2p5pct` (from `--vp 0.025`) also
+  crashed the plot. Both are now parsed and ordered one way.
+- **Download filenames are Windows-safe as documented.**
+  `_sanitise_filename_component` now also replaces `\ : * ? " < > |`,
+  other whitespace and control characters, not just `/` and spaces.
+- **`compare_configurations(configs={})` / `sweep_configurations(configs={})`
+  run nothing.** An empty mapping used to fall back to the five bundled
+  configurations; only `None` does now.
 - **`porosity-analyze` output failures honor the exit-code contract.**
   An `OSError` while writing a JSON result or a plot exited with a
   traceback (code 1); it now returns 2, and any other output failure
