@@ -911,19 +911,28 @@ class TestExtrapolationWarning:
     numerical results are unchanged.
     """
 
-    def _build_solver(self, Vp):
+    def _build_solver(self, Vp, distribution='uniform', nz=2, **pf_kwargs):
         material = MATERIALS['T800_epoxy']
-        pf = PorosityField(material, Vp, distribution='uniform')
-        mesh = CompositeMesh(pf, material, nx=4, ny=2, nz=2)
+        pf = PorosityField(material, Vp, distribution=distribution, **pf_kwargs)
+        mesh = CompositeMesh(pf, material, nx=4, ny=2, nz=nz)
         return EmpiricalSolver(mesh, material)
+
+    @staticmethod
+    def _extrapolation_warnings(solver, mode='compression', model='judd_wright'):
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            solver.apply_loading(mode, model)
+        return [w for w in record
+                if issubclass(w.category, UserWarning)
+                and 'calibration bound' in str(w.message)]
 
     def test_warns_when_vp_exceeds_bound(self):
         """A built-in model at Vp > 0.05 must emit exactly one UserWarning
-        naming the offending Vp."""
+        naming the offending specimen-average Vp."""
         solver = self._build_solver(0.08)
         with pytest.warns(
             UserWarning,
-            match=r"beyond calibration bound.*max Vp = 0\.08",
+            match=r"beyond calibration bound.*specimen-average Vp = 0\.08\.",
         ) as record:
             solver.apply_loading('compression', 'judd_wright')
         # Exactly one warning per call — never per node.
@@ -966,3 +975,182 @@ class TestExtrapolationWarning:
                   if issubclass(w.category, UserWarning)
                   and 'calibration bound' in str(w.message)]
         assert extrap == []
+
+    def test_warns_on_local_peak_when_mean_within_bound(self):
+        """A clustered field with mean Vp inside the bound but a local peak
+        above it must warn about the per-node field, naming both values."""
+        solver = self._build_solver(0.03, distribution='clustered', nz=12)
+        peak = float(solver.mesh.porosity.max())
+        assert peak > 0.05, "fixture must put the clustered peak past the bound"
+        extrap = self._extrapolation_warnings(solver)
+        assert len(extrap) == 1
+        msg = str(extrap[0].message)
+        assert 'per-node field' in msg
+        assert f"local peak Vp = {peak:.4g}" in msg
+        assert "specimen-average Vp = 0.03 is within the bound" in msg
+
+    def test_local_peak_warning_exempts_user_callable(self):
+        """The local-peak branch honours the same user-callable exemption."""
+        solver = self._build_solver(0.03, distribution='clustered', nz=12)
+        extrap = self._extrapolation_warnings(
+            solver, model=lambda Vp, mode: 0.9)
+        assert extrap == []
+
+    def test_mean_over_bound_reports_local_peak_too(self):
+        """When the mean is already past the bound, a distinct local peak is
+        appended so the user sees how far the nodal field extrapolates."""
+        solver = self._build_solver(0.06, distribution='clustered', nz=12)
+        peak = float(solver.mesh.porosity.max())
+        extrap = self._extrapolation_warnings(solver)
+        assert len(extrap) == 1
+        msg = str(extrap[0].message)
+        assert "specimen-average Vp = 0.06" in msg
+        assert f"(local peak Vp = {peak:.4g})" in msg
+
+    def test_discrete_void_interior_does_not_trigger_warning(self):
+        """Nodes inside a discrete void carry Vp = 1.0 but are modeled by the
+        SCF post-step, so they must not trip the local-peak warning."""
+        material = MATERIALS['T800_epoxy']
+        void = VoidGeometry(center=(25, 10, material.total_thickness / 2),
+                            radii=(2, 2, 0.5))
+        pf = PorosityField(material, 0.02, distribution='uniform',
+                           discrete_voids=[void])
+        mesh = CompositeMesh(pf, material, nx=20, ny=10, nz=12)
+        assert mesh.porosity.max() == pytest.approx(1.0)
+        solver = EmpiricalSolver(mesh, material)
+        assert self._extrapolation_warnings(solver) == []
+
+    def test_get_failure_load_ignores_local_peak(self):
+        """``get_failure_load`` returns a specimen-average result, so a local
+        peak past the bound (mean within it) must not warn there."""
+        solver = self._build_solver(0.03, distribution='clustered', nz=12)
+        assert float(solver.mesh.porosity.max()) > 0.05
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            solver.get_failure_load('compression', 'judd_wright')
+        assert [w for w in record if 'calibration bound' in str(w.message)] == []
+        # The nodal field is still populated for visualization.
+        assert solver.nodal_knockdown is not None
+
+    def test_get_failure_load_mean_warning_omits_local_peak(self):
+        solver = self._build_solver(0.06, distribution='clustered', nz=12)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            solver.get_failure_load('compression', 'judd_wright')
+        extrap = [w for w in record if 'calibration bound' in str(w.message)]
+        assert len(extrap) == 1
+        msg = str(extrap[0].message)
+        assert "specimen-average Vp = 0.06." in msg
+        assert "local peak" not in msg
+
+    @pytest.mark.parametrize("entry", ["apply_loading", "get_failure_load"])
+    def test_warning_points_at_caller(self, entry):
+        """``stacklevel`` must attribute the warning to the user's call site
+        for both public entry points."""
+        solver = self._build_solver(0.08)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            getattr(solver, entry)('compression', 'judd_wright')
+        extrap = [w for w in record if 'calibration bound' in str(w.message)]
+        assert len(extrap) == 1
+        assert extrap[0].filename == __file__
+
+    def test_uniform_within_bound_no_local_peak_warning(self):
+        """A uniform field has peak == mean, so Vp at the bound stays silent."""
+        solver = self._build_solver(0.05, nz=12)
+        assert self._extrapolation_warnings(solver) == []
+
+
+class TestKnockdownDispatch:
+    """IMPROVEMENT_PLAN 5.2 / 5.3: one implementation per knockdown law, and
+    each public call validates its inputs once."""
+
+    def setup_method(self):
+        self.material = MATERIALS['T800_epoxy']
+        pf = PorosityField(self.material, 0.03, distribution='clustered')
+        self.mesh = CompositeMesh(pf, self.material, nx=6, ny=3, nz=6)
+        self.solver = EmpiricalSolver(self.mesh, self.material)
+        self.n_nodes = len(self.mesh.nodes)
+
+    def _counting_model(self):
+        calls = []
+
+        def model(Vp, mode):
+            calls.append(Vp)
+            return float(np.exp(-5.0 * Vp))
+        return model, calls
+
+    def test_get_failure_load_validates_user_callable_once(self):
+        """Grid validation (11 points) runs once, then one call per node for
+        the nodal field and one at the specimen-average Vp."""
+        model, calls = self._counting_model()
+        self.solver.get_failure_load('compression', model)
+        assert len(calls) == 11 + self.n_nodes + 1
+
+    def test_apply_loading_validates_user_callable_once(self):
+        model, calls = self._counting_model()
+        self.solver.apply_loading('shear', model)
+        assert len(calls) == 11 + self.n_nodes
+
+    def test_environment_and_fatigue_factors_evaluated_once(self, monkeypatch):
+        counts = {'env': 0, 'fat': 0}
+        real_env = self.solver._environment_knockdown_factor
+        real_fat = self.solver._fatigue_knockdown_factor
+
+        def env(*args, **kwargs):
+            counts['env'] += 1
+            return real_env(*args, **kwargs)
+
+        def fat(*args, **kwargs):
+            counts['fat'] += 1
+            return real_fat(*args, **kwargs)
+
+        monkeypatch.setattr(self.solver, '_environment_knockdown_factor', env)
+        monkeypatch.setattr(self.solver, '_fatigue_knockdown_factor', fat)
+        fr = self.solver.get_failure_load(
+            'compression', 'judd_wright', cycles=1e5,
+            environment={'T': 80.0, 'M': 1.0})
+        assert counts == {'env': 1, 'fat': 1}
+        # The nodal field carries the same factors as the returned result.
+        base = self.solver._judd_wright(self.mesh.porosity_field.Vp, 'compression')
+        assert fr.knockdown == pytest.approx(
+            base * fr.details['environment_knockdown'] * fr.details['fatigue_knockdown'],
+            rel=1e-12)
+
+    def test_nodal_field_uses_the_same_law_as_scalar_path(self):
+        """The vectorized nodal path and the scalar methods share one law."""
+        for model in ('judd_wright', 'power_law', 'linear'):
+            self.solver.apply_loading('ilss', model)
+            scalar = [getattr(self.solver, '_' + model)(vp, 'ilss')
+                      for vp in self.mesh.porosity]
+            # NumPy's vectorized exp may differ from the scalar call by 1 ulp.
+            np.testing.assert_allclose(self.solver.nodal_knockdown, scalar,
+                                       rtol=1e-15, atol=0)
+
+    @pytest.mark.parametrize("call, callable_ok", [
+        (lambda s: s.apply_loading('compression', 'bogus'), True),
+        (lambda s: s.get_failure_load('compression', 'bogus'), True),
+        (lambda s: s.local_sensitivities('compression', 'bogus'), False),
+        (lambda s: s.sensitivity_fd('compression', 'bogus'), False),
+    ], ids=['apply_loading', 'get_failure_load', 'local_sensitivities',
+            'sensitivity_fd'])
+    def test_unknown_model_message_is_consistent(self, call, callable_ok):
+        expected = ("Unknown knockdown model 'bogus'. "
+                    "Use one of ['judd_wright', 'linear', 'power_law']")
+        with pytest.raises(ValueError) as exc:
+            call(self.solver)
+        msg = str(exc.value)
+        assert msg.startswith(expected)
+        assert msg.endswith(" or pass a callable.") is callable_ok
+
+    def test_new_law_without_derivatives_is_not_treated_as_linear(self, monkeypatch):
+        """A law added to _KNOCKDOWN_LAWS must not silently inherit the
+        linear law's analytic derivatives."""
+        from porosity_fe import empirical as emp_mod
+        laws = dict(emp_mod._KNOCKDOWN_LAWS)
+        laws['quadratic'] = (lambda Vp, c: (1.0 - c * Vp) ** 2, 'LINEAR_BETA')
+        monkeypatch.setattr(emp_mod, '_KNOCKDOWN_LAWS', laws)
+        with pytest.raises(NotImplementedError, match="sensitivity_fd"):
+            self.solver.local_sensitivities('compression', 'quadratic')
+        # The finite-difference path still works for such a law.
+        assert np.isfinite(self.solver.sensitivity_fd('compression', 'quadratic'))

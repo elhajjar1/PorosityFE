@@ -35,6 +35,21 @@ class TestValidateCLISmoke:
             main(['--help'])
         assert exc.value.code == 0
 
+    def test_version_fallback_uses_package_version(self, monkeypatch):
+        """Without installed metadata the CLI reports
+        ``porosity_fe.__version__`` rather than its own literal."""
+        import importlib.metadata as ilm
+
+        import porosity_fe
+        from validate_porosity_cli import _resolve_version
+
+        def _missing(_name):
+            raise ilm.PackageNotFoundError("porosity-fe")
+
+        monkeypatch.setattr(ilm, "version", _missing)
+        monkeypatch.setattr(porosity_fe, "__version__", "9.9.9-test")
+        assert _resolve_version() == "9.9.9-test"
+
 
 # A schema-valid dataset whose (fiber, matrix) maps to the
 # AS4_3501_6_epoxy preset, so the whole validate pipeline (load ->
@@ -617,8 +632,11 @@ class TestCLIMain:
         comparison, and the cross-Vp knockdown curves. Covers the cli.py
         --plots branch and, transitively, viz.plot_model_comparison /
         plot_knockdown_curves (both previously uncovered)."""
+        import matplotlib.pyplot as plt
+
         monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
                             _TINY_CONFIGS)
+        open_before = set(plt.get_fignums())
         rc = porosity_fe_analysis.main([
             '--vp', '0.02',
             '--output-dir', str(tmp_path),
@@ -626,6 +644,8 @@ class TestCLIMain:
             '--quiet',
         ])
         assert rc == 0
+        # Every saved figure is closed (IMPROVEMENT_PLAN 4.5).
+        assert set(plt.get_fignums()) == open_before
         for fname in (
             'porosity_profile_uniform_spherical_2pct.png',
             'porosity_mesh_3d_uniform_spherical_2pct.png',

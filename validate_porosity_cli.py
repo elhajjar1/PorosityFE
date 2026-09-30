@@ -24,9 +24,11 @@ from pathlib import Path
 def _resolve_version() -> str:
     """Return the package version from importlib.metadata when installed.
 
-    Falls back to a hard-coded string when running from a source checkout
-    that hasn't been pip-installed (e.g. during tests). The hard-coded
-    fallback must be kept in sync with pyproject.toml on each release.
+    Falls back to ``porosity_fe.__version__`` when running from a source
+    checkout that hasn't been pip-installed (e.g. during tests) or from the
+    frozen executable, so the only hand-synced version literal is the one
+    in ``porosity_fe/__init__.py``. The package is imported only on this
+    fallback path, keeping ``--version`` fast for installed copies.
     """
     try:
         from importlib.metadata import PackageNotFoundError, version
@@ -36,7 +38,8 @@ def _resolve_version() -> str:
             pass
     except ImportError:
         pass
-    return "1.2.0"
+    from porosity_fe import __version__
+    return __version__
 
 
 def _resolve_bundled_datasets_dir() -> str:

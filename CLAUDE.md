@@ -69,7 +69,12 @@ different numerical answers for the same inputs**, not the same answer:
   floors `_F_MD_FLOOR` / `_F_MD_FLOOR_ILSS`).
 - `FESolver` (`porosity_fe/fe/solver.py`) — builds a hex8 mesh and
   applies stiffness degradation **per element** via Eshelby/Mori-Tanaka
-  micromechanics on the local `Vp(x, y, z)`. Strength degradation uses a
+  micromechanics on the local `Vp(x, y, z)`. Assembly and stress recovery
+  run on batched per-element arrays (`porosity_fe/fe/batch.py`), not
+  per-element `Hex8Element` objects (kept as the public reference
+  implementation and tested for agreement); the assembled `K` and its LU
+  factorization are cached on the assembler / solver and reused across
+  solves until the mesh, material or porosity change. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
   `_degraded_strengths`). The FE path **does** pick up distribution-shape
   differences.
@@ -107,10 +112,10 @@ handling, change it here, not at the call sites.
 
 `validation/datasets/*.json` holds 13 peer-reviewed experimental
 datasets, schema-validated against
-`validation/schemas/validation_dataset_schema.json`. The whole tree is
-gitignored (digitized from published figures, kept out of the repo); the
-PyInstaller spec bundles it into the CLI executable so end users get an
-offline-runnable validator. `validate_porosity_cli.py` calls
+`validation/schemas/validation_dataset_schema.json`. The datasets are
+tracked in the repository (it is where they are backed up), and CI runs
+the validation tests against them. The PyInstaller spec bundles them into
+the CLI executable so end users get an offline-runnable validator. `validate_porosity_cli.py` calls
 `validation/validate_all.py` to run every dataset through the empirical
 pipeline and emit `validation_master_report.png` + `validation_detail_report.md`.
 
@@ -123,10 +128,10 @@ for `app.py`. Don't reorder those imports.
 
 ### Test conftest layout
 
-The repo-root `conftest.py` adjusts `sys.path` so tests can find
-`porosity_fe`, `app`, `validate_porosity_cli`, and `validation` without an
-editable install (CI installs deps but historically not the package
-itself). `tests/conftest.py` adds the `_restore_porosity_logger`
+Tests import `porosity_fe`, `app`, `validate_porosity_cli`, and
+`validation` from the installed package, so run them after
+`pip install -e ".[dev]"` (CI does the same; there is no repo-root
+`sys.path` shim). `tests/conftest.py` adds the `_restore_porosity_logger`
 autouse fixture that undoes `_configure_cli_logging`'s
 `propagate = False` between tests — required because alphabetical
 collection puts `test_cli.py` first.
@@ -148,7 +153,9 @@ collection puts `test_cli.py` first.
 
 `.github/workflows/tests.yml` runs three jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
-`{3.10, 3.11, 3.12, 3.13}`), and `streamlit_smoke` (decoupled
+`{3.10, 3.11, 3.12, 3.13}` against an editable install; the ubuntu/3.12
+cell also measures coverage, uploads `coverage.xml` as an artifact, and
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`), and `streamlit_smoke` (decoupled
 single-OS/Python import-only check — Streamlit wheel availability on 3.13
 can't be allowed to drop the whole library matrix red, see issue #157).
 `security.yml` runs `pip-audit` weekly. Match the matrix when adding
@@ -162,7 +169,10 @@ version-sensitive code.
   micromechanics path and the empirical path read from the same dataclass,
   so populate constituent fields (`matrix_modulus`, `fiber_volume_fraction`,
   etc.) even if you only plan to exercise the empirical solver.
-- **New empirical correlation**: add to `EmpiricalSolver`. Take `Vp` as a
+- **New empirical correlation**: register the law function in
+  `_KNOCKDOWN_LAWS` (`porosity_fe/empirical.py`), the one place every
+  solver path looks laws up; add its QI table to `Calibration`, its name to
+  `KnockdownModel`, and a `local_sensitivities` branch. Take `Vp` as a
   fraction in `[0, 1]`, return `KD ∈ (0, 1]`. Document the calibration
   set, the regression form (`ln(KD)` vs `Vp` for Judd-Wright,
   `ln(KD)` vs `ln(1-Vp)` for power law), and the validity bound. Custom

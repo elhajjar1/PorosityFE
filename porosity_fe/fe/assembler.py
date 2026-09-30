@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 import numpy as np
@@ -10,6 +11,7 @@ import scipy.sparse
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..porosity_field import PorosityField
+from .batch import ElementBatch, build_element_batch, element_dofs
 from .element import Hex8Element
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -39,14 +41,13 @@ class GlobalAssembler:
         self.material = material
         self.porosity_field = porosity_field
         self._C_base = material.get_stiffness_matrix()
-        # Hoisted from per-call hash; _C_base is set once in __init__ and never mutated.
-        self._c_base_hash = hash(self._C_base.tobytes())
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
         self._void_shape = porosity_field.void_shape_radii
-        self._ke_cache: dict[tuple, np.ndarray] = {}
-        self._cache_hits = 0
-        self._cache_misses = 0
+        # Assembly results, valid while _state_key() still returns _key.
+        self._key: tuple | None = None
+        self._batch: ElementBatch | None = None
+        self._K: scipy.sparse.csc_matrix | None = None
 
     def create_element(self, elem_idx: int) -> Hex8Element:
         """Create a Hex8Element for the given element index.
@@ -72,146 +73,89 @@ class GlobalAssembler:
             material=self.material,
         )
 
-    def _element_cache_key(self, elem_idx: int) -> tuple | None:
-        """Return a cache key if this element can reuse a cached Ke.
-
-        Elements can share stiffness matrices when they have:
-        - Same ply angle
-        - Same uniform porosity at all 8 nodes
-        - Same element geometry (all 8 node positions relative to centroid)
-        - Same void status
-        - Same base stiffness matrix C_base
-
-        The geometry fingerprint uses all 8 node coordinates relative to the
-        element centroid (rounded to 8 decimal places) so that skewed, rotated,
-        or otherwise non-rectilinear elements are never incorrectly coalesced
-        with axis-aligned elements that share the same bounding-box extents.
-        C_base is included so elements with identical shape but different
-        material properties do not share a cached stiffness matrix.
-        """
-        node_ids = self.mesh.elements[elem_idx]
-        node_porosities = self.mesh.porosity[node_ids]
-        # Only cache if all nodes have the same porosity
-        if not np.allclose(node_porosities, node_porosities[0], atol=1e-12):
-            return None
-        is_void = elem_idx in self.mesh.void_element_set
-        ply_angle = float(self.mesh.ply_angles[elem_idx])
-        porosity_val = round(float(node_porosities[0]), 10)
-        # Encode the full element shape: 8 node positions relative to the
-        # centroid, rounded to 8 decimal places.  This correctly distinguishes
-        # skewed/non-rectilinear elements from axis-aligned ones that happen to
-        # share the same (dx, dy, dz) bounding-box extents.
-        coords = self.mesh.nodes[node_ids]
-        centroid = coords.mean(axis=0)
-        rel_coords = np.round(coords - centroid, 8)
-        geom_key = tuple(rel_coords.ravel())
-        # Include a hash of C_base so elements with the same geometry but
-        # different material stiffness do not share a cached matrix.
-        c_key = self._c_base_hash
-        return (ply_angle, porosity_val, is_void, geom_key, c_key)
-
-    def _cache_uniform_elements(self) -> None:
-        """Pre-compute stiffness matrices for elements that share properties.
-
-        For uniform porosity distributions on structured meshes, many elements
-        differ only in ply angle. This method identifies unique element types
-        and caches their stiffness matrices.
-        """
-        self._ke_cache.clear()
-        self._cache_hits = 0
-        self._cache_misses = 0
-
-        for e in range(self.mesh.n_elements):
-            key = self._element_cache_key(e)
-            if key is not None and key not in self._ke_cache:
-                elem = self.create_element(e)
-                Ke = elem.stiffness_matrix()
-                # Symmetrize: Ke = B^T C B * |J| * w is mathematically
-                # symmetric, but the void-overflow finite-mask in
-                # Hex8Element.stiffness_matrix can break this for elements
-                # crossing the void modulus boundary, and FP accumulation
-                # across 8 Gauss points adds further drift. Iterative
-                # solvers (CG/MINRES) warn or fail on asymmetric K, so we
-                # enforce K = K^T at the source (issue #57).
-                self._ke_cache[key] = 0.5 * (Ke + Ke.T)
-
     def element_dof_indices(self, elem_idx: int) -> np.ndarray:
         """Global DOF indices (24,) for an element's 8 nodes."""
-        node_ids = self.mesh.elements[elem_idx]
-        dofs = np.empty(24, dtype=np.intp)
-        for i, nid in enumerate(node_ids):
-            base = 3 * nid
-            dofs[3 * i] = base
-            dofs[3 * i + 1] = base + 1
-            dofs[3 * i + 2] = base + 2
-        return dofs
+        return element_dofs(self.mesh.elements[elem_idx:elem_idx + 1])[0]
+
+    def _state_key(self) -> tuple:
+        """Fingerprint of every input the stiffness depends on.
+
+        Hashes the mesh arrays by content (so in-place edits are seen) and
+        the material and void shape by value.
+        """
+        h = hashlib.blake2b(digest_size=16)
+        mesh = self.mesh
+        for arr in (mesh.nodes, mesh.elements, mesh.porosity,
+                    mesh.ply_angles, mesh.void_elements):
+            a = np.ascontiguousarray(arr)
+            h.update(f"{a.dtype}{a.shape}".encode())
+            h.update(a.tobytes())
+        return (h.hexdigest(), repr(self.material),
+                tuple(self.porosity_field.void_shape_radii))
+
+    def element_batch(self) -> ElementBatch:
+        """Per-element, per-Gauss-point ``B``, ``C`` and ``det(J) w`` arrays.
+
+        Reuses the batch from the last assembly while the mesh, material and
+        porosity inputs are unchanged; rebuilds it otherwise.
+        """
+        key = self._state_key()
+        if self._batch is None or key != self._key:
+            self._batch = build_element_batch(
+                self.mesh, self.material, self.porosity_field.void_shape_radii)
+            self._key = key
+            self._K = None
+        return self._batch
+
+    def stiffness(self, verbose: bool = False) -> scipy.sparse.csc_matrix:
+        """Global K, re-assembled only when its inputs have changed.
+
+        The returned matrix is shared with later calls; treat it as
+        read-only (``BoundaryHandler.apply_penalty`` returns a new matrix).
+        """
+        if self._K is None or self._state_key() != self._key:
+            self.assemble_stiffness(verbose=verbose)
+        assert self._K is not None
+        return self._K
 
     def assemble_stiffness(self, verbose: bool = False) -> scipy.sparse.csc_matrix:
         """Assemble global stiffness matrix K in CSC format.
 
-        Uses COO pre-allocation: n_elem * 576 entries.
-        Elements with identical properties (same ply angle, porosity, geometry)
-        reuse cached stiffness matrices for faster assembly.
+        All element stiffness matrices are computed together from an
+        :class:`ElementBatch` (see :mod:`porosity_fe.fe.batch`) and scattered
+        into a COO matrix of ``n_elem * 576`` entries. Always assembles;
+        :meth:`stiffness` returns the cached result when inputs are unchanged.
         """
-        # Pre-compute cache for uniform elements
-        self._cache_uniform_elements()
+        self._batch = build_element_batch(
+            self.mesh, self.material, self.porosity_field.void_shape_radii)
+        self._key = self._state_key()
+        batch = self._batch
+        Ke = batch.stiffness_matrices()
+
+        # An element whose contribution overflows is recomputed through
+        # Hex8Element, which zeroes non-finite terms per Gauss point.
+        overflowed = np.flatnonzero(~np.isfinite(Ke).all(axis=(1, 2)))
+        for e in overflowed:
+            Ke_e = self.create_element(int(e)).stiffness_matrix()
+            Ke[e] = 0.5 * (Ke_e + Ke_e.T)
 
         n_elem = self.mesh.n_elements
         n_dof = self.mesh.n_dof
-        entries_per_elem = 24 * 24  # 576
-
-        total_entries = n_elem * entries_per_elem
-        coo_rows = np.empty(total_entries, dtype=np.intp)
-        coo_cols = np.empty(total_entries, dtype=np.intp)
-        coo_vals = np.empty(total_entries, dtype=np.float64)
-
-        local_ii, local_jj = np.meshgrid(np.arange(24), np.arange(24), indexing='ij')
-        local_ii = local_ii.ravel()
-        local_jj = local_jj.ravel()
-
-        for e in range(n_elem):
-            if verbose and e % 500 == 0:
-                logger.info(
-                    "  Assembling element %d/%d (%.1f%%)",
-                    e, n_elem, 100.0 * e / n_elem,
-                )
-
-            # Try cache first
-            key = self._element_cache_key(e)
-            if key is not None and key in self._ke_cache:
-                Ke = self._ke_cache[key]
-                self._cache_hits += 1
-            else:
-                elem = self.create_element(e)
-                Ke = elem.stiffness_matrix()
-                # Match the symmetrization applied in
-                # _cache_uniform_elements so cache-miss and cache-hit
-                # paths yield identical entries (issue #57).
-                Ke = 0.5 * (Ke + Ke.T)
-                self._cache_misses += 1
-
-            dofs = self.element_dof_indices(e)
-
-            offset = e * entries_per_elem
-            coo_rows[offset:offset + entries_per_elem] = dofs[local_ii]
-            coo_cols[offset:offset + entries_per_elem] = dofs[local_jj]
-            coo_vals[offset:offset + entries_per_elem] = Ke.ravel()
+        dofs = batch.dofs
+        coo_rows = np.broadcast_to(dofs[:, :, None], Ke.shape).ravel()
+        coo_cols = np.broadcast_to(dofs[:, None, :], Ke.shape).ravel()
+        coo_vals = Ke.ravel()
 
         if verbose:
             n_void = len(self.mesh.void_elements)
-            logger.info(
-                "  Assembling element %d/%d (100.0%%) -- done.", n_elem, n_elem)
+            logger.info("  Assembled %d elements", n_elem)
             logger.info(
                 "  Void inclusion elements: %d (E ~ %s MPa)",
                 n_void, Hex8Element.VOID_MODULUS,
             )
             logger.info(
-                "  Ke cache: %d unique, %d hits, %d misses",
-                len(self._ke_cache), self._cache_hits, self._cache_misses,
-            )
-            logger.info(
                 "  Building sparse matrix: %d DOFs, %d COO entries",
-                n_dof, total_entries,
+                n_dof, coo_vals.size,
             )
 
         K_coo = scipy.sparse.coo_matrix(
@@ -226,7 +170,8 @@ class GlobalAssembler:
                 K_csc.nnz, K_csc.nnz / n_dof,
             )
 
-        return K_csc
+        self._K = K_csc
+        return K_csc.copy()
 
 
 # ============================================================
@@ -489,17 +434,18 @@ class BoundaryHandler:
         if not constrained_dofs:
             return K, F
 
-        # Ensure K is in a sparse format that supports conversion to LIL
         if not scipy.sparse.issparse(K):
             K = scipy.sparse.csc_matrix(K)
-        K_lil = K.tolil()
         F_mod = F.copy()
 
         diag_max = np.abs(K.diagonal()).max()
         alpha = penalty_factor * max(diag_max, 1.0)
 
-        for dof, val in constrained_dofs.items():
-            K_lil[dof, dof] += alpha
-            F_mod[dof] = alpha * val
+        n = len(constrained_dofs)
+        dofs = np.fromiter(constrained_dofs.keys(), dtype=np.intp, count=n)
+        vals = np.fromiter(constrained_dofs.values(), dtype=float, count=n)
+        penalty = scipy.sparse.csc_matrix(
+            (np.full(n, alpha), (dofs, dofs)), shape=K.shape)
+        F_mod[dofs] = alpha * vals
 
-        return K_lil.tocsc(), F_mod
+        return (K + penalty).tocsc(), F_mod

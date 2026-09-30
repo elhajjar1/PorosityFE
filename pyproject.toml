@@ -43,7 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["streamlit>=1.32"]
-dev = ["pytest>=7.0.0", "ruff>=0.5", "mypy>=1.8"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0", "ruff>=0.5", "mypy>=1.8"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
@@ -52,6 +52,7 @@ docs = [
 all = [
     "streamlit>=1.32",
     "pytest>=7.0.0",
+    "pytest-cov>=4.0",
     "ruff>=0.5",
     "mypy>=1.8",
     "sphinx>=7.0",
@@ -60,14 +61,13 @@ all = [
 ]
 
 [project.urls]
-# This fork (ranipdx-glitch) is the active development home: it owns the
-# GitHub Pages deployment, the active issue tracker, and ongoing PRs.
-# Unify all URLs on this org so PyPI metadata points users at the live
-# project rather than the upstream snapshot.
-Homepage = "https://github.com/ranipdx-glitch/PorosityFE"
-Repository = "https://github.com/ranipdx-glitch/PorosityFE"
-Issues = "https://github.com/ranipdx-glitch/PorosityFE/issues"
-Documentation = "https://ranipdx-glitch.github.io/PorosityFE/"
+# elhajjar1/PorosityFE is the canonical repository (issue tracker, GitHub
+# Pages docs, citation). Keep every URL here, in the README, CITATION.cff,
+# CONTRIBUTING.md and the docs on this owner.
+Homepage = "https://github.com/elhajjar1/PorosityFE"
+Repository = "https://github.com/elhajjar1/PorosityFE"
+Issues = "https://github.com/elhajjar1/PorosityFE/issues"
+Documentation = "https://elhajjar1.github.io/PorosityFE/"
 
 [project.scripts]
 validate_porosity = "validate_porosity_cli:main"
@@ -96,10 +96,8 @@ select = ["E", "F", "I", "B", "UP"]
 ignore = [
     # UP006/UP035: rewriting `typing.Tuple/Dict/List` -> builtin generics
     # across ~50 public signatures is a separate, behavior-touching slice
-    # (see issue #54 item 2) and the project supports Python 3.9 without
-    # `from __future__ import annotations`, so annotations are evaluated at
-    # runtime. Kept out of scope here; tightening signatures is tracked
-    # separately.
+    # (see issue #54 item 2). Kept out of scope here; tightening signatures
+    # is tracked separately.
     "UP006",
     "UP035",
 ]
@@ -108,6 +106,11 @@ ignore = [
 # app.py intentionally calls matplotlib.use("Agg") and bootstraps sys.path
 # before importing pyplot / sibling modules, which trips E402/I001.
 "app.py" = ["E402", "I001"]
+# validation/validate_all.py bootstraps sys.path and imports in several
+# sections through the file. It was outside ruff's view while the whole
+# validation/ tree was gitignored; consolidating its imports is tracked as
+# IMPROVEMENT_PLAN.md item 5.4.
+"validation/validate_all.py" = ["E402", "I001"]
 # Tests use explicit `== True/False` assertions for readability, a single
 # ply-angle loop label `l`, deliberately-unused locals, and in-function
 # imports interleaved with assertions; none warrant churning test logic.

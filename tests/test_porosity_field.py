@@ -164,3 +164,48 @@ class TestPorosityField:
     def test_Vp_none_rejected(self):
         with pytest.raises(ValueError, match=r"None"):
             PorosityField(self.material, None, distribution='uniform')
+
+
+class TestProfileNormalizationCache:
+    """IMPROVEMENT_PLAN 5.4: the normalization profile is computed once per
+    distinct laminate shape, not on every ``local_porosity`` call."""
+
+    def setup_method(self):
+        from porosity_fe import porosity_field as pf_mod
+        self.pf_mod = pf_mod
+        pf_mod._profile_normalization.cache_clear()
+        self.material = MATERIALS['T800_epoxy']
+
+    @pytest.mark.parametrize("distribution", ["clustered", "interface"])
+    def test_repeated_calls_reuse_normalization(self, distribution):
+        pf = PorosityField(self.material, 0.03, distribution=distribution)
+        z = np.linspace(0, pf.Lz, 7)
+        first = pf.local_porosity(np.zeros_like(z), np.zeros_like(z), z)
+        for _ in range(3):
+            again = pf.local_porosity(np.zeros_like(z), np.zeros_like(z), z)
+            np.testing.assert_array_equal(again, first)
+        info = self.pf_mod._profile_normalization.cache_info()
+        assert (info.misses, info.hits) == (1, 3)
+
+    def test_attribute_change_after_init_is_honoured(self):
+        """Mutating the distribution after construction must give the same
+        field as building it that way, not a stale normalization."""
+        pf = PorosityField(self.material, 0.03, distribution='clustered')
+        z = np.linspace(0, pf.Lz, 25)
+        zeros = np.zeros_like(z)
+        pf.local_porosity(zeros, zeros, z)
+        pf.distribution = 'interface'
+        fresh = PorosityField(self.material, 0.03, distribution='interface')
+        np.testing.assert_array_equal(pf.local_porosity(zeros, zeros, z),
+                                      fresh.local_porosity(zeros, zeros, z))
+
+    @pytest.mark.parametrize("distribution, location", [
+        ("clustered", "midplane"), ("clustered", "surface"),
+        ("clustered", "quarter"), ("interface", "midplane"),
+    ])
+    def test_field_still_averages_to_vp(self, distribution, location):
+        pf = PorosityField(self.material, 0.04, distribution=distribution,
+                           cluster_location=location)
+        z = np.linspace(0, pf.Lz, 1000)
+        zeros = np.zeros_like(z)
+        assert pf.local_porosity(zeros, zeros, z).mean() == pytest.approx(0.04, rel=1e-12)

@@ -39,11 +39,9 @@ from porosity_fe import (
     LABEL_X_MM,
     LABEL_Z_MM,
     MATERIALS,
-    CompositeMesh,
-    EmpiricalSolver,
     FESolver,
-    PorosityField,
     _configure_matplotlib_style,
+    build_empirical_pipeline,
 )
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -52,7 +50,7 @@ _configure_matplotlib_style()
 
 # Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
 _README_URL = (
-    "https://github.com/ranipdx-glitch/PorosityFE"
+    "https://github.com/elhajjar1/PorosityFE"
     "#solver-selection-fe-vs-empirical"
 )
 
@@ -116,6 +114,10 @@ def run_analysis(cfg: dict) -> dict:
 
     Returns a dict with keys: config, material, porosity_field, mesh,
     empirical, fe_field, fe_loading, fe_skipped_reason, f_md.
+
+    The empirical results are always returned. If the FE solve fails,
+    ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
+    UI can still show the headline knockdown numbers.
     """
     if cfg["material_name"] not in MATERIALS:
         raise ValueError(
@@ -134,35 +136,18 @@ def run_analysis(cfg: dict) -> dict:
     if cfg["distribution"] == "clustered":
         pf_kwargs["cluster_location"] = cfg["cluster_location"]
 
-    porosity_field = PorosityField(material, cfg["Vp"] / 100.0, **pf_kwargs)
-
-    mesh = CompositeMesh(
-        porosity_field, material,
-        nx=cfg["nx"], ny=cfg["ny"], nz=cfg["nz"],
+    porosity_field, mesh, empirical = build_empirical_pipeline(
+        material, cfg["Vp"] / 100.0,
         ply_angles=cfg["angles"],
+        mesh_res=(cfg["nx"], cfg["ny"], cfg["nz"]),
+        porosity_config=pf_kwargs,
     )
-
-    empirical = EmpiricalSolver(mesh, material, ply_angles=cfg["angles"])
     emp_results = empirical.get_all_failure_loads()
 
-    # All four loading modes now have FE BC support, including ILSS
-    # short-beam shear (ASTM D2344, 3-point bend, force-controlled).
-    loading_mode = cfg["loading_mode"]
-    fe_loading = loading_mode
-    fe_solver = FESolver(
-        mesh, material, porosity_field, ply_angles=cfg["angles"],
+    fe_loading = cfg["loading_mode"]
+    fe_field, fe_skipped_reason = _run_fe_solve(
+        mesh, material, porosity_field, cfg["angles"], fe_loading,
     )
-    if loading_mode == "ilss":
-        # Force-controlled short-beam shear. Default 10 N midspan load is
-        # arbitrary — knockdown and field shapes are scale-invariant.
-        fe_field = fe_solver.solve(
-            loading="ilss", applied_load=-10.0, verbose=False,
-        )
-    else:
-        applied_strain = -0.01 if loading_mode == "compression" else 0.01
-        fe_field = fe_solver.solve(
-            loading=fe_loading, applied_strain=applied_strain, verbose=False,
-        )
 
     return {
         "config": cfg,
@@ -172,9 +157,38 @@ def run_analysis(cfg: dict) -> dict:
         "empirical": emp_results,
         "fe_field": fe_field,
         "fe_loading": fe_loading,
-        "fe_skipped_reason": None,
+        "fe_skipped_reason": fe_skipped_reason,
         "f_md": empirical.f_md,
     }
+
+
+def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str):
+    """Run the FE solve for ``loading_mode``; return ``(field, skipped_reason)``.
+
+    Exactly one of the pair is ``None``. Any exception from the FE path is
+    logged and turned into a reason string rather than propagated, because
+    the empirical results do not depend on it.
+    """
+    try:
+        fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
+        # All four loading modes have FE BC support, including ILSS
+        # short-beam shear (ASTM D2344, 3-point bend, force-controlled).
+        if loading_mode == "ilss":
+            # Force-controlled short-beam shear. Default 10 N midspan load is
+            # arbitrary — knockdown and field shapes are scale-invariant.
+            field = fe_solver.solve(
+                loading="ilss", applied_load=-10.0, verbose=False,
+            )
+        else:
+            applied_strain = -0.01 if loading_mode == "compression" else 0.01
+            field = fe_solver.solve(
+                loading=loading_mode, applied_strain=applied_strain,
+                verbose=False,
+            )
+    except Exception as exc:
+        logger.exception("FE solve failed for loading=%s", loading_mode)
+        return None, f"the FE solver raised {type(exc).__name__}: {exc}"
+    return field, None
 
 
 # ======================================================================
@@ -310,11 +324,13 @@ def plot_results(result: dict, layup_str: str):
             else:
                 vals.append(emp[mode][model_key]["knockdown"])
         bar_x = x + i * width - (n_models - 1) * width / 2
+        labeled = False
         for bx, bv in zip(bar_x, vals, strict=True):
             if not np.isnan(bv):
                 ax.bar(bx, bv, width, color=color, hatch=hatch,
                        edgecolor="white" if hatch is None else "0.3",
-                       label=label if bx == bar_x[0] else "")
+                       label="" if labeled else label)
+                labeled = True
 
     ax.set_xticks(x)
     ax.set_xticklabels([m.upper() for m in modes])
@@ -691,9 +707,10 @@ def _build_stress_tab(result: dict | None):
         _placeholder_tab()
         return
     if result.get("fe_field") is None:
+        reason = result.get("fe_skipped_reason")
         st.warning(
-            result.get("fe_skipped_reason")
-            or "No FE field available for this configuration."
+            f"FE solve was skipped: {reason}" if reason
+            else "No FE field available for this configuration."
         )
         return
     comp_name = st.selectbox(

@@ -105,6 +105,64 @@ class TestRunAnalysis:
         with pytest.raises(ValueError, match="Unknown material"):
             app.run_analysis(_base_cfg(material_name="unobtainium"))
 
+    def test_fe_failure_keeps_empirical_results(self, monkeypatch):
+        """An exception from the FE path must not discard the empirical
+        results; it is reported through ``fe_skipped_reason`` instead."""
+        class _ExplodingFESolver:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def solve(self, **kwargs):
+                raise RuntimeError("singular stiffness matrix")
+
+        monkeypatch.setattr(app, "FESolver", _ExplodingFESolver)
+        r = app.run_analysis(_base_cfg(loading_mode="tension"))
+        assert r["fe_field"] is None
+        assert "RuntimeError" in r["fe_skipped_reason"]
+        assert "singular stiffness matrix" in r["fe_skipped_reason"]
+        for mode in ("compression", "tension", "shear", "ilss"):
+            assert mode in r["empirical"]
+        fig = app.plot_results(r, "0/90/90/0")
+        labels = fig.axes[0].get_legend_handles_labels()[1]
+        assert not any(lbl.startswith("FE") for lbl in labels)
+        plt.close(fig)
+
+    def test_fe_constructor_failure_is_also_caught(self, monkeypatch):
+        def _raise(*args, **kwargs):
+            raise ValueError("bad ply angles")
+
+        monkeypatch.setattr(app, "FESolver", _raise)
+        r = app.run_analysis(_base_cfg())
+        assert r["fe_field"] is None
+        assert "ValueError: bad ply angles" in r["fe_skipped_reason"]
+
+    def test_routes_through_build_empirical_pipeline(self, monkeypatch):
+        """The app must build field/mesh/solver via the canonical factory so
+        mesh-default and ply-angle changes reach the GUI."""
+        calls = []
+        real_factory = app.build_empirical_pipeline
+
+        def _spy(material, vp, **kwargs):
+            calls.append((vp, kwargs))
+            return real_factory(material, vp, **kwargs)
+
+        def _no_fe(*args, **kwargs):
+            raise RuntimeError("FE not needed for this test")
+
+        monkeypatch.setattr(app, "build_empirical_pipeline", _spy)
+        monkeypatch.setattr(app, "FESolver", _no_fe)
+        cfg = _base_cfg(distribution="clustered", cluster_location="surface")
+        r = app.run_analysis(cfg)
+
+        assert len(calls) == 1
+        vp, kwargs = calls[0]
+        assert vp == pytest.approx(0.03)
+        assert kwargs["mesh_res"] == (10, 4, 6)
+        assert kwargs["ply_angles"] == cfg["angles"]
+        assert kwargs["porosity_config"]["distribution"] == "clustered"
+        assert kwargs["porosity_config"]["cluster_location"] == "surface"
+        assert (r["mesh"].nx, r["mesh"].ny, r["mesh"].nz) == (10, 4, 6)
+
 
 class TestPlots:
     def test_plot_profile(self, comp_result):
@@ -120,6 +178,19 @@ class TestPlots:
     def test_plot_results_with_fe(self, comp_result):
         fig = app.plot_results(comp_result, "0/90/90/0")
         assert fig is not None
+        plt.close(fig)
+
+    @pytest.mark.parametrize(
+        "fe_loading", ["compression", "tension", "shear", "ilss"])
+    def test_plot_results_legend_has_every_series(self, comp_result, fe_loading):
+        """The FE series is drawn only at its own loading mode; its legend
+        entry must survive when that mode is not the first bar group."""
+        r = dict(comp_result)
+        r["fe_loading"] = fe_loading
+        fig = app.plot_results(r, "0/90/90/0")
+        labels = fig.axes[0].get_legend_handles_labels()[1]
+        assert labels == ["Judd-Wright", "Power Law", "Linear",
+                          f"FE Stiffness ({fe_loading})"]
         plt.close(fig)
 
     def test_plot_results_fiber_dominated_footnote(self, comp_result):

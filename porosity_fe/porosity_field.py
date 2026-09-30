@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 
 from ._types import ClusterLocation, Distribution
@@ -11,6 +13,38 @@ from .void_geometry import VOID_SHAPES, VoidGeometry
 # ============================================================
 # SECTION 3: POROSITY FIELD MODEL
 # ============================================================
+
+
+def _shape_profile(z: np.ndarray, distribution: str, z0: float, Lz: float,
+                   t_ply: float, n_plies: int) -> np.ndarray:
+    """Un-normalized through-thickness shape for ``clustered`` / ``interface``.
+
+    ``clustered`` is a Gaussian bump at ``z0`` with ``sigma = Lz / 6``;
+    ``interface`` is a sum of Gaussians (``sigma = 0.35 t_ply``) at each of
+    the ``n_plies - 1`` ply interfaces.
+    """
+    if distribution == 'clustered':
+        sigma = Lz / 6
+        return np.exp(-0.5 * ((z - z0) / sigma)**2)
+    profile = np.zeros_like(z)
+    for k in range(1, n_plies):
+        z_int = k * t_ply
+        profile += np.exp(-0.5 * ((z - z_int) / (t_ply * 0.35))**2)
+    return profile
+
+
+@functools.lru_cache(maxsize=128)
+def _profile_normalization(distribution: str, z0: float, Lz: float,
+                           t_ply: float, n_plies: int) -> float:
+    """Mean of :func:`_shape_profile` over ``[0, Lz]`` so the field averages to ``Vp``.
+
+    Memoized on the arguments that define the shape, so repeated
+    ``local_porosity`` calls on one field (or on fields sharing a laminate)
+    reuse it, and a changed attribute simply maps to a new cache entry.
+    """
+    z_ref = np.linspace(0, Lz, 1000)
+    mean_val = np.mean(_shape_profile(z_ref, distribution, z0, Lz, t_ply, n_plies))
+    return mean_val if mean_val > 0 else 1.0
 
 POROSITY_CONFIGS = {
     'uniform_spherical': {
@@ -192,47 +226,19 @@ class PorosityField:
         else:
             self.void_shape_radii = tuple(void_shape)
 
-    def _compute_normalization(self, distribution: str, cluster_location: str) -> float:
-        """Compute normalization factor over the full domain so average equals Vp."""
-        z_ref = np.linspace(0, self.Lz, 1000)
-        match distribution:
-            case 'clustered':
-                z0 = self.Lz * self._CLUSTER_OFFSETS[cluster_location]
-                sigma = self.Lz / 6
-                profile_ref = np.exp(-0.5 * ((z_ref - z0) / sigma)**2)
-            case 'interface':
-                t = self.material.t_ply
-                n = self.material.n_plies
-                profile_ref = np.zeros_like(z_ref)
-                for k in range(1, n):
-                    z_int = k * t
-                    profile_ref += np.exp(-0.5 * ((z_ref - z_int) / (t * 0.35))**2)
-            case _:
-                return 1.0
-        mean_val = np.mean(profile_ref)
-        return mean_val if mean_val > 0 else 1.0
-
     def _distributed_porosity(self, z: np.ndarray) -> np.ndarray:
         """Through-thickness distributed porosity profile."""
         z = np.asarray(z, dtype=float)
         match self.distribution:
             case 'uniform':
                 return np.full_like(z, self.Vp)
-            case 'clustered':
-                z0 = self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
-                sigma = self.Lz / 6
-                profile = np.exp(-0.5 * ((z - z0) / sigma)**2)
-                norm = self._compute_normalization('clustered', self.cluster_location)
-                return self.Vp * profile / norm
-            case 'interface':
-                t = self.material.t_ply
-                n = self.material.n_plies
-                profile = np.zeros_like(z)
-                for k in range(1, n):
-                    z_int = k * t
-                    profile += np.exp(-0.5 * ((z - z_int) / (t * 0.35))**2)
-                norm = self._compute_normalization('interface', self.cluster_location)
-                return self.Vp * profile / norm
+            case 'clustered' | 'interface':
+                z0 = (self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
+                      if self.distribution == 'clustered' else 0.0)
+                shape = (self.distribution, z0, self.Lz,
+                         self.material.t_ply, self.material.n_plies)
+                profile = _shape_profile(z, *shape)
+                return self.Vp * profile / _profile_normalization(*shape)
             case _:
                 raise ValueError(
                     f"Unknown distribution {self.distribution!r}. "

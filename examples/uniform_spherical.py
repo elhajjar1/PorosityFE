@@ -16,7 +16,7 @@ import os
 import sys
 
 # Make the sibling porosity_fe package importable when it is not
-# pip-installed (matches the project's conftest.py path adjustment).
+# pip-installed, so the script runs straight from a checkout.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

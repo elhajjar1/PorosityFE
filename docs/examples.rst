@@ -38,5 +38,5 @@ Gallery
   per ply.
 
 The complete gallery (with descriptions and PNG previews) lives in
-`examples/README.md <https://github.com/ranipdx-glitch/PorosityFE/blob/master/examples/README.md>`_
+`examples/README.md <https://github.com/elhajjar1/PorosityFE/blob/master/examples/README.md>`_
 on GitHub.

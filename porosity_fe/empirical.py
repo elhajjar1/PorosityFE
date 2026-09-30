@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import warnings
@@ -20,8 +21,10 @@ logger = logging.getLogger("porosity_fe_analysis")
 
 #: Upper porosity bound (as a fraction) over which the empirical knockdown
 #: coefficients were calibrated (Elhajjar 2025, ``Vp ≲ 0.05``). Evaluating a
-#: built-in knockdown model at a larger specimen-average ``Vp`` extrapolates
-#: beyond the validated range, so :meth:`EmpiricalSolver.apply_loading` emits a
+#: built-in knockdown model at a larger specimen-average ``Vp``, or at a larger
+#: local ``Vp`` in the per-node field, extrapolates beyond the validated range,
+#: so :meth:`EmpiricalSolver.apply_loading` (local peak) and
+#: :meth:`EmpiricalSolver.get_failure_load` (specimen average) each emit a
 #: single :class:`UserWarning` flagging the extrapolation (CLAUDE.md: "flag
 #: extrapolations explicitly"). User-supplied callables own their own
 #: calibration contract and are exempt from the warning.
@@ -144,6 +147,36 @@ class Calibration:
     UQ_DEFAULT_PERCENTILES: tuple[float, ...] = (5.0, 50.0, 95.0)
 
 
+# ----------------------------------------------------------------------
+# Knockdown laws: the one implementation of each empirical form. ``Vp`` is a
+# fraction in [0, 1] (scalar or ndarray) and the coefficient is the
+# layup-scaled per-mode value; the result has the shape of ``Vp``.
+# ----------------------------------------------------------------------
+
+def _kd_judd_wright(Vp, alpha):
+    """Judd-Wright: ``KD = exp(-alpha * Vp)``."""
+    return np.exp(-alpha * Vp)
+
+
+def _kd_power_law(Vp, n):
+    """Power law: ``KD = (1 - Vp)**n``."""
+    return (1.0 - Vp) ** n
+
+
+def _kd_linear(Vp, beta):
+    """Linear, clipped at zero: ``KD = max(1 - beta * Vp, 0)``."""
+    return np.maximum(1.0 - beta * Vp, 0.0)
+
+
+#: Built-in model name -> (law, name of the per-mode coefficient dict that
+#: :class:`EmpiricalSolver` populates with layup-scaled values).
+_KNOCKDOWN_LAWS: dict[str, tuple[Callable[[Any, float], Any], str]] = {
+    'judd_wright': (_kd_judd_wright, 'JUDD_WRIGHT_ALPHA'),
+    'power_law': (_kd_power_law, 'POWER_LAW_N'),
+    'linear': (_kd_linear, 'LINEAR_BETA'),
+}
+
+
 class EmpiricalSolver:
     """Fast analytical solver using empirical porosity-strength models.
 
@@ -234,6 +267,10 @@ class EmpiricalSolver:
         self._void_scf_cache: (
             list[tuple[np.ndarray, dict[str, float]]] | None
         ) = None
+        # Peak of the distributed porosity over the mesh nodes, for the
+        # extrapolation warning. Lazily cached on the same fixed-mesh
+        # argument as ``_void_scf_cache``. ``None`` => not yet populated.
+        self._local_vp_peak_cache: float | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -347,27 +384,69 @@ class EmpiricalSolver:
         raw = self.f_md / ref
         return max(raw, floor)
 
-    def _warn_if_extrapolated(self, model: object) -> None:
+    def _local_vp_peak(self) -> float:
+        """Peak of the distributed porosity field over the mesh nodes.
+
+        Nodes inside a discrete void carry ``Vp = 1.0`` in
+        ``mesh.porosity``; those are represented by the SCF post-step rather
+        than the empirical law, so they are excluded by sampling only the
+        distributed (through-thickness) component of the field.
+        """
+        if self._local_vp_peak_cache is None:
+            z = self.mesh.nodes[:, 2]
+            dist = self.mesh.porosity_field._distributed_porosity(z)
+            self._local_vp_peak_cache = float(np.max(dist))
+        return self._local_vp_peak_cache
+
+    def _warn_if_extrapolated(self, model: object, *, nodal: bool) -> None:
         """Emit a single ``UserWarning`` when ``Vp`` exceeds the calibration bound.
 
         The built-in empirical coefficients are calibrated to
-        ``Vp ≲ _VP_CALIBRATION_MAX`` (Elhajjar 2025); evaluating them at a
-        larger specimen-average porosity extrapolates beyond the validated
-        range. We warn once per :meth:`apply_loading` call (never per node),
-        naming the offending ``Vp``. User-supplied callables own their own
-        calibration contract (#62), so a non-string ``model`` is exempt.
+        ``Vp ≲ _VP_CALIBRATION_MAX`` (Elhajjar 2025). Two regimes are
+        flagged:
+
+        - the specimen-average ``Vp`` exceeds the bound, so both the
+          specimen-level failure load and the per-node field are
+          extrapolated;
+        - the average is within the bound but the local peak of a
+          ``clustered`` / ``interface`` distribution is not, so the per-node
+          knockdown field is extrapolated near the peak while the
+          specimen-level result is not.
+
+        ``nodal`` says whether the caller's product is the per-node field
+        (:meth:`apply_loading`) or the specimen-average failure load
+        (:meth:`get_failure_load`); only the former checks the local peak.
+        We warn once per public call (never per node). User-supplied
+        callables own their own calibration contract (#62), so a non-string
+        ``model`` is exempt.
         """
         if not isinstance(model, str):
             return
-        vp_max = float(self.mesh.porosity_field.Vp)
-        if vp_max > _VP_CALIBRATION_MAX:
-            warnings.warn(
+        vp_mean = float(self.mesh.porosity_field.Vp)
+        bound = _VP_CALIBRATION_MAX
+        if vp_mean <= bound and not nodal:
+            return
+        vp_peak = self._local_vp_peak() if nodal else vp_mean
+        if vp_mean > bound:
+            peak_note = (f" (local peak Vp = {vp_peak:.4g})"
+                         if vp_peak > vp_mean * (1 + 1e-9) else "")
+            message = (
                 f"Empirical knockdown evaluated beyond calibration bound "
-                f"(Vp <= {_VP_CALIBRATION_MAX}): max Vp = {vp_max:.4g}. "
-                f"Results are extrapolated and may be inaccurate.",
-                UserWarning,
-                stacklevel=3,
+                f"(Vp <= {bound}): specimen-average Vp = {vp_mean:.4g}"
+                f"{peak_note}. Results are extrapolated and may be inaccurate."
             )
+        elif vp_peak > bound:
+            message = (
+                f"Empirical knockdown evaluated beyond calibration bound "
+                f"(Vp <= {bound}) in the per-node field: local peak "
+                f"Vp = {vp_peak:.4g} (specimen-average Vp = {vp_mean:.4g} is "
+                f"within the bound). Per-node knockdowns where Vp > {bound} "
+                f"are extrapolated; get_failure_load() uses the average and "
+                f"is not."
+            )
+        else:
+            return
+        warnings.warn(message, UserWarning, stacklevel=3)
 
     @staticmethod
     def _check_internal_Vp(Vp: float) -> float:
@@ -437,6 +516,30 @@ class EmpiricalSolver:
                     f"mode={mode!r}; expected a value in [0, 1]."
                 )
 
+    def _builtin_law(self, model: object, mode: str, *,
+                     callable_ok: bool = True
+                     ) -> tuple[Callable[[Any, float], Any], float]:
+        """Return ``(law, layup-scaled coefficient)`` for a built-in model name.
+
+        ``callable_ok`` only changes the error message: entry points that
+        also accept a user callable say so.
+        """
+        entry = _KNOCKDOWN_LAWS.get(model) if isinstance(model, str) else None
+        if entry is None:
+            alternative = " or pass a callable" if callable_ok else ""
+            raise ValueError(
+                f"Unknown knockdown model {model!r}. "
+                f"Use one of {sorted(_KNOCKDOWN_LAWS)}{alternative}."
+            )
+        law, coef_attr = entry
+        return law, getattr(self, coef_attr)[mode]
+
+    def _builtin_kd(self, model: str, Vp: float, mode: str) -> float:
+        """Scalar knockdown for a built-in model at a single ``Vp``."""
+        Vp = self._check_internal_Vp(Vp)
+        law, coef = self._builtin_law(model, mode)
+        return float(law(Vp, coef))
+
     def _judd_wright(self, Vp: float, mode: str) -> float:
         """Judd-Wright knockdown: KD = exp(-alpha * Vp).
 
@@ -445,9 +548,7 @@ class EmpiricalSolver:
         ``JUDD_WRIGHT_ALPHA`` and the README "Empirical Strength
         Knockdown" section for definitions and ranges).
         """
-        Vp = self._check_internal_Vp(Vp)
-        alpha = self.JUDD_WRIGHT_ALPHA[mode]
-        return float(np.exp(-alpha * Vp))
+        return self._builtin_kd('judd_wright', Vp, mode)
 
     def _power_law(self, Vp: float, mode: str) -> float:
         """Power-law knockdown: KD = (1 - Vp)**n.
@@ -457,21 +558,21 @@ class EmpiricalSolver:
         the README "Empirical Strength Knockdown" section for
         definitions and ranges).
         """
-        Vp = self._check_internal_Vp(Vp)
-        n = self.POWER_LAW_N[mode]
-        return float((1.0 - Vp)**n)
+        return self._builtin_kd('power_law', Vp, mode)
 
     def _linear(self, Vp: float, mode: str) -> float:
-        Vp = self._check_internal_Vp(Vp)
-        beta = self.LINEAR_BETA[mode]
-        return float(max(1.0 - beta * Vp, 0.0))
+        """Linear knockdown clipped at zero: KD = max(1 - beta * Vp, 0)."""
+        return self._builtin_kd('linear', Vp, mode)
 
-    def _get_pristine_strength(self, mode: str) -> float:
+    def _check_mode(self, mode: str) -> None:
         if mode not in self.PRISTINE_STRENGTH_KEY:
             raise ValueError(
                 f"Unknown loading mode {mode!r}. "
                 f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
             )
+
+    def _get_pristine_strength(self, mode: str) -> float:
+        self._check_mode(mode)
         return getattr(self.material, self.PRISTINE_STRENGTH_KEY[mode])
 
     def _environment_knockdown_factor(self, mode: str,
@@ -565,15 +666,8 @@ class EmpiricalSolver:
         scaling is bypassed (#62).
         """
         if isinstance(model, str):
-            _MODEL_FUNCS = {'judd_wright': self._judd_wright,
-                            'power_law': self._power_law,
-                            'linear': self._linear}
-            if model not in _MODEL_FUNCS:
-                raise ValueError(
-                    f"Unknown knockdown model {model!r}. "
-                    f"Use one of {sorted(_MODEL_FUNCS)} or pass a callable."
-                )
-            return _MODEL_FUNCS[model], False
+            self._builtin_law(model, mode)  # raises on an unknown name
+            return functools.partial(self._builtin_kd, model), False
         # User-supplied callable.
         self._validate_user_kd_callable(model, mode)
         return model, True
@@ -639,15 +733,40 @@ class EmpiricalSolver:
         **signed** FE stresses and strains in Voigt order
         ``[11, 22, 33, 23, 13, 12]`` (engineering shear).
         """
-        if mode not in self.PRISTINE_STRENGTH_KEY:
-            raise ValueError(
-                f"Unknown loading mode {mode!r}. "
-                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
-            )
+        _, env_kd, fat_kd = self._prepare_loading(
+            mode, model, cycles, environment, R)
+        self._populate_nodal_knockdown(mode, model, env_kd, fat_kd)
         # Flag extrapolation past the empirical calibration bound (#184).
-        # One warning per call, built-in models only — user callables are
-        # exempt (they own their own calibration contract, #62).
-        self._warn_if_extrapolated(model)
+        # The per-node field is this method's product, so local peaks count.
+        self._warn_if_extrapolated(model, nodal=True)
+
+    def _prepare_loading(
+            self, mode: str,
+            model: KnockdownModel | Callable[[float, str], float],
+            cycles: float | None, environment: dict[str, float] | None,
+            R: float | None,
+    ) -> tuple[Callable[[float, str], float], float, float]:
+        """Validate a loading request once; return ``(model_func, env_kd, fat_kd)``.
+
+        Shared by :meth:`apply_loading` and :meth:`get_failure_load` so a
+        user callable is grid-validated, and the hygrothermal / fatigue
+        factors are evaluated, exactly once per public call.
+        """
+        self._check_mode(mode)
+        model_func, _is_user = self._resolve_knockdown_model(model, mode)
+        env_kd = self._environment_knockdown_factor(mode, environment)
+        fat_kd = self._fatigue_knockdown_factor(mode, cycles, R)
+        return model_func, env_kd, fat_kd
+
+    def _populate_nodal_knockdown(
+            self, mode: str,
+            model: KnockdownModel | Callable[[float, str], float],
+            env_kd: float, fat_kd: float) -> None:
+        """Evaluate ``model`` at every node's local ``Vp`` into ``nodal_knockdown``.
+
+        ``mode`` and ``model`` must already be validated by
+        :meth:`_prepare_loading`, which also supplies ``env_kd`` / ``fat_kd``.
+        """
         # #115: vectorize the built-in knockdown evaluation. The scalar list
         # comprehension was ~60x slower than NumPy on the per-node Vp array
         # (4400-element typical mesh). User-supplied callables still get the
@@ -658,27 +777,11 @@ class EmpiricalSolver:
         # static checkers can see the vectorized branches are well-typed.
         assert Vp_arr is not None, "CompositeMesh.porosity not populated"
         if isinstance(model, str):
-            # Mode validation already done above; this picks built-ins or
-            # raises a clear error before we touch the array.
-            match model:
-                case 'judd_wright':
-                    kd = np.exp(-self.JUDD_WRIGHT_ALPHA[mode] * Vp_arr)
-                case 'power_law':
-                    kd = (1.0 - Vp_arr) ** self.POWER_LAW_N[mode]
-                case 'linear':
-                    kd = np.maximum(1.0 - self.LINEAR_BETA[mode] * Vp_arr, 0.0)
-                case _:
-                    raise ValueError(
-                        f"Unknown knockdown model {model!r}. "
-                        f"Use one of ['judd_wright', 'power_law', 'linear'] "
-                        f"or pass a callable."
-                    )
+            law, coef = self._builtin_law(model, mode)
+            kd = law(Vp_arr, coef)
         else:
-            self._validate_user_kd_callable(model, mode)
             kd = np.array([model(Vp, mode) for Vp in Vp_arr])
         kd = self._apply_discrete_void_scf(kd, mode)
-        env_kd = self._environment_knockdown_factor(mode, environment)
-        fat_kd = self._fatigue_knockdown_factor(mode, cycles, R)
         if env_kd != 1.0:
             kd = kd * env_kd
         if fat_kd != 1.0:
@@ -696,7 +799,10 @@ class EmpiricalSolver:
 
         The knockdown is evaluated at the mean Vp (matching how the original
         correlations were calibrated), not at the local peak.  Per-node
-        knockdown is still computed for visualization via apply_loading().
+        knockdown is still populated on ``nodal_knockdown`` for
+        visualization, as :meth:`apply_loading` would. The extrapolation
+        warning checks only the specimen-average ``Vp`` here; call
+        :meth:`apply_loading` directly to be warned about local peaks.
         Optional hygrothermal (``environment``) and S-N fatigue
         (``cycles`` / ``R``) knockdowns compose multiplicatively with the
         porosity knockdown (issue #59).
@@ -743,21 +849,22 @@ class EmpiricalSolver:
             ``__getitem__`` shim and will be removed in a future major
             version — prefer attribute access.
         """
-        self.apply_loading(mode, model,
-                           cycles=cycles, environment=environment, R=R)
+        model_func, env_kd, fat_kd = self._prepare_loading(
+            mode, model, cycles, environment, R)
+        self._populate_nodal_knockdown(mode, model, env_kd, fat_kd)
+        # The returned failure load uses the specimen-average Vp, so only
+        # the average is checked against the calibration bound here.
+        self._warn_if_extrapolated(model, nodal=False)
         sigma_0 = self._get_pristine_strength(mode)
 
         # Use specimen-average Vp for knockdown (matches calibration basis)
         Vp_mean = self.mesh.porosity_field.Vp
-        model_func, _is_user = self._resolve_knockdown_model(model, mode)
         porosity_kd = float(model_func(Vp_mean, mode))
 
         # Hygrothermal and fatigue knockdowns compose multiplicatively at
         # the same point as the porosity knockdown so the final
         # `failure_stress` carries all three effects, mirroring how the
         # layup scaling is folded into the empirical coefficients upstream.
-        env_kd = self._environment_knockdown_factor(mode, environment)
-        fat_kd = self._fatigue_knockdown_factor(mode, cycles, R)
         mean_kd = porosity_kd * env_kd * fat_kd
 
         # Record a JSON-friendly label even when the caller passes a
@@ -875,27 +982,18 @@ class EmpiricalSolver:
             it already reflects the layup scaling from
             :meth:`_layup_scale`.
         """
-        if mode not in self.PRISTINE_STRENGTH_KEY:
-            raise ValueError(
-                f"Unknown loading mode {mode!r}. "
-                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
-            )
+        self._check_mode(mode)
         if Vp is None:
             Vp = self.mesh.porosity_field.Vp
         Vp = self._check_internal_Vp(Vp)
+        law, coef = self._builtin_law(model, mode, callable_ok=False)
+        kd = float(law(Vp, coef))
         match model:
             case 'judd_wright':
-                alpha = self.JUDD_WRIGHT_ALPHA[mode]
-                kd = float(np.exp(-alpha * Vp))
-                return {
-                    'KD': kd,
-                    'dKD_dVp': float(-alpha * kd),
-                    'dKD_dcoef': float(-Vp * kd),
-                }
+                d_dVp = float(-coef * kd)
+                d_dcoef = float(-Vp * kd)
             case 'power_law':
-                n = self.POWER_LAW_N[mode]
                 one_minus = 1.0 - Vp
-                kd = float(one_minus**n)
                 # Guard the log when Vp = 1 (degenerate edge): KD is 0 there
                 # and the d/dn partial collapses to 0 because KD * ln(1-Vp)
                 # is 0 * (-inf) in the limit.  We pin it to 0.0 explicitly so
@@ -905,34 +1003,22 @@ class EmpiricalSolver:
                     d_dVp = 0.0
                 else:
                     d_dcoef = float(kd * np.log(one_minus))
-                    d_dVp = float(-n * one_minus**(n - 1.0))
-                return {
-                    'KD': kd,
-                    'dKD_dVp': d_dVp,
-                    'dKD_dcoef': d_dcoef,
-                }
+                    d_dVp = float(-coef * one_minus**(coef - 1.0))
             case 'linear':
-                beta = self.LINEAR_BETA[mode]
-                raw = 1.0 - beta * Vp
-                kd = float(max(raw, 0.0))
-                # The linear law is clipped at 0: once raw < 0, the
+                # The linear law is clipped at 0: once 1 - beta*Vp <= 0 the
                 # piecewise-constant 0 floor has zero gradient.
-                if raw <= 0.0:
+                if kd <= 0.0:
                     d_dVp = 0.0
                     d_dcoef = 0.0
                 else:
-                    d_dVp = float(-beta)
+                    d_dVp = float(-coef)
                     d_dcoef = float(-Vp)
-                return {
-                    'KD': kd,
-                    'dKD_dVp': d_dVp,
-                    'dKD_dcoef': d_dcoef,
-                }
             case _:
-                raise ValueError(
-                    f"Unknown knockdown model {model!r}. "
-                    f"Use one of ['judd_wright', 'linear', 'power_law']."
+                raise NotImplementedError(
+                    f"No analytic sensitivities for knockdown model {model!r}; "
+                    f"use sensitivity_fd() instead."
                 )
+        return {'KD': kd, 'dKD_dVp': d_dVp, 'dKD_dcoef': d_dcoef}
 
     def sensitivity_fd(self, mode: str = 'compression',
                        model: str = 'judd_wright',
@@ -963,37 +1049,19 @@ class EmpiricalSolver:
             ``(KD(x+h) - KD(x-h)) / (2*h)`` evaluated at the same
             ``Vp_mean`` :meth:`get_failure_load` uses.
         """
-        if mode not in self.PRISTINE_STRENGTH_KEY:
-            raise ValueError(
-                f"Unknown loading mode {mode!r}. "
-                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
-            )
-        if model not in ('judd_wright', 'power_law', 'linear'):
-            raise ValueError(
-                f"Unknown knockdown model {model!r}. "
-                f"Use one of ['judd_wright', 'linear', 'power_law']."
-            )
+        self._check_mode(mode)
+        law, coef = self._builtin_law(model, mode, callable_ok=False)
         if param not in ('Vp', 'coef'):
             raise ValueError(
                 f"param must be 'Vp' or 'coef', got {param!r}."
             )
         Vp0 = float(self.mesh.porosity_field.Vp)
+        coef0 = float(coef)
 
-        # Select the analytic functional form so we can perturb the
-        # parameter without mutating solver state.
-        match model:
-            case 'judd_wright':
-                coef0 = float(self.JUDD_WRIGHT_ALPHA[mode])
-                def f(Vp_val, coef_val):
-                    return float(np.exp(-coef_val * Vp_val))
-            case 'power_law':
-                coef0 = float(self.POWER_LAW_N[mode])
-                def f(Vp_val, coef_val):
-                    return float((1.0 - Vp_val)**coef_val)
-            case _:  # linear
-                coef0 = float(self.LINEAR_BETA[mode])
-                def f(Vp_val, coef_val):
-                    return float(max(1.0 - coef_val * Vp_val, 0.0))
+        # Evaluate the law directly so the parameter can be perturbed
+        # without mutating solver state.
+        def f(Vp_val, coef_val):
+            return float(law(Vp_val, coef_val))
 
         if param == 'Vp':
             return float((f(Vp0 + h, coef0) - f(Vp0 - h, coef0)) / (2.0 * h))

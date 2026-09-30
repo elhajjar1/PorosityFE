@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import json
 import logging
 import os
@@ -82,6 +83,27 @@ _UNITS_STREAMLIT_EMPIRICAL = {
 }
 
 
+@functools.lru_cache(maxsize=1)
+def _git_commit_sha() -> str | None:
+    """HEAD commit of the checkout containing this module, or ``None``.
+
+    Cached for the life of the process, so each JSON write no longer spawns
+    a ``git`` subprocess; the already-imported code cannot change mid-run.
+    """
+    try:
+        # Run git from the directory containing this module so a CLI invoked
+        # from somewhere else still resolves the repo SHA. Graceful fallback
+        # to ``None`` for wheel/sdist installs or untracked checkouts.
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=Path(__file__).resolve().parent,
+        )
+    except Exception:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def _build_provenance(seed: int | None = None) -> dict:
     """Return a provenance metadata dict for JSON output reproducibility.
 
@@ -114,22 +136,14 @@ def _build_provenance(seed: int | None = None) -> dict:
         mod = sys.modules.get(module_name)
         return getattr(mod, "__version__", None) if mod else None
 
-    try:
-        # Run git from the directory containing this module so a CLI invoked
-        # from somewhere else still resolves the repo SHA. Graceful fallback
-        # to ``None`` for wheel/sdist installs or untracked checkouts.
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-            cwd=Path(__file__).resolve().parent,
-        )
-        git_commit: str | None = result.stdout.strip() if result.returncode == 0 else None
-    except (subprocess.CalledProcessError, FileNotFoundError, Exception):
-        git_commit = None
+    git_commit = _git_commit_sha()
 
     numpy_v = _pkg_version("numpy")
     scipy_v = _pkg_version("scipy")
-    generated_utc = datetime.datetime.utcnow().isoformat() + "Z"
+    # Naive-UTC ISO string plus "Z", the format the schema and consumers
+    # already expect (not the "+00:00" suffix an aware isoformat() adds).
+    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    generated_utc = now_utc.isoformat() + "Z"
 
     prov = {
         # Envelope schema version, repeated inside the provenance block so a

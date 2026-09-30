@@ -12,7 +12,7 @@ All notable changes to PorosityFE will be documented in this file.
   reading only the JSON can tell whether `knockdown` is a fraction, a
   percentage, or a multiplier. `JSON_SCHEMA_VERSION` bumped to `1.1`
   (additive, backwards-compatible — 1.0 files still load and validate). (#131)
-- **`--jobs N` flag on the `porosity-fe` CLI** parallelises the per-
+- **`--jobs N` flag on the `porosity-analyze` CLI** parallelises the per-
   configuration sweep in `compare_configurations` over a
   `concurrent.futures.ProcessPoolExecutor`. `N=1` (default) preserves
   the deterministic serial path byte-for-byte; `N>1` dispatches the
@@ -29,6 +29,79 @@ All notable changes to PorosityFE will be documented in this file.
   `(Vp, name, result_dict)` tuple includes the mesh / porosity_field /
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
+
+### Fixed
+- **Empirical extrapolation warning now reports the right value and sees
+  local peaks.** The message labelled the specimen-average `Vp` as
+  "max Vp"; it now says "specimen-average Vp". `apply_loading()` also
+  warns when the mean is within the `Vp <= 0.05` calibration bound but a
+  `clustered` / `interface` distribution's local peak is not, since the
+  per-node knockdown field is then extrapolated near the peak.
+  `get_failure_load()` still checks only the mean, because its result uses
+  the mean. Nodes inside discrete voids (`Vp = 1.0`, handled by the SCF
+  step) are excluded from the peak. The warning is now attributed to the
+  caller's line for both entry points.
+- **App: the FE legend entry no longer disappears** for tension, shear,
+  and ILSS runs. It was attached only to a bar in the first (compression)
+  group, where the FE series is not drawn.
+- **App: an FE solver failure no longer discards the empirical results.**
+  Only the FE solve is guarded; on failure `fe_field` is `None` and
+  `fe_skipped_reason` names the exception, which activates the existing
+  "FE solve was skipped" notice.
+- **App: `run_analysis` builds the field, mesh, and empirical solver
+  through `build_empirical_pipeline`**, so changes to mesh defaults or
+  ply-angle handling reach the GUI.
+- **`FEVisualizer` closes figures after saving them.** The CLI `--plots`
+  sweep no longer accumulates 100+ open figures. The `Figure` is still
+  returned; without `save_path` it is left open for the caller as before.
+- **Provenance timestamps no longer use the deprecated
+  `datetime.utcnow()`** (Python 3.12+). The `...Z` string format is
+  unchanged.
+- **`validate_porosity --version` falls back to `porosity_fe.__version__`**
+  instead of its own hard-coded version string, leaving
+  `porosity_fe/__init__.py` as the only literal to bump at release.
+
+### Changed
+- **FE solves are ~5x faster, and repeat solves ~60x faster.** On the
+  production mesh (30x10x12, 3,600 elements) a first solve went from
+  14 s (clustered porosity) / 9.6 s (uniform) to ~2.6 s / ~2.1 s, now
+  bound by the sparse LU factorization. Assembly and stress recovery use
+  batched per-element arrays instead of per-element Python objects, and
+  recovery reuses what assembly computed. The FE knockdown, penalty BCs
+  and mesh-quality check are vectorized. The assembled stiffness and its
+  factorization are reused across solves with the same constraints
+  (e.g. compression after tension: ~0.23 s), and are rebuilt
+  automatically if the mesh, material or porosity change. Results agree
+  with the previous implementation to ~1e-11 relative.
+- **The validation datasets are tracked in git like any other file.**
+  `.gitignore` used to ignore the whole `validation/` tree even though the
+  datasets were committed, so `git add` silently skipped a newly added
+  dataset. The blanket rule is removed; the generated
+  `validation_*_report` files stay ignored.
+- **`elhajjar1/PorosityFE` is the canonical repository.** The PyPI project
+  URLs (homepage, repository, issues, documentation), the app's README
+  link, the docs and the Streamlit deployment guide now point there, in
+  line with the README, `CITATION.cff` and `CONTRIBUTING.md`.
+- **CI installs the package** (`pip install -e ".[dev]"`) in the lint, test
+  and Streamlit jobs, so tests exercise the real packaging, and the
+  repo-root `conftest.py` `sys.path` shim is removed. Run tests after an
+  editable install.
+- **CI measures coverage** on the ubuntu / Python 3.12 test cell and uploads
+  `coverage.xml` as a workflow artifact. `pytest-cov` joins the `dev` extra.
+- **CI caches pip downloads** in the test, security and executable-build
+  workflows, and the executable build installs its runtime dependencies
+  from `requirements.txt` instead of a hand-written list.
+- **Internal: one implementation per empirical knockdown law.** The
+  Judd-Wright, power-law, and linear forms were each written out in four
+  places in `EmpiricalSolver`; they now live in one table, and every entry
+  point raises the same "Unknown knockdown model" message. Results are
+  bit-identical.
+- **Internal: each `apply_loading()` / `get_failure_load()` call validates
+  a user knockdown callable, and evaluates the hygrothermal and fatigue
+  factors, once** instead of twice.
+- **Internal: the porosity profile normalization is memoized**, and the git
+  commit used in JSON provenance is looked up once per process instead of
+  once per file written.
 
 ## [1.2.0] - 2026-05-11
 

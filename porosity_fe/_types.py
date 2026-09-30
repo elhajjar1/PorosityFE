@@ -31,8 +31,8 @@ LoadingMode = Literal[
 #: the ``loading`` dispatch in ``FESolver.solve``.
 FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss']
 
-#: Built-in empirical knockdown model names. Source of truth: the
-#: ``_MODEL_FUNCS`` dispatch in ``EmpiricalSolver._resolve_knockdown_model``.
+#: Built-in empirical knockdown model names. Source of truth:
+#: ``porosity_fe.empirical._KNOCKDOWN_LAWS``.
 KnockdownModel = Literal['judd_wright', 'power_law', 'linear']
 
 #: Through-thickness porosity distribution shapes. Source of truth:
