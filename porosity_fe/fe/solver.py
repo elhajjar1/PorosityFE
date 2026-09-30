@@ -204,6 +204,23 @@ class FieldResults:
         write_vtk(self, mesh, filename)
 
 
+_DEFAULT_APPLIED_STRAIN = {'compression': -0.01, 'tension': 0.01, 'shear': 0.01}
+
+
+def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float:
+    """Mode-dependent default strain; warn when the sign contradicts the mode."""
+    if applied_strain is None:
+        return _DEFAULT_APPLIED_STRAIN.get(loading, -0.01)
+    if (loading == 'compression' and applied_strain > 0) or \
+            (loading == 'tension' and applied_strain < 0):
+        logger.warning(
+            "loading=%r with applied_strain=%g: the strain sign contradicts "
+            "the loading mode, so the solve is really in %s.",
+            loading, applied_strain,
+            'tension' if applied_strain > 0 else 'compression')
+    return float(applied_strain)
+
+
 class FESolver:
     """Linear static FE solver for porosity-degraded composite laminates.
 
@@ -298,7 +315,7 @@ class FESolver:
         self._lu_cache: tuple | None = None
 
     def solve(self, loading: FELoadingMode = 'compression',
-              applied_strain: float = -0.01,
+              applied_strain: float | None = None,
               applied_load: float = -10.0,
               verbose: bool = False,
               failure_criterion: Literal['tsai_wu', 'hashin', 'max_stress'] | None = None,
@@ -312,10 +329,14 @@ class FESolver:
         ----------
         loading : str
             'compression', 'tension', 'shear', or 'ilss'.
-        applied_strain : float
+        applied_strain : float, optional
             Applied nominal strain (negative for compression). Used by the
             displacement-controlled modes ('compression', 'tension',
-            'shear').
+            'shear'). Defaults to ``-0.01`` for ``'compression'`` and
+            ``+0.01`` for ``'tension'`` and ``'shear'``. (Before 2.3 the
+            default was ``-0.01`` for every mode, so ``solve('tension')``
+            silently ran a compression solve.) A strain whose sign
+            contradicts ``'compression'`` / ``'tension'`` logs a warning.
         applied_load : float
             Total midspan load (force) used by the force-controlled ILSS
             short-beam-shear mode (ASTM D2344). Ignored for the other
@@ -385,6 +406,8 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
 
+        applied_strain = _resolve_applied_strain(loading, applied_strain)
+
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
 
@@ -432,7 +455,8 @@ class FESolver:
             stress_local, criterion=criterion)
         fpf_load_factor = failure.first_ply_failure_load_factor(
             stress_local, self.mesh.porosity, self.mesh.elements,
-            self.material, self.porosity_field.void_shape_radii, criterion)
+            self.material, self.porosity_field.void_shape_radii, criterion,
+            void_elements=self.mesh.void_elements)
 
         # 7. Compute knockdown as average-stress ratio (porous / pristine).
         knockdown = self._compute_knockdown(
@@ -878,7 +902,8 @@ class FESolver:
         """Failure indices for every Gauss point; see :func:`failure.evaluate_failure`."""
         return failure.evaluate_failure(
             stress_local, self.mesh.porosity, self.mesh.elements,
-            self.material, self.porosity_field.void_shape_radii, criterion)
+            self.material, self.porosity_field.void_shape_radii, criterion,
+            void_elements=self.mesh.void_elements)
 
     def _evaluate_tsai_wu(self, s_all: np.ndarray,
                           strengths: tuple[float, float, float, float, float, float],

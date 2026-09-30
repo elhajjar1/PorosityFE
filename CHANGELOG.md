@@ -43,6 +43,24 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **`FESolver.solve('tension')` now pulls.** `applied_strain` defaulted
+  to `-0.01` for every mode and `tension_bcs` forwarded it unchanged, so
+  a tension solve without an explicit strain was a compression solve
+  (identical failure indices to `'compression'`). The default is now
+  mode-dependent (`-0.01` compression, `+0.01` tension and shear), and a
+  strain whose sign contradicts `'compression'` / `'tension'` logs a
+  warning. **Result change** only for callers relying on the default;
+  explicit strains (as the app and pipeline pass) are unaffected.
+- **One definition of a "void element" in the FE path.** Failure
+  evaluation and the first-ply-failure load factor now skip geometric
+  void elements (`CompositeMesh.void_elements`, assembled with ~1 MPa
+  stiffness) as well as elements above the porosity threshold. Before,
+  a geometric void with low nodal porosity went through the failure
+  polynomial with near-pristine strengths. The thresholds are shared
+  constants in `porosity_fe.fe.element` (`VOID_VP_THRESHOLD = 0.95`,
+  `VP_STIFFNESS_CLAMP = 0.99`). Geometric voids never governed the
+  maximum index in the cases checked, so only their per-element entries
+  change (to 0).
 - **Mori-Tanaka Eshelby tensor corrected.** Three errors in
   `_mt_effective_stiffness`, now checked against Mura's integrals and the
   closed-form spherical-void Mori-Tanaka moduli:

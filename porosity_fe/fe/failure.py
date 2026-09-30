@@ -13,6 +13,7 @@ import numpy as np
 from ..empirical import Calibration
 from ..homogenization import _mt_effective_stiffness
 from ..materials import MaterialProperties
+from .element import VOID_VP_THRESHOLD
 
 #: Failure criteria accepted by :func:`evaluate_failure` and
 #: :meth:`FESolver.solve <porosity_fe.fe.solver.FESolver.solve>`.
@@ -29,6 +30,23 @@ EMPTY_MODE_FI: dict[str, float] = {
     'shear': 0.0,
     'delamination': 0.0,
 }
+
+def _element_porosity_and_skip(porosity: np.ndarray, elements: np.ndarray,
+                               void_elements=None) -> tuple[np.ndarray, np.ndarray]:
+    """Nodal-mean element porosity and the mask of elements failure ignores.
+
+    An element is skipped if its mean porosity exceeds
+    :data:`~porosity_fe.fe.element.VOID_VP_THRESHOLD` or it is a geometric
+    void (``void_elements``, the indices in ``CompositeMesh.void_elements``).
+    """
+    elem_Vp = np.clip(np.mean(porosity[elements], axis=1), 0.0, 1.0)
+    skip = elem_Vp > VOID_VP_THRESHOLD
+    if void_elements is not None:
+        void_idx = np.asarray(void_elements, dtype=np.intp).ravel()
+        if void_idx.size:
+            skip[void_idx] = True
+    return elem_Vp, skip
+
 
 def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
                        elem_Vp: float
@@ -128,7 +146,8 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
 
 def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                      elements: np.ndarray, material: MaterialProperties,
-                     void_shape_radii: tuple, criterion: str = 'tsai_wu'
+                     void_shape_radii: tuple, criterion: str = 'tsai_wu',
+                     void_elements=None
                      ) -> tuple[float, np.ndarray, dict[str, float]]:
     """Evaluate the chosen failure criterion at every Gauss point.
 
@@ -151,6 +170,10 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         Void shape used by the Mori-Tanaka strength degradation.
     criterion : {'tsai_wu', 'hashin', 'max_stress'}
         Failure criterion to apply.
+    void_elements : array-like of int, optional
+        Geometric void elements (``CompositeMesh.void_elements``). They are
+        skipped, as are elements whose mean porosity exceeds
+        :data:`~porosity_fe.fe.element.VOID_VP_THRESHOLD`.
 
     Returns
     -------
@@ -185,10 +208,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
     # The old `np.mean(porosity[elements[e]])` per iteration was an
     # O(n_elem) Python loop where O(1) vectorized NumPy works; this gives
     # ~143x on the inner step and ~1-2 s on a typical 5x5 sweep.
-    elem_Vp_all = np.clip(
-        np.mean(porosity[elements], axis=1),
-        0.0, 1.0,
-    )
+    elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
 
     max_fi = 0.0
     best_mode_indices: dict[str, float] = dict(EMPTY_MODE_FI)
@@ -210,7 +230,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         elem_Vp = float(elem_Vp_all[e])
 
         # Skip void elements (carry no meaningful load)
-        if elem_Vp > 0.95:
+        if skip[e]:
             continue
 
         strengths = degraded_strengths(material, void_shape_radii, elem_Vp)
@@ -543,7 +563,8 @@ def _point_load_factors(s_all: np.ndarray,
 def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray,
                                   elements: np.ndarray, material: MaterialProperties,
                                   void_shape_radii: tuple,
-                                  criterion: str = 'tsai_wu') -> float:
+                                  criterion: str = 'tsai_wu',
+                                  void_elements=None) -> float:
     """Load multiplier at which ``criterion`` first reaches 1 anywhere.
 
     The analysis is linear, so every stress scales with the applied load
@@ -559,10 +580,10 @@ def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray
             f"Unknown failure criterion {criterion!r}. "
             f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
         )
-    elem_Vp_all = np.clip(np.mean(porosity[elements], axis=1), 0.0, 1.0)
+    elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
     strengths_by_vp: dict[float, tuple[float, float, float, float, float, float]] = {}
     lam_min = np.inf
-    for e in np.flatnonzero(elem_Vp_all <= 0.95):
+    for e in np.flatnonzero(~skip):
         vp = float(elem_Vp_all[e])
         strengths = strengths_by_vp.get(vp)
         if strengths is None:

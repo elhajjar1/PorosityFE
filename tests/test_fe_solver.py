@@ -1927,3 +1927,81 @@ class TestHashinDelaminationMode:
                 for c in ('tsai_wu', 'hashin', 'max_stress')}
         assert keys['tsai_wu'] == keys['hashin'] == keys['max_stress']
         assert 'delamination' in keys['hashin']
+
+
+@pytest.fixture(scope="module")
+def voided():
+    """UD mesh containing geometric void elements, with its solver."""
+    mat = MATERIALS['T800_epoxy']
+    void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
+                        radii=(4, 3, 1.0))
+    pf = PorosityField(mat, 0.04, discrete_voids=[void])
+    mesh = CompositeMesh(pf, mat, nx=10, ny=6, nz=12, ply_angles='UD')
+    assert len(mesh.void_elements) > 0
+    return mat, pf, mesh, FESolver(mesh, mat, pf, ply_angles='UD')
+
+
+class TestVoidElementUnification:
+    """IMPROVEMENT_PLAN 2.3: one notion of "void element" across the FE path."""
+
+    @pytest.mark.parametrize("criterion", ['tsai_wu', 'hashin', 'max_stress'])
+    def test_geometric_voids_are_skipped_by_failure(self, voided, criterion):
+        _mat, _pf, mesh, solver = voided
+        r = solver.solve('compression', failure_criterion=criterion)
+        assert np.all(r.per_element_failure_index[mesh.void_elements] == 0.0)
+        assert r.max_failure_index > 0.0
+
+    def test_load_factor_ignores_geometric_voids(self, voided):
+        from porosity_fe.fe.failure import first_ply_failure_load_factor
+        mat, pf, mesh, solver = voided
+        r = solver.solve('compression')
+        # Put a huge stress in one void element: only the unmasked call sees it.
+        stress = r.stress_local.copy()
+        stress[mesh.void_elements[0]] = -1e6
+        args = (stress, mesh.porosity, mesh.elements, mat, pf.void_shape_radii)
+        masked = first_ply_failure_load_factor(
+            *args, void_elements=mesh.void_elements)
+        unmasked = first_ply_failure_load_factor(*args)
+        assert masked == pytest.approx(r.first_ply_failure_load_factor, rel=1e-12)
+        assert unmasked < 1e-3 * masked
+
+    def test_high_porosity_threshold_is_shared(self):
+        from porosity_fe.fe import batch, element, failure
+        assert failure.VOID_VP_THRESHOLD is element.VOID_VP_THRESHOLD
+        assert batch.VP_STIFFNESS_CLAMP is element.VP_STIFFNESS_CLAMP
+        assert element.VOID_VP_THRESHOLD < element.VP_STIFFNESS_CLAMP
+
+
+@pytest.fixture(scope="module")
+def small_ud_solver():
+    mat = MATERIALS['T800_epoxy']
+    pf = PorosityField(mat, 0.02)
+    mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=4, ply_angles='UD')
+    return FESolver(mesh, mat, pf, ply_angles='UD')
+
+
+class TestAppliedStrainDefault:
+    """``solve('tension')`` used to default to -0.01 and run in compression."""
+
+    def test_default_tension_is_tensile(self, small_ud_solver):
+        r = small_ud_solver.solve('tension')
+        assert np.mean(r.stress_global[:, :, 0]) > 0.0
+        explicit = small_ud_solver.solve('tension', applied_strain=0.01)
+        np.testing.assert_array_equal(r.stress_global, explicit.stress_global)
+
+    def test_default_compression_is_compressive(self, small_ud_solver):
+        r = small_ud_solver.solve('compression')
+        assert np.mean(r.stress_global[:, :, 0]) < 0.0
+        explicit = small_ud_solver.solve('compression', applied_strain=-0.01)
+        np.testing.assert_array_equal(r.stress_global, explicit.stress_global)
+
+    def test_tension_and_compression_failure_indices_differ(self, small_ud_solver):
+        t = small_ud_solver.solve('tension')
+        c = small_ud_solver.solve('compression')
+        assert t.max_failure_index != pytest.approx(c.max_failure_index, rel=1e-3)
+
+    def test_contradictory_sign_warns(self, small_ud_solver, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="porosity_fe_analysis"):
+            small_ud_solver.solve('tension', applied_strain=-0.01)
+        assert "contradicts the loading mode" in caplog.text
