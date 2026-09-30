@@ -733,7 +733,8 @@ class TestFESolverNonFiniteGuards:
                 'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
             }
 
-        monkeypatch.setattr(self.solver, '_evaluate_hashin', fake_hashin)
+        from porosity_fe.fe import failure as failure_mod
+        monkeypatch.setattr(failure_mod, 'evaluate_hashin', fake_hashin)
         with pytest.raises(ValueError, match="hashin failure index is non-finite"):
             self.solver._evaluate_failure(self.stress_local, criterion='hashin')
 
@@ -752,7 +753,8 @@ class TestFESolverNonFiniteGuards:
                 'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
             }
 
-        monkeypatch.setattr(self.solver, '_evaluate_max_stress', fake_max_stress)
+        from porosity_fe.fe import failure as failure_mod
+        monkeypatch.setattr(failure_mod, 'evaluate_max_stress', fake_max_stress)
         with pytest.raises(ValueError, match="max_stress failure index is non-finite"):
             self.solver._evaluate_failure(self.stress_local, criterion='max_stress')
 
