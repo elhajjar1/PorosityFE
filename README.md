@@ -84,6 +84,30 @@ porosity-analyze
 ```
 Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
 
+### Uncertainty propagation
+
+```bash
+porosity-analyze --vp 0.02 0.04 --uq --uq-samples 500 --seed 1
+```
+`--uq` propagates input scatter through the empirical Judd-Wright knockdown
+for every loading mode and writes `porosity_uq_<Vp>.json` with the mean, std
+and p5/p50/p95 of the knockdown and failure stress. The sampled inputs are:
+- the law's calibration coefficient (`--uq-coef-cov`, default 0.10), usually
+  the dominant term;
+- the measured mean porosity (`--uq-vp-cov`, default 0.10);
+- each mode's pristine strength (`--uq-strength-cov`, default 0.05).
+
+The default CoVs are assumptions; replace them with values from your own
+data. The web app's Results tab has the same analysis in an
+**Uncertainty** expander, with a knockdown histogram. From Python:
+
+```python
+from porosity_fe import propagate_uncertainty
+r = propagate_uncertainty(0.03, 'T800_epoxy', 'compression', coef_cov=0.1,
+                          vp_cov=0.1, n_samples=1000, method='lhs', seed=0)
+print(r['knockdown']['percentiles'])   # {'p5': ..., 'p50': ..., 'p95': ...}
+```
+
 ### Python library
 ```python
 from porosity_fe import *
@@ -304,6 +328,7 @@ Guidance on which to use:
 | `porosity_comparison_*.png` | Model comparison bar charts |
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
+| `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table.
 

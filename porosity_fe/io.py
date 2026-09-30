@@ -55,7 +55,8 @@ JSON_SCHEMA_VERSION = "1.1"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
-_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR}
+FORMAT_UQ = "porosity-fe.uq"
+_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ}
 
 
 # Per-format units descriptors for the self-documenting ``units`` envelope
@@ -66,6 +67,14 @@ _UNITS_EMPIRICAL_SWEEP = {
     "failure_stress": "MPa",
     "knockdown": "dimensionless fraction in (0, 1]",
     "void_volume_fraction": "dimensionless fraction in [0, 1]",
+}
+_UNITS_UQ = {
+    "failure_stress": "MPa",
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "void_volume_fraction": "dimensionless fraction in [0, 1]",
+    "vp_cov": "dimensionless coefficient of variation",
+    "coef_cov": "dimensionless coefficient of variation",
+    "percentiles": "%",
 }
 _UNITS_NCR = {
     "failure_stress": "MPa",

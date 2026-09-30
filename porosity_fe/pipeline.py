@@ -34,6 +34,7 @@ def build_empirical_pipeline(
     mesh_res: tuple[int, int, int] = _DEFAULT_MESH_RES,
     porosity_config: dict[str, Any] | None = None,
     seed: int | None = None,
+    solver_kwargs: dict[str, Any] | None = None,
 ) -> tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
     """Factory: ``(material, Vp) -> (PorosityField, CompositeMesh, EmpiricalSolver)``.
 
@@ -64,6 +65,10 @@ def build_empirical_pipeline(
     seed : int, optional
         Recorded into the porosity field for reproducibility provenance.
         Overrides any ``seed`` key in ``porosity_config``.
+    solver_kwargs : dict, optional
+        Extra keyword arguments for :class:`EmpiricalSolver`, e.g. the
+        coefficient overrides ``judd_wright_alpha`` / ``power_law_n`` /
+        ``linear_beta``.
 
     Returns
     -------
@@ -78,7 +83,8 @@ def build_empirical_pipeline(
     nx, ny, nz = mesh_res
     mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz,
                          ply_angles=ply_angles)
-    emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles)
+    emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles,
+                          **(solver_kwargs or {}))
     return pf, mesh, emp
 
 

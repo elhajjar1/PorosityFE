@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import os
+import warnings
 from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 
@@ -12,6 +16,7 @@ from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _
     Calibration,
     EmpiricalSolver,
 )
+from .io import _UNITS_UQ, FORMAT_UQ, _json_default, _wrap_envelope
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
 
@@ -26,6 +31,20 @@ _UQ_METHODS = ('monte_carlo', 'lhs')
 # Distributions that consume a standard-normal unit draw vs. a U(0,1) draw.
 _UQ_NORMAL_DISTS = ('lognormal', 'normal')
 _UQ_UNIFORM_DISTS = ('uniform',)
+# Built-in knockdown law -> (EmpiricalSolver override kwarg, QI coefficient table).
+_UQ_COEF_TABLES = {
+    'judd_wright': ('judd_wright_alpha', Calibration.JUDD_WRIGHT_ALPHA_QI),
+    'power_law': ('power_law_n', Calibration.POWER_LAW_N_QI),
+    'linear': ('linear_beta', Calibration.LINEAR_BETA_QI),
+}
+
+
+def _material_label(material: MaterialProperties) -> str:
+    """Preset name of ``material`` if it equals one, else ``'custom'``."""
+    for name, preset in MATERIALS.items():
+        if preset == material:
+            return name
+    return 'custom'
 
 
 def _normalize_uq_spec(material: MaterialProperties,
@@ -127,6 +146,7 @@ def propagate_uncertainty(void_volume_fraction: float,
                           covs: dict[str, float] | None = None,
                           spec: dict[str, tuple[str, float]] | None = None,
                           vp_cov: float = 0.0,
+                          coef_cov: float = 0.0,
                           n_samples: int = 1000,
                           method: str = 'monte_carlo',
                           seed: int | None = None,
@@ -158,6 +178,13 @@ def propagate_uncertainty(void_volume_fraction: float,
     vp_cov : float
         CoV of the mean porosity itself (truncated-lognormal, clipped to
         [0, 1]). 0.0 (default) holds Vp fixed at ``void_volume_fraction``.
+    coef_cov : float
+        CoV of the knockdown law's calibration coefficient for ``mode``
+        (Judd-Wright ``alpha``, power-law ``n`` or linear ``beta``),
+        median-preserving lognormal on the QI value; the layup scaling is
+        applied on top as usual. This is usually the dominant uncertainty:
+        with material scatter alone the knockdown does not vary at all.
+        0.0 (default) keeps the calibrated value.
     n_samples : int
         Number of draws.
     method : {'monte_carlo', 'lhs'}
@@ -191,7 +218,7 @@ def propagate_uncertainty(void_volume_fraction: float,
         material_name = material
         mat = MATERIALS[material]
     else:
-        material_name = getattr(material, '__class__', type(material)).__name__
+        material_name = _material_label(material)
         mat = material
 
     if not isinstance(n_samples, (int, np.integer)) or n_samples <= 0:
@@ -208,6 +235,18 @@ def propagate_uncertainty(void_volume_fraction: float,
         raise ValueError(
             f"vp_cov must be a finite non-negative number, got {vp_cov!r}."
         )
+    coef_cov = float(coef_cov)
+    if not np.isfinite(coef_cov) or coef_cov < 0.0:
+        raise ValueError(
+            f"coef_cov must be a finite non-negative number, got {coef_cov!r}."
+        )
+    sample_coef = coef_cov > 0.0
+    if sample_coef and (model not in _UQ_COEF_TABLES
+                        or mode not in _UQ_COEF_TABLES[model][1]):
+        raise ValueError(
+            f"coef_cov needs a built-in model ({sorted(_UQ_COEF_TABLES)}) "
+            f"with a calibrated {mode!r} coefficient; got model={model!r}."
+        )
     pcts = tuple(float(p) for p in percentiles)
     if any((not np.isfinite(p)) or p < 0.0 or p > 100.0 for p in pcts):
         raise ValueError(
@@ -216,14 +255,15 @@ def propagate_uncertainty(void_volume_fraction: float,
 
     resolved = _normalize_uq_spec(mat, covs, spec)
     field_names = list(resolved.keys())
-    # The porosity variable, if active, is the last sampling dimension.
+    # Sampling dimensions: material fields, then the law coefficient (if
+    # active), then porosity (if active) last.
     sample_vp = vp_cov > 0.0
-    n_vars = len(field_names) + (1 if sample_vp else 0)
+    n_vars = len(field_names) + int(sample_coef) + int(sample_vp)
 
     config = config or {}
 
-    def _build_solver(material_obj: MaterialProperties,
-                      vp_value: float) -> EmpiricalSolver:
+    def _build_solver(material_obj: MaterialProperties, vp_value: float,
+                      coef: float | None = None) -> EmpiricalSolver:
         # CompositeMesh prints a banner on construction; the sampling loop
         # builds one mesh per draw, so silence it (additive: we do not touch
         # CompositeMesh itself).
@@ -234,6 +274,8 @@ def propagate_uncertainty(void_volume_fraction: float,
                 ply_angles=ply_angles,
                 mesh_res=(4, 3, 3),
                 porosity_config=config,
+                solver_kwargs=(None if coef is None
+                               else {_UQ_COEF_TABLES[model][0]: {mode: coef}}),
             )
             return emp
 
@@ -249,11 +291,16 @@ def propagate_uncertainty(void_volume_fraction: float,
 
     # Pre-compute per-field column index and the unit-variate mapping.
     col_for_field = {name: i for i, name in enumerate(field_names)}
-    vp_col = len(field_names) if sample_vp else None
+    coef_col = len(field_names) if sample_coef else None
+    vp_col = len(field_names) + int(sample_coef) if sample_vp else None
     nominal_vp = float(void_volume_fraction)
     if sample_vp:
         sigma_ln_vp = np.sqrt(np.log1p(vp_cov * vp_cov))
+    if sample_coef:
+        nominal_coef = float(_UQ_COEF_TABLES[model][1][mode])
+        sigma_ln_coef = np.sqrt(np.log1p(coef_cov * coef_cov))
 
+    n_extrapolated = 0
     for s in range(int(n_samples)):
         draws = {}
         for name in field_names:
@@ -270,9 +317,32 @@ def propagate_uncertainty(void_volume_fraction: float,
         else:
             vp_value = nominal_vp
 
-        res = _build_solver(sampled_mat, vp_value).get_failure_load(mode, model)
+        coef = None
+        if sample_coef:
+            z = float(_unit_to_draw(np.array([unit[s, coef_col]]),
+                                    'lognormal')[0])
+            coef = nominal_coef * float(np.exp(sigma_ln_coef * z))
+
+        # Draws scattered past the calibration bound would each warn;
+        # count them and warn once after the loop instead.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            res = _build_solver(sampled_mat, vp_value, coef).get_failure_load(
+                mode, model)
+        for w in caught:
+            if "calibration bound" in str(w.message):
+                n_extrapolated += 1
+            else:
+                warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
         fs_samples[s] = res['failure_stress']
         kd_samples[s] = res['knockdown']
+
+    if n_extrapolated:
+        warnings.warn(
+            f"{n_extrapolated} of {int(n_samples)} uncertainty draws evaluated "
+            f"the empirical knockdown beyond its calibration bound "
+            f"(Vp <= 0.05); those results are extrapolated.",
+            UserWarning, stacklevel=2)
 
     def _summary(arr: np.ndarray) -> dict:
         return {
@@ -304,6 +374,32 @@ def propagate_uncertainty(void_volume_fraction: float,
         'material': material_name,
         'void_volume_fraction': float(void_volume_fraction),
         'vp_cov': vp_cov,
+        'coef_cov': coef_cov,
         'percentiles': list(pcts),
         'spec': {k: list(v) for k, v in resolved.items()},
     }
+
+
+def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLike,
+                            include_samples: bool = False) -> None:
+    """Write :func:`propagate_uncertainty` outputs as a ``porosity-fe.uq`` JSON.
+
+    Parameters
+    ----------
+    results : dict
+        ``{label: propagate_uncertainty(...)}``, e.g. keyed by loading mode.
+    filename : str or os.PathLike
+        Output path.
+    include_samples : bool, optional
+        Keep the raw per-draw ``samples`` arrays (dropped by default; they
+        are ``n_samples`` floats per quantity).
+    """
+    payload = {}
+    for label, res in results.items():
+        entry = dict(res)
+        if not include_samples:
+            entry.pop('samples', None)
+        payload[label] = entry
+    envelope = _wrap_envelope(FORMAT_UQ, _UNITS_UQ, {'uq': payload})
+    with open(Path(filename), 'w', encoding='utf-8') as f:
+        json.dump(envelope, f, indent=2, default=_json_default)

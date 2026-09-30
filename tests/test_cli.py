@@ -751,3 +751,29 @@ class TestCLIOutputExitCodes:
     def test_other_output_failure_exits_3(self, tmp_path, monkeypatch, capsys):
         assert self._run(tmp_path, monkeypatch, RuntimeError("broken")) == 3
         assert "writing output" in capsys.readouterr().err
+
+
+class TestCLIUncertainty:
+    """IMPROVEMENT_PLAN 3.4: ``porosity-analyze --uq``."""
+
+    def test_uq_writes_one_file_per_level(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '0.03', '--output-dir', str(tmp_path), '--quiet',
+            '--uq', '--uq-samples', '20', '--seed', '1'])
+        assert rc == 0
+        files = sorted(tmp_path.glob('porosity_uq_*.json'))
+        assert len(files) == 2
+        data = load_results_from_json(files[0])
+        assert data['format'] == 'porosity-fe.uq'
+        assert set(data['uq']) == {'compression', 'tension', 'shear', 'ilss',
+                                   'transverse_tension'}
+        assert data['uq']['ilss']['coef_cov'] == 0.10
+
+    def test_bad_sample_count_exits_2(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet',
+            '--uq', '--uq-samples', '0'])
+        assert rc == 2
+        assert '--uq-samples' in capsys.readouterr().err

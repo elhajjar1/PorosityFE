@@ -90,3 +90,14 @@ class TestAppRender:
         assert any("disposition" in w.value.lower() for w in at.warning)
         # ...and all nine download buttons (4 PNG + 2 export + 3 NCR) coexist.
         assert len(at.get("download_button")) == 9
+
+
+def test_uq_expander_reports_percentiles():
+    """IMPROVEMENT_PLAN 3.4: the Results tab runs uncertainty propagation."""
+    at = _run_small_analysis(_fresh_app())
+    _button(at, "Run uncertainty analysis").click().run()
+    assert not at.exception
+    labels = [m.label for m in at.metric]
+    assert labels == ["Knockdown p5", "Knockdown p50", "Knockdown p95"]
+    p5, p50, p95 = (float(m.value) for m in at.metric)
+    assert p5 < p50 < p95

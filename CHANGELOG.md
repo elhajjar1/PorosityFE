@@ -5,6 +5,22 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Uncertainty propagation in the CLI and app (IMPROVEMENT_PLAN 3.4).**
+  - `porosity-analyze --uq` writes `porosity_uq_<Vp>.json` (new
+    `porosity-fe.uq` format, `FORMAT_UQ`) for every loading mode. The
+    sampled inputs are set with `--uq-samples`, `--uq-coef-cov`,
+    `--uq-vp-cov` and `--uq-strength-cov`.
+  - The app's Results tab gains an **Uncertainty** expander showing the
+    p5/p50/p95 metrics and a knockdown histogram.
+  - `propagate_uncertainty(coef_cov=...)` perturbs the knockdown law's
+    calibration coefficient. Before this, material scatter alone left
+    the knockdown with zero spread.
+  - A passed `MaterialProperties` instance now reports its preset name
+    (or `"custom"`) instead of `"MaterialProperties"`.
+  - Draws beyond the calibration bound produce one summary warning
+    instead of one per draw.
+  - New `save_uq_results_to_json()`, and a `solver_kwargs=` hook on
+    `build_empirical_pipeline` for the coefficient overrides.
 - **`sweep_configurations(void_volume_fractions, ...)`** runs
   `compare_configurations` for several porosity levels with every
   `(Vp, config)` pair in one task list, so `n_jobs > 1` keeps one process

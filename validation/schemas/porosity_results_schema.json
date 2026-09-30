@@ -16,7 +16,8 @@
       "enum": [
         "porosity-fe.empirical-sweep",
         "porosity-fe.fe-fields",
-        "porosity-fe.ncr"
+        "porosity-fe.ncr",
+        "porosity-fe.uq"
       ]
     },
     "provenance": {

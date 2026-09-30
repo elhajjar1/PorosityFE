@@ -15,6 +15,7 @@ import datetime
 import io
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import matplotlib
@@ -40,9 +41,11 @@ from porosity_fe import (
     LABEL_X_MM,
     LABEL_Z_MM,
     MATERIALS,
+    EmpiricalSolver,
     FESolver,
     _configure_matplotlib_style,
     build_empirical_pipeline,
+    propagate_uncertainty,
 )
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -110,6 +113,30 @@ def run_analysis_cached(cfg_key: tuple) -> dict:
     for k, v in cfg_key:
         cfg[k] = list(v) if isinstance(v, tuple) else v
     return run_analysis(cfg)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
+                  vp_cov: float, strength_cov: float) -> tuple[dict, list[str]]:
+    """Latin-hypercube uncertainty propagation for the analysed laminate.
+
+    Returns the :func:`propagate_uncertainty` result and any warning
+    messages it raised (e.g. draws beyond the calibration bound).
+    """
+    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
+    material = dataclasses.replace(
+        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+    strength_field = EmpiricalSolver.PRISTINE_STRENGTH_KEY[mode]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = propagate_uncertainty(
+            cfg["Vp"] / 100.0, material, mode, "judd_wright",
+            covs={strength_field: strength_cov},
+            vp_cov=vp_cov, coef_cov=coef_cov,
+            n_samples=n_samples, method="lhs", seed=0,
+            ply_angles=cfg["angles"],
+        )
+    return res, sorted({str(w.message) for w in caught})
 
 
 def run_analysis(cfg: dict) -> dict:
@@ -353,6 +380,26 @@ _STRESS_COMPONENTS = {
     "τ₁₂ (in-plane shear)": (5, r"$\tau_{12}$ local (MPa)"),
     "Von Mises": (-1, "Von Mises Stress (MPa)"),
 }
+
+
+def plot_uq(uq: dict):
+    """Histogram of sampled knockdowns with the p5 / p50 / p95 band."""
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    kd = np.asarray(uq["samples"]["knockdown"])
+    pct = uq["knockdown"]["percentiles"]
+    ax.hist(kd, bins=40, color="0.7", edgecolor="0.4")
+    ax.axvspan(pct["p5"], pct["p95"], color="tab:blue", alpha=0.15,
+               label=f"p5-p95: {pct['p5']:.3f}-{pct['p95']:.3f}")
+    ax.axvline(pct["p50"], color="tab:blue", linewidth=2,
+               label=f"p50: {pct['p50']:.3f}")
+    ax.axvline(uq["nominal"]["knockdown"], color="k", linestyle="--",
+               label=f"nominal: {uq['nominal']['knockdown']:.3f}")
+    ax.set_xlabel(LABEL_KNOCKDOWN)
+    ax.set_ylabel("Draws")
+    ax.set_title(f"Knockdown uncertainty: {uq['mode']}, {uq['n_samples']} draws")
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    return fig
 
 
 def plot_stress(result: dict, comp_name: str):
@@ -694,6 +741,58 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
         return
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
+    _build_uq_expander(result)
+
+
+def _build_uq_expander(result: dict):
+    """Opt-in uncertainty propagation on the analysed laminate (plan 3.4)."""
+    with st.expander("Uncertainty (Latin hypercube sampling)"):
+        st.caption(
+            "Propagates scatter in the Judd-Wright calibration coefficient, "
+            "the measured porosity and the pristine strength through the "
+            "empirical knockdown. The default CoVs are assumptions; set them "
+            "to your own data.")
+        modes = list(EmpiricalSolver.PRISTINE_STRENGTH_KEY)
+        cfg = result["config"]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            mode = st.selectbox(
+                "Mode", modes, key="uq_mode",
+                index=modes.index(cfg["loading_mode"])
+                if cfg["loading_mode"] in modes else 0)
+            n_samples = st.number_input(
+                "Draws", min_value=50, max_value=5000, value=500, step=50,
+                key="uq_samples")
+        with c2:
+            coef_cov = st.number_input(
+                "Coefficient CoV", min_value=0.0, max_value=1.0, value=0.10,
+                step=0.01, key="uq_coef_cov")
+            vp_cov = st.number_input(
+                "Porosity CoV", min_value=0.0, max_value=1.0, value=0.10,
+                step=0.01, key="uq_vp_cov")
+        with c3:
+            strength_cov = st.number_input(
+                "Strength CoV", min_value=0.0, max_value=1.0, value=0.05,
+                step=0.01, key="uq_strength_cov")
+        params = (_config_to_key(cfg), mode, int(n_samples), float(coef_cov),
+                  float(vp_cov), float(strength_cov))
+        if st.button("Run uncertainty analysis", key="uq_run"):
+            st.session_state["uq_params"] = params
+        if st.session_state.get("uq_params") != params:
+            return
+        with st.spinner("Sampling..."):
+            uq, messages = run_uq_cached(*params)
+        for msg in messages:
+            st.warning(msg)
+        kd, fs = uq["knockdown"]["percentiles"], uq["failure_stress"]["percentiles"]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Knockdown p5", f"{kd['p5']:.3f}", f"{fs['p5']:.0f} MPa",
+                  delta_color="off")
+        m2.metric("Knockdown p50", f"{kd['p50']:.3f}", f"{fs['p50']:.0f} MPa",
+                  delta_color="off")
+        m3.metric("Knockdown p95", f"{kd['p95']:.3f}", f"{fs['p95']:.0f} MPa",
+                  delta_color="off")
+        _show_figure(plot_uq(uq), f"knockdown_uq_{mode}", "dl_png_uq")
 
 
 def _build_stress_tab(result: dict | None):

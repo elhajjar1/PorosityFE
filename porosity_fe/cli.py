@@ -154,7 +154,50 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "re-assembled regardless of N."
         ),
     )
+    uq = parser.add_argument_group(
+        "uncertainty quantification",
+        "Propagate input scatter through the empirical Judd-Wright knockdown "
+        "for every loading mode and write porosity_uq_<Vp>.json per level.")
+    uq.add_argument(
+        "--uq", action="store_true",
+        help="Run the uncertainty propagation after the sweep.")
+    uq.add_argument(
+        "--uq-samples", type=int, default=500, metavar="N",
+        help="Latin-hypercube draws per loading mode (default 500).")
+    uq.add_argument(
+        "--uq-coef-cov", type=float, default=0.10, metavar="COV",
+        help=("CoV of the knockdown law's calibration coefficient (default "
+              "0.10, an assumed value; this is usually the dominant term)."))
+    uq.add_argument(
+        "--uq-vp-cov", type=float, default=0.10, metavar="COV",
+        help="CoV of the measured mean porosity (default 0.10).")
+    uq.add_argument(
+        "--uq-strength-cov", type=float, default=0.05, metavar="COV",
+        help="CoV of each mode's pristine strength (default 0.05).")
     return parser
+
+
+def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
+    """Propagate uncertainty for every loading mode at one porosity level."""
+    from .empirical import EmpiricalSolver
+    from .uq import propagate_uncertainty, save_uq_results_to_json
+
+    results = {}
+    for mode, strength_field in EmpiricalSolver.PRISTINE_STRENGTH_KEY.items():
+        results[mode] = propagate_uncertainty(
+            Vp, material, mode, 'judd_wright',
+            covs={strength_field: args.uq_strength_cov},
+            vp_cov=args.uq_vp_cov,
+            coef_cov=args.uq_coef_cov,
+            n_samples=args.uq_samples,
+            method='lhs',
+            seed=args.seed,
+        )
+        kd = results[mode]['knockdown']['percentiles']
+        logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f",
+                    mode, kd['p5'], kd['p50'], kd['p95'])
+    save_uq_results_to_json(results, out_path)
+    return results
 
 
 class _DynamicStdoutHandler(logging.StreamHandler):
@@ -393,6 +436,25 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - surface as a failure
             print(f"ERROR: writing output for Vp={Vp} failed: {exc}", file=sys.stderr)
             return 3
+
+    if args.uq:
+        if args.uq_samples <= 0:
+            print("ERROR: --uq-samples must be a positive integer.", file=sys.stderr)
+            return 2
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nUncertainty propagation: Vp = %.2f%%", Vp * 100)
+            try:
+                _run_uq(args, args.material, Vp,
+                        output_dir / f"porosity_uq_{Vp_label}.json")
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: uncertainty propagation for Vp={Vp}: {exc}",
+                      file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as a failure
+                print(f"ERROR: uncertainty propagation for Vp={Vp} failed: {exc}",
+                      file=sys.stderr)
+                return 3
 
     if args.plots and all_results:
         try:
