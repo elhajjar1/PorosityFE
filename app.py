@@ -545,10 +545,11 @@ def _build_sidebar_inputs() -> dict | None:
 
         st.subheader("Porosity")
         Vp = st.number_input(
-            "Void volume fraction (%)",
+            "Void content Vp (%)",
             min_value=0.1, max_value=15.0, value=3.0, step=0.5, format="%.1f",
             help=(
-                "Typical range: 0.5–5% for autoclave, 2–10% for OOA."
+                "Enter a percentage: 3.0 means 3 % voids (a volume fraction "
+                "of 0.03). Typical range: 0.5–5 % for autoclave, 2–10 % for OOA."
             ),
         )
         distribution_label = st.selectbox(
@@ -750,8 +751,9 @@ def _build_uq_expander(result: dict):
         st.caption(
             "Propagates scatter in the Judd-Wright calibration coefficient, "
             "the measured porosity and the pristine strength through the "
-            "empirical knockdown. The default CoVs are assumptions; set them "
-            "to your own data.")
+            "empirical knockdown. Each CoV is a fraction (0.10 = 10 % of the "
+            "value), not a percent of porosity. The defaults are assumptions; "
+            "set them to your own data.")
         modes = list(EmpiricalSolver.PRISTINE_STRENGTH_KEY)
         cfg = result["config"]
         c1, c2, c3 = st.columns(3)
@@ -766,14 +768,17 @@ def _build_uq_expander(result: dict):
         with c2:
             coef_cov = st.number_input(
                 "Coefficient CoV", min_value=0.0, max_value=1.0, value=0.10,
-                step=0.01, key="uq_coef_cov")
+                step=0.01, key="uq_coef_cov",
+                help="Coefficient of variation of the coefficient, as a fraction: 0.10 means 10 %.")
             vp_cov = st.number_input(
                 "Porosity CoV", min_value=0.0, max_value=1.0, value=0.10,
-                step=0.01, key="uq_vp_cov")
+                step=0.01, key="uq_vp_cov",
+                help="Coefficient of variation of the measured porosity, as a fraction: 0.10 means 10 %.")
         with c3:
             strength_cov = st.number_input(
                 "Strength CoV", min_value=0.0, max_value=1.0, value=0.05,
-                step=0.01, key="uq_strength_cov")
+                step=0.01, key="uq_strength_cov",
+                help="Coefficient of variation of the pristine strength, as a fraction: 0.10 means 10 %.")
         params = (_config_to_key(cfg), mode, int(n_samples), float(coef_cov),
                   float(vp_cov), float(strength_cov))
         if st.button("Run uncertainty analysis", key="uq_run"):

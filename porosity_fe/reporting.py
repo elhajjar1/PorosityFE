@@ -246,7 +246,7 @@ def governing_failure(result: dict) -> dict:
 
 
 def recommend_disposition(
-    Vp: float, governing_knockdown: float, structural_class: str = "primary"
+    Vp_percent: float, governing_knockdown: float, structural_class: str = "primary"
 ) -> dict:
     """Recommend (not decide) an MRB disposition path for a porosity NCR.
 
@@ -256,13 +256,32 @@ def recommend_disposition(
     engineering drawing / process spec is the governing acceptance
     authority, and the MRB must substantiate against it.
 
+    Parameters
+    ----------
+    Vp_percent : float
+        Measured void content **in percent**, as reported on an NCR:
+        ``3.0`` means 3 % voids. This is the one porosity input in the
+        package that takes a percent rather than a fraction; passing the
+        fraction ``0.03`` would be read as 0.03 % and recommend Use-As-Is.
+    governing_knockdown : float
+        Worst-case strength knockdown, a fraction in ``(0, 1]``.
+    structural_class : str
+        One of :data:`STRUCTURAL_CLASSES`.
+
     Raises
     ------
     ValueError
-        If ``structural_class`` is not one of :data:`STRUCTURAL_CLASSES`.
-        (It used to fall back to ``"primary"`` silently, which in an MRB
-        record would misstate the substantiation basis.)
+        If ``Vp_percent`` is not a finite value in ``[0, 100]``, or
+        ``structural_class`` is not one of :data:`STRUCTURAL_CLASSES`.
+        (An unknown class used to fall back to ``"primary"`` silently,
+        which in an MRB record would misstate the substantiation basis.)
     """
+    if not (0.0 <= Vp_percent <= 100.0):  # also rejects NaN
+        raise ValueError(
+            f"Vp_percent must be the void content in percent, in [0, 100]; "
+            f"got {Vp_percent!r}."
+        )
+    Vp = float(Vp_percent)
     if structural_class not in STRUCTURAL_CLASSES:
         raise ValueError(
             f"Unknown structural_class {structural_class!r}; "

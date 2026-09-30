@@ -573,3 +573,20 @@ class TestNcrTextLinesAndPdf:
         plt.close('all')
         serialise_ncr_pdf(_ncr({"note": "void " * 1500}))
         assert plt.get_fignums() == []
+
+
+class TestDispositionTakesPercent:
+    """``recommend_disposition`` takes void content in percent, and says so."""
+
+    def test_parameter_is_named_percent(self):
+        import inspect
+        from porosity_fe.reporting import recommend_disposition
+        assert list(inspect.signature(recommend_disposition).parameters)[0] == 'Vp_percent'
+        assert recommend_disposition(Vp_percent=3.0, governing_knockdown=0.85)['path'] == \
+            recommend_disposition(3.0, 0.85)['path']
+
+    @pytest.mark.parametrize("bad", [-0.5, 100.5, float('nan')])
+    def test_out_of_range_percent_rejected(self, bad):
+        from porosity_fe.reporting import recommend_disposition
+        with pytest.raises(ValueError, match='percent'):
+            recommend_disposition(bad, 0.9)

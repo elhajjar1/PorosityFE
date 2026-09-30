@@ -349,6 +349,17 @@ convention only. The constructor (`PorosityField(..., void_volume_fraction=Vp)`)
 rejects values outside `[0, 1]` with a `ValueError` and offers a percent-vs-fraction
 hint when the value is plausibly a percent (`Vp ≥ 1.001`).
 
+Three places take a **percent** instead, and say so in their names or labels:
+
+| Where | Input | Example for 3 % voids |
+|---|---|---|
+| Streamlit sidebar | "Void content Vp (%)" | `3.0` |
+| CLI | `--vp-pct` (`--vp` takes a fraction) | `--vp-pct 3` or `--vp 0.03` |
+| `porosity_fe.reporting.recommend_disposition` | `Vp_percent`, as on an NCR | `recommend_disposition(3.0, ...)` |
+
+Coefficients of variation (`--uq-vp-cov`, the app's "Porosity CoV") are
+fractions of the value: `0.10` means 10 % of `Vp`, not 10 percentage points.
+
 ### Per-ply vs. specimen-average porosity
 
 The empirical knockdown path (`EmpiricalSolver`) treats `Vp` as the

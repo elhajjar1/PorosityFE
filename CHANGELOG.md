@@ -222,6 +222,18 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Percent inputs are labelled as percent.** The only porosity inputs that
+  take a percent now say so where the value is asked for:
+  - the app field is "Void content Vp (%)", with help "3.0 means 3 % voids";
+  - `recommend_disposition`'s first parameter is renamed `Vp` ->
+    `Vp_percent`. It is documented and rejects values outside `[0, 100]`;
+    positional callers are unaffected, but `Vp=` keyword callers must switch
+    to `Vp_percent=`;
+  - the README conventions section lists all three percent inputs
+    (the app field, `--vp-pct`, `recommend_disposition`).
+
+  The uncertainty CoV inputs (CLI and app) now state that they are
+  fractions of the value (0.10 = 10 % of Vp, not 10 percentage points).
 - **Dedup and cleanup (IMPROVEMENT_PLAN 5.4).** All five JSON writers
   build their envelope through one `io._wrap_envelope()` (output is
   unchanged). `compute_clt_effective_modulus` reuses `_build_clt_abd`

@@ -163,17 +163,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Run the uncertainty propagation after the sweep.")
     uq.add_argument(
         "--uq-samples", type=int, default=500, metavar="N",
-        help="Latin-hypercube draws per loading mode (default 500).")
+        help="Latin-hypercube draws per loading mode.")
     uq.add_argument(
         "--uq-coef-cov", type=float, default=0.10, metavar="COV",
-        help=("CoV of the knockdown law's calibration coefficient (default "
-              "0.10, an assumed value; this is usually the dominant term)."))
+        help=("CoV of the knockdown law's calibration coefficient, as a "
+              "fraction (0.10 = 10%%). The default is an assumed value; this "
+              "is usually the dominant term."))
     uq.add_argument(
         "--uq-vp-cov", type=float, default=0.10, metavar="COV",
-        help="CoV of the measured mean porosity (default 0.10).")
+        help=("CoV of the measured mean porosity, as a fraction of it "
+              "(0.10 = 10%% of Vp, not 10 percentage points)."))
     uq.add_argument(
         "--uq-strength-cov", type=float, default=0.05, metavar="COV",
-        help="CoV of each mode's pristine strength (default 0.05).")
+        help="CoV of each mode's pristine strength, as a fraction (0.05 = 5%%).")
     return parser
 
 
