@@ -157,11 +157,11 @@ class CompositeMesh:
 
         self.nodes = None
         self.elements = None
-        self.porosity = None
+        self.porosity: np.ndarray | None = None
         self.stiffness_reduction = None
         self.ply_ids = None
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
-        self.void_elements = None
+        self.void_elements: np.ndarray | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
