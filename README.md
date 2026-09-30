@@ -28,7 +28,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Six material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK (or define your own)
-- **Discrete void modeling**: Explicit ellipsoidal voids with stress concentration factors
+- **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
 - **Tsai-Wu failure criterion**: Full 3D multiaxial strength evaluation
 
 ## Visualizations

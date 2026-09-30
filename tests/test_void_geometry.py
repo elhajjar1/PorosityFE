@@ -77,59 +77,74 @@ class TestVoidGeometry:
         assert 'ilss' in scf
         assert scf['compression'] > 1.0
 
-    def test_scf_sphere_exact_values(self):
-        """The near-spherical branch (ar < 1.2) returns fixed SCFs."""
-        void = VoidGeometry(center=(0, 0, 0), radii=(1, 1, 1))
-        assert void.stress_concentration_factor() == {
-            'compression': 2.0, 'tension': 2.0, 'shear': 1.5,
-            'ilss': 1.8, 'transverse_tension': 2.0,
-        }
+    @pytest.mark.parametrize("nu", [0.2, 0.35, 0.45])
+    def test_scf_sphere_matches_goodier(self, nu):
+        """Spherical cavity: Goodier (1933) closed forms."""
+        scf = VoidGeometry(center=(0, 0, 0), radii=(1, 1, 1)
+                           ).stress_concentration_factor(nu)
+        tension = (27 - 15 * nu) / (2 * (7 - 5 * nu))
+        shear = 15 * (1 - nu) / (7 - 5 * nu)
+        for mode in ('tension', 'compression', 'transverse_tension'):
+            assert scf[mode] == pytest.approx(tension, rel=1e-8)
+        for mode in ('shear', 'ilss'):
+            assert scf[mode] == pytest.approx(shear, rel=1e-8)
 
-    def test_scf_cylindrical_prolate_values(self):
-        """Prolate ('cylindrical') void: radii[0] > radii[2] and
-        radii[1] < radii[0]/2. Pins the aspect-ratio scaling and the
-        ``VOID_SHAPES['cylindrical']`` preset -> regime mapping."""
-        void = VoidGeometry(center=(0, 0, 0), radii=VOID_SHAPES['cylindrical'])
-        ar = void.aspect_ratio  # (3, 1, 1) -> 3.0
-        assert ar == 3.0
-        scf = void.stress_concentration_factor()
-        assert scf == {
-            'compression': 1.5 + 0.5 * ar,        # 3.0
-            'tension': 1.5 + 0.5 * ar,            # 3.0
-            'shear': 1.3 + 0.3 * ar,              # 2.2
-            'ilss': 1.5 + 0.4 * ar,               # 2.7
-            'transverse_tension': 1.5 + 0.5 * ar,  # 3.0
-        }
+    def test_scf_long_circular_cylinder_matches_kirsch(self):
+        """Cavity elongated along z, loaded along x: Kirsch's 3."""
+        scf = VoidGeometry(center=(0, 0, 0), radii=(1, 1, 200)
+                           ).stress_concentration_factor()
+        assert scf['tension'] == pytest.approx(3.0, rel=1e-3)
 
-    def test_scf_penny_oblate_values(self):
-        """Oblate ('penny') void: radii[0] > radii[2] and
-        radii[1] >= radii[0]/2. Pennies carry the highest SCFs, so a
-        regression in this branch would understate their severity."""
-        void = VoidGeometry(center=(0, 0, 0), radii=VOID_SHAPES['penny'])
-        ar = void.aspect_ratio  # (3, 3, 0.3) -> 10.0
-        assert ar == 10.0
-        scf = void.stress_concentration_factor()
-        assert scf == {
-            'compression': 2.0 + 1.0 * ar,        # 12.0
-            'tension': 2.0 + 1.5 * ar,            # 17.0
-            'shear': 1.5 + 0.8 * ar,              # 9.5
-            'ilss': 2.0 + 1.2 * ar,               # 14.0
-            'transverse_tension': 2.0 + 1.5 * ar,  # 17.0
-        }
-        # Penny tension SCF must exceed an equally-elongated prolate void's.
-        prolate = VoidGeometry(center=(0, 0, 0), radii=(10, 1, 1))
-        assert scf['tension'] > prolate.stress_concentration_factor()['tension']
+    def test_scf_long_elliptic_cylinder_matches_inglis(self):
+        """Elliptic cross-section a=1 (x), b=0.25 (y): 1 + 2 a / b."""
+        scf = VoidGeometry(center=(0, 0, 0), radii=(1, 0.25, 200)
+                           ).stress_concentration_factor()
+        assert scf['transverse_tension'] == pytest.approx(1 + 2 * 1 / 0.25, rel=1e-3)
+        assert scf['tension'] == pytest.approx(1 + 2 * 0.25 / 1, rel=1e-3)
 
-    def test_scf_through_thickness_falls_back_to_sphere(self):
-        """A void elongated through-thickness (radii[0] <= radii[2]) is not
-        a recognised in-plane regime, so the SCF defaults to the spherical
-        values rather than the prolate/oblate scaling."""
-        void = VoidGeometry(center=(0, 0, 0), radii=(1, 1, 3))
-        assert void.aspect_ratio == 3.0  # >= 1.2, so not the spherical branch
-        assert void.stress_concentration_factor() == {
-            'compression': 2.0, 'tension': 2.0, 'shear': 1.5,
-            'ilss': 1.8, 'transverse_tension': 2.0,
-        }
+    def test_scf_penny_depends_on_load_direction(self):
+        """A penny void barely concentrates in-plane loads but strongly
+        concentrates interlaminar shear (the old heuristic gave 17 for
+        in-plane tension)."""
+        scf = VoidGeometry(center=(0, 0, 0), radii=VOID_SHAPES['penny']
+                           ).stress_concentration_factor()
+        assert 1.0 < scf['tension'] < 1.3
+        assert scf['ilss'] > 5.0
+        thinner = VoidGeometry(center=(0, 0, 0), radii=(3, 3, 0.03)
+                               ).stress_concentration_factor()
+        assert thinner['ilss'] > 5 * scf['ilss']
+
+    def test_scf_tension_equals_compression(self):
+        scf = VoidGeometry(center=(0, 0, 0), radii=(3, 1, 0.5)
+                           ).stress_concentration_factor()
+        assert scf['tension'] == pytest.approx(scf['compression'], rel=1e-12)
+
+    def test_scf_honors_orientation(self):
+        """Rotating a void 90 deg about z swaps the x and y loadings."""
+        import math
+        base = VoidGeometry(center=(0, 0, 0), radii=(3, 1, 1)
+                            ).stress_concentration_factor()
+        rotated = VoidGeometry(center=(0, 0, 0), radii=(3, 1, 1),
+                               orientation=math.pi / 2).stress_concentration_factor()
+        swapped = VoidGeometry(center=(0, 0, 0), radii=(1, 3, 1)
+                               ).stress_concentration_factor()
+        assert rotated['tension'] == pytest.approx(base['transverse_tension'], rel=1e-6)
+        assert rotated['transverse_tension'] == pytest.approx(base['tension'], rel=1e-6)
+        for mode in rotated:
+            assert rotated[mode] == pytest.approx(swapped[mode], rel=1e-6)
+
+    def test_scf_continuous_across_former_shape_thresholds(self):
+        """The old rules jumped at aspect ratio 1.2 and radii[1] = radii[0]/2."""
+        near = [VoidGeometry(center=(0, 0, 0), radii=r).stress_concentration_factor()
+                for r in [(1.19, 1, 1), (1.21, 1, 1), (3, 1.49, 1), (3, 1.51, 1)]]
+        for lo, hi in ((near[0], near[1]), (near[2], near[3])):
+            for mode in lo:
+                assert lo[mode] == pytest.approx(hi[mode], rel=0.02)
+
+    def test_scf_rejects_bad_poisson_ratio(self):
+        with pytest.raises(ValueError, match="nu_m"):
+            VoidGeometry(center=(0, 0, 0), radii=(1, 1, 1)
+                         ).stress_concentration_factor(0.5)
 
     def test_distance_field_inside_negative(self):
         void = VoidGeometry(center=(0, 0, 0), radii=(1, 1, 1))

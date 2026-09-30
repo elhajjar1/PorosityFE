@@ -865,7 +865,8 @@ class TestDiscreteVoidScfCache:
             # exactly as the pre-#179 implementation did.
             expected = base.copy()
             for void in mesh.porosity_field.discrete_voids:
-                scf = void.stress_concentration_factor().get(mode, 1.0)
+                scf = void.stress_concentration_factor(
+                    solver.material.matrix_poisson).get(mode, 1.0)
                 dist = void.distance_field(nodes[:, 0], nodes[:, 1],
                                            nodes[:, 2])
                 influence = np.exp(-np.maximum(dist, 0) / max(void.radii))

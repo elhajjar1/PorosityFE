@@ -43,6 +43,22 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **Void stress concentration factors from elasticity.**
+  `VoidGeometry.stress_concentration_factor` used uncited
+  piecewise-linear rules in aspect ratio, with shape classes that
+  disagreed with the micromechanics' (and jumped at aspect ratio 1.2 and
+  `radii[1] = radii[0]/2`). A penny void loaded in its own plane got
+  SCF 17, and orientation was ignored. It now uses the exact solution for
+  a traction-free ellipsoidal cavity in an isotropic matrix: Eshelby's
+  interior field plus the traction-free jump condition, maximized over the
+  surface. That reproduces Goodier's sphere values, Kirsch's 3 and Inglis'
+  `1 + 2a/b`, honors `orientation`, and takes the matrix Poisson's ratio
+  (`nu_m`, default 0.35; `EmpiricalSolver` passes
+  `material.matrix_poisson`). **Result change:** only the discrete-void
+  term of `EmpiricalSolver.nodal_knockdown` (and the SCF plot) changes.
+  For example, the preset penny void goes from SCF 17 / 14 (tension /
+  ILSS) to 1.16 / 6.08, and a sphere from 2.0 / 1.8 to 2.07 / 1.86.
+  Specimen-level failure loads and the validation MAE are unaffected.
 - **FE knockdown is now a real stiffness ratio.** `FieldResults.knockdown`
   was the ratio of signed domain-mean stresses (porous vs pristine
   stiffness applied to the porous strain field), silently clamped to 1.

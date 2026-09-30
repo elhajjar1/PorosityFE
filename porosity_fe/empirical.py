@@ -634,7 +634,8 @@ class EmpiricalSolver:
         """
         cache: list[tuple[np.ndarray, dict[str, float]]] = []
         for void in self.mesh.porosity_field.discrete_voids:
-            scf_dict = void.stress_concentration_factor()
+            scf_dict = void.stress_concentration_factor(
+                self.material.matrix_poisson)
             dist = void.distance_field(self.mesh.nodes[:, 0],
                                         self.mesh.nodes[:, 1],
                                         self.mesh.nodes[:, 2])
