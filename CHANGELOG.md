@@ -43,6 +43,21 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **FE knockdown is now a real stiffness ratio.** `FieldResults.knockdown`
+  was the ratio of signed domain-mean stresses (porous vs pristine
+  stiffness applied to the porous strain field), silently clamped to 1.
+  It read `sigma_xx` for the shear mode and the sign-changing `tau_xz`
+  field for ILSS, so both came out as exactly 1.0 at any porosity. The
+  knockdown is now porous over pristine structural stiffness from a
+  second solve of the same mesh and boundary conditions with no porosity
+  or void elements: the `E_x` / `G_xy` ratio for compression, tension and
+  shear, and the beam-stiffness (inverse compliance) ratio for ILSS.
+  Values above 1 are logged, not clamped. The pristine result is cached
+  by mesh geometry and material, so a porosity sweep pays for it once
+  per loading mode; the first solve on a new production mesh takes about
+  3 s longer. **Result change:** shear and ILSS FE knockdowns drop below
+  1 (e.g. 0.985 and 0.946 for uniform QI at `Vp = 0.06`), and the
+  compression values shift slightly (README comparison table updated).
 - **`FESolver.solve('tension')` now pulls.** `applied_strain` defaulted
   to `-0.01` for every mode and `tension_bcs` forwarded it unchanged, so
   a tension solve without an explicit strain was a compression solve

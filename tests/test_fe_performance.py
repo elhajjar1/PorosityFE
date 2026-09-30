@@ -7,8 +7,9 @@ old assembly and recovery loops created (~7,000 per production solve).
 
 The timing test needs the production mesh and a quiet machine, so it only
 runs when ``POROSITY_FE_BENCHMARK=1`` (CI sets it on one test cell). Its
-budgets leave ~4x headroom over the measured times; before these changes a
-first solve took 14-24 s.
+budgets leave ~3-4x headroom over the measured times; before these changes a
+first solve took 14-24 s. Since 2.4 the first solve on a new mesh geometry
+also runs the pristine reference solve for the knockdown (~3 s, then cached).
 """
 
 import logging
@@ -51,7 +52,9 @@ def test_solve_uses_batched_path_not_per_element_objects(monkeypatch):
     reason="set POROSITY_FE_BENCHMARK=1 to run the production-mesh timing check",
 )
 def test_production_mesh_solve_time():
-    first_budget = float(os.environ.get("POROSITY_FE_BENCH_FIRST_S", "10"))
+    from porosity_fe.fe import solver as solver_mod
+    solver_mod._PRISTINE_MEASURE_CACHE.clear()
+    first_budget = float(os.environ.get("POROSITY_FE_BENCH_FIRST_S", "20"))
     repeat_budget = float(os.environ.get("POROSITY_FE_BENCH_REPEAT_S", "2"))
     logging.disable(logging.CRITICAL)
     try:
@@ -68,7 +71,8 @@ def test_production_mesh_solve_time():
         logging.disable(logging.NOTSET)
     assert first < first_budget, (
         f"first production-mesh solve took {first:.2f} s "
-        f"(budget {first_budget} s; ~2.6 s expected, 14-24 s before Phase 2)")
+        f"(budget {first_budget} s; ~6 s expected: ~2.6 s for the solve plus "
+        f"~3 s for the pristine knockdown reference; 14-24 s before Phase 2)")
     assert repeat < repeat_budget, (
         f"repeat solve with the same constraints took {repeat:.2f} s "
         f"(budget {repeat_budget} s; ~0.25 s expected when K and its LU "

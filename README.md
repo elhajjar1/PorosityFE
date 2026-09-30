@@ -246,10 +246,10 @@ gives distinct compression knockdowns even at matched mean:
 
 ```
 mode = compression, FE Tsai-Wu, Vp_mean = 3 %
-  uniform               0.9887
-  clustered (midplane)  0.9882
-  clustered (surface)   0.9883
-  interface             0.9854   (penny voids, sharpest local field)
+  uniform               0.9844
+  clustered (midplane)  0.9839
+  clustered (surface)   0.9846
+  interface             0.9638   (penny voids, sharpest local field)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`;

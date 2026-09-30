@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import logging
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Literal
 
@@ -18,7 +21,7 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
 from ..results import FailureResult
-from ..transforms import rotate_stiffness_3d, strain_transformation_3d, stress_transformation_3d
+from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from .assembler import BoundaryHandler, GlobalAssembler
 from .export import export_results as _export_results
@@ -49,7 +52,9 @@ class FieldResults:
     max_failure_index : float
         Maximum failure index across all Gauss points (criterion-dependent).
     knockdown : float
-        Stiffness knockdown factor (modulus ratio: E_porous/E_pristine).
+        Stiffness knockdown factor: porous over pristine structural
+        stiffness from a pristine reference solve of the same mesh (``E_x``
+        or ``G_xy`` ratio; beam-stiffness ratio for ILSS).
     per_element_failure_index : np.ndarray or None
         Shape (n_elem,) max-over-Gauss-point failure index per element.
         Optional (defaults to ``None`` for back-compatibility with callers
@@ -219,6 +224,36 @@ def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float
             loading, applied_strain,
             'tension' if applied_strain > 0 else 'compression')
     return float(applied_strain)
+
+
+#: Pristine stiffness measures (see :func:`_stiffness_measure`) keyed by
+#: loading, mesh geometry, material and penalty factor. Shared across solvers
+#: so a porosity sweep on one mesh solves each pristine reference once.
+_PRISTINE_MEASURE_CACHE: OrderedDict[tuple, float] = OrderedDict()
+_PRISTINE_MEASURE_CACHE_MAXSIZE = 64
+
+
+def _stiffness_measure(loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
+                       applied_strain: float, applied_load: float) -> float:
+    """Structural stiffness of a linear solve, independent of load magnitude.
+
+    ``u^T K u / strain^2`` for the displacement-controlled modes (the
+    effective modulus times the volume) and ``load^2 / u^T K u`` (inverse
+    compliance) for the force-controlled ILSS bend.
+    """
+    energy = float(u @ (K @ u))
+    if loading == 'ilss':
+        return applied_load ** 2 / energy
+    return energy / applied_strain ** 2
+
+
+def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
+    """Shallow copy of ``mesh`` with zero porosity and no void elements."""
+    pristine = copy.copy(mesh)
+    pristine.porosity = np.zeros_like(mesh.porosity)
+    pristine.void_elements = np.zeros(0, dtype=np.intp)
+    pristine.void_element_set = set()
+    return pristine
 
 
 class FESolver:
@@ -458,9 +493,9 @@ class FESolver:
             self.material, self.porosity_field.void_shape_radii, criterion,
             void_elements=self.mesh.void_elements)
 
-        # 7. Compute knockdown as average-stress ratio (porous / pristine).
+        # 7. Knockdown: porous / pristine structural stiffness.
         knockdown = self._compute_knockdown(
-            loading, stress_global, strain_global)
+            loading, K, u, applied_strain, applied_load, penalty_factor)
 
         displacement = u.reshape(-1, 3)
         reactions, effective_modulus = self._reactions_and_modulus(
@@ -832,60 +867,71 @@ class FESolver:
         return stress_global, stress_local, strain_global, strain_local
 
     def _compute_knockdown(
-        self, loading: str, stress_global: np.ndarray, strain_global: np.ndarray,
+        self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
+        applied_strain: float, applied_load: float, penalty_factor: float,
     ) -> float:
-        """Compute the stiffness knockdown as a porous/pristine stress ratio.
+        """Stiffness knockdown: porous over pristine structural stiffness.
 
-        Both numerator and denominator use the same 3D FE framework so that
-        dimensional/mesh effects cancel. For each element we compute what the
-        dominant stress component *would* be with pristine stiffness at the
-        same strain, then average. This avoids the CLT-vs-3D mismatch that
-        caused knockdown > 1.
+        The pristine reference is a second solve of the same mesh, loading
+        and boundary conditions with zero porosity and no void elements
+        (cached across solvers by mesh geometry, see
+        :meth:`_pristine_stiffness_measure`). For compression, tension and
+        shear the ratio is ``E_x`` or ``G_xy`` porous / pristine; for the
+        ILSS bend it is the ratio of the beam stiffnesses (inverse
+        compliances). IMPROVEMENT_PLAN 2.4 replaced the earlier ratio of
+        signed domain-mean stresses, which read ``sigma_xx`` for shear, went
+        unstable for the sign-changing ILSS ``tau_xz`` field, and was
+        silently clamped to 1.
 
-        For ILSS short-beam shear the dominant component is ``tau_xz``
-        (Voigt index 4); for the other modes it is ``sigma_xx`` (index 0).
-
-        Parameters
-        ----------
-        loading : str
-            Loading mode (selects the dominant stress component).
-        stress_global : np.ndarray
-            Shape ``(n_elem, n_gp, 6)`` recovered global stresses.
-        strain_global : np.ndarray
-            Shape ``(n_elem, n_gp, 6)`` recovered global strains.
-
-        Returns
-        -------
-        knockdown : float
-            Modulus ratio ``E_porous / E_pristine``, clamped to ``<= 1.0``.
+        Returns 1.0 for a pristine mesh or a zero load. A ratio above 1 is
+        not clamped; it is logged as a warning.
         """
-        if loading == 'ilss':
-            comp_idx = 4
-        else:
-            comp_idx = 0
+        porosity = np.asarray(self.mesh.porosity, dtype=float)
+        if not np.any(porosity > 0.0) and np.size(self.mesh.void_elements) == 0:
+            return 1.0
+        if (applied_load if loading == 'ilss' else applied_strain) == 0.0:
+            return 1.0
+        porous = _stiffness_measure(loading, K, u, applied_strain, applied_load)
+        pristine = self._pristine_stiffness_measure(loading, penalty_factor)
+        knockdown = porous / pristine
+        if knockdown > 1.0 + 1e-6:
+            logger.warning(
+                "FE knockdown %.6f exceeds 1 for loading=%r: the porous model "
+                "came out stiffer than the pristine one.", knockdown, loading)
+        return float(knockdown)
 
-        avg_sigma = np.mean(stress_global[:, :, comp_idx])
+    def _pristine_stiffness_measure(self, loading: str,
+                                    penalty_factor: float) -> float:
+        """:func:`_stiffness_measure` of this mesh with no porosity or voids."""
+        # Tension and compression share one linear pristine problem.
+        key_loading = 'compression' if loading == 'tension' else loading
+        h = hashlib.blake2b(digest_size=16)
+        for arr in (self.mesh.nodes, self.mesh.elements, self.mesh.ply_angles):
+            a = np.ascontiguousarray(arr)
+            h.update(f"{a.dtype}{a.shape}".encode())
+            h.update(a.tobytes())
+        key = (key_loading, h.hexdigest(), repr(self.material),
+               float(penalty_factor))
+        cached = _PRISTINE_MEASURE_CACHE.get(key)
+        if cached is not None:
+            _PRISTINE_MEASURE_CACHE.move_to_end(key)
+            return cached
 
-        # Pristine reference: compute the same Voigt component using the
-        # rotated pristine stiffness applied to the recovered strain field,
-        # with one rotation per distinct ply angle.
-        C_base = self.material.get_stiffness_matrix()
-        angles, angle_idx = np.unique(
-            np.asarray(self.mesh.ply_angles, dtype=float), return_inverse=True)
-        rows = np.empty((len(angles), 6))
-        for k, angle in enumerate(angles):
-            ply_rad = np.radians(angle)
-            C_rot = (rotate_stiffness_3d(C_base, ply_rad, axis='z')
-                     if abs(ply_rad) > 1e-15 else C_base)
-            rows[k] = C_rot[comp_idx, :]
-        pristine_sig = np.einsum('ej,egj->eg', rows[angle_idx], strain_global)
-        pristine_avg = float(pristine_sig.mean()) if pristine_sig.size else 1.0
+        pristine = FESolver(_pristine_mesh(self.mesh), self.material,
+                            self.porosity_field, ply_angles=self.ply_angles)
+        strain = _DEFAULT_APPLIED_STRAIN.get(key_loading, -0.01)
+        load = -10.0
+        constrained, F = pristine._apply_boundary_conditions(
+            key_loading, strain, load)
+        K0 = pristine.assembler.stiffness()
+        u0, _ = pristine._modify_system_and_solve(
+            K0, F, constrained, penalty_factor=penalty_factor)
+        measure = _stiffness_measure(key_loading, K0, u0, strain, load)
 
-        if abs(pristine_avg) > 1e-12:
-            knockdown = abs(avg_sigma) / abs(pristine_avg)
-        else:
-            knockdown = 1.0
-        return min(knockdown, 1.0)
+        _PRISTINE_MEASURE_CACHE[key] = measure
+        if len(_PRISTINE_MEASURE_CACHE) > _PRISTINE_MEASURE_CACHE_MAXSIZE:
+            _PRISTINE_MEASURE_CACHE.popitem(last=False)
+        return measure
 
     #: Empty per-mode failure-index dict (see :mod:`porosity_fe.fe.failure`).
     _EMPTY_MODE_FI: dict[str, float] = failure.EMPTY_MODE_FI

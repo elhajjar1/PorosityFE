@@ -1644,32 +1644,88 @@ class TestElementBatchMatchesHex8Element:
             build_element_batch(mesh, mat, pf.void_shape_radii)
 
 
-class TestComputeKnockdownVectorized:
-    """IMPROVEMENT_PLAN 1.3: the vectorized knockdown matches the original
-    per-element / per-Gauss-point loop."""
+class TestKnockdownFromPristineReference:
+    """IMPROVEMENT_PLAN 2.4: knockdown = porous / pristine structural stiffness."""
 
-    @pytest.mark.parametrize("loading", ["compression", "ilss"])
-    def test_matches_reference_loop(self, loading):
-        from porosity_fe.transforms import rotate_stiffness_3d
+    @staticmethod
+    def _pair(Vp=0.04, discrete_voids=None, **mesh_kw):
         mat = MATERIALS['T800_epoxy']
-        pf = PorosityField(mat, 0.04, distribution='clustered')
-        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=6,
-                             ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
-        solver = FESolver(mesh, mat, pf)
-        rng = np.random.default_rng(1)
-        strain = rng.normal(size=(mesh.n_elements, 8, 6))
-        stress = rng.normal(size=(mesh.n_elements, 8, 6))
-        comp = 4 if loading == 'ilss' else 0
-        C_base = mat.get_stiffness_matrix()
-        total = 0.0
-        for e in range(mesh.n_elements):
-            rad = np.radians(float(mesh.ply_angles[e]))
-            C = rotate_stiffness_3d(C_base, rad, axis='z') if abs(rad) > 1e-15 else C_base
-            for g in range(8):
-                total += float(C[comp, :] @ strain[e, g])
-        ref = abs(np.mean(stress[:, :, comp])) / abs(total / (mesh.n_elements * 8))
-        got = solver._compute_knockdown(loading, stress, strain)
-        assert got == pytest.approx(min(ref, 1.0), rel=1e-12)
+        kw = dict(nx=6, ny=3, nz=6, ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
+        kw.update(mesh_kw)
+        pf = PorosityField(mat, Vp, distribution='clustered',
+                           discrete_voids=discrete_voids or [])
+        pf0 = PorosityField(mat, 0.0)
+        porous = FESolver(CompositeMesh(pf, mat, **kw), mat, pf,
+                          ply_angles=kw['ply_angles'])
+        pristine = FESolver(CompositeMesh(pf0, mat, **kw), mat, pf0,
+                            ply_angles=kw['ply_angles'])
+        return porous, pristine
+
+    @pytest.mark.parametrize("loading", ["compression", "tension", "shear"])
+    def test_equals_effective_modulus_ratio(self, loading):
+        porous, pristine = self._pair()
+        r, r0 = porous.solve(loading), pristine.solve(loading)
+        assert r.knockdown == pytest.approx(
+            r.effective_modulus / r0.effective_modulus, rel=1e-9)
+        assert 0.0 < r.knockdown < 1.0
+
+    def test_ilss_equals_beam_stiffness_ratio(self):
+        porous, pristine = self._pair()
+        r, r0 = porous.solve('ilss'), pristine.solve('ilss')
+        # Inverse compliance: pristine deflection energy / porous.
+        b, b0 = porous.assembler.element_batch(), pristine.assembler.element_batch()
+        W = np.einsum('egi,egij,egj,eg->', r.strain_global, b.C,
+                      r.strain_global, b.detJ_w)
+        W0 = np.einsum('egi,egij,egj,eg->', r0.strain_global, b0.C,
+                       r0.strain_global, b0.detJ_w)
+        assert r.knockdown == pytest.approx(W0 / W, rel=1e-6)
+        assert 0.0 < r.knockdown < 1.0
+
+    def test_shear_and_ilss_are_no_longer_pinned_at_one(self):
+        porous, _ = self._pair()
+        assert porous.solve('shear').knockdown < 0.999
+        assert porous.solve('ilss').knockdown < 0.999
+
+    def test_pristine_mesh_gives_exactly_one(self):
+        _, pristine = self._pair()
+        for loading in ('compression', 'shear', 'ilss'):
+            assert pristine.solve(loading).knockdown == 1.0
+
+    def test_geometric_voids_alone_reduce_stiffness(self):
+        mat = MATERIALS['T800_epoxy']
+        void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
+                            radii=(4, 3, 1.0))
+        porous, _ = self._pair(Vp=0.0, discrete_voids=[void],
+                               nx=10, ny=6, nz=12, ply_angles='UD')
+        assert len(porous.mesh.void_elements) > 0
+        assert porous.solve('shear').knockdown < 0.99
+
+    def test_independent_of_load_magnitude_and_sign(self):
+        porous, _ = self._pair()
+        ref = porous.solve('compression').knockdown
+        assert porous.solve('compression', applied_strain=-0.001).knockdown == \
+            pytest.approx(ref, rel=1e-9)
+        assert porous.solve('tension', applied_strain=0.003).knockdown == \
+            pytest.approx(ref, rel=1e-9)
+        ilss = porous.solve('ilss').knockdown
+        assert porous.solve('ilss', applied_load=-250.0).knockdown == \
+            pytest.approx(ilss, rel=1e-9)
+
+    def test_pristine_reference_is_cached_across_solvers(self, monkeypatch):
+        from porosity_fe.fe import solver as solver_mod
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        calls = []
+        real = solver_mod._pristine_mesh
+        monkeypatch.setattr(solver_mod, '_pristine_mesh',
+                            lambda mesh: calls.append(1) or real(mesh))
+        a, _ = self._pair(Vp=0.02)
+        b, _ = self._pair(Vp=0.05)
+        a.solve('compression')
+        a.solve('tension')
+        b.solve('compression')
+        assert len(calls) == 1
+        b.solve('shear')
+        assert len(calls) == 2
 
 
 class TestStiffnessAndFactorizationReuse:
@@ -1700,6 +1756,10 @@ class TestStiffnessAndFactorizationReuse:
 
         monkeypatch.setattr(asm_mod, 'build_element_batch', batch)
         monkeypatch.setattr(sla, 'splu', splu)
+        # Count only this solver's assembly and factorizations, not the
+        # (separately cached) pristine knockdown reference solve.
+        monkeypatch.setattr(FESolver, '_pristine_stiffness_measure',
+                            lambda self, loading, penalty_factor: 1.0)
         return counts
 
     @staticmethod
