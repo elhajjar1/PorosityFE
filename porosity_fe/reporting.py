@@ -142,24 +142,8 @@ def build_export_payload(result: dict) -> dict:
 
 
 def write_results_json(filepath: str, payload: dict) -> None:
-    from porosity_fe import (
-        FORMAT_EMPIRICAL_SWEEP,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_EMPIRICAL_SWEEP,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the payload below.
-        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
-        **payload,
-    }
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, indent=2, default=_json_default)
+        f.write(_serialise_payload_json(payload))
 
 
 def _format_csv_row(mode: str, model: str, r: dict) -> list:
@@ -198,22 +182,9 @@ def write_results_csv(filepath: str, payload: dict) -> None:
 
 
 def _serialise_payload_json(payload: dict) -> str:
-    from porosity_fe import (
-        FORMAT_EMPIRICAL_SWEEP,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_EMPIRICAL_SWEEP,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the payload below.
-        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
-        **payload,
-    }
+    from porosity_fe import FORMAT_EMPIRICAL_SWEEP, _json_default
+    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL, _wrap_envelope
+    envelope = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_STREAMLIT_EMPIRICAL, payload)
     return json.dumps(envelope, indent=2, default=_json_default)
 
 
@@ -279,8 +250,19 @@ def recommend_disposition(
     structural class. It is deliberately conservative: the released
     engineering drawing / process spec is the governing acceptance
     authority, and the MRB must substantiate against it.
+
+    Raises
+    ------
+    ValueError
+        If ``structural_class`` is not one of :data:`STRUCTURAL_CLASSES`.
+        (It used to fall back to ``"primary"`` silently, which in an MRB
+        record would misstate the substantiation basis.)
     """
-    structural_class = structural_class if structural_class in STRUCTURAL_CLASSES else "primary"
+    if structural_class not in STRUCTURAL_CLASSES:
+        raise ValueError(
+            f"Unknown structural_class {structural_class!r}; "
+            f"expected one of {list(STRUCTURAL_CLASSES)}."
+        )
 
     if Vp <= 1.0 and governing_knockdown >= 0.95:
         path = "Use-As-Is (UAI) — pending MRB concurrence"
@@ -438,22 +420,9 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
 
 
 def serialise_ncr_json(ncr: dict) -> str:
-    from porosity_fe import (
-        FORMAT_NCR,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_NCR
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_NCR,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the NCR payload below.
-        "units": dict(_UNITS_NCR),
-        **ncr,
-    }
+    from porosity_fe import FORMAT_NCR, _json_default
+    from porosity_fe.io import _UNITS_NCR, _wrap_envelope
+    envelope = _wrap_envelope(FORMAT_NCR, _UNITS_NCR, ncr)
     return json.dumps(envelope, indent=2, default=_json_default)
 
 

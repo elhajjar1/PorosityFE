@@ -1,6 +1,9 @@
 """Publication-quality plotting helpers (matplotlib)."""
 
+from __future__ import annotations
+
 import logging
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,7 +51,7 @@ class FEVisualizer:
     """
 
     @staticmethod
-    def plot_porosity_field(porosity_field: PorosityField, save_path: str = None):
+    def plot_porosity_field(porosity_field: PorosityField, save_path: str | os.PathLike | None = None):
         """Single panel: through-thickness porosity profile."""
         fig, ax = plt.subplots(1, 1, figsize=(6, 5))
 
@@ -63,7 +66,7 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_mesh_3d(mesh: CompositeMesh, save_path: str = None):
+    def plot_mesh_3d(mesh: CompositeMesh, save_path: str | os.PathLike | None = None):
         """3D hex mesh wireframe with void elements highlighted."""
         fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(111, projection='3d')
@@ -104,23 +107,15 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_mesh_detail(mesh: CompositeMesh, save_path: str = None):
+    def plot_mesh_detail(mesh: CompositeMesh, save_path: str | os.PathLike | None = None):
         """Cross-section with porosity contour + single hex element."""
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
         # Left: cross-section at mid-y
-        ny_mid = mesh.ny // 2
-        nx1 = mesh.nx + 1
-        ny1 = mesh.ny + 1
-        indices = []
-        for k in range(mesh.nz + 1):
-            for i in range(mesh.nx + 1):
-                idx = k * ny1 * nx1 + ny_mid * nx1 + i
-                indices.append(idx)
-        indices = np.array(indices)  # type: ignore[assignment]  # list rebound to ndarray
-        X = mesh.nodes[indices, 0].reshape(mesh.nz + 1, mesh.nx + 1)
-        Z = mesh.nodes[indices, 2].reshape(mesh.nz + 1, mesh.nx + 1)
-        P = mesh.porosity[indices].reshape(mesh.nz + 1, mesh.nx + 1)
+        section = mesh.mid_y_section_indices()   # (nz + 1, nx + 1)
+        X = mesh.nodes[section, 0]
+        Z = mesh.nodes[section, 2]
+        P = mesh.porosity[section]
 
         im = axes[0].contourf(X, Z, P * 100, levels=20, cmap='YlOrRd')
         plt.colorbar(im, ax=axes[0], label=LABEL_POROSITY_PCT)
@@ -156,7 +151,7 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_damage_contour(mesh: CompositeMesh, solver, save_path: str = None):
+    def plot_damage_contour(mesh: CompositeMesh, solver, save_path: str | os.PathLike | None = None):
         """2D stiffness reduction map at midplane."""
         fig, ax = plt.subplots(figsize=(10, 4))
 
@@ -190,7 +185,7 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_void_scf(void_geometry: VoidGeometry, save_path: str = None):
+    def plot_void_scf(void_geometry: VoidGeometry, save_path: str | os.PathLike | None = None):
         """Stress concentration field around a single void."""
         fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -220,7 +215,7 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_knockdown_curves(results_by_porosity: dict, save_path: str = None):
+    def plot_knockdown_curves(results_by_porosity: dict, save_path: str | os.PathLike | None = None):
         """Strength vs porosity % for all loading modes."""
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         axes = axes.ravel()
@@ -252,7 +247,7 @@ class FEVisualizer:
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_model_comparison(results: dict, save_path: str = None):
+    def plot_model_comparison(results: dict, save_path: str | os.PathLike | None = None):
         """Empirical model comparison bar chart."""
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
         configs = list(results.keys())

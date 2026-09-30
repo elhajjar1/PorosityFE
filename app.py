@@ -215,19 +215,10 @@ def plot_mesh(result: dict):
     """Mid-y cross-section coloured by stiffness retention with void overlays."""
     fig, ax = plt.subplots(figsize=(8, 5))
     mesh = result["mesh"]
-    nx1 = mesh.nx + 1
-    ny1 = mesh.ny + 1
-    ny_mid = mesh.ny // 2
-
-    indices = []
-    for k in range(mesh.nz + 1):
-        for i in range(mesh.nx + 1):
-            indices.append(k * ny1 * nx1 + ny_mid * nx1 + i)
-    indices = np.array(indices)
-
-    X = mesh.nodes[indices, 0].reshape(mesh.nz + 1, mesh.nx + 1)
-    Z = mesh.nodes[indices, 2].reshape(mesh.nz + 1, mesh.nx + 1)
-    Sr = mesh.stiffness_reduction[indices].reshape(mesh.nz + 1, mesh.nx + 1)
+    section = mesh.mid_y_section_indices()   # (nz + 1, nx + 1)
+    X = mesh.nodes[section, 0]
+    Z = mesh.nodes[section, 2]
+    Sr = mesh.stiffness_reduction[section]
 
     im = ax.contourf(X, Z, Sr * 100, levels=20, cmap="cividis",
                      vmin=max(0, Sr.min() * 100 - 1), vmax=100)
@@ -236,17 +227,9 @@ def plot_mesh(result: dict):
     step_x = max(1, mesh.nx // 20)
     step_z = max(1, mesh.nz // 20)
     for k in range(0, mesh.nz + 1, step_z):
-        row_x = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 0]
-        row_z = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 2]
-        ax.plot(row_x, row_z, "k-", linewidth=0.3, alpha=0.4)
+        ax.plot(X[k], Z[k], "k-", linewidth=0.3, alpha=0.4)
     for i in range(0, mesh.nx + 1, step_x):
-        col_x = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 0]
-        col_z = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 2]
-        ax.plot(col_x, col_z, "k-", linewidth=0.3, alpha=0.4)
+        ax.plot(X[:, i], Z[:, i], "k-", linewidth=0.3, alpha=0.4)
 
     void_elems = mesh.void_elements
     if len(void_elems) > 0:
@@ -397,12 +380,7 @@ def plot_stress(result: dict, comp_name: str):
     else:
         elem_stress = stress_local.mean(axis=1)[:, comp_idx]
 
-    ny_mid = mesh.ny // 2
-    mid_elem_indices = []
-    for k in range(mesh.nz):
-        for i in range(mesh.nx):
-            mid_elem_indices.append(k * mesh.ny * mesh.nx + ny_mid * mesh.nx + i)
-    mid_elem_indices = np.array(mid_elem_indices)
+    mid_elem_indices = mesh.mid_y_element_indices().ravel()
 
     elem_nodes_coords = mesh.nodes[mesh.elements[mid_elem_indices]]
     cx = elem_nodes_coords[:, :, 0].mean(axis=1)

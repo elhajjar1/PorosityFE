@@ -1068,3 +1068,10 @@ class TestNCRExport:
         write_ncr_pdf(path, ncr)
         with open(path, "rb") as f:
             assert f.read(4) == b"%PDF"
+
+
+def test_recommend_disposition_rejects_unknown_structural_class():
+    """IMPROVEMENT_PLAN 5.4: no silent fallback to 'primary' in an MRB record."""
+    from porosity_fe.reporting import recommend_disposition
+    with pytest.raises(ValueError, match="structural_class"):
+        recommend_disposition(0.5, 0.98, "primry")

@@ -359,33 +359,8 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     float
         Effective longitudinal modulus E_x (MPa).
     """
-    C_base = material.get_stiffness_matrix()
-    n_plies = len(ply_angles)
-    t_ply = material.t_ply
-    h_total = n_plies * t_ply
-
-    # Build A-matrix: A_ij = sum over plies of Q_bar_ij * t_ply
-    A = np.zeros((3, 3))
-    for angle_deg in ply_angles:
-        angle_rad = np.radians(float(angle_deg))
-        if abs(angle_rad) > 1e-15:
-            C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z')
-        else:
-            C_rot = C_base
-        # Extract in-plane Q-bar (reduced stiffness) from 6x6:
-        # Q_bar = C_rot[0:3, 0:3] is the membrane portion in plane-stress
-        # For CLT, use the plane-stress reduced stiffness
-        # Q_bar_ij = C_ij - C_i3*C_j3/C_33  (i,j = 1,2,6 -> indices 0,1,5)
-        idx = [0, 1, 5]  # 11, 22, 12 in Voigt
-        Q_bar = np.zeros((3, 3))
-        for i in range(3):
-            for j in range(3):
-                ii, jj = idx[i], idx[j]
-                if abs(C_rot[2, 2]) > 1e-12:
-                    Q_bar[i, j] = C_rot[ii, jj] - C_rot[ii, 2] * C_rot[jj, 2] / C_rot[2, 2]
-                else:
-                    Q_bar[i, j] = C_rot[ii, jj]
-        A += Q_bar * t_ply
+    h_total = len(ply_angles) * material.t_ply
+    A, _ = _build_clt_abd(material, ply_angles, material.get_stiffness_matrix())
 
     # Effective modulus: E_x = (A11*A22 - A12^2) / (A22 * h)
     # From a_ij = A_inv, E_x = 1 / (h * a_11)

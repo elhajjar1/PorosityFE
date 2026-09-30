@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..io import FORMAT_FE_FIELDS, JSON_SCHEMA_VERSION, _build_provenance, _json_default
+from ..io import FORMAT_FE_FIELDS, _json_default, _wrap_envelope
 from ..mesh import CompositeMesh
 
 if TYPE_CHECKING:
@@ -247,12 +247,7 @@ def export_results(field_results: FieldResults,
                 float(v) for v in np.sum(field_results.reaction_forces, axis=0)],
         }
 
-    output = {
-        'schema_version': JSON_SCHEMA_VERSION,
-        'format': FORMAT_FE_FIELDS,
-        'provenance': _build_provenance(),
-        **results_data,
-    }
+    output = _wrap_envelope(FORMAT_FE_FIELDS, None, results_data)
     if include_raw:
         # Sidecar file path lives next to the JSON so users see them
         # together; ``np.savez`` will append ``.npz`` if missing.

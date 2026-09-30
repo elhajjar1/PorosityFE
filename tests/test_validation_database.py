@@ -312,8 +312,8 @@ def test_resolve_material_raises_on_unknown_fiber_matrix():
 
 
 def test_resolve_material_strict_kwarg_is_backward_compatible():
-    """The ``strict`` kwarg is retained as a no-op for backward compatibility
-    (issue #34 made the loud KeyError unconditional). Passing strict=False
+    """The ``strict`` kwarg is accepted but ignored (issue #34 made the loud
+    KeyError unconditional), with a DeprecationWarning. Passing strict=False
     must still raise on an unknown (fiber, matrix) pair."""
     from validation.validate_all import resolve_material
 
@@ -326,10 +326,10 @@ def test_resolve_material_strict_kwarg_is_backward_compatible():
             'n_plies': 8,
         }
     }
-    with pytest.raises(KeyError, match='UnknownFiberXYZ'):
-        resolve_material(dataset, strict=True)
-    with pytest.raises(KeyError, match='UnknownFiberXYZ'):
-        resolve_material(dataset, strict=False)
+    for strict in (True, False):
+        with pytest.warns(DeprecationWarning, match='strict'), \
+                pytest.raises(KeyError, match='UnknownFiberXYZ'):
+            resolve_material(dataset, strict=strict)
 
 
 def test_resolve_material_no_warning_for_known_fiber_matrix():

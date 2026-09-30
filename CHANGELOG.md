@@ -170,6 +170,20 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Dedup and cleanup (IMPROVEMENT_PLAN 5.4).** All five JSON writers
+  build their envelope through one `io._wrap_envelope()` (output is
+  unchanged). `compute_clt_effective_modulus` reuses `_build_clt_abd`
+  (bit-identical). The new `CompositeMesh.mid_y_section_indices()` /
+  `mid_y_element_indices()` replace three copies of the cross-section
+  index loop in the app and `FEVisualizer`. `validate_all.py` has one
+  import block and no longer carries the empty
+  `_UNSUPPORTED_STRENGTH_PROPS` guards. `FEVisualizer` `save_path`
+  parameters are annotated `str | os.PathLike | None`.
+- **`recommend_disposition` rejects an unknown `structural_class`** with
+  `ValueError`. It used to substitute `"primary"` silently, which in an
+  MRB record misstates the substantiation basis.
+- **`resolve_material(strict=...)` is deprecated.** It had been a no-op
+  since #34; passing it now emits a `DeprecationWarning`.
 - **`sigma_2c` scope documented (IMPROVEMENT_PLAN 3.1).** The plan asked
   to add a `transverse_compression` empirical mode or document why not.
   There is no porosity dataset for transverse compression to calibrate a
