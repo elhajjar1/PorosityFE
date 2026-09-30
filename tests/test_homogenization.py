@@ -227,15 +227,16 @@ class TestOblateMTValidation:
     def test_oblate_transverse_stiffness_regression_pin(self):
         """Snapshot pin for a penny-shaped void (alpha = 0.01) at 5% porosity.
 
-        Regression pin per #143; snapshot of post-#32 behavior. Penny axis
-        is along x_3 (radii = (1, 1, 0.01)), so x_1 / x_2 are the in-plane
-        (transverse to the disk axis) directions. ``C_eff[1, 1]`` is the
-        in-plane stiffness perpendicular to the penny axis.
+        Penny axis is along x_3 (radii = (1, 1, 0.01)), so x_1 / x_2 are
+        the in-plane directions. Re-pinned after the Eshelby S_1122 /
+        S_2211 entries were corrected (IMPROVEMENT_PLAN 2.5); the tensor is
+        now checked against Mura's integrals in ``TestEshelbyTensorReference``.
 
-        These values were generated from the current implementation and
-        will catch any silent regression in the oblate g-function or the
-        Voigt permutation that maps the canonical-frame Eshelby tensor
-        onto the actual axis.
+        Physical check: at this crack density (~1.2) the disks cut almost
+        all through-thickness load transfer, so the in-plane ``C_11``
+        approaches its plane-stress value, ratio
+        ``(1 - 2 nu) / (1 - nu)^2 = 0.710`` for ``nu = 0.35``. The pinned
+        ratio is 0.703 (slightly lower because in-plane shear also drops).
         """
         from porosity_fe import _mt_effective_stiffness_cached
         _mt_effective_stiffness_cached.cache_clear()
@@ -243,12 +244,17 @@ class TestOblateMTValidation:
             self.C_m, 0.05, (1.0, 1.0, 0.01), self.nu_m)
         # Snapshot to ~5 significant figures; rtol=1e-4 catches numerically
         # meaningful regressions while tolerating cross-platform FP noise.
-        assert C_eff[1, 1] == pytest.approx(5345.6799, rel=1e-4)
-        assert C_eff[0, 0] == pytest.approx(5345.6799, rel=1e-4)
+        assert C_eff[1, 1] == pytest.approx(3950.4041, rel=1e-4)
+        assert C_eff[0, 0] == pytest.approx(3950.4041, rel=1e-4)
         # Off-diagonal in-plane coupling (also pinned)
-        assert C_eff[0, 1] == pytest.approx(2884.2736, rel=1e-4)
+        assert C_eff[0, 1] == pytest.approx(1488.9977, rel=1e-4)
+        # Through-thickness stiffness collapses across the disks.
+        assert C_eff[2, 2] == pytest.approx(537.6298, rel=1e-4)
         # Penny in-plane transverse isotropy: C[0,0] == C[1,1] exactly.
         assert C_eff[0, 0] == pytest.approx(C_eff[1, 1], rel=1e-12)
+        nu = self.nu_m
+        plane_stress_ratio = (1 - 2 * nu) / (1 - nu) ** 2
+        assert C_eff[1, 1] / self.C_m[1, 1] < plane_stress_ratio
 
     def test_oblate_monotonic_in_vp(self):
         """Increasing porosity must monotonically reduce transverse stiffness
@@ -268,30 +274,18 @@ class TestOblateMTValidation:
         )
 
     def test_oblate_more_severe_than_prolate_at_matched_vp(self):
-        """At matched Vp, compare oblate (penny) vs prolate (needle) transverse
-        stiffness reduction.
+        """At matched Vp, penny voids degrade in-plane C[1, 1] more than needles.
 
-        Note on the issue's expected inequality (#143): the issue text
-        predicted that penny (oblate) voids would degrade C[1, 1] *more*
-        than prolate (needle) voids at matched Vp. That intuition is
-        wrong for the canonical orientation:
+        Penny axis along x_3 (radii = (1, 1, 0.01)) puts the disks in the
+        x_1-x_2 plane at a high crack density, so C[1, 1] loses its
+        through-thickness constraint and falls towards the plane-stress
+        value (ratio ~0.703 at Vp = 0.05). A needle along x_3
+        (radii = (1, 1, 100)) is a cylindrical hole seen side-on by x_1
+        loads (ratio ~0.829).
 
-        - Penny axis along x_3 (radii = (1, 1, 0.01)) means the disk lies
-          IN the x_1-x_2 plane. Loads along x_1 (i.e. C[1, 1]) travel
-          along the long in-plane dimension of the disk and barely see
-          the void — degradation is mild (ratio ~ 0.952 at Vp = 0.05).
-          The brutal direction is C[2, 2] (through-thickness, where the
-          load is forced across the penny's short axis); this matches
-          the existing ``test_penny_void_anisotropy_along_short_axis``
-          regression for #32.
-        - Prolate along x_3 (radii = (1, 1, 100)) is a long needle.
-          Transverse loads (C[1, 1]) have to flow around the entire
-          length of the needle — degradation is severe (ratio ~ 0.833
-          at Vp = 0.05).
-
-        So at matched Vp, prolate degrades C[1, 1] MORE than oblate, not
-        less. We pin the actual (correct) physics here rather than the
-        issue's predicted inequality.
+        The pre-2.5 snapshot (oblate ~0.952, prolate ~0.833) had the
+        inequality the other way round; it came from swapped S_1122 /
+        S_2211 entries in the axisymmetric Eshelby tensor.
         """
         from porosity_fe import _mt_effective_stiffness_cached
         Vp = 0.05
@@ -304,16 +298,121 @@ class TestOblateMTValidation:
 
         ratio_oblate = C_oblate[1, 1] / self.C_m[1, 1]
         ratio_prolate = C_prolate[1, 1] / self.C_m[1, 1]
-        # Actual measured ratios (snapshotted): oblate ~0.952, prolate ~0.833.
-        # Prolate is MORE severe on the transverse C[1, 1] component.
-        assert ratio_prolate < ratio_oblate, (
-            f"expected prolate C[1,1] reduction stronger than oblate; "
+        assert ratio_oblate < ratio_prolate, (
+            f"expected oblate C[1,1] reduction stronger than prolate; "
             f"got oblate={ratio_oblate:.4f}, prolate={ratio_prolate:.4f}"
         )
         # Pin the numerical values too so the inequality direction can't
         # silently flip without flagging the snapshot.
-        assert ratio_oblate == pytest.approx(0.9516, rel=1e-3)
-        assert ratio_prolate == pytest.approx(0.8328, rel=1e-3)
+        assert ratio_oblate == pytest.approx(0.7033, rel=1e-3)
+        assert ratio_prolate == pytest.approx(0.8294, rel=1e-3)
+
+
+def _eshelby_from_mura_integrals(radii, nu):
+    """Eshelby tensor (Voigt, engineering shear) by quadrature of Mura's integrals.
+
+    Independent of the closed forms in ``_mt_effective_stiffness``: Mura
+    (1987) eqs. 11.7-11.19, with ``I_i`` and ``I_ij`` evaluated numerically.
+    """
+    from scipy.integrate import quad
+    a = np.asarray(radii, dtype=float)
+    pref = 2.0 * np.pi * np.prod(a)
+
+    def delta(t):
+        return np.sqrt(np.prod(a ** 2 + t))
+
+    def integral(*idx):
+        return pref * quad(
+            lambda t: 1.0 / (np.prod([a[i] ** 2 + t for i in idx]) * delta(t)),
+            0.0, np.inf, limit=500)[0]
+
+    I1 = [integral(i) for i in range(3)]
+    I2 = [[integral(i, j) for j in range(3)] for i in range(3)]
+    c = 1.0 / (8.0 * np.pi * (1.0 - nu))
+    S = np.zeros((6, 6))
+    for i in range(3):
+        for j in range(3):
+            if i == j:
+                S[i, i] = 3 * c * a[i] ** 2 * I2[i][i] + (1 - 2 * nu) * c * I1[i]
+            else:
+                S[i, j] = c * a[j] ** 2 * I2[i][j] - (1 - 2 * nu) * c * I1[i]
+    for v, (i, j) in zip((3, 4, 5), ((1, 2), (0, 2), (0, 1)), strict=True):
+        S_ijij = ((a[i] ** 2 + a[j] ** 2) * I2[i][j]
+                  + (1 - 2 * nu) * (I1[i] + I1[j])) / (16 * np.pi * (1 - nu))
+        S[v, v] = 2.0 * S_ijij
+    return S
+
+
+class TestEshelbyTensorReference:
+    """Check the Mori-Tanaka Eshelby tensor against independent references.
+
+    IMPROVEMENT_PLAN 2.5: the shear diagonal was missing the factor 2 of
+    the engineering-shear Voigt form, and ``S_1122`` / ``S_2211`` were
+    swapped (with a wrong ``S_2211`` formula) in the axisymmetric branch.
+    """
+
+    def setup_method(self):
+        self.mat = MATERIALS['T800_epoxy']
+        self.C_m = self.mat.get_isotropic_matrix_stiffness()
+        self.nu_m = self.mat.matrix_poisson
+
+    def _recovered_eshelby(self, Vp, radii):
+        """Back out S from C_eff = C_m (I - Vp (I - (1 - Vp) S)^-1)."""
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
+        C_eff = _mt_effective_stiffness(self.C_m, Vp, radii, self.nu_m)
+        inner_inv = (np.eye(6) - np.linalg.solve(self.C_m, C_eff)) / Vp
+        return (np.eye(6) - np.linalg.inv(inner_inv)) / (1.0 - Vp)
+
+    @pytest.mark.parametrize("radii", [
+        (1.0, 1.0, 1.0),
+        (3.0, 1.0, 1.0),
+        (10.0, 1.0, 1.0),
+        (0.1, 1.0, 1.0),
+        (1.0, 3.0, 1.0),
+        (1.0, 0.2, 1.0),
+        (1.0, 1.0, 0.1),
+    ])
+    def test_matches_mura_integrals(self, radii):
+        S_code = self._recovered_eshelby(0.05, radii)
+        S_ref = _eshelby_from_mura_integrals(radii, self.nu_m)
+        # atol covers the wrapper's cache-key rounding of C_m (4 decimals).
+        np.testing.assert_allclose(S_code, S_ref, atol=1e-6)
+
+    def test_spherical_voids_match_closed_form_mori_tanaka(self):
+        """Spherical voids: K* and mu* from the scalar Mori-Tanaka formulas."""
+        from porosity_fe import _mt_effective_stiffness_cached
+        Vp = 0.05
+        _mt_effective_stiffness_cached.cache_clear()
+        C_eff = _mt_effective_stiffness(self.C_m, Vp, (1.0, 1.0, 1.0), self.nu_m)
+        mu_m = self.C_m[3, 3]
+        K_m = self.C_m[0, 0] - 4.0 * mu_m / 3.0
+        K_ref = K_m * (1 - Vp) / (1 + Vp * K_m / (4.0 * mu_m / 3.0))
+        zeta = mu_m * (9 * K_m + 8 * mu_m) / (6 * (K_m + 2 * mu_m))
+        mu_ref = mu_m * (1 - Vp) / (1 + Vp * mu_m / zeta)
+        assert C_eff[3, 3] == pytest.approx(mu_ref, rel=1e-7)
+        assert C_eff[0, 0] - C_eff[0, 1] == pytest.approx(2 * mu_ref, rel=1e-7)
+        assert C_eff[0, 0] - 4.0 * C_eff[3, 3] / 3.0 == pytest.approx(K_ref, rel=1e-7)
+
+    @pytest.mark.parametrize("radii", [
+        (3.0, 1.0, 1.0), (1.0, 1.0, 0.05), (1.0, 20.0, 1.0)])
+    def test_effective_stiffness_is_symmetric(self, radii):
+        from porosity_fe import _mt_effective_stiffness_cached
+        _mt_effective_stiffness_cached.cache_clear()
+        C_eff = _mt_effective_stiffness(self.C_m, 0.1, radii, self.nu_m)
+        np.testing.assert_allclose(C_eff, C_eff.T, atol=1e-9 * np.max(C_eff))
+
+    def test_projected_matrix_moduli_independent_of_void_orientation(self):
+        """The composite stiffness uses the isotropic projection of C_eff,
+        so rotating an axisymmetric void must not change it."""
+        from porosity_fe import _mt_effective_stiffness_cached
+        results = []
+        for radii in [(0.1, 1.0, 1.0), (1.0, 0.1, 1.0), (1.0, 1.0, 0.1)]:
+            _mt_effective_stiffness_cached.cache_clear()
+            results.append(_degraded_composite_stiffness(0.04, radii, self.mat))
+        atol = 1e-9 * np.max(np.abs(results[0]))
+        np.testing.assert_allclose(results[1], results[0], rtol=0, atol=atol)
+        np.testing.assert_allclose(results[2], results[0], rtol=0, atol=atol)
 
 
 class TestDegradedCompositeStiffness:

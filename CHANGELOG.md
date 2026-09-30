@@ -43,6 +43,28 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **Mori-Tanaka Eshelby tensor corrected.** Three errors in
+  `_mt_effective_stiffness`, now checked against Mura's integrals and the
+  closed-form spherical-void Mori-Tanaka moduli:
+  (1) the shear diagonal lacked the factor 2 of the engineering-shear
+  Voigt form, so every void shape under-degraded shear stiffness;
+  (2) in the axisymmetric (cylindrical / penny) branch `S_1122` and
+  `S_2211` were swapped and the `S_2211` expression was wrong, which also
+  made `C_eff` asymmetric (11% for cylinders, 76% for pennies);
+  (3) `_degraded_composite_stiffness` read the matrix moduli from single
+  entries `C_eff[3,3]` / `C_eff[0,1]`, which for an anisotropic `C_eff`
+  picks one plane's values depending on the void orientation. It now uses
+  the isotropic (Voigt-average) projection, which is exact for spheres.
+  **Result change:** FE knockdowns at `Vp = 0.04` move by about one
+  percentage point (e.g. uniform QI 0.963 -> 0.950, penny interface
+  0.991 -> 0.979), with matching shifts in stresses and failure indices.
+  CLT modulus predictions change too: validation MAE goes from 7.09% to
+  7.05% property-weighted and 6.56% to 6.53% point-weighted, and only
+  modulus entries move (liu_2018 transverse modulus 3.29% -> 2.76%,
+  stamopoulos_2016 shear modulus 15.39% -> 14.73%, stamopoulos_2016
+  transverse modulus 1.02% -> 1.49%). The penny-void regression pins in
+  `test_homogenization.py` were re-derived: at high crack density the
+  in-plane `C_11` now correctly approaches its plane-stress limit.
 - **FE Hashin criterion now sees interlaminar stresses.** It used only
   `sigma_11`, `sigma_22`, `tau_12`, so `loading='ilss'` with
   `failure_criterion='hashin'` returned an index blind to the governing

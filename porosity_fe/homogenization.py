@@ -149,10 +149,13 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
             1 - 2 * nu + (3 * a2 - 1) / (a2 - 1) - (1 - 2 * nu + 3 * a2 / (a2 - 1)) * g)
         S[1, 1] = S[2, 2] = (3.0 / (8 * (1 - nu))) * a2 / (a2 - 1) + \
             (1.0 / (4 * (1 - nu))) * (1 - 2 * nu - 9.0 / (4 * (a2 - 1))) * g
-        S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
+        # Voigt row = output strain, column = input strain, so S[0, 1] is
+        # S_1122 and S[1, 0] is S_2211 (Tandon & Weng 1984).
+        S[0, 1] = S[0, 2] = -(1.0 / (2 * (1 - nu))) * (
+            1 - 2 * nu + 1.0 / (a2 - 1)) + (1.0 / (2 * (1 - nu))) * (
+            1 - 2 * nu + 3.0 / (2 * (a2 - 1))) * g
+        S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * a2 / (a2 - 1) + \
             (1.0 / (4 * (1 - nu))) * (3 * a2 / (a2 - 1) - (1 - 2 * nu)) * g
-        S[1, 0] = S[2, 0] = -(1.0 / (2 * (1 - nu))) * 1.0 / (a2 - 1) + \
-            (1.0 / (4 * (1 - nu))) * (3.0 / (a2 - 1) - (1 - 2 * nu)) * g
         S[1, 2] = S[2, 1] = (1.0 / (4 * (1 - nu))) * (
             a2 / (2 * (a2 - 1)) - (1 - 2 * nu + 3.0 / (4 * (a2 - 1))) * g)
         S[3, 3] = (1.0 / (4 * (1 - nu))) * (
@@ -173,6 +176,15 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
                 perm = [2, 1, 0, 5, 4, 3]
             P = np.eye(6)[perm]
             S = P @ S @ P.T
+
+    # The closed forms above are the tensor components S_2323, S_1313,
+    # S_1212. The Voigt form used here maps engineering shear strain to
+    # engineering shear strain (gamma = 2 eps), so its shear diagonal is
+    # twice the tensor component. With this factor the spherical-void
+    # result matches the closed-form Mori-Tanaka shear modulus exactly.
+    S[3, 3] *= 2.0
+    S[4, 4] *= 2.0
+    S[5, 5] *= 2.0
 
     I6 = np.eye(6)
     inner = I6 - (1 - Vp) * S
@@ -241,9 +253,17 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     C_m = mat.get_isotropic_matrix_stiffness()
     C_eff = _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
 
-    # Extract degraded isotropic matrix moduli
-    mu_eff = C_eff[3, 3]
-    lam_eff = C_eff[0, 1]
+    # Degraded matrix moduli from the isotropic (Voigt-average) projection
+    # of the Mori-Tanaka tensor. For spherical voids C_eff is isotropic and
+    # this returns its Lame constants exactly; cylindrical / penny voids
+    # give an anisotropic C_eff, where reading single entries such as
+    # C[3,3] and C[0,1] would pick one plane's values arbitrarily.
+    bulk_eff = (np.trace(C_eff[:3, :3])
+                + 2.0 * (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])) / 9.0
+    mu_eff = (np.trace(C_eff[:3, :3])
+              - (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])
+              + 3.0 * np.trace(C_eff[3:, 3:])) / 15.0
+    lam_eff = bulk_eff - 2.0 * mu_eff / 3.0
     denom = lam_eff + mu_eff
     G_m_eff = max(mu_eff, 1.0)
     E_m_eff = mu_eff * (3.0 * lam_eff + 2.0 * mu_eff) / denom if denom > 1e-12 else 1.0
