@@ -1874,3 +1874,56 @@ class TestFirstPlyFailureLoadFactor:
         data = json.loads(path.read_text())
         assert data['failure']['first_ply_failure_load_factor'] == pytest.approx(
             r.first_ply_failure_load_factor)
+
+
+class TestHashinDelaminationMode:
+    """IMPROVEMENT_PLAN 2.2: Hashin now sees interlaminar stresses through a
+    Brewer-Lagace delamination mode."""
+
+    @pytest.fixture(scope="class")
+    def strengths(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.0)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        return FESolver(mesh, mat, pf)._degraded_strengths(0.0)
+
+    def test_pure_interlaminar_shear_governs(self, strengths):
+        from porosity_fe.fe.failure import evaluate_hashin
+        S23 = strengths[5]
+        s = np.zeros((2, 6))
+        s[0, 4] = 0.5 * S23           # tau_13
+        s[1, 3] = 0.5 * S23           # tau_23
+        modes = evaluate_hashin(s, strengths)
+        np.testing.assert_allclose(modes['delamination'], 0.25, rtol=1e-12)
+        np.testing.assert_allclose(modes['max_fi'], 0.25, rtol=1e-12)
+
+    def test_only_through_thickness_tension_contributes(self, strengths):
+        from porosity_fe.fe.failure import evaluate_hashin
+        Yt = strengths[2]
+        s = np.zeros((2, 6))
+        s[0, 2] = 0.5 * Yt            # sigma_33 tension
+        s[1, 2] = -0.5 * Yt           # sigma_33 compression
+        modes = evaluate_hashin(s, strengths)
+        assert modes['delamination'][0] == pytest.approx(0.25, rel=1e-12)
+        assert modes['delamination'][1] == 0.0
+
+    def test_ilss_hashin_is_governed_by_delamination(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=10, ny=3, nz=8)
+        r = FESolver(mesh, mat, pf).solve('ilss', failure_criterion='hashin')
+        modes = r.failure_mode_indices
+        assert r.max_failure_index == pytest.approx(modes['delamination'], rel=1e-12)
+        assert modes['delamination'] > max(modes['fiber_t'], modes['fiber_c'],
+                                           modes['matrix_t'], modes['matrix_c'])
+
+    def test_mode_keys_are_uniform_across_criteria(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=4)
+        solver = FESolver(mesh, mat, pf)
+        keys = {c: set(solver.solve('tension', applied_strain=0.002,
+                                    failure_criterion=c).failure_mode_indices)
+                for c in ('tsai_wu', 'hashin', 'max_stress')}
+        assert keys['tsai_wu'] == keys['hashin'] == keys['max_stress']
+        assert 'delamination' in keys['hashin']

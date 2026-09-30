@@ -43,6 +43,17 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **FE Hashin criterion now sees interlaminar stresses.** It used only
+  `sigma_11`, `sigma_22`, `tau_12`, so `loading='ilss'` with
+  `failure_criterion='hashin'` returned an index blind to the governing
+  `tau_13` / `tau_23`. A fifth `delamination` mode (Brewer & Lagace 1988:
+  `(<sigma_33>/Y_t)^2 + (tau_13^2 + tau_23^2)/S_23^2`) is part of
+  `max_fi` and the load factor. **Result change:** Hashin ILSS indices are
+  now governed by delamination; Hashin results for the other load cases
+  in the regression fingerprint, and all Tsai-Wu / max-stress results,
+  are unchanged. Every criterion's mode breakdown now has a
+  `delamination` key (NaN for Tsai-Wu, 0 for max-stress, which already
+  checks those components).
 - **Empirical extrapolation warning now reports the right value and sees
   local peaks.** The message labelled the specimen-average `Vp` as
   "max Vp"; it now says "specimen-average Vp". `apply_loading()` also

@@ -27,6 +27,7 @@ EMPTY_MODE_FI: dict[str, float] = {
     'matrix_t': 0.0,
     'matrix_c': 0.0,
     'shear': 0.0,
+    'delamination': 0.0,
 }
 
 def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
@@ -202,6 +203,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
             'matrix_t': float('nan'),
             'matrix_c': float('nan'),
             'shear': float('nan'),
+            'delamination': float('nan'),
         }
 
     for e in range(n_elem):
@@ -248,6 +250,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                     'matrix_t': float(mode_fi_per_gp['matrix_t'][g_max]),
                     'matrix_c': float(mode_fi_per_gp['matrix_c'][g_max]),
                     'shear': float(mode_fi_per_gp['shear'][g_max]),
+                    'delamination': float(mode_fi_per_gp['delamination'][g_max]),
                 }
 
     return float(max_fi), per_elem_fi, best_mode_indices
@@ -342,21 +345,37 @@ def evaluate_tsai_wu(s_all: np.ndarray,
 def evaluate_hashin(s_all: np.ndarray,
                     strengths: tuple[float, float, float, float, float, float]
                     ) -> dict[str, np.ndarray]:
-    """2D Hashin failure indices for unidirectional plies.
+    """Hashin failure indices for unidirectional plies, plus delamination.
 
-    Implements the Hashin (1980) 2D criterion with separate fiber/matrix
-    tension/compression modes. Reference:
+    The four in-plane modes are the Hashin (1980) 2D criterion with
+    separate fiber/matrix tension/compression modes, evaluated per Gauss
+    point on ``(σ_11, σ_22, τ_12)``:
 
         Hashin, Z. (1980). "Failure Criteria for Unidirectional Fiber
         Composites." J. Appl. Mech. 47(2), 329-334.
 
-    Indices are computed per Gauss point on the in-plane local stresses
-    ``(σ_11, σ_22, τ_12)``; ``σ_33`` and out-of-plane shears are ignored
-    because the standard formulation is 2D. The ``shear`` slot returns
-    the in-plane ``(τ_12 / S_12)^2`` contribution for completeness.
+    Because that form ignores ``σ_33``, ``τ_13`` and ``τ_23``, it is blind
+    to the interlaminar stresses that govern e.g. the ILSS short-beam
+    test. A fifth ``delamination`` mode adds the Brewer & Lagace quadratic
+    delamination-initiation criterion, with the through-thickness tensile
+    strength taken as ``Y_t`` (transverse isotropy) and both out-of-plane
+    shears against the interlaminar shear strength ``S_23``::
 
-    Returns a dict of per-GP arrays:
-    ``{'max_fi', 'fiber_t', 'fiber_c', 'matrix_t', 'matrix_c', 'shear'}``.
+        delamination = (<σ_33>/Y_t)^2 + (τ_13^2 + τ_23^2) / S_23^2
+
+    where ``<σ_33> = max(σ_33, 0)`` (through-thickness compression does not
+    open a delamination):
+
+        Brewer, J. C. & Lagace, P. A. (1988). "Quadratic Stress Criterion
+        for Initiation of Delamination." J. Compos. Mater. 22(12),
+        1141-1155.
+
+    ``max_fi`` is the maximum over the five modes. The ``shear`` slot
+    returns the in-plane ``(τ_12 / S_12)^2`` contribution for completeness
+    and is not itself a mode.
+
+    Returns a dict of per-GP arrays: ``{'max_fi', 'fiber_t', 'fiber_c',
+    'matrix_t', 'matrix_c', 'shear', 'delamination'}``.
 
     Notes
     -----
@@ -408,7 +427,11 @@ def evaluate_hashin(s_all: np.ndarray,
 
     shear = (tau_12 / S12_s) ** 2
 
-    max_fi = np.maximum.reduce([ft, fc, mt, mc])
+    # Delamination initiation (Brewer & Lagace 1988)
+    sigma_33_t = np.maximum(s_all[:, 2], 0.0)
+    delam = (sigma_33_t / Yt_s) ** 2 + (s_all[:, 4] ** 2 + s_all[:, 3] ** 2) / S23_s ** 2
+
+    max_fi = np.maximum.reduce([ft, fc, mt, mc, delam])
     return {
         'max_fi': max_fi,
         'fiber_t': ft,
@@ -416,6 +439,7 @@ def evaluate_hashin(s_all: np.ndarray,
         'matrix_t': mt,
         'matrix_c': mc,
         'shear': shear,
+        'delamination': delam,
     }
 
 def evaluate_max_stress(s_all: np.ndarray,
@@ -428,7 +452,8 @@ def evaluate_max_stress(s_all: np.ndarray,
     is the maximum across all five mode/component buckets. Returns the
     same per-GP dict shape as :func:`evaluate_hashin`; unused entries
     are zeroed (rather than NaN) since each mode is well-defined for
-    max-stress.
+    max-stress. ``delamination`` is always zero: max-stress already checks
+    ``σ_33`` in the matrix buckets and ``τ_13`` / ``τ_23`` in ``shear``.
     """
     Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
     sigma_11 = s_all[:, 0]
@@ -464,6 +489,7 @@ def evaluate_max_stress(s_all: np.ndarray,
         'matrix_t': mt,
         'matrix_c': mc,
         'shear': shear,
+        'delamination': np.zeros_like(max_fi),
     }
 
 
@@ -505,6 +531,8 @@ def _point_load_factors(s_all: np.ndarray,
             np.where(s1 < 0.0, _positive_root(
                 (s1 / (2.0 * S23_s)) ** 2 + shear,
                 ((Yc_s / (2.0 * S23_s)) ** 2 - 1.0) * (s1 / Yc_s)), np.inf),
+            _positive_root((np.maximum(s2, 0.0) / Yt_s) ** 2
+                           + (s4 ** 2 + s3 ** 2) / S23_s ** 2, zero),
         ]
         return np.minimum.reduce(modes)
     fi = evaluate_max_stress(s_all, strengths)['max_fi']

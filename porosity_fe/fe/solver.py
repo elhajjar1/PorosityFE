@@ -63,7 +63,7 @@ class FieldResults:
     failure_mode_indices : dict or None
         Per-mode breakdown of the maximum failure index across the model with
         keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
-        ``'shear'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
+        ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
         ``NaN`` (the polynomial does not separate modes); for ``max_stress``
         the unused entries are zero. Lets the GUI and JSON exporter report
         the dominant failure mode, not just severity.
@@ -246,7 +246,8 @@ class FESolver:
         ``F_12 = -0.5 * sqrt(F_11 * F_22)`` is used (see
         :meth:`_evaluate_tsai_wu`). ``'hashin'`` uses the Hashin
         2D criterion with separate fiber/matrix tension/compression
-        modes. ``'max_stress'`` uses an uncoupled maximum-stress check
+        modes, plus a Brewer-Lagace delamination mode for the
+        interlaminar stresses. ``'max_stress'`` uses an uncoupled maximum-stress check
         against each lamina strength. Validated against
         :attr:`SUPPORTED_FAILURE_CRITERIA`; an unknown value raises
         :class:`ValueError`.
