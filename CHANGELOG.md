@@ -5,6 +5,13 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Reaction forces and effective modulus from FE solves.** `FieldResults`
+  now carries `reaction_forces` (N, per node) and `effective_modulus`
+  (MPa): `E_x` for compression/tension and `G_xy` for shear, from the
+  strain energy `u^T K u / (strain^2 V)`; `None` for the force-controlled
+  ILSS bend. A pristine UD specimen recovers `E11` and `G12` exactly, and
+  a quasi-isotropic one matches CLT `G_xy` exactly and `E_x` to ~1%. The
+  JSON export gains a `stiffness` block.
 - **Self-documenting `units` block in JSON envelopes** (`save_results_to_json`,
   `write_results_json` / `_serialise_payload_json`, `serialise_ncr_json`) plus
   per-field `description` entries on numeric leaves in

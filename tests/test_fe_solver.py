@@ -1752,3 +1752,68 @@ class TestStiffnessAndFactorizationReuse:
         K = solver.assembler.assemble_stiffness()
         K.data[:] = 0.0
         self._assert_same(solver.solve('tension', applied_strain=0.01), ref)
+
+
+class TestReactionsAndEffectiveModulus:
+    """IMPROVEMENT_PLAN 3.2: reaction forces and the strain-energy effective
+    modulus recovered from a displacement-controlled solve."""
+
+    @staticmethod
+    def _solver(Vp, angles, nz=8):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, Vp)
+        mesh = CompositeMesh(pf, mat, nx=10, ny=4, nz=nz, ply_angles=angles)
+        return mat, mesh, FESolver(mesh, mat, pf, ply_angles=angles)
+
+    def test_pristine_ud_recovers_ply_moduli(self):
+        mat, _, solver = self._solver(0.0, 'UD')
+        assert solver.solve('tension', applied_strain=0.01).effective_modulus == \
+            pytest.approx(mat.E11, rel=1e-6)
+        assert solver.solve('compression', applied_strain=-0.005).effective_modulus == \
+            pytest.approx(mat.E11, rel=1e-6)
+        assert solver.solve('shear', applied_strain=0.01).effective_modulus == \
+            pytest.approx(mat.G12, rel=1e-6)
+
+    def test_axial_modulus_equals_face_reaction_over_area_and_strain(self):
+        _, mesh, solver = self._solver(0.04, 'QI')
+        r = solver.solve('tension', applied_strain=0.01)
+        P = r.reaction_forces[mesh.nodes_on_face('x_max'), 0].sum()
+        assert r.effective_modulus == pytest.approx(
+            P / (mesh.L_y * mesh.L_z * 0.01), rel=1e-6)
+
+    @pytest.mark.parametrize("Vp", [0.0, 0.04])
+    def test_quasi_isotropic_moduli_match_clt(self, Vp):
+        from porosity_fe.homogenization import compute_degraded_clt_moduli
+        mat, mesh, solver = self._solver(Vp, 'QI', nz=16)
+        clt = compute_degraded_clt_moduli(
+            mat, [0, 90, 45, -45, -45, 45, 90, 0], max(Vp, 1e-12))
+        Gxy = solver.solve('shear', applied_strain=0.01).effective_modulus
+        Ex = solver.solve('tension', applied_strain=0.01).effective_modulus
+        # Homogeneous shear BCs reproduce the in-plane CLT assumption; the
+        # axial modulus carries a small 3D (free-edge, sigma_zz) effect.
+        assert Gxy == pytest.approx(clt['Gxy'], rel=1e-6)
+        assert Ex == pytest.approx(clt['Ex'], rel=0.02)
+
+    def test_porosity_lowers_effective_modulus(self):
+        _, _, pristine = self._solver(0.0, 'QI')
+        _, _, porous = self._solver(0.05, 'QI')
+        for loading in ('tension', 'shear'):
+            assert porous.solve(loading, applied_strain=0.01).effective_modulus < \
+                pristine.solve(loading, applied_strain=0.01).effective_modulus
+
+    def test_ilss_reactions_balance_applied_load_and_no_modulus(self):
+        _, _, solver = self._solver(0.02, 'QI')
+        r = solver.solve('ilss', applied_load=-10.0)
+        assert r.effective_modulus is None
+        np.testing.assert_allclose(r.reaction_forces.sum(axis=0), [0.0, 0.0, 10.0],
+                                   atol=1e-6)
+
+    def test_json_export_carries_stiffness_block(self, tmp_path):
+        import json
+        _, _, solver = self._solver(0.02, 'QI')
+        r = solver.solve('tension', applied_strain=0.01)
+        path = tmp_path / "fe.json"
+        FESolver.export_results(r, path)
+        block = json.loads(path.read_text())['stiffness']
+        assert block['effective_modulus_MPa'] == pytest.approx(r.effective_modulus)
+        assert len(block['reaction_force_sum_N']) == 3

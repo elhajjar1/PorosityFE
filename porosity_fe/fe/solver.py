@@ -67,6 +67,16 @@ class FieldResults:
         ``NaN`` (the polynomial does not separate modes); for ``max_stress``
         the unused entries are zero. Lets the GUI and JSON exporter report
         the dominant failure mode, not just severity.
+    reaction_forces : np.ndarray or None
+        Shape (n_nodes, 3) nodal reaction forces ``K u - F`` (N). Non-zero
+        only at constrained DOFs, up to solver residual; summed over a
+        loaded face they give the resultant the boundary conditions apply.
+    effective_modulus : float or None
+        Homogenized modulus of the specimen (MPa) for the displacement-
+        controlled modes: ``E_x`` for ``'compression'`` / ``'tension'``
+        and ``G_xy`` for ``'shear'``, from the strain energy
+        ``u^T K u / (strain^2 * V)``. ``None`` for the force-controlled
+        ``'ilss'`` three-point bend, which has no single modulus.
 
     Notes
     -----
@@ -91,6 +101,8 @@ class FieldResults:
     per_element_failure_index: np.ndarray | None = None
     failure_criterion: str = 'tsai_wu'
     failure_mode_indices: dict[str, float] | None = None
+    reaction_forces: np.ndarray | None = None
+    effective_modulus: float | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -415,6 +427,8 @@ class FESolver:
             loading, stress_global, strain_global)
 
         displacement = u.reshape(-1, 3)
+        reactions, effective_modulus = self._reactions_and_modulus(
+            loading, K, u, F, applied_strain)
 
         if verbose:
             t3 = time.perf_counter()
@@ -434,6 +448,8 @@ class FESolver:
             per_element_failure_index=per_elem_fi,
             failure_criterion=criterion,
             failure_mode_indices=mode_indices,
+            reaction_forces=reactions,
+            effective_modulus=effective_modulus,
         )
 
     def _apply_boundary_conditions(
@@ -711,6 +727,26 @@ class FESolver:
             )
             self._lu_cache = (K, key, lu)
         return lu.solve(np.asarray(F_solve, dtype=float))
+
+    def _reactions_and_modulus(
+        self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
+        F: np.ndarray, applied_strain: float,
+    ) -> tuple[np.ndarray, float | None]:
+        """Nodal reactions ``K u - F`` and the strain-energy effective modulus.
+
+        For the displacement-controlled modes only the prescribed boundary
+        moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
+        twice the strain energy ``0.5 M strain^2 V``, giving ``M``: axial
+        ``E_x = P / (A strain)`` for compression/tension, ``G_xy`` for the
+        homogeneous pure-shear BCs.
+        """
+        Ku = K @ u
+        reactions = (Ku - F).reshape(-1, 3)
+        if loading == 'ilss' or applied_strain == 0.0:
+            return reactions, None
+        volume = self.mesh.L_x * self.mesh.L_y * self.mesh.L_z
+        modulus = float(u @ Ku) / (applied_strain ** 2 * volume)
+        return reactions, modulus
 
     def _recover_stresses(
         self, u: np.ndarray, *, verbose: bool = False,

@@ -229,6 +229,14 @@ def export_results(field_results: FieldResults,
             'knockdown_factor': float(field_results.knockdown),
         },
     }
+    if field_results.reaction_forces is not None:
+        results_data['stiffness'] = {
+            'effective_modulus_MPa': (
+                float(field_results.effective_modulus)
+                if field_results.effective_modulus is not None else None),
+            'reaction_force_sum_N': [
+                float(v) for v in np.sum(field_results.reaction_forces, axis=0)],
+        }
 
     output = {
         'schema_version': JSON_SCHEMA_VERSION,
