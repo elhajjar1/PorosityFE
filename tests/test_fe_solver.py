@@ -1817,3 +1817,60 @@ class TestReactionsAndEffectiveModulus:
         block = json.loads(path.read_text())['stiffness']
         assert block['effective_modulus_MPa'] == pytest.approx(r.effective_modulus)
         assert len(block['reaction_force_sum_N']) == 3
+
+
+class TestFirstPlyFailureLoadFactor:
+    """IMPROVEMENT_PLAN 3.3: the load multiplier at first-ply failure."""
+
+    @pytest.fixture(scope="class")
+    def solver(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=8)
+        return FESolver(mesh, mat, pf)
+
+    @pytest.mark.parametrize("criterion", ["tsai_wu", "hashin", "max_stress"])
+    @pytest.mark.parametrize("loading, kwarg, value", [
+        ("tension", "applied_strain", 0.002),
+        ("compression", "applied_strain", -0.002),
+        ("shear", "applied_strain", 0.002),
+        ("ilss", "applied_load", -10.0),
+    ])
+    def test_rescaled_load_reaches_unit_failure_index(self, solver, criterion,
+                                                      loading, kwarg, value):
+        """Linear analysis: re-solving at lam times the load must put the
+        governing point exactly on the failure surface."""
+        r = solver.solve(loading, failure_criterion=criterion, **{kwarg: value})
+        lam = r.first_ply_failure_load_factor
+        assert np.isfinite(lam) and lam > 0
+        r2 = solver.solve(loading, failure_criterion=criterion,
+                          **{kwarg: value * lam})
+        assert r2.max_failure_index == pytest.approx(1.0, rel=1e-9)
+        assert r2.first_ply_failure_load_factor == pytest.approx(1.0, rel=1e-9)
+
+    def test_max_stress_factor_is_reciprocal_of_max_index(self, solver):
+        r = solver.solve('tension', applied_strain=0.002, failure_criterion='max_stress')
+        assert r.first_ply_failure_load_factor == pytest.approx(
+            1.0 / r.max_failure_index, rel=1e-12)
+
+    def test_unstressed_model_gives_infinite_factor(self):
+        from porosity_fe.fe.failure import first_ply_failure_load_factor
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        zero = np.zeros((mesh.n_elements, 8, 6))
+        for criterion in ("tsai_wu", "hashin", "max_stress"):
+            assert first_ply_failure_load_factor(
+                zero, mesh.porosity, mesh.elements, mat,
+                pf.void_shape_radii, criterion) == np.inf
+
+    def test_reported_in_summary_and_json(self, solver, tmp_path):
+        import json
+        r = solver.solve('tension', applied_strain=0.002)
+        assert r.summary().details['first_ply_failure_load_factor'] == \
+            r.first_ply_failure_load_factor
+        path = tmp_path / "fe.json"
+        FESolver.export_results(r, path)
+        data = json.loads(path.read_text())
+        assert data['failure']['first_ply_failure_load_factor'] == pytest.approx(
+            r.first_ply_failure_load_factor)

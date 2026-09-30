@@ -5,6 +5,11 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **First-ply-failure load factor.** `FieldResults.first_ply_failure_load_factor`
+  is the multiplier on the applied load at which the selected criterion
+  first reaches 1 (linear scaling; margin of safety = factor - 1), solved
+  exactly per Gauss point for Tsai-Wu, Hashin and max-stress. Also in
+  `summary().details` and the JSON export.
 - **Reaction forces and effective modulus from FE solves.** `FieldResults`
   now carries `reaction_forces` (N, per node) and `effective_modulus`
   (MPa): `E_x` for compression/tension and `G_xy` for shear, from the

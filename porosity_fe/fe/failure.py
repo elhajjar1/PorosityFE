@@ -252,6 +252,38 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
 
     return float(max_fi), per_elem_fi, best_mode_indices
 
+def _tsai_wu_coefficients(
+        strengths: tuple[float, float, float, float, float, float],
+        tsai_wu_F12: float | None) -> tuple[float, ...]:
+    """Tsai-Wu coefficients ``(F1, F2, F3, F11, F22, F33, F44, F55, F66,
+    F12, F13, F23)`` for one element's degraded strengths."""
+    Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        F1 = 1.0 / Xt_s - 1.0 / Xc_s
+        F2 = 1.0 / Yt_s - 1.0 / Yc_s
+        F3 = F2
+        F11 = 1.0 / (Xt_s * Xc_s)
+        F22 = 1.0 / (Yt_s * Yc_s)
+        F33 = F22
+        F44 = 1.0 / S23_s**2
+        F55 = 1.0 / S12_s**2
+        F66 = 1.0 / S12_s**2
+        # F12, F23 use sqrt of a product. Guard against negative
+        # products in case future refactors break the F11/F22/F33 sign.
+        F11_F22 = max(F11 * F22, 0.0)
+        F22_F33 = max(F22 * F33, 0.0)
+        # Issue #145: honour a user-supplied F_12 when provided.
+        # Validation (None or finite in [-1, 0]) is enforced by
+        # MaterialProperties.__post_init__, so trust the value here.
+        if tsai_wu_F12 is None:
+            F12 = -0.5 * np.sqrt(F11_F22)
+        else:
+            F12 = float(tsai_wu_F12)
+        F13 = F12
+        F23 = -0.5 * np.sqrt(F22_F33)
+    return F1, F2, F3, F11, F22, F33, F44, F55, F66, F12, F13, F23
+
+
 def evaluate_tsai_wu(s_all: np.ndarray,
                      strengths: tuple[float, float, float, float, float, float],
                      e: int, elem_Vp: float,
@@ -284,31 +316,8 @@ def evaluate_tsai_wu(s_all: np.ndarray,
     Tsai, S. W. & Wu, E. M. (1971). "A General Theory of Strength for
     Anisotropic Materials." *J. Composite Materials* 5(1), 58-80.
     """
-    Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
-    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-        F1 = 1.0 / Xt_s - 1.0 / Xc_s
-        F2 = 1.0 / Yt_s - 1.0 / Yc_s
-        F3 = F2
-        F11 = 1.0 / (Xt_s * Xc_s)
-        F22 = 1.0 / (Yt_s * Yc_s)
-        F33 = F22
-        F44 = 1.0 / S23_s**2
-        F55 = 1.0 / S12_s**2
-        F66 = 1.0 / S12_s**2
-        # F12, F23 use sqrt of a product. Guard against negative
-        # products in case future refactors break the F11/F22/F33 sign.
-        F11_F22 = max(F11 * F22, 0.0)
-        F22_F33 = max(F22 * F33, 0.0)
-        # Issue #145: honour a user-supplied F_12 when provided.
-        # Validation (None or finite in [-1, 0]) is enforced by
-        # MaterialProperties.__post_init__, so trust the value here.
-        user_F12 = tsai_wu_F12
-        if user_F12 is None:
-            F12 = -0.5 * np.sqrt(F11_F22)
-        else:
-            F12 = float(user_F12)
-        F13 = F12
-        F23 = -0.5 * np.sqrt(F22_F33)
+    (F1, F2, F3, F11, F22, F33, F44, F55, F66,
+     F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12)
 
     # Vectorize across all Gauss points of this element (#41).
     fi_per_gp = (
@@ -456,3 +465,82 @@ def evaluate_max_stress(s_all: np.ndarray,
         'matrix_c': mc,
         'shear': shear,
     }
+
+
+def _positive_root(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Smallest positive ``lam`` with ``A lam**2 + B lam = 1``, else ``inf``.
+
+    Written as ``2 / (B + sqrt(B**2 + 4A))`` (the rationalized root), which
+    is stable when ``A`` is tiny and reduces to ``1/B`` for ``A = 0``.
+    """
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        denom = B + np.sqrt(B * B + 4.0 * A)
+        return np.where(denom > 0.0, 2.0 / denom, np.inf)
+
+
+def _point_load_factors(s_all: np.ndarray,
+                        strengths: tuple[float, float, float, float, float, float],
+                        criterion: str,
+                        tsai_wu_F12: float | None) -> np.ndarray:
+    """Per-Gauss-point load factor at which ``criterion`` reaches 1."""
+    s0, s1, s2, s3, s4, s5 = (s_all[:, k] for k in range(6))
+    if criterion == 'tsai_wu':
+        (F1, F2, F3, F11, F22, F33, F44, F55, F66,
+         F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12)
+        B = F1 * s0 + F2 * s1 + F3 * s2
+        A = (F11 * s0**2 + F22 * s1**2 + F33 * s2**2
+             + F44 * s3**2 + F55 * s4**2 + F66 * s5**2
+             + 2 * F12 * s0 * s1 + 2 * F13 * s0 * s2 + 2 * F23 * s1 * s2)
+        return _positive_root(A, B)
+    if criterion == 'hashin':
+        Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+        zero = np.zeros_like(s0)
+        shear = (s5 / S12_s) ** 2
+        # Each mode's active branch depends only on stress signs, which a
+        # positive load factor preserves.
+        modes = [
+            np.where(s0 >= 0.0, _positive_root((s0 / Xt_s) ** 2 + shear, zero), np.inf),
+            np.where(s0 < 0.0, _positive_root((s0 / Xc_s) ** 2, zero), np.inf),
+            np.where(s1 >= 0.0, _positive_root((s1 / Yt_s) ** 2 + shear, zero), np.inf),
+            np.where(s1 < 0.0, _positive_root(
+                (s1 / (2.0 * S23_s)) ** 2 + shear,
+                ((Yc_s / (2.0 * S23_s)) ** 2 - 1.0) * (s1 / Yc_s)), np.inf),
+        ]
+        return np.minimum.reduce(modes)
+    fi = evaluate_max_stress(s_all, strengths)['max_fi']
+    with np.errstate(divide='ignore'):
+        return np.where(fi > 0.0, 1.0 / fi, np.inf)
+
+
+def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray,
+                                  elements: np.ndarray, material: MaterialProperties,
+                                  void_shape_radii: tuple,
+                                  criterion: str = 'tsai_wu') -> float:
+    """Load multiplier at which ``criterion`` first reaches 1 anywhere.
+
+    The analysis is linear, so every stress scales with the applied load
+    factor ``lam``. Per Gauss point the failure index is then a polynomial
+    in ``lam`` (degree 1 for max-stress, degree 2 for Tsai-Wu and the
+    Hashin modes), and the returned value is the smallest positive ``lam``
+    at which any point of any non-void element reaches an index of 1 (the
+    same elements :func:`evaluate_failure` checks). The margin of safety
+    is ``lam - 1``. Returns ``inf`` if no point is stressed.
+    """
+    if criterion not in SUPPORTED_FAILURE_CRITERIA:
+        raise ValueError(
+            f"Unknown failure criterion {criterion!r}. "
+            f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
+        )
+    elem_Vp_all = np.clip(np.mean(porosity[elements], axis=1), 0.0, 1.0)
+    strengths_by_vp: dict[float, tuple[float, float, float, float, float, float]] = {}
+    lam_min = np.inf
+    for e in np.flatnonzero(elem_Vp_all <= 0.95):
+        vp = float(elem_Vp_all[e])
+        strengths = strengths_by_vp.get(vp)
+        if strengths is None:
+            strengths = degraded_strengths(material, void_shape_radii, vp)
+            strengths_by_vp[vp] = strengths
+        lam = _point_load_factors(stress_local[e], strengths, criterion,
+                                  material.tsai_wu_F12)
+        lam_min = min(lam_min, float(lam.min()))
+    return float(lam_min)

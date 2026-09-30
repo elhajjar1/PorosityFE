@@ -77,6 +77,11 @@ class FieldResults:
         and ``G_xy`` for ``'shear'``, from the strain energy
         ``u^T K u / (strain^2 * V)``. ``None`` for the force-controlled
         ``'ilss'`` three-point bend, which has no single modulus.
+    first_ply_failure_load_factor : float or None
+        Multiplier on the applied load at which ``failure_criterion`` first
+        reaches 1 at any Gauss point of a non-void element (linear
+        scaling); the margin of safety is this value minus 1. ``inf`` if no
+        point is stressed.
 
     Notes
     -----
@@ -103,6 +108,7 @@ class FieldResults:
     failure_mode_indices: dict[str, float] | None = None
     reaction_forces: np.ndarray | None = None
     effective_modulus: float | None = None
+    first_ply_failure_load_factor: float | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -156,6 +162,8 @@ class FieldResults:
                     dict(self.failure_mode_indices)
                     if self.failure_mode_indices is not None else None
                 ),
+                'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
+                'effective_modulus': self.effective_modulus,
             },
         )
 
@@ -421,6 +429,9 @@ class FESolver:
         #    (NaN entries for Tsai-Wu, which does not separate modes).
         max_fi, per_elem_fi, mode_indices = self._evaluate_failure(
             stress_local, criterion=criterion)
+        fpf_load_factor = failure.first_ply_failure_load_factor(
+            stress_local, self.mesh.porosity, self.mesh.elements,
+            self.material, self.porosity_field.void_shape_radii, criterion)
 
         # 7. Compute knockdown as average-stress ratio (porous / pristine).
         knockdown = self._compute_knockdown(
@@ -450,6 +461,7 @@ class FESolver:
             failure_mode_indices=mode_indices,
             reaction_forces=reactions,
             effective_modulus=effective_modulus,
+            first_ply_failure_load_factor=fpf_load_factor,
         )
 
     def _apply_boundary_conditions(

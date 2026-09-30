@@ -26,6 +26,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("porosity_fe_analysis")
 
 
+def _finite_or_none(value: float | None) -> float | None:
+    """JSON-safe float: ``None`` for missing or non-finite values."""
+    if value is None or not np.isfinite(value):
+        return None
+    return float(value)
+
+
 def write_vtk(results: FieldResults, mesh: CompositeMesh,
               filename: str | os.PathLike) -> None:
     """Write ``results`` on ``mesh`` as legacy ASCII VTK; see :meth:`FieldResults.to_vtk`."""
@@ -227,6 +234,8 @@ def export_results(field_results: FieldResults,
                 else None
             ),
             'knockdown_factor': float(field_results.knockdown),
+            'first_ply_failure_load_factor': _finite_or_none(
+                field_results.first_ply_failure_load_factor),
         },
     }
     if field_results.reaction_forces is not None:
