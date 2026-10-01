@@ -74,6 +74,14 @@ class MaterialProperties:
         :meth:`FESolver._evaluate_tsai_wu`. When provided, must lie in
         ``[-1, 0]`` so the quadratic failure envelope stays closed; for
         critical applications, calibrate against biaxial coupon data.
+    fiber_poisson : float, optional
+        Fiber Poisson's ratio ``nu_f`` used by the micromechanics (default
+        0.2, typical of carbon fiber), in ``(-1, 0.5)``.
+    fiber_shear_modulus : float, optional
+        Fiber axial shear modulus ``G_f`` in MPa for the Halpin-Tsai shear
+        ratios. ``None`` (default) uses the isotropic estimate
+        ``E_f / (2 (1 + nu_f))``; carbon fibers are anisotropic, so set the
+        measured value when it is known.
 
     Attributes
     ----------
@@ -168,6 +176,20 @@ class MaterialProperties:
     # applications, calibrate against biaxial coupon data.
     tsai_wu_F12: float | None = None
 
+    # Fiber constituent elasticity for the Halpin-Tsai degradation ratios.
+    # The defaults reproduce the earlier hard-coded isotropic fiber
+    # (nu_f = 0.2, G_f = E_f / (2 (1 + nu_f))); carbon fibers are strongly
+    # anisotropic, so set the measured axial shear modulus when known.
+    fiber_poisson: float = 0.2
+    fiber_shear_modulus: float | None = None
+
+    @property
+    def fiber_shear_modulus_eff(self) -> float:
+        """``fiber_shear_modulus``, or the isotropic ``E_f / (2 (1 + nu_f))``."""
+        if self.fiber_shear_modulus is not None:
+            return float(self.fiber_shear_modulus)
+        return self.fiber_modulus / (2.0 * (1.0 + self.fiber_poisson))
+
     def __post_init__(self):
         # Stiffness moduli must be positive finite (non-zero for 1/E in compliance).
         for name in ('E11', 'E22', 'E33', 'G12', 'G13', 'G23',
@@ -181,13 +203,20 @@ class MaterialProperties:
         # Poisson ratios must be in (-1, 0.5) for an isotropic-stable matrix
         # (the matrix stiffness uses (1 - 2*nu_m) in the denominator) and for
         # well-posed orthotropic compliance entries.
-        for name in ('nu12', 'nu13', 'nu23', 'matrix_poisson'):
+        for name in ('nu12', 'nu13', 'nu23', 'matrix_poisson', 'fiber_poisson'):
             value = getattr(self, name)
             if not np.isfinite(value) or not (-1.0 < value < 0.5):
                 raise ValueError(
                     f"MaterialProperties.{name} must be a finite Poisson's ratio "
                     f"in (-1, 0.5), got {value!r}."
                 )
+        if self.fiber_shear_modulus is not None and (
+                not np.isfinite(self.fiber_shear_modulus)
+                or self.fiber_shear_modulus <= 0):
+            raise ValueError(
+                f"MaterialProperties.fiber_shear_modulus must be a positive "
+                f"finite number (MPa) or None, got {self.fiber_shear_modulus!r}."
+            )
         # Strengths must be positive finite (used as 1/X in Tsai-Wu).
         for name in ('sigma_1c', 'sigma_1t', 'sigma_2t', 'sigma_2c',
                      'tau_12', 'tau_ilss'):
@@ -457,21 +486,40 @@ class MaterialProperties:
                 return nominal
             # Median-preserving lognormal with the requested CoV.
             sigma_ln = np.sqrt(np.log1p(cov * cov))
-            return float(nominal * np.exp(sigma_ln * unit_draw))
+            return self._clip_perturbed(name, nominal * np.exp(sigma_ln * unit_draw))
         if dist == 'normal':
             cov = float(params)
             if cov <= 0.0:
                 return nominal
-            return float(nominal + cov * abs(nominal) * unit_draw)
+            return self._clip_perturbed(name, nominal + cov * abs(nominal) * unit_draw)
         if dist == 'uniform':
             h = float(params)
             if h <= 0.0:
                 return nominal
-            return float(nominal * (1.0 - h + 2.0 * h * unit_draw))
+            return self._clip_perturbed(name, nominal * (1.0 - h + 2.0 * h * unit_draw))
         raise ValueError(
             f"Unknown distribution {dist!r} for field {name!r}. "
             f"Use one of 'lognormal', 'normal', 'uniform'."
         )
+
+    # Fiber volume fraction cannot exceed hexagonal close packing.
+    _VF_MAX = float(np.pi / (2.0 * np.sqrt(3.0)))
+
+    def _clip_perturbed(self, name: str, value: float) -> float:
+        """Keep a perturbed draw inside the field's valid range.
+
+        A wide distribution can otherwise push ``fiber_volume_fraction``
+        past 1 or a modulus / strength below 0 (``'normal'``), and the
+        re-validation in ``__post_init__`` would abort the whole UQ sweep
+        (IMPROVEMENT_PLAN 2.8). Clipping moves those rare tail draws to the
+        bound instead.
+        """
+        value = float(value)
+        if name == 'fiber_volume_fraction':
+            return float(min(max(value, 1e-3), self._VF_MAX))
+        # Every other perturbable field is a strictly positive modulus or
+        # strength.
+        return float(max(value, 1e-6 * abs(float(getattr(self, name)))))
 
     def perturb(self, draws: dict[str, float],
                 spec: dict[str, tuple[str, float]]) -> MaterialProperties:

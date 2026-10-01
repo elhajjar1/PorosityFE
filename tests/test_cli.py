@@ -777,3 +777,22 @@ class TestCLIUncertainty:
             '--uq', '--uq-samples', '0'])
         assert rc == 2
         assert '--uq-samples' in capsys.readouterr().err
+
+
+class TestAppliedStressIsInert:
+    """IMPROVEMENT_PLAN 4.7: --applied-stress warns that it does nothing."""
+
+    def _run(self, tmp_path, monkeypatch, capsys, extra):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        rc = porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path), '--quiet'] + extra)
+        assert rc == 0
+        out = capsys.readouterr()
+        return out.out + out.err
+
+    def test_explicit_value_warns(self, tmp_path, monkeypatch, capsys):
+        assert "has no effect" in self._run(tmp_path, monkeypatch, capsys,
+                                            ['--applied-stress', '-900'])
+
+    def test_default_is_silent(self, tmp_path, monkeypatch, capsys):
+        assert "has no effect" not in self._run(tmp_path, monkeypatch, capsys, [])

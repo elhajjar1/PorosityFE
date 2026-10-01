@@ -135,6 +135,19 @@ def _wrap_envelope(fmt: str, units: dict | None = None,
     return envelope
 
 
+#: Deprecated provenance alias -> canonical key. The aliases are still
+#: written for back-compat; the schema no longer requires them and they go
+#: away in schema 2.0.
+_DEPRECATED_PROVENANCE_ALIASES: dict[str, str] = {
+    "package_version": "porosity_fe_version",
+    "python": "python_version",
+    "numpy": "numpy_version",
+    "scipy": "scipy_version",
+    "generated_utc": "timestamp_utc",
+    "git_sha": "git_commit",
+}
+
+
 def _build_provenance(seed: int | None = None) -> dict:
     """Return a provenance metadata dict for JSON output reproducibility.
 
@@ -142,10 +155,13 @@ def _build_provenance(seed: int | None = None) -> dict:
     and the run ``seed`` so that any JSON output can be traced back to the
     exact environment used (#55).
 
-    Field names use two parallel conventions for back-compat: the original
-    ``*_version`` / ``timestamp_utc`` / ``git_commit`` keys plus the shorter
-    ``python`` / ``numpy`` / ``scipy`` / ``git_sha`` / ``generated_utc`` /
-    ``package_version`` aliases from the #55 reproducibility contract.
+    The canonical keys are ``porosity_fe_version``, ``python_version``,
+    ``numpy_version``, ``scipy_version``, ``timestamp_utc`` and
+    ``git_commit``. The short aliases from the #55 reproducibility contract
+    (``package_version``, ``python``, ``numpy``, ``scipy``,
+    ``generated_utc``, ``git_sha``; see :data:`_DEPRECATED_PROVENANCE_ALIASES`)
+    are still written but deprecated: the schema no longer requires them and
+    they will be dropped in schema 2.0 (IMPROVEMENT_PLAN 4.7).
 
     The optional ``hostname`` field is opt-in via the
     ``POROSITY_FE_INCLUDE_HOSTNAME`` env var (set to ``1``/``true``/``yes``)
@@ -192,14 +208,10 @@ def _build_provenance(seed: int | None = None) -> dict:
         "timestamp_utc": generated_utc,
         "seed": seed,
         "git_commit": git_commit,
-        # #55 aliases (short names from the reproducibility contract).
-        "package_version": pfe_version,
-        "python": python_version,
-        "numpy": numpy_v,
-        "scipy": scipy_v,
-        "generated_utc": generated_utc,
-        "git_sha": git_commit,
     }
+    # Deprecated #55 aliases, written until schema 2.0.
+    for alias, canonical in _DEPRECATED_PROVENANCE_ALIASES.items():
+        prov[alias] = prov[canonical]
 
     # Hostname is opt-in to avoid leaking workstation names in shared
     # artifacts. Default off (#55).

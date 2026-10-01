@@ -41,6 +41,7 @@ from porosity_fe import (
     LABEL_X_MM,
     LABEL_Z_MM,
     MATERIALS,
+    CompositeMesh,
     EmpiricalSolver,
     FESolver,
     _configure_matplotlib_style,
@@ -615,6 +616,12 @@ def _build_sidebar_inputs() -> dict | None:
                     f"FE results from meshes below ~100 elements are unreliable. "
                     f"Defaults (30×10×12 = 3600 elements) are recommended."
                 )
+            elif total_elems > CompositeMesh._MAX_TOTAL_ELEMENTS:
+                st.error(
+                    f"Mesh has {total_elems:,} elements, above the "
+                    f"{CompositeMesh._MAX_TOTAL_ELEMENTS:,}-element cap. "
+                    f"Reduce nx, ny or nz to run."
+                )
             elif total_elems > 50_000:
                 # Very rough time estimate; tune from real benchmarks if available.
                 est_min = total_elems / 8000
@@ -629,6 +636,7 @@ def _build_sidebar_inputs() -> dict | None:
 
         _run_disabled = (
             st.session_state.get("_layup_status", ("ok", None))[0] == "err"
+            or nx * ny * nz > CompositeMesh._MAX_TOTAL_ELEMENTS
         )
         run = st.button(
             "Run analysis",

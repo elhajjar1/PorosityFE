@@ -286,3 +286,48 @@ class TestMidYSectionIndices:
         ref = np.array([[k * mesh.ny * mesh.nx + (mesh.ny // 2) * mesh.nx + i
                          for i in range(mesh.nx)] for k in range(mesh.nz)])
         np.testing.assert_array_equal(mesh.mid_y_element_indices(), ref)
+
+
+class TestTotalElementCap:
+    """IMPROVEMENT_PLAN 1.7: cap the total element count, not just each axis."""
+
+    def test_total_cap_rejects_large_mesh_before_building(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        # Every axis is far under the 10 000 per-axis cap.
+        with pytest.raises(ValueError, match="element cap"):
+            CompositeMesh(pf, mat, nx=200, ny=100, nz=100)
+
+    def test_mesh_at_the_cap_is_allowed(self, monkeypatch):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        monkeypatch.setattr(CompositeMesh, '_MAX_TOTAL_ELEMENTS', 4 * 2 * 3)
+        CompositeMesh(pf, mat, nx=4, ny=2, nz=3)
+        with pytest.raises(ValueError, match="GB before factorization"):
+            CompositeMesh(pf, mat, nx=4, ny=2, nz=4)
+
+
+def test_quality_check_sees_corner_inversion():
+    """IMPROVEMENT_PLAN 2.8: an element valid at its center but inverted near a
+    corner is reported, as assembly would reject it."""
+    from porosity_fe.mesh import check_mesh_quality
+    from porosity_fe.fe.element import Hex8Element
+    from porosity_fe.gauss import gauss_points_hex
+    mat = MATERIALS['T800_epoxy']
+    mesh = CompositeMesh(PorosityField(mat, 0.02), mat, nx=2, ny=2, nz=2)
+    mesh.nodes = mesh.nodes.copy()
+    elem = mesh.elements[0]
+    # Push one top corner far down through the element.
+    corner = elem[6]
+    mesh.nodes[corner, 2] -= 3.0 * (mesh.nodes[elem[6], 2] - mesh.nodes[elem[2], 2])
+    coords = mesh.nodes[elem]
+    centre = np.linalg.det(Hex8Element.shape_derivatives(0, 0, 0) @ coords)
+    gps = [np.linalg.det(Hex8Element.shape_derivatives(*p) @ coords)
+           for p in gauss_points_hex(order=2)[0]]
+    assert centre > 0 and min(gps) <= 0      # the case the old check missed
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = check_mesh_quality(mesh)
+    assert result['n_inverted'] >= 1
+    assert result['min_jacobian_det'] <= 0

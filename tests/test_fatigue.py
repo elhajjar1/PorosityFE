@@ -165,13 +165,23 @@ class TestSlopeOverride:
 
 
 class TestStressRatioAndValidation:
-    """``R`` is informational today; ``cycles`` must be finite and >= 1."""
+    """``R`` does not enter the result (and says so); ``cycles`` must be finite and >= 1."""
 
-    @pytest.mark.parametrize("R", [-1.0, 0.0, 0.1, 0.5, 10.0])
+    @pytest.mark.parametrize("R", [-1.0, 0.0, 0.5, 10.0])
     def test_finite_R_does_not_change_result(self, R):
-        """Any finite stress ratio yields the same factor as the default R=0.1."""
+        """Any finite stress ratio yields the same factor as the default R=0.1,
+        and a non-calibration R warns that it is not used."""
         fm = FatigueModel()
-        assert fm.knockdown_factor('compression', 1e6, R=R) == fm.knockdown_factor('compression', 1e6)
+        with pytest.warns(UserWarning, match="does not change the result"):
+            kd = fm.knockdown_factor('compression', 1e6, R=R)
+        assert kd == fm.knockdown_factor('compression', 1e6)
+
+    def test_calibration_R_does_not_warn(self):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            FatigueModel().knockdown_factor('compression', 1e6, R=0.1)
+            FatigueModel().knockdown_factor('compression', 1e6)
 
     @pytest.mark.parametrize("cycles", [0, -5, 0.999])
     def test_cycles_below_one_rejected(self, cycles):

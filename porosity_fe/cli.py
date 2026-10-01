@@ -21,6 +21,10 @@ logger = logging.getLogger("porosity_fe_analysis")
 DEFAULT_POROSITY_LEVELS = [0.01, 0.02, 0.03, 0.05, 0.08]
 
 
+#: Placeholder passed through to compare_configurations, which ignores it.
+_DEFAULT_APPLIED_STRESS = -1500.0
+
+
 def _vp_label(Vp: float) -> str:
     """Stable, filesystem-safe label for a void fraction.
 
@@ -93,13 +97,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--applied-stress",
         type=float,
-        default=-1500.0,
+        default=None,
         help=(
             "Applied stress (MPa), reserved for downstream solver hooks. "
             "Accepted for parity with compare_configurations but currently "
             "unused: the empirical knockdown sweep does not consume it, so "
-            "changing this value will not affect results. Retained as a "
-            "stable CLI surface for future use (#132)."
+            "changing this value will not affect results, and passing it "
+            "logs a warning. Retained as a stable CLI surface for future "
+            "use (#132)."
         ),
     )
     parser.add_argument(
@@ -324,6 +329,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--quiet and --verbose are mutually exclusive.")
 
     _configure_cli_logging(quiet=args.quiet, verbose=args.verbose)
+
+    if args.applied_stress is not None:
+        logger.warning(
+            "--applied-stress %g has no effect: the empirical sweep does not "
+            "use an applied stress (IMPROVEMENT_PLAN 4.7).", args.applied_stress)
+    else:
+        args.applied_stress = _DEFAULT_APPLIED_STRESS
 
     if args.material not in materials:
         parser.error(

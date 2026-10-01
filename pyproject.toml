@@ -49,17 +49,8 @@ docs = [
     "sphinx-rtd-theme>=2.0",
     "myst-parser>=2.0",
 ]
-all = [
-    "streamlit>=1.32",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0",
-    "hypothesis>=6.0",
-    "ruff>=0.5",
-    "mypy>=1.8",
-    "sphinx>=7.0",
-    "sphinx-rtd-theme>=2.0",
-    "myst-parser>=2.0",
-]
+# Self-referential so the extras above stay the single source (pip >= 21.2).
+all = ["porosity-fe[web,dev,docs]"]
 
 [project.urls]
 # elhajjar1/PorosityFE is the canonical repository (issue tracker, GitHub
@@ -75,6 +66,10 @@ validate_porosity = "validate_porosity_cli:main"
 porosity-analyze = "porosity_fe_analysis:main"
 
 [tool.setuptools]
+# Top-level modules: the compatibility shim, the Streamlit app and the
+# validate CLI. `app` is a generic top-level name; it is installed so
+# `streamlit run app.py` and the tests can import it, and could shadow
+# another installed module called `app`.
 py-modules = ["porosity_fe_analysis", "app", "validate_porosity_cli"]
 packages = ["porosity_fe", "porosity_fe.fe", "validation"]
 

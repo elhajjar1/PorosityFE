@@ -9,6 +9,7 @@ import numpy as np
 
 from ._ply_angles import _resolve_ply_angles
 from ._types import MeshFace
+from .gauss import gauss_points_hex
 from .materials import MaterialProperties
 from .porosity_field import PorosityField
 
@@ -46,7 +47,9 @@ class CompositeMesh:
     nx, ny, nz : int, optional
         Number of elements along each axis (defaults
         ``nx=50``, ``ny=20``, ``nz=24``). Each must be a positive
-        integer not greater than ``_MAX_ELEMENTS_PER_AXIS`` (10 000).
+        integer not greater than ``_MAX_ELEMENTS_PER_AXIS`` (10 000), and
+        ``nx * ny * nz`` may not exceed ``_MAX_TOTAL_ELEMENTS`` (1 000 000;
+        an FE solve needs about 30 kB per element before factorization).
     ply_angles : list of float or {'QI', 'UD'}, optional
         Per-ply orientation in degrees, OR a string sentinel — ``'QI'``
         (default, expands to the 8-ply quasi-isotropic baseline
@@ -127,6 +130,13 @@ class CompositeMesh:
     # mesh is already ~100x what the GUI spinboxes allow; an order of magnitude
     # above that is almost certainly a typo or unit confusion.
     _MAX_ELEMENTS_PER_AXIS = 10_000
+    # The per-axis cap alone still admits 10_000**3 elements. FE assembly
+    # holds roughly 30 kB per element before the sparse factorization (B, C,
+    # element stiffness and COO triplets), so a million elements is already
+    # ~30 GB; refuse anything larger up front instead of failing with an
+    # out-of-memory error mid-assembly (IMPROVEMENT_PLAN 1.7).
+    _MAX_TOTAL_ELEMENTS = 1_000_000
+    _FE_BYTES_PER_ELEMENT = 30_000
 
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
                  nx: int = 50, ny: int = 20, nz: int = 24,
@@ -144,6 +154,15 @@ class CompositeMesh:
                     f"Such a fine mesh would exhaust memory; "
                     f"reduce or split the analysis."
                 )
+        n_total = int(nx) * int(ny) * int(nz)
+        if n_total > self._MAX_TOTAL_ELEMENTS:
+            gb = n_total * self._FE_BYTES_PER_ELEMENT / 1e9
+            raise ValueError(
+                f"CompositeMesh {nx}x{ny}x{nz} has {n_total:,} elements, above "
+                f"the {self._MAX_TOTAL_ELEMENTS:,}-element cap. An FE solve "
+                f"would need roughly {gb:,.0f} GB before factorization; "
+                f"reduce the resolution or split the analysis."
+            )
 
         self.porosity_field = porosity_field
         self.material = material
@@ -396,8 +415,10 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     Returns
     -------
     dict
-        Quality metrics: min/max aspect ratio, min Jacobian determinant,
-        number of inverted elements, number of highly distorted elements.
+        Quality metrics: min/max aspect ratio, min Jacobian determinant over
+        the 8 Gauss points, number of inverted elements (non-positive
+        determinant at any Gauss point, matching what assembly rejects),
+        number of highly distorted elements.
 
     Raises
     ------
@@ -422,11 +443,15 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     with np.errstate(divide='ignore'):
         aspect_ratios = np.where(min_len > 1e-15, max_len / min_len, np.inf)
 
-    # Jacobian at element center
-    dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
-    min_detJ_per_elem = np.linalg.det(np.einsum('ij,ejk->eik', dN, coords))
+    # Jacobian at the 8 Gauss points, the same points where assembly
+    # rejects a non-positive determinant; checking only the element center
+    # missed elements that are inverted near a corner (IMPROVEMENT_PLAN 2.8).
+    points, _ = gauss_points_hex(order=2)
+    dN = np.stack([Hex8Element.shape_derivatives(*p) for p in points])  # (G, 3, 8)
+    detJ = np.linalg.det(np.einsum('gij,ejk->egik', dN, coords))         # (E, G)
+    min_detJ_per_elem = detJ.min(axis=1)
 
-    n_inverted = int(np.sum(min_detJ_per_elem < 0))
+    n_inverted = int(np.sum(min_detJ_per_elem <= 0))
     n_distorted = int(np.sum(aspect_ratios > 20.0))
 
     result = {

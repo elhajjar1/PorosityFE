@@ -31,13 +31,7 @@
         "scipy_version",
         "timestamp_utc",
         "seed",
-        "git_commit",
-        "package_version",
-        "python",
-        "numpy",
-        "scipy",
-        "generated_utc",
-        "git_sha"
+        "git_commit"
       ],
       "properties": {
         "schema_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
@@ -50,12 +44,12 @@
         "timestamp_utc": {"type": "string"},
         "seed": {"type": ["integer", "null"], "description": "RNG seed for the run (null when unset or ambiguous). Dimensionless."},
         "git_commit": {"type": ["string", "null"]},
-        "package_version": {"type": ["string", "null"]},
-        "python": {"type": "string"},
-        "numpy": {"type": ["string", "null"]},
-        "scipy": {"type": ["string", "null"]},
-        "generated_utc": {"type": "string"},
-        "git_sha": {"type": ["string", "null"]},
+        "package_version": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of porosity_fe_version; no longer required, to be removed in schema 2.0."},
+        "python": {"type": "string", "deprecated": true, "description": "Deprecated alias of python_version; no longer required, to be removed in schema 2.0."},
+        "numpy": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of numpy_version; no longer required, to be removed in schema 2.0."},
+        "scipy": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of scipy_version; no longer required, to be removed in schema 2.0."},
+        "generated_utc": {"type": "string", "deprecated": true, "description": "Deprecated alias of timestamp_utc; no longer required, to be removed in schema 2.0."},
+        "git_sha": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of git_commit; no longer required, to be removed in schema 2.0."},
         "hostname": {"type": ["string", "null"]}
       }
     },

@@ -49,6 +49,8 @@ _FATIGUE_B_QI: dict[str, float] = {
 # caller knows they are off the calibration range.
 # Back-compat alias; canonical reference is ``Calibration.FATIGUE_KD_FLOOR``.
 _FATIGUE_KD_FLOOR = 0.01
+# Stress ratio the S-N slopes were calibrated at (tension-tension).
+_FATIGUE_R_CALIBRATION = 0.1
 
 
 @dataclass
@@ -108,9 +110,11 @@ class FatigueModel:
             value; ``cycles = 1`` corresponds to the static (one-cycle)
             allowable and returns ``1.0``.
         R : float, optional
-            Stress ratio ``sigma_min / sigma_max``. Currently
-            informational (default 0.1, tension-tension); reserved
-            for a future Goodman / Walker R-correction.
+            Stress ratio ``sigma_min / sigma_max``. Not used in the
+            result: the slopes are calibrated at ``R = 0.1``
+            (tension-tension) and no Goodman / Walker mean-stress
+            correction is applied. Any other value emits a
+            :class:`UserWarning` saying so.
 
         Returns
         -------
@@ -119,12 +123,19 @@ class FatigueModel:
             extrapolation would go below the floor (``floor = 0.01``),
             the value is clamped and a :class:`UserWarning` is emitted.
         """
-        # Reserved for future R-correction; today it is purely
-        # informational. Validate finiteness so a stray nan can't slip
-        # through silently.
+        # R does not enter the result; validate it and say so when it
+        # differs from the calibration ratio (IMPROVEMENT_PLAN 2.8).
         if not np.isfinite(float(R)):
             raise ValueError(
                 f"FatigueModel.knockdown_factor: R must be finite, got {R!r}."
+            )
+        if not np.isclose(float(R), _FATIGUE_R_CALIBRATION):
+            warnings.warn(
+                f"FatigueModel: R={R!r} does not change the result. The S-N "
+                f"slopes are calibrated at R={_FATIGUE_R_CALIBRATION} "
+                f"(tension-tension) and no mean-stress correction is applied.",
+                UserWarning,
+                stacklevel=2,
             )
 
         N = float(cycles)

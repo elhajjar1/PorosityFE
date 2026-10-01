@@ -337,3 +337,25 @@ def test_save_uq_results_round_trip(tmp_path):
         res['compression']['knockdown']['percentiles'])
     save_uq_results_to_json(res, path, include_samples=True)
     assert len(json.loads(path.read_text())['uq']['compression']['samples']['knockdown']) == 20
+
+
+class TestPerturbClipping:
+    """IMPROVEMENT_PLAN 2.8: extreme draws are clipped, not fatal."""
+
+    def test_wide_vf_scatter_does_not_crash(self):
+        r = propagate_uncertainty(0.03, spec={'fiber_volume_fraction': ('lognormal', 1.5)},
+                                  n_samples=200, seed=4)
+        assert r['n_samples'] == 200
+
+    def test_normal_draw_cannot_make_a_modulus_negative(self):
+        from porosity_fe import MATERIALS
+        mat = MATERIALS['T800_epoxy']
+        out = mat.perturb({'E22': -50.0}, {'E22': ('normal', 0.5)})
+        assert 0.0 < out.E22 < mat.E22
+
+    def test_vf_clipped_to_packing_limit(self):
+        from porosity_fe import MATERIALS
+        mat = MATERIALS['T800_epoxy']
+        out = mat.perturb({'fiber_volume_fraction': 10.0},
+                          {'fiber_volume_fraction': ('lognormal', 1.0)})
+        assert out.fiber_volume_fraction == pytest.approx(np.pi / (2 * np.sqrt(3)))

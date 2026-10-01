@@ -7,9 +7,9 @@ include examples/*.py
 include examples/README.md
 include examples/.gitignore
 
-# Top-level metadata files. `license = {text = "MIT"}` in pyproject.toml
-# embeds the license string but does not ship the LICENSE file itself in
-# the sdist; including it here ensures redistributors get the canonical
-# text. CHANGELOG.md is similarly outside any package directory.
+# Top-level metadata files outside any package directory: the license
+# text, the changelog, and the citation metadata (so people who cite the
+# package from an sdist have it).
 include LICENSE
 include CHANGELOG.md
+include CITATION.cff
