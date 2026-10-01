@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "porosity-fe"
 version = "1.2.0"
 description = "Streamlit web app for porosity-degraded composite laminate analysis"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     {name = "Rani Elhajjar", email = "elhajjar@uwm.edu"},
@@ -23,7 +24,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -43,7 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["streamlit>=1.32"]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0", "ruff>=0.5", "mypy>=1.8"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0", "hypothesis>=6.0", "ruff>=0.5", "mypy>=1.8"]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
@@ -53,6 +53,7 @@ all = [
     "streamlit>=1.32",
     "pytest>=7.0.0",
     "pytest-cov>=4.0",
+    "hypothesis>=6.0",
     "ruff>=0.5",
     "mypy>=1.8",
     "sphinx>=7.0",
@@ -106,10 +107,8 @@ ignore = [
 # app.py intentionally calls matplotlib.use("Agg") and bootstraps sys.path
 # before importing pyplot / sibling modules, which trips E402/I001.
 "app.py" = ["E402", "I001"]
-# validation/validate_all.py bootstraps sys.path and imports in several
-# sections through the file. It was outside ruff's view while the whole
-# validation/ tree was gitignored; consolidating its imports is tracked as
-# IMPROVEMENT_PLAN.md item 5.4.
+# validation/validate_all.py selects the Agg backend and bootstraps sys.path
+# before importing pyplot and the package, like app.py.
 "validation/validate_all.py" = ["E402", "I001"]
 # Tests use explicit `== True/False` assertions for readability, a single
 # ply-angle loop label `l`, deliberately-unused locals, and in-function

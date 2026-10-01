@@ -733,7 +733,8 @@ class TestFESolverNonFiniteGuards:
                 'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
             }
 
-        monkeypatch.setattr(self.solver, '_evaluate_hashin', fake_hashin)
+        from porosity_fe.fe import failure as failure_mod
+        monkeypatch.setattr(failure_mod, 'evaluate_hashin', fake_hashin)
         with pytest.raises(ValueError, match="hashin failure index is non-finite"):
             self.solver._evaluate_failure(self.stress_local, criterion='hashin')
 
@@ -752,7 +753,8 @@ class TestFESolverNonFiniteGuards:
                 'matrix_t': zeros, 'matrix_c': zeros, 'shear': zeros,
             }
 
-        monkeypatch.setattr(self.solver, '_evaluate_max_stress', fake_max_stress)
+        from porosity_fe.fe import failure as failure_mod
+        monkeypatch.setattr(failure_mod, 'evaluate_max_stress', fake_max_stress)
         with pytest.raises(ValueError, match="max_stress failure index is non-finite"):
             self.solver._evaluate_failure(self.stress_local, criterion='max_stress')
 
@@ -1642,32 +1644,88 @@ class TestElementBatchMatchesHex8Element:
             build_element_batch(mesh, mat, pf.void_shape_radii)
 
 
-class TestComputeKnockdownVectorized:
-    """IMPROVEMENT_PLAN 1.3: the vectorized knockdown matches the original
-    per-element / per-Gauss-point loop."""
+class TestKnockdownFromPristineReference:
+    """IMPROVEMENT_PLAN 2.4: knockdown = porous / pristine structural stiffness."""
 
-    @pytest.mark.parametrize("loading", ["compression", "ilss"])
-    def test_matches_reference_loop(self, loading):
-        from porosity_fe.transforms import rotate_stiffness_3d
+    @staticmethod
+    def _pair(Vp=0.04, discrete_voids=None, **mesh_kw):
         mat = MATERIALS['T800_epoxy']
-        pf = PorosityField(mat, 0.04, distribution='clustered')
-        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=6,
-                             ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
-        solver = FESolver(mesh, mat, pf)
-        rng = np.random.default_rng(1)
-        strain = rng.normal(size=(mesh.n_elements, 8, 6))
-        stress = rng.normal(size=(mesh.n_elements, 8, 6))
-        comp = 4 if loading == 'ilss' else 0
-        C_base = mat.get_stiffness_matrix()
-        total = 0.0
-        for e in range(mesh.n_elements):
-            rad = np.radians(float(mesh.ply_angles[e]))
-            C = rotate_stiffness_3d(C_base, rad, axis='z') if abs(rad) > 1e-15 else C_base
-            for g in range(8):
-                total += float(C[comp, :] @ strain[e, g])
-        ref = abs(np.mean(stress[:, :, comp])) / abs(total / (mesh.n_elements * 8))
-        got = solver._compute_knockdown(loading, stress, strain)
-        assert got == pytest.approx(min(ref, 1.0), rel=1e-12)
+        kw = dict(nx=6, ny=3, nz=6, ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
+        kw.update(mesh_kw)
+        pf = PorosityField(mat, Vp, distribution='clustered',
+                           discrete_voids=discrete_voids or [])
+        pf0 = PorosityField(mat, 0.0)
+        porous = FESolver(CompositeMesh(pf, mat, **kw), mat, pf,
+                          ply_angles=kw['ply_angles'])
+        pristine = FESolver(CompositeMesh(pf0, mat, **kw), mat, pf0,
+                            ply_angles=kw['ply_angles'])
+        return porous, pristine
+
+    @pytest.mark.parametrize("loading", ["compression", "tension", "shear"])
+    def test_equals_effective_modulus_ratio(self, loading):
+        porous, pristine = self._pair()
+        r, r0 = porous.solve(loading), pristine.solve(loading)
+        assert r.knockdown == pytest.approx(
+            r.effective_modulus / r0.effective_modulus, rel=1e-9)
+        assert 0.0 < r.knockdown < 1.0
+
+    def test_ilss_equals_beam_stiffness_ratio(self):
+        porous, pristine = self._pair()
+        r, r0 = porous.solve('ilss'), pristine.solve('ilss')
+        # Inverse compliance: pristine deflection energy / porous.
+        b, b0 = porous.assembler.element_batch(), pristine.assembler.element_batch()
+        W = np.einsum('egi,egij,egj,eg->', r.strain_global, b.C,
+                      r.strain_global, b.detJ_w)
+        W0 = np.einsum('egi,egij,egj,eg->', r0.strain_global, b0.C,
+                       r0.strain_global, b0.detJ_w)
+        assert r.knockdown == pytest.approx(W0 / W, rel=1e-6)
+        assert 0.0 < r.knockdown < 1.0
+
+    def test_shear_and_ilss_are_no_longer_pinned_at_one(self):
+        porous, _ = self._pair()
+        assert porous.solve('shear').knockdown < 0.999
+        assert porous.solve('ilss').knockdown < 0.999
+
+    def test_pristine_mesh_gives_exactly_one(self):
+        _, pristine = self._pair()
+        for loading in ('compression', 'shear', 'ilss'):
+            assert pristine.solve(loading).knockdown == 1.0
+
+    def test_geometric_voids_alone_reduce_stiffness(self):
+        mat = MATERIALS['T800_epoxy']
+        void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
+                            radii=(4, 3, 1.0))
+        porous, _ = self._pair(Vp=0.0, discrete_voids=[void],
+                               nx=10, ny=6, nz=12, ply_angles='UD')
+        assert len(porous.mesh.void_elements) > 0
+        assert porous.solve('shear').knockdown < 0.99
+
+    def test_independent_of_load_magnitude_and_sign(self):
+        porous, _ = self._pair()
+        ref = porous.solve('compression').knockdown
+        assert porous.solve('compression', applied_strain=-0.001).knockdown == \
+            pytest.approx(ref, rel=1e-9)
+        assert porous.solve('tension', applied_strain=0.003).knockdown == \
+            pytest.approx(ref, rel=1e-9)
+        ilss = porous.solve('ilss').knockdown
+        assert porous.solve('ilss', applied_load=-250.0).knockdown == \
+            pytest.approx(ilss, rel=1e-9)
+
+    def test_pristine_reference_is_cached_across_solvers(self, monkeypatch):
+        from porosity_fe.fe import solver as solver_mod
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        calls = []
+        real = solver_mod._pristine_mesh
+        monkeypatch.setattr(solver_mod, '_pristine_mesh',
+                            lambda mesh: calls.append(1) or real(mesh))
+        a, _ = self._pair(Vp=0.02)
+        b, _ = self._pair(Vp=0.05)
+        a.solve('compression')
+        a.solve('tension')
+        b.solve('compression')
+        assert len(calls) == 1
+        b.solve('shear')
+        assert len(calls) == 2
 
 
 class TestStiffnessAndFactorizationReuse:
@@ -1698,6 +1756,10 @@ class TestStiffnessAndFactorizationReuse:
 
         monkeypatch.setattr(asm_mod, 'build_element_batch', batch)
         monkeypatch.setattr(sla, 'splu', splu)
+        # Count only this solver's assembly and factorizations, not the
+        # (separately cached) pristine knockdown reference solve.
+        monkeypatch.setattr(FESolver, '_pristine_stiffness_measure',
+                            lambda self, loading, penalty_factor: 1.0)
         return counts
 
     @staticmethod
@@ -1750,3 +1812,256 @@ class TestStiffnessAndFactorizationReuse:
         K = solver.assembler.assemble_stiffness()
         K.data[:] = 0.0
         self._assert_same(solver.solve('tension', applied_strain=0.01), ref)
+
+
+class TestReactionsAndEffectiveModulus:
+    """IMPROVEMENT_PLAN 3.2: reaction forces and the strain-energy effective
+    modulus recovered from a displacement-controlled solve."""
+
+    @staticmethod
+    def _solver(Vp, angles, nz=8):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, Vp)
+        mesh = CompositeMesh(pf, mat, nx=10, ny=4, nz=nz, ply_angles=angles)
+        return mat, mesh, FESolver(mesh, mat, pf, ply_angles=angles)
+
+    def test_pristine_ud_recovers_ply_moduli(self):
+        mat, _, solver = self._solver(0.0, 'UD')
+        assert solver.solve('tension', applied_strain=0.01).effective_modulus == \
+            pytest.approx(mat.E11, rel=1e-6)
+        assert solver.solve('compression', applied_strain=-0.005).effective_modulus == \
+            pytest.approx(mat.E11, rel=1e-6)
+        assert solver.solve('shear', applied_strain=0.01).effective_modulus == \
+            pytest.approx(mat.G12, rel=1e-6)
+
+    def test_axial_modulus_equals_face_reaction_over_area_and_strain(self):
+        _, mesh, solver = self._solver(0.04, 'QI')
+        r = solver.solve('tension', applied_strain=0.01)
+        P = r.reaction_forces[mesh.nodes_on_face('x_max'), 0].sum()
+        assert r.effective_modulus == pytest.approx(
+            P / (mesh.L_y * mesh.L_z * 0.01), rel=1e-6)
+
+    @pytest.mark.parametrize("Vp", [0.0, 0.04])
+    def test_quasi_isotropic_moduli_match_clt(self, Vp):
+        from porosity_fe.homogenization import compute_degraded_clt_moduli
+        mat, mesh, solver = self._solver(Vp, 'QI', nz=16)
+        clt = compute_degraded_clt_moduli(
+            mat, [0, 90, 45, -45, -45, 45, 90, 0], max(Vp, 1e-12))
+        Gxy = solver.solve('shear', applied_strain=0.01).effective_modulus
+        Ex = solver.solve('tension', applied_strain=0.01).effective_modulus
+        # Homogeneous shear BCs reproduce the in-plane CLT assumption; the
+        # axial modulus carries a small 3D (free-edge, sigma_zz) effect.
+        assert Gxy == pytest.approx(clt['Gxy'], rel=1e-6)
+        assert Ex == pytest.approx(clt['Ex'], rel=0.02)
+
+    def test_porosity_lowers_effective_modulus(self):
+        _, _, pristine = self._solver(0.0, 'QI')
+        _, _, porous = self._solver(0.05, 'QI')
+        for loading in ('tension', 'shear'):
+            assert porous.solve(loading, applied_strain=0.01).effective_modulus < \
+                pristine.solve(loading, applied_strain=0.01).effective_modulus
+
+    def test_ilss_reactions_balance_applied_load_and_no_modulus(self):
+        _, _, solver = self._solver(0.02, 'QI')
+        r = solver.solve('ilss', applied_load=-10.0)
+        assert r.effective_modulus is None
+        np.testing.assert_allclose(r.reaction_forces.sum(axis=0), [0.0, 0.0, 10.0],
+                                   atol=1e-6)
+
+    def test_json_export_carries_stiffness_block(self, tmp_path):
+        import json
+        _, _, solver = self._solver(0.02, 'QI')
+        r = solver.solve('tension', applied_strain=0.01)
+        path = tmp_path / "fe.json"
+        FESolver.export_results(r, path)
+        block = json.loads(path.read_text())['stiffness']
+        assert block['effective_modulus_MPa'] == pytest.approx(r.effective_modulus)
+        assert len(block['reaction_force_sum_N']) == 3
+
+
+class TestFirstPlyFailureLoadFactor:
+    """IMPROVEMENT_PLAN 3.3: the load multiplier at first-ply failure."""
+
+    @pytest.fixture(scope="class")
+    def solver(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=8)
+        return FESolver(mesh, mat, pf)
+
+    @pytest.mark.parametrize("criterion", ["tsai_wu", "hashin", "max_stress"])
+    @pytest.mark.parametrize("loading, kwarg, value", [
+        ("tension", "applied_strain", 0.002),
+        ("compression", "applied_strain", -0.002),
+        ("shear", "applied_strain", 0.002),
+        ("ilss", "applied_load", -10.0),
+    ])
+    def test_rescaled_load_reaches_unit_failure_index(self, solver, criterion,
+                                                      loading, kwarg, value):
+        """Linear analysis: re-solving at lam times the load must put the
+        governing point exactly on the failure surface."""
+        r = solver.solve(loading, failure_criterion=criterion, **{kwarg: value})
+        lam = r.first_ply_failure_load_factor
+        assert np.isfinite(lam) and lam > 0
+        r2 = solver.solve(loading, failure_criterion=criterion,
+                          **{kwarg: value * lam})
+        assert r2.max_failure_index == pytest.approx(1.0, rel=1e-9)
+        assert r2.first_ply_failure_load_factor == pytest.approx(1.0, rel=1e-9)
+
+    def test_max_stress_factor_is_reciprocal_of_max_index(self, solver):
+        r = solver.solve('tension', applied_strain=0.002, failure_criterion='max_stress')
+        assert r.first_ply_failure_load_factor == pytest.approx(
+            1.0 / r.max_failure_index, rel=1e-12)
+
+    def test_unstressed_model_gives_infinite_factor(self):
+        from porosity_fe.fe.failure import first_ply_failure_load_factor
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        zero = np.zeros((mesh.n_elements, 8, 6))
+        for criterion in ("tsai_wu", "hashin", "max_stress"):
+            assert first_ply_failure_load_factor(
+                zero, mesh.porosity, mesh.elements, mat,
+                pf.void_shape_radii, criterion) == np.inf
+
+    def test_reported_in_summary_and_json(self, solver, tmp_path):
+        import json
+        r = solver.solve('tension', applied_strain=0.002)
+        assert r.summary().details['first_ply_failure_load_factor'] == \
+            r.first_ply_failure_load_factor
+        path = tmp_path / "fe.json"
+        FESolver.export_results(r, path)
+        data = json.loads(path.read_text())
+        assert data['failure']['first_ply_failure_load_factor'] == pytest.approx(
+            r.first_ply_failure_load_factor)
+
+
+class TestHashinDelaminationMode:
+    """IMPROVEMENT_PLAN 2.2: Hashin now sees interlaminar stresses through a
+    Brewer-Lagace delamination mode."""
+
+    @pytest.fixture(scope="class")
+    def strengths(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.0)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2)
+        return FESolver(mesh, mat, pf)._degraded_strengths(0.0)
+
+    def test_pure_interlaminar_shear_governs(self, strengths):
+        from porosity_fe.fe.failure import evaluate_hashin
+        S23 = strengths[5]
+        s = np.zeros((2, 6))
+        s[0, 4] = 0.5 * S23           # tau_13
+        s[1, 3] = 0.5 * S23           # tau_23
+        modes = evaluate_hashin(s, strengths)
+        np.testing.assert_allclose(modes['delamination'], 0.25, rtol=1e-12)
+        np.testing.assert_allclose(modes['max_fi'], 0.25, rtol=1e-12)
+
+    def test_only_through_thickness_tension_contributes(self, strengths):
+        from porosity_fe.fe.failure import evaluate_hashin
+        Yt = strengths[2]
+        s = np.zeros((2, 6))
+        s[0, 2] = 0.5 * Yt            # sigma_33 tension
+        s[1, 2] = -0.5 * Yt           # sigma_33 compression
+        modes = evaluate_hashin(s, strengths)
+        assert modes['delamination'][0] == pytest.approx(0.25, rel=1e-12)
+        assert modes['delamination'][1] == 0.0
+
+    def test_ilss_hashin_is_governed_by_delamination(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=10, ny=3, nz=8)
+        r = FESolver(mesh, mat, pf).solve('ilss', failure_criterion='hashin')
+        modes = r.failure_mode_indices
+        assert r.max_failure_index == pytest.approx(modes['delamination'], rel=1e-12)
+        assert modes['delamination'] > max(modes['fiber_t'], modes['fiber_c'],
+                                           modes['matrix_t'], modes['matrix_c'])
+
+    def test_mode_keys_are_uniform_across_criteria(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=4)
+        solver = FESolver(mesh, mat, pf)
+        keys = {c: set(solver.solve('tension', applied_strain=0.002,
+                                    failure_criterion=c).failure_mode_indices)
+                for c in ('tsai_wu', 'hashin', 'max_stress')}
+        assert keys['tsai_wu'] == keys['hashin'] == keys['max_stress']
+        assert 'delamination' in keys['hashin']
+
+
+@pytest.fixture(scope="module")
+def voided():
+    """UD mesh containing geometric void elements, with its solver."""
+    mat = MATERIALS['T800_epoxy']
+    void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
+                        radii=(4, 3, 1.0))
+    pf = PorosityField(mat, 0.04, discrete_voids=[void])
+    mesh = CompositeMesh(pf, mat, nx=10, ny=6, nz=12, ply_angles='UD')
+    assert len(mesh.void_elements) > 0
+    return mat, pf, mesh, FESolver(mesh, mat, pf, ply_angles='UD')
+
+
+class TestVoidElementUnification:
+    """IMPROVEMENT_PLAN 2.3: one notion of "void element" across the FE path."""
+
+    @pytest.mark.parametrize("criterion", ['tsai_wu', 'hashin', 'max_stress'])
+    def test_geometric_voids_are_skipped_by_failure(self, voided, criterion):
+        _mat, _pf, mesh, solver = voided
+        r = solver.solve('compression', failure_criterion=criterion)
+        assert np.all(r.per_element_failure_index[mesh.void_elements] == 0.0)
+        assert r.max_failure_index > 0.0
+
+    def test_load_factor_ignores_geometric_voids(self, voided):
+        from porosity_fe.fe.failure import first_ply_failure_load_factor
+        mat, pf, mesh, solver = voided
+        r = solver.solve('compression')
+        # Put a huge stress in one void element: only the unmasked call sees it.
+        stress = r.stress_local.copy()
+        stress[mesh.void_elements[0]] = -1e6
+        args = (stress, mesh.porosity, mesh.elements, mat, pf.void_shape_radii)
+        masked = first_ply_failure_load_factor(
+            *args, void_elements=mesh.void_elements)
+        unmasked = first_ply_failure_load_factor(*args)
+        assert masked == pytest.approx(r.first_ply_failure_load_factor, rel=1e-12)
+        assert unmasked < 1e-3 * masked
+
+    def test_high_porosity_threshold_is_shared(self):
+        from porosity_fe.fe import batch, element, failure
+        assert failure.VOID_VP_THRESHOLD is element.VOID_VP_THRESHOLD
+        assert batch.VP_STIFFNESS_CLAMP is element.VP_STIFFNESS_CLAMP
+        assert element.VOID_VP_THRESHOLD < element.VP_STIFFNESS_CLAMP
+
+
+@pytest.fixture(scope="module")
+def small_ud_solver():
+    mat = MATERIALS['T800_epoxy']
+    pf = PorosityField(mat, 0.02)
+    mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=4, ply_angles='UD')
+    return FESolver(mesh, mat, pf, ply_angles='UD')
+
+
+class TestAppliedStrainDefault:
+    """``solve('tension')`` used to default to -0.01 and run in compression."""
+
+    def test_default_tension_is_tensile(self, small_ud_solver):
+        r = small_ud_solver.solve('tension')
+        assert np.mean(r.stress_global[:, :, 0]) > 0.0
+        explicit = small_ud_solver.solve('tension', applied_strain=0.01)
+        np.testing.assert_array_equal(r.stress_global, explicit.stress_global)
+
+    def test_default_compression_is_compressive(self, small_ud_solver):
+        r = small_ud_solver.solve('compression')
+        assert np.mean(r.stress_global[:, :, 0]) < 0.0
+        explicit = small_ud_solver.solve('compression', applied_strain=-0.01)
+        np.testing.assert_array_equal(r.stress_global, explicit.stress_global)
+
+    def test_tension_and_compression_failure_indices_differ(self, small_ud_solver):
+        t = small_ud_solver.solve('tension')
+        c = small_ud_solver.solve('compression')
+        assert t.max_failure_index != pytest.approx(c.max_failure_index, rel=1e-3)
+
+    def test_contradictory_sign_warns(self, small_ud_solver, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="porosity_fe_analysis"):
+            small_ud_solver.solve('tension', applied_strain=-0.01)
+        assert "contradicts the loading mode" in caplog.text

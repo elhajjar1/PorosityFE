@@ -267,3 +267,73 @@ class TestValidationBands:
             assert lo <= p <= hi, (
                 f"Band [{lo}, {hi}] does not straddle central prediction {p}"
             )
+
+
+class TestCoefficientUncertainty:
+    """IMPROVEMENT_PLAN 3.4: perturb the knockdown law's coefficient."""
+
+    def test_coef_cov_makes_knockdown_uncertain(self):
+        fixed = propagate_uncertainty(0.03, covs={'sigma_1c': 0.05},
+                                      n_samples=100, seed=3)
+        assert fixed['knockdown']['std'] == pytest.approx(0.0, abs=1e-12)
+        scattered = propagate_uncertainty(0.03, coef_cov=0.15, n_samples=200,
+                                          seed=3, method='lhs')
+        assert scattered['knockdown']['std'] > 0.01
+        pct = scattered['knockdown']['percentiles']
+        # Median-preserving draw: p50 sits on the nominal knockdown.
+        assert pct['p50'] == pytest.approx(scattered['nominal']['knockdown'], abs=0.01)
+        assert pct['p5'] < pct['p50'] < pct['p95']
+        assert scattered['coef_cov'] == 0.15
+
+    @pytest.mark.parametrize("model", ['judd_wright', 'power_law', 'linear'])
+    def test_all_builtin_models_supported(self, model):
+        r = propagate_uncertainty(0.03, model=model, mode='ilss', coef_cov=0.1,
+                                  n_samples=20, seed=1)
+        assert r['knockdown']['std'] > 0.0
+
+    def test_zero_coef_cov_leaves_sampling_unchanged(self):
+        a = propagate_uncertainty(0.03, covs={'sigma_1c': 0.05}, vp_cov=0.1,
+                                  n_samples=50, seed=9)
+        b = propagate_uncertainty(0.03, covs={'sigma_1c': 0.05}, vp_cov=0.1,
+                                  coef_cov=0.0, n_samples=50, seed=9)
+        np.testing.assert_array_equal(a['samples']['knockdown'],
+                                      b['samples']['knockdown'])
+
+    def test_invalid_coef_cov_rejected(self):
+        with pytest.raises(ValueError, match='coef_cov'):
+            propagate_uncertainty(0.03, coef_cov=-0.1, n_samples=5)
+        with pytest.raises(ValueError, match='coef_cov'):
+            propagate_uncertainty(0.03, model=lambda vp, mode: 1.0 - vp,
+                                  coef_cov=0.1, n_samples=5)
+
+    def test_extrapolated_draws_warn_once(self):
+        with pytest.warns(UserWarning, match='draws evaluated') as record:
+            propagate_uncertainty(0.049, vp_cov=0.3, n_samples=40, seed=2)
+        assert sum('calibration bound' in str(w.message) for w in record) == 1
+
+
+class TestMaterialLabel:
+    def test_preset_instance_reports_its_name(self):
+        from porosity_fe import MATERIALS
+        r = propagate_uncertainty(0.02, material=MATERIALS['T700_epoxy'], n_samples=3)
+        assert r['material'] == 'T700_epoxy'
+
+    def test_modified_instance_reports_custom(self):
+        import dataclasses
+        from porosity_fe import MATERIALS
+        m = dataclasses.replace(MATERIALS['T700_epoxy'], t_ply=0.2)
+        assert propagate_uncertainty(0.02, material=m, n_samples=3)['material'] == 'custom'
+
+
+def test_save_uq_results_round_trip(tmp_path):
+    from porosity_fe import FORMAT_UQ, load_results_from_json, save_uq_results_to_json
+    res = {'compression': propagate_uncertainty(0.03, coef_cov=0.1, n_samples=20, seed=1)}
+    path = tmp_path / 'uq.json'
+    save_uq_results_to_json(res, path)
+    data = load_results_from_json(path)
+    assert data['format'] == FORMAT_UQ
+    assert 'samples' not in data['uq']['compression']
+    assert data['uq']['compression']['knockdown']['percentiles'] == pytest.approx(
+        res['compression']['knockdown']['percentiles'])
+    save_uq_results_to_json(res, path, include_samples=True)
+    assert len(json.loads(path.read_text())['uq']['compression']['samples']['knockdown']) == 20

@@ -28,7 +28,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Six material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK (or define your own)
-- **Discrete void modeling**: Explicit ellipsoidal voids with stress concentration factors
+- **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
 - **Tsai-Wu failure criterion**: Full 3D multiaxial strength evaluation
 
 ## Visualizations
@@ -83,6 +83,30 @@ Community Cloud.
 porosity-analyze
 ```
 Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
+
+### Uncertainty propagation
+
+```bash
+porosity-analyze --vp 0.02 0.04 --uq --uq-samples 500 --seed 1
+```
+`--uq` propagates input scatter through the empirical Judd-Wright knockdown
+for every loading mode and writes `porosity_uq_<Vp>.json` with the mean, std
+and p5/p50/p95 of the knockdown and failure stress. The sampled inputs are:
+- the law's calibration coefficient (`--uq-coef-cov`, default 0.10), usually
+  the dominant term;
+- the measured mean porosity (`--uq-vp-cov`, default 0.10);
+- each mode's pristine strength (`--uq-strength-cov`, default 0.05).
+
+The default CoVs are assumptions; replace them with values from your own
+data. The web app's Results tab has the same analysis in an
+**Uncertainty** expander, with a knockdown histogram. From Python:
+
+```python
+from porosity_fe import propagate_uncertainty
+r = propagate_uncertainty(0.03, 'T800_epoxy', 'compression', coef_cov=0.1,
+                          vp_cov=0.1, n_samples=1000, method='lhs', seed=0)
+print(r['knockdown']['percentiles'])   # {'p5': ..., 'p50': ..., 'p95': ...}
+```
 
 ### Python library
 ```python
@@ -246,10 +270,10 @@ gives distinct compression knockdowns even at matched mean:
 
 ```
 mode = compression, FE Tsai-Wu, Vp_mean = 3 %
-  uniform               0.9887
-  clustered (midplane)  0.9882
-  clustered (surface)   0.9883
-  interface             0.9854   (penny voids, sharpest local field)
+  uniform               0.9844
+  clustered (midplane)  0.9839
+  clustered (surface)   0.9846
+  interface             0.9638   (penny voids, sharpest local field)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`;
@@ -304,6 +328,7 @@ Guidance on which to use:
 | `porosity_comparison_*.png` | Model comparison bar charts |
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
+| `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table.
 
@@ -323,6 +348,17 @@ The plotting axes display `Vp * 100 (%)` for readability; that is a display
 convention only. The constructor (`PorosityField(..., void_volume_fraction=Vp)`)
 rejects values outside `[0, 1]` with a `ValueError` and offers a percent-vs-fraction
 hint when the value is plausibly a percent (`Vp ≥ 1.001`).
+
+Three places take a **percent** instead, and say so in their names or labels:
+
+| Where | Input | Example for 3 % voids |
+|---|---|---|
+| Streamlit sidebar | "Void content Vp (%)" | `3.0` |
+| CLI | `--vp-pct` (`--vp` takes a fraction) | `--vp-pct 3` or `--vp 0.03` |
+| `porosity_fe.reporting.recommend_disposition` | `Vp_percent`, as on an NCR | `recommend_disposition(3.0, ...)` |
+
+Coefficients of variation (`--uq-vp-cov`, the app's "Porosity CoV") are
+fractions of the value: `0.10` means 10 % of `Vp`, not 10 percentage points.
 
 ### Per-ply vs. specimen-average porosity
 
@@ -478,16 +514,18 @@ or in-process via `validation/validate_all.py`.
 | ILSS (short-beam shear) | 9 | 4.3% |
 | Tensile strength | 7 | 6.9% |
 | Tensile modulus | 3 | 1.3% |
-| Transverse tensile modulus | 3 | 3.4% |
+| Transverse tensile modulus | 3 | 3.3% |
 | Transverse tensile strength | 3 | 7.4% |
 | Flexural modulus (D-matrix CLT) | 5 | 8.9% |
 | Compression strength | 2 | 11.4% |
 | Shear strength | 2 | 13.5% |
-| Shear modulus (A-matrix CLT) | 1 | 15.4% |
+| Shear modulus (A-matrix CLT) | 1 | 14.7% |
+
+Transverse compression strength (`sigma_2c`) has no empirical loading mode because no dataset measures it against porosity. The FE failure criteria still use it.
 
 Overall MAE:
-- Property-weighted: **7.09%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
-- Point-weighted: **6.56%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
+- Property-weighted: **7.05%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
+- Point-weighted: **6.53%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 

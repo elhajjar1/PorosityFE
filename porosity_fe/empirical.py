@@ -200,6 +200,8 @@ class EmpiricalSolver:
     _JUDD_WRIGHT_ALPHA_QI = Calibration.JUDD_WRIGHT_ALPHA_QI
     _POWER_LAW_N_QI = Calibration.POWER_LAW_N_QI
     _LINEAR_BETA_QI = Calibration.LINEAR_BETA_QI
+    # No 'transverse_compression' mode: sigma_2c has no porosity dataset to
+    # calibrate against (IMPROVEMENT_PLAN 3.1). The FE criteria still use it.
     PRISTINE_STRENGTH_KEY = {
         'compression': 'sigma_1c', 'tension': 'sigma_1t',
         'shear': 'tau_12', 'ilss': 'tau_ilss',
@@ -634,7 +636,8 @@ class EmpiricalSolver:
         """
         cache: list[tuple[np.ndarray, dict[str, float]]] = []
         for void in self.mesh.porosity_field.discrete_voids:
-            scf_dict = void.stress_concentration_factor()
+            scf_dict = void.stress_concentration_factor(
+                self.material.matrix_poisson)
             dist = void.distance_field(self.mesh.nodes[:, 0],
                                         self.mesh.nodes[:, 1],
                                         self.mesh.nodes[:, 2])

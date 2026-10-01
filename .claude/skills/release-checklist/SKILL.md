@@ -44,7 +44,9 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    following the existing style. Pull the entries from `git log
    <previous-tag>..HEAD --oneline` and group them into Added / Changed /
    Fixed / Removed. Don't invent entries — every line should map to a
-   landed commit.
+   landed commit. Move everything under `## [Unreleased]` into the new
+   section and leave `[Unreleased]` empty: the publish workflow refuses
+   to release otherwise.
 
 4. **Run the local gate** (must mirror `.github/workflows/tests.yml`):
    ```bash
@@ -60,6 +62,9 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    # Streamlit smoke (decoupled in CI to protect the lib matrix from
    # streamlit wheel issues on 3.13 — see issue #157)
    python -c "import app; print('app imports OK')"
+
+   # The same release check publish.yml runs on the tag
+   python .github/scripts/check_release.py v<new>
    ```
 
 5. **Rebuild the standalone CLI** to verify the PyInstaller spec still
@@ -92,7 +97,12 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
 - **Pushing tags or creating GitHub releases.** That's a deliberate
   manual step — the user should review the staged commit + changelog
   entry before any tag goes public.
-- **Cutting a PyPI release.** This project doesn't publish to PyPI from
-  CI; if/when it does, that step belongs here as a follow-up.
+- **Publishing to PyPI.** Pushing the `v<new>` tag triggers
+  `.github/workflows/publish.yml`. It reruns the release check, builds
+  and checks the sdist and wheel, and publishes through PyPI trusted
+  publishing. A published version cannot be re-uploaded, so the tag push
+  is the point of no return. Make that clear when handing back. One-time
+  setup, done by the maintainer on PyPI: a trusted publisher for
+  `elhajjar1/PorosityFE`, workflow `publish.yml`, environment `pypi`.
 - **Editing `CITATION.cff`.** Update it manually if the citation year
   rolls over; the existing block already pins `year = {2026}`.

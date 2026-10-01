@@ -157,11 +157,11 @@ class CompositeMesh:
 
         self.nodes = None
         self.elements = None
-        self.porosity = None
+        self.porosity: np.ndarray | None = None
         self.stiffness_reduction = None
         self.ply_ids = None
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
-        self.void_elements = None
+        self.void_elements: np.ndarray | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -266,6 +266,23 @@ class CompositeMesh:
     @property
     def domain_size(self) -> tuple[float, float, float]:
         return (self.L_x, self.L_y, self.L_z)
+
+    def mid_y_section_indices(self) -> np.ndarray:
+        """Node indices of the mid-y (``j = ny // 2``) cross-section.
+
+        Shape ``(nz + 1, nx + 1)``: row ``k`` is one through-thickness node
+        layer, column ``i`` one x position.
+        """
+        nx1, ny1 = self.nx + 1, self.ny + 1
+        k = np.arange(self.nz + 1)[:, None]
+        i = np.arange(nx1)[None, :]
+        return k * ny1 * nx1 + (self.ny // 2) * nx1 + i
+
+    def mid_y_element_indices(self) -> np.ndarray:
+        """Element indices of the mid-y element row, shape ``(nz, nx)``."""
+        k = np.arange(self.nz)[:, None]
+        i = np.arange(self.nx)[None, :]
+        return k * self.ny * self.nx + (self.ny // 2) * self.nx + i
 
     def nodes_on_face(self, face: MeshFace) -> np.ndarray:
         """Return node indices on the specified face.

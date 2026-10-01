@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__
 from .io import save_results_to_json
 from .materials import MATERIALS
-from .pipeline import compare_configurations
+from .pipeline import _resolve_n_jobs, compare_configurations, sweep_configurations
 from .porosity_field import POROSITY_CONFIGS
 from .viz import FEVisualizer
 
@@ -154,7 +154,52 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "re-assembled regardless of N."
         ),
     )
+    uq = parser.add_argument_group(
+        "uncertainty quantification",
+        "Propagate input scatter through the empirical Judd-Wright knockdown "
+        "for every loading mode and write porosity_uq_<Vp>.json per level.")
+    uq.add_argument(
+        "--uq", action="store_true",
+        help="Run the uncertainty propagation after the sweep.")
+    uq.add_argument(
+        "--uq-samples", type=int, default=500, metavar="N",
+        help="Latin-hypercube draws per loading mode.")
+    uq.add_argument(
+        "--uq-coef-cov", type=float, default=0.10, metavar="COV",
+        help=("CoV of the knockdown law's calibration coefficient, as a "
+              "fraction (0.10 = 10%%). The default is an assumed value; this "
+              "is usually the dominant term."))
+    uq.add_argument(
+        "--uq-vp-cov", type=float, default=0.10, metavar="COV",
+        help=("CoV of the measured mean porosity, as a fraction of it "
+              "(0.10 = 10%% of Vp, not 10 percentage points)."))
+    uq.add_argument(
+        "--uq-strength-cov", type=float, default=0.05, metavar="COV",
+        help="CoV of each mode's pristine strength, as a fraction (0.05 = 5%%).")
     return parser
+
+
+def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
+    """Propagate uncertainty for every loading mode at one porosity level."""
+    from .empirical import EmpiricalSolver
+    from .uq import propagate_uncertainty, save_uq_results_to_json
+
+    results = {}
+    for mode, strength_field in EmpiricalSolver.PRISTINE_STRENGTH_KEY.items():
+        results[mode] = propagate_uncertainty(
+            Vp, material, mode, 'judd_wright',
+            covs={strength_field: args.uq_strength_cov},
+            vp_cov=args.uq_vp_cov,
+            coef_cov=args.uq_coef_cov,
+            n_samples=args.uq_samples,
+            method='lhs',
+            seed=args.seed,
+        )
+        kd = results[mode]['knockdown']['percentiles']
+        logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f",
+                    mode, kd['p5'], kd['p50'], kd['p95'])
+    save_uq_results_to_json(results, out_path)
+    return results
 
 
 class _DynamicStdoutHandler(logging.StreamHandler):
@@ -234,6 +279,29 @@ def _resolve_via_shim(name: str, fallback):
     return getattr(shim, name, fallback)
 
 
+def _write_vp_plots(viz, results: dict, artifacts: dict, output_dir: Path,
+                    Vp_label: str) -> None:
+    """Write the per-configuration and comparison PNGs for one porosity level."""
+    for name in results:
+        art = artifacts[name]
+        viz.plot_porosity_field(
+            art.porosity_field,
+            save_path=output_dir / f"porosity_profile_{name}_{Vp_label}.png")
+        viz.plot_mesh_3d(
+            art.mesh,
+            save_path=output_dir / f"porosity_mesh_3d_{name}_{Vp_label}.png")
+        viz.plot_mesh_detail(
+            art.mesh,
+            save_path=output_dir / f"porosity_mesh_detail_{name}_{Vp_label}.png")
+        viz.plot_damage_contour(
+            art.mesh,
+            art.empirical_solver,
+            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
+    viz.plot_model_comparison(
+        results,
+        save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Argparse-driven entry point.
 
@@ -307,56 +375,100 @@ def main(argv: list[str] | None = None) -> int:
     viz = _resolve_via_shim('FEVisualizer', FEVisualizer)
     porosity_configs = _resolve_via_shim('POROSITY_CONFIGS', POROSITY_CONFIGS)
 
-    all_results = {}
-    for Vp in args.vp:
-        Vp_label = _vp_label(Vp)
+    # With several workers and several porosity levels, send every
+    # (Vp, config) pair to one process pool (IMPROVEMENT_PLAN 4.6) instead
+    # of draining a fresh pool per level.
+    precomputed: dict = {}
+    if _resolve_n_jobs(args.jobs) > 1 and len(set(args.vp)) > 1:
+        sweep_fn = _resolve_via_shim('sweep_configurations', sweep_configurations)
         try:
-            # ``return_artifacts=True`` because the --plots path needs the
-            # live mesh / empirical_solver / porosity_field objects for
-            # the FEVisualizer calls below (#44 item 3 migration).
-            results, artifacts = cmp_fn(
-                Vp,
+            precomputed = sweep_fn(
+                args.vp,
                 material_name=args.material,
                 applied_stress=args.applied_stress,
+                configs=porosity_configs,
                 seed=args.seed,
                 n_jobs=args.jobs,
                 return_artifacts=True,
             )
         except ValueError as exc:
-            print(f"ERROR: bad input for Vp={Vp}: {exc}", file=sys.stderr)
+            print(f"ERROR: bad input: {exc}", file=sys.stderr)
             return 2
         except Exception as exc:  # noqa: BLE001 - surface as solver failure
-            print(f"ERROR: solver failure for Vp={Vp}: {exc}", file=sys.stderr)
+            print(f"ERROR: solver failure: {exc}", file=sys.stderr)
             return 3
+
+    all_results = {}
+    for Vp in args.vp:
+        Vp_label = _vp_label(Vp)
+        if precomputed:
+            results, artifacts = precomputed[float(Vp)]
+        else:
+            try:
+                # ``return_artifacts=True`` because the --plots path needs the
+                # live mesh / empirical_solver / porosity_field objects for
+                # the FEVisualizer calls below (#44 item 3 migration).
+                results, artifacts = cmp_fn(
+                    Vp,
+                    material_name=args.material,
+                    applied_stress=args.applied_stress,
+                    configs=porosity_configs,
+                    seed=args.seed,
+                    n_jobs=args.jobs,
+                    return_artifacts=True,
+                )
+            except ValueError as exc:
+                print(f"ERROR: bad input for Vp={Vp}: {exc}", file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as solver failure
+                print(f"ERROR: solver failure for Vp={Vp}: {exc}", file=sys.stderr)
+                return 3
         all_results[Vp_label] = results
 
-        if args.plots:
-            for name in results:
-                art = artifacts[name]
-                viz.plot_porosity_field(
-                    art.porosity_field,
-                    save_path=output_dir / f"porosity_profile_{name}_{Vp_label}.png")
-                viz.plot_mesh_3d(
-                    art.mesh,
-                    save_path=output_dir / f"porosity_mesh_3d_{name}_{Vp_label}.png")
-                viz.plot_mesh_detail(
-                    art.mesh,
-                    save_path=output_dir / f"porosity_mesh_detail_{name}_{Vp_label}.png")
-                viz.plot_damage_contour(
-                    art.mesh,
-                    art.empirical_solver,
-                    save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
-            viz.plot_model_comparison(
-                results,
-                save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
+        # Writing outputs keeps the 0/2/3 contract: an unwritable file is
+        # an input/environment problem (2), anything else a failure (3).
+        try:
+            if args.plots:
+                _write_vp_plots(viz, results, artifacts, output_dir, Vp_label)
+            out_path = output_dir / f"porosity_analysis_results_{Vp_label}.json"
+            save_fn(results, out_path, artifacts=artifacts)
+        except OSError as exc:
+            print(f"ERROR: cannot write output for Vp={Vp}: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # noqa: BLE001 - surface as a failure
+            print(f"ERROR: writing output for Vp={Vp} failed: {exc}", file=sys.stderr)
+            return 3
 
-        out_path = output_dir / f"porosity_analysis_results_{Vp_label}.json"
-        save_fn(results, out_path, artifacts=artifacts)
+    if args.uq:
+        if args.uq_samples <= 0:
+            print("ERROR: --uq-samples must be a positive integer.", file=sys.stderr)
+            return 2
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nUncertainty propagation: Vp = %.2f%%", Vp * 100)
+            try:
+                _run_uq(args, args.material, Vp,
+                        output_dir / f"porosity_uq_{Vp_label}.json")
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: uncertainty propagation for Vp={Vp}: {exc}",
+                      file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as a failure
+                print(f"ERROR: uncertainty propagation for Vp={Vp} failed: {exc}",
+                      file=sys.stderr)
+                return 3
 
     if args.plots and all_results:
-        viz.plot_knockdown_curves(
-            all_results,
-            save_path=output_dir / "porosity_knockdown_curves.png")
+        try:
+            viz.plot_knockdown_curves(
+                all_results,
+                save_path=output_dir / "porosity_knockdown_curves.png")
+        except OSError as exc:
+            print(f"ERROR: cannot write knockdown curves: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # noqa: BLE001 - surface as a failure
+            print(f"ERROR: plotting knockdown curves failed: {exc}", file=sys.stderr)
+            return 3
 
     _bar = "=" * 70
     logger.info("\n%s", _bar)

@@ -101,6 +101,7 @@ from .io import _KNOWN_FORMATS as _KNOWN_FORMATS  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
+from .io import FORMAT_UQ as FORMAT_UQ  # noqa: F401, E402
 from .io import JSON_SCHEMA_VERSION as JSON_SCHEMA_VERSION  # noqa: F401, E402
 from .io import _build_provenance as _build_provenance  # noqa: F401, E402
 from .io import _json_default as _json_default  # noqa: F401, E402
@@ -116,6 +117,7 @@ from .pipeline import _build_config_result as _build_config_result  # noqa: F401
 from .pipeline import _resolve_n_jobs as _resolve_n_jobs  # noqa: F401, E402
 from .pipeline import build_empirical_pipeline as build_empirical_pipeline  # noqa: F401, E402
 from .pipeline import compare_configurations as compare_configurations  # noqa: F401, E402
+from .pipeline import sweep_configurations as sweep_configurations  # noqa: F401, E402
 from .porosity_field import POROSITY_CONFIGS as POROSITY_CONFIGS  # noqa: F401, E402
 from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
 from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
@@ -129,6 +131,7 @@ from .uq import _UQ_DEFAULT_PERCENTILES as _UQ_DEFAULT_PERCENTILES  # noqa: F401
 from .uq import _draw_unit_samples as _draw_unit_samples  # noqa: F401, E402
 from .uq import _normalize_uq_spec as _normalize_uq_spec  # noqa: F401, E402
 from .uq import propagate_uncertainty as propagate_uncertainty  # noqa: F401, E402
+from .uq import save_uq_results_to_json as save_uq_results_to_json  # noqa: F401, E402
 from .viz import FEVisualizer as FEVisualizer  # noqa: F401, E402
 from .void_geometry import VOID_SHAPES as VOID_SHAPES  # noqa: F401, E402
 from .void_geometry import VoidGeometry as VoidGeometry  # noqa: F401, E402
@@ -168,6 +171,7 @@ __all__ = [
     "EmpiricalSolver",
     "FatigueModel",
     "propagate_uncertainty",
+    "save_uq_results_to_json",
     # Coordinate transforms
     "rotation_matrix_3d",
     "rotate_stiffness_3d",
@@ -192,12 +196,14 @@ __all__ = [
     "FORMAT_EMPIRICAL_SWEEP",
     "FORMAT_FE_FIELDS",
     "FORMAT_NCR",
+    "FORMAT_UQ",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",
     # Pipeline / CLI
     "build_empirical_pipeline",
     "compare_configurations",
+    "sweep_configurations",
     "main",
     # Closed-set string type aliases (#109)
     "ClusterLocation",

@@ -55,7 +55,8 @@ JSON_SCHEMA_VERSION = "1.1"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
-_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR}
+FORMAT_UQ = "porosity-fe.uq"
+_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ}
 
 
 # Per-format units descriptors for the self-documenting ``units`` envelope
@@ -66,6 +67,14 @@ _UNITS_EMPIRICAL_SWEEP = {
     "failure_stress": "MPa",
     "knockdown": "dimensionless fraction in (0, 1]",
     "void_volume_fraction": "dimensionless fraction in [0, 1]",
+}
+_UNITS_UQ = {
+    "failure_stress": "MPa",
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "void_volume_fraction": "dimensionless fraction in [0, 1]",
+    "vp_cov": "dimensionless coefficient of variation",
+    "coef_cov": "dimensionless coefficient of variation",
+    "percentiles": "%",
 }
 _UNITS_NCR = {
     "failure_stress": "MPa",
@@ -102,6 +111,28 @@ def _git_commit_sha() -> str | None:
     except Exception:
         return None
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _wrap_envelope(fmt: str, units: dict | None = None,
+                   payload: dict | None = None, *, seed: int | None = None) -> dict:
+    """Standard JSON envelope: schema version, format, provenance, units.
+
+    ``payload`` keys follow the envelope keys. ``units`` is omitted when
+    ``None``. Every JSON writer builds its envelope here.
+    """
+    envelope = {
+        'schema_version': JSON_SCHEMA_VERSION,
+        'format': fmt,
+        'provenance': _build_provenance(seed=seed),
+    }
+    if units is not None:
+        # Self-documenting units block (#131): documents the physical units
+        # of the numeric leaves so downstream consumers reading only the
+        # JSON can interpret values without external docs.
+        envelope['units'] = dict(units)
+    if payload:
+        envelope.update(payload)
+    return envelope
 
 
 def _build_provenance(seed: int | None = None) -> dict:
@@ -226,15 +257,7 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
 
     filename = Path(filename)
 
-    output = {
-        'schema_version': JSON_SCHEMA_VERSION,
-        'format': FORMAT_EMPIRICAL_SWEEP,
-        'provenance': _build_provenance(seed=seed),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the payload below so downstream consumers
-        # reading only the JSON can interpret values without external docs.
-        'units': dict(_UNITS_EMPIRICAL_SWEEP),
-    }
+    output = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_EMPIRICAL_SWEEP, seed=seed)
     for name, data in results.items():
         if name in ('schema_version', 'format', 'units'):
             # Defensive: a user-named config that collides with envelope

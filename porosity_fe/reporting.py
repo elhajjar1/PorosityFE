@@ -23,6 +23,7 @@ import csv
 import datetime
 import io
 import json
+import re
 import textwrap
 
 
@@ -84,15 +85,19 @@ def parse_layup(text: str) -> list:
     return angles
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\s\x00-\x1f]')
+
+
 def _sanitise_filename_component(value: str) -> str:
     """Replace filesystem-unfriendly characters in a filename fragment.
 
     Slashes and spaces are the common offenders in material codes and
-    user-typed NCR references (e.g. ``"T800/epoxy"``, ``"NCR 12"``); both
-    become underscores so the resulting filename is portable across
-    Windows, macOS and Linux.
+    user-typed NCR references (e.g. ``"T800/epoxy"``, ``"NCR 12"``). They,
+    the other characters Windows forbids (``\\ : * ? " < > |``), other
+    whitespace and control characters all become underscores, so the
+    resulting filename is portable across Windows, macOS and Linux.
     """
-    return str(value).replace("/", "_").replace(" ", "_")
+    return _UNSAFE_FILENAME_CHARS.sub("_", str(value))
 
 
 def download_filename_stem(payload: dict) -> str:
@@ -142,24 +147,8 @@ def build_export_payload(result: dict) -> dict:
 
 
 def write_results_json(filepath: str, payload: dict) -> None:
-    from porosity_fe import (
-        FORMAT_EMPIRICAL_SWEEP,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_EMPIRICAL_SWEEP,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the payload below.
-        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
-        **payload,
-    }
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, indent=2, default=_json_default)
+        f.write(_serialise_payload_json(payload))
 
 
 def _format_csv_row(mode: str, model: str, r: dict) -> list:
@@ -198,22 +187,9 @@ def write_results_csv(filepath: str, payload: dict) -> None:
 
 
 def _serialise_payload_json(payload: dict) -> str:
-    from porosity_fe import (
-        FORMAT_EMPIRICAL_SWEEP,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_EMPIRICAL_SWEEP,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the payload below.
-        "units": dict(_UNITS_STREAMLIT_EMPIRICAL),
-        **payload,
-    }
+    from porosity_fe import FORMAT_EMPIRICAL_SWEEP, _json_default
+    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL, _wrap_envelope
+    envelope = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_STREAMLIT_EMPIRICAL, payload)
     return json.dumps(envelope, indent=2, default=_json_default)
 
 
@@ -270,7 +246,7 @@ def governing_failure(result: dict) -> dict:
 
 
 def recommend_disposition(
-    Vp: float, governing_knockdown: float, structural_class: str = "primary"
+    Vp_percent: float, governing_knockdown: float, structural_class: str = "primary"
 ) -> dict:
     """Recommend (not decide) an MRB disposition path for a porosity NCR.
 
@@ -279,8 +255,38 @@ def recommend_disposition(
     structural class. It is deliberately conservative: the released
     engineering drawing / process spec is the governing acceptance
     authority, and the MRB must substantiate against it.
+
+    Parameters
+    ----------
+    Vp_percent : float
+        Measured void content **in percent**, as reported on an NCR:
+        ``3.0`` means 3 % voids. This is the one porosity input in the
+        package that takes a percent rather than a fraction; passing the
+        fraction ``0.03`` would be read as 0.03 % and recommend Use-As-Is.
+    governing_knockdown : float
+        Worst-case strength knockdown, a fraction in ``(0, 1]``.
+    structural_class : str
+        One of :data:`STRUCTURAL_CLASSES`.
+
+    Raises
+    ------
+    ValueError
+        If ``Vp_percent`` is not a finite value in ``[0, 100]``, or
+        ``structural_class`` is not one of :data:`STRUCTURAL_CLASSES`.
+        (An unknown class used to fall back to ``"primary"`` silently,
+        which in an MRB record would misstate the substantiation basis.)
     """
-    structural_class = structural_class if structural_class in STRUCTURAL_CLASSES else "primary"
+    if not (0.0 <= Vp_percent <= 100.0):  # also rejects NaN
+        raise ValueError(
+            f"Vp_percent must be the void content in percent, in [0, 100]; "
+            f"got {Vp_percent!r}."
+        )
+    Vp = float(Vp_percent)
+    if structural_class not in STRUCTURAL_CLASSES:
+        raise ValueError(
+            f"Unknown structural_class {structural_class!r}; "
+            f"expected one of {list(STRUCTURAL_CLASSES)}."
+        )
 
     if Vp <= 1.0 and governing_knockdown >= 0.95:
         path = "Use-As-Is (UAI) — pending MRB concurrence"
@@ -438,22 +444,9 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
 
 
 def serialise_ncr_json(ncr: dict) -> str:
-    from porosity_fe import (
-        FORMAT_NCR,
-        JSON_SCHEMA_VERSION,
-        _build_provenance,
-        _json_default,
-    )
-    from porosity_fe.io import _UNITS_NCR
-    envelope = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "format": FORMAT_NCR,
-        "provenance": _build_provenance(),
-        # Self-documenting units block (#131): documents the physical units
-        # of the numeric leaves in the NCR payload below.
-        "units": dict(_UNITS_NCR),
-        **ncr,
-    }
+    from porosity_fe import FORMAT_NCR, _json_default
+    from porosity_fe.io import _UNITS_NCR, _wrap_envelope
+    envelope = _wrap_envelope(FORMAT_NCR, _UNITS_NCR, ncr)
     return json.dumps(envelope, indent=2, default=_json_default)
 
 

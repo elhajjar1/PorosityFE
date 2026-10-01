@@ -312,8 +312,8 @@ def test_resolve_material_raises_on_unknown_fiber_matrix():
 
 
 def test_resolve_material_strict_kwarg_is_backward_compatible():
-    """The ``strict`` kwarg is retained as a no-op for backward compatibility
-    (issue #34 made the loud KeyError unconditional). Passing strict=False
+    """The ``strict`` kwarg is accepted but ignored (issue #34 made the loud
+    KeyError unconditional), with a DeprecationWarning. Passing strict=False
     must still raise on an unknown (fiber, matrix) pair."""
     from validation.validate_all import resolve_material
 
@@ -326,10 +326,10 @@ def test_resolve_material_strict_kwarg_is_backward_compatible():
             'n_plies': 8,
         }
     }
-    with pytest.raises(KeyError, match='UnknownFiberXYZ'):
-        resolve_material(dataset, strict=True)
-    with pytest.raises(KeyError, match='UnknownFiberXYZ'):
-        resolve_material(dataset, strict=False)
+    for strict in (True, False):
+        with pytest.warns(DeprecationWarning, match='strict'), \
+                pytest.raises(KeyError, match='UnknownFiberXYZ'):
+            resolve_material(dataset, strict=strict)
 
 
 def test_resolve_material_no_warning_for_known_fiber_matrix():
@@ -490,36 +490,36 @@ _MAE_BASELINES = {
     ('bowles_1992', 'ilss'): 3.019,
     ('elhajjar_2025', 'compression_strength'): 5.643,
     ('elhajjar_2025', 'tensile_strength'): 4.331,
-    ('ghiorse_1993', 'flexural_modulus'): 16.284,
+    ('ghiorse_1993', 'flexural_modulus'): 16.219,
     ('ghiorse_1993', 'ilss'): 10.155,
     ('jeong_1997', 'ilss'): 4.156,
-    ('liu_2006', 'flexural_modulus'): 7.707,
+    ('liu_2006', 'flexural_modulus'): 7.68,
     ('liu_2006', 'ilss'): 1.987,
-    ('liu_2006', 'tensile_modulus'): 1.808,
+    ('liu_2006', 'tensile_modulus'): 1.771,
     ('liu_2006', 'tensile_strength'): 1.581,
-    ('liu_2018', 'tensile_modulus'): 0.864,
+    ('liu_2018', 'tensile_modulus'): 0.858,
     ('liu_2018', 'tensile_strength'): 5.26,
-    ('liu_2018', 'transverse_tensile_modulus'): 3.286,
+    ('liu_2018', 'transverse_tensile_modulus'): 2.756,
     ('liu_2018', 'transverse_tensile_strength'): 5.696,
-    ('olivier_1995', 'flexural_modulus'): 10.55,
+    ('olivier_1995', 'flexural_modulus'): 10.528,
     ('olivier_1995', 'ilss'): 1.554,
     ('olivier_1995', 'tensile_strength'): 15.667,
-    ('stamopoulos_2016', 'flexural_modulus'): 2.314,
+    ('stamopoulos_2016', 'flexural_modulus'): 2.309,
     ('stamopoulos_2016', 'ilss'): 2.523,
-    ('stamopoulos_2016', 'shear_modulus'): 15.387,
+    ('stamopoulos_2016', 'shear_modulus'): 14.734,
     ('stamopoulos_2016', 'shear_strength'): 4.353,
-    ('stamopoulos_2016', 'transverse_tensile_modulus'): 1.022,
+    ('stamopoulos_2016', 'transverse_tensile_modulus'): 1.489,
     ('stamopoulos_2016', 'transverse_tensile_strength'): 2.493,
-    ('tang_1987', 'flexural_modulus'): 7.933,
+    ('tang_1987', 'flexural_modulus'): 7.922,
     ('tang_1987', 'ilss'): 8.374,
     ('tang_1987', 'tensile_strength'): 10.923,
-    ('wang_2022', 'tensile_modulus'): 1.336,
+    ('wang_2022', 'tensile_modulus'): 1.325,
     ('wang_2022', 'tensile_strength'): 12.801,
     ('wen_2023', 'compression_strength'): 17.236,
     ('wen_2023', 'ilss'): 5.704,
     ('wen_2023', 'shear_strength'): 22.644,
     ('wen_2023', 'tensile_strength'): 6.583,
-    ('zhang_peek_2025', 'transverse_tensile_modulus'): 5.96,
+    ('zhang_peek_2025', 'transverse_tensile_modulus'): 5.512,
     ('zhang_peek_2025', 'transverse_tensile_strength'): 14.077,
 }
 
@@ -600,3 +600,21 @@ def test_run_one_dataset_is_picklable():
     import pickle
     from validation.validate_all import _run_one_dataset
     assert pickle.loads(pickle.dumps(_run_one_dataset)) is _run_one_dataset
+
+
+# ---------------------------------------------------------------------------
+# IMPROVEMENT_PLAN 6.6 — golden pin on the headline validation metric
+#
+# The per-entry pins above tolerate 10% drift each; this catches a small
+# drift spread across many entries, and a dataset or property silently
+# appearing or disappearing. Re-pin (and update README "Overall MAE") only
+# on an intentional model or dataset change.
+# ---------------------------------------------------------------------------
+
+def test_headline_mae_pinned(_all_results):
+    from validation.validate_all import summarize_mae
+    s = summarize_mae(_all_results)
+    assert s['n_entries'] == 35
+    assert s['n_points'] == 239
+    assert s['property_weighted_mae'] == pytest.approx(7.050, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(6.531, abs=0.05)

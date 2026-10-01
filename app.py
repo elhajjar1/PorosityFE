@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import io
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import matplotlib
@@ -39,9 +41,11 @@ from porosity_fe import (
     LABEL_X_MM,
     LABEL_Z_MM,
     MATERIALS,
+    EmpiricalSolver,
     FESolver,
     _configure_matplotlib_style,
     build_empirical_pipeline,
+    propagate_uncertainty,
 )
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -100,13 +104,39 @@ def _config_to_key(cfg: dict) -> tuple:
                  for k in _CFG_KEYS)
 
 
-@st.cache_data(show_spinner=False)
+# Each entry pickles a mesh and its fields (a few MB), so bound the cache
+# instead of letting it grow for the life of the server process.
+@st.cache_data(show_spinner=False, max_entries=16)
 def run_analysis_cached(cfg_key: tuple) -> dict:
     """Cached wrapper around :func:`run_analysis`. ``cfg_key`` must be hashable."""
     cfg = {}
     for k, v in cfg_key:
         cfg[k] = list(v) if isinstance(v, tuple) else v
     return run_analysis(cfg)
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
+                  vp_cov: float, strength_cov: float) -> tuple[dict, list[str]]:
+    """Latin-hypercube uncertainty propagation for the analysed laminate.
+
+    Returns the :func:`propagate_uncertainty` result and any warning
+    messages it raised (e.g. draws beyond the calibration bound).
+    """
+    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
+    material = dataclasses.replace(
+        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+    strength_field = EmpiricalSolver.PRISTINE_STRENGTH_KEY[mode]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = propagate_uncertainty(
+            cfg["Vp"] / 100.0, material, mode, "judd_wright",
+            covs={strength_field: strength_cov},
+            vp_cov=vp_cov, coef_cov=coef_cov,
+            n_samples=n_samples, method="lhs", seed=0,
+            ply_angles=cfg["angles"],
+        )
+    return res, sorted({str(w.message) for w in caught})
 
 
 def run_analysis(cfg: dict) -> dict:
@@ -212,19 +242,10 @@ def plot_mesh(result: dict):
     """Mid-y cross-section coloured by stiffness retention with void overlays."""
     fig, ax = plt.subplots(figsize=(8, 5))
     mesh = result["mesh"]
-    nx1 = mesh.nx + 1
-    ny1 = mesh.ny + 1
-    ny_mid = mesh.ny // 2
-
-    indices = []
-    for k in range(mesh.nz + 1):
-        for i in range(mesh.nx + 1):
-            indices.append(k * ny1 * nx1 + ny_mid * nx1 + i)
-    indices = np.array(indices)
-
-    X = mesh.nodes[indices, 0].reshape(mesh.nz + 1, mesh.nx + 1)
-    Z = mesh.nodes[indices, 2].reshape(mesh.nz + 1, mesh.nx + 1)
-    Sr = mesh.stiffness_reduction[indices].reshape(mesh.nz + 1, mesh.nx + 1)
+    section = mesh.mid_y_section_indices()   # (nz + 1, nx + 1)
+    X = mesh.nodes[section, 0]
+    Z = mesh.nodes[section, 2]
+    Sr = mesh.stiffness_reduction[section]
 
     im = ax.contourf(X, Z, Sr * 100, levels=20, cmap="cividis",
                      vmin=max(0, Sr.min() * 100 - 1), vmax=100)
@@ -233,17 +254,9 @@ def plot_mesh(result: dict):
     step_x = max(1, mesh.nx // 20)
     step_z = max(1, mesh.nz // 20)
     for k in range(0, mesh.nz + 1, step_z):
-        row_x = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 0]
-        row_z = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for i in range(mesh.nx + 1)], 2]
-        ax.plot(row_x, row_z, "k-", linewidth=0.3, alpha=0.4)
+        ax.plot(X[k], Z[k], "k-", linewidth=0.3, alpha=0.4)
     for i in range(0, mesh.nx + 1, step_x):
-        col_x = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 0]
-        col_z = mesh.nodes[
-            [k * ny1 * nx1 + ny_mid * nx1 + i for k in range(mesh.nz + 1)], 2]
-        ax.plot(col_x, col_z, "k-", linewidth=0.3, alpha=0.4)
+        ax.plot(X[:, i], Z[:, i], "k-", linewidth=0.3, alpha=0.4)
 
     void_elems = mesh.void_elements
     if len(void_elems) > 0:
@@ -369,6 +382,26 @@ _STRESS_COMPONENTS = {
 }
 
 
+def plot_uq(uq: dict):
+    """Histogram of sampled knockdowns with the p5 / p50 / p95 band."""
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    kd = np.asarray(uq["samples"]["knockdown"])
+    pct = uq["knockdown"]["percentiles"]
+    ax.hist(kd, bins=40, color="0.7", edgecolor="0.4")
+    ax.axvspan(pct["p5"], pct["p95"], color="tab:blue", alpha=0.15,
+               label=f"p5-p95: {pct['p5']:.3f}-{pct['p95']:.3f}")
+    ax.axvline(pct["p50"], color="tab:blue", linewidth=2,
+               label=f"p50: {pct['p50']:.3f}")
+    ax.axvline(uq["nominal"]["knockdown"], color="k", linestyle="--",
+               label=f"nominal: {uq['nominal']['knockdown']:.3f}")
+    ax.set_xlabel(LABEL_KNOCKDOWN)
+    ax.set_ylabel("Draws")
+    ax.set_title(f"Knockdown uncertainty: {uq['mode']}, {uq['n_samples']} draws")
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    return fig
+
+
 def plot_stress(result: dict, comp_name: str):
     fig, ax = plt.subplots(figsize=(8, 5))
     fe_field = result.get("fe_field")
@@ -394,12 +427,7 @@ def plot_stress(result: dict, comp_name: str):
     else:
         elem_stress = stress_local.mean(axis=1)[:, comp_idx]
 
-    ny_mid = mesh.ny // 2
-    mid_elem_indices = []
-    for k in range(mesh.nz):
-        for i in range(mesh.nx):
-            mid_elem_indices.append(k * mesh.ny * mesh.nx + ny_mid * mesh.nx + i)
-    mid_elem_indices = np.array(mid_elem_indices)
+    mid_elem_indices = mesh.mid_y_element_indices().ravel()
 
     elem_nodes_coords = mesh.nodes[mesh.elements[mid_elem_indices]]
     cx = elem_nodes_coords[:, :, 0].mean(axis=1)
@@ -517,10 +545,11 @@ def _build_sidebar_inputs() -> dict | None:
 
         st.subheader("Porosity")
         Vp = st.number_input(
-            "Void volume fraction (%)",
+            "Void content Vp (%)",
             min_value=0.1, max_value=15.0, value=3.0, step=0.5, format="%.1f",
             help=(
-                "Typical range: 0.5–5% for autoclave, 2–10% for OOA."
+                "Enter a percentage: 3.0 means 3 % voids (a volume fraction "
+                "of 0.03). Typical range: 0.5–5 % for autoclave, 2–10 % for OOA."
             ),
         )
         distribution_label = st.selectbox(
@@ -638,6 +667,18 @@ def _build_sidebar_inputs() -> dict | None:
     return {"cfg": cfg, "layup_str": layup_str, "run": run}
 
 
+def _show_figure(fig, file_stem: str, key: str) -> None:
+    """Render ``fig`` in the page and offer it as a PNG download."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    st.pyplot(fig, clear_figure=True)
+    plt.close(fig)
+    st.download_button(
+        "Download PNG", data=buf.getvalue(), file_name=f"{file_stem}.png",
+        mime="image/png", key=key,
+    )
+
+
 def _placeholder_tab():
     st.info("Run an analysis to populate this tab.")
 
@@ -685,21 +726,78 @@ def _build_profile_tab(result: dict | None):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_profile(result), clear_figure=True)
+    _show_figure(plot_profile(result), "porosity_profile", "dl_png_profile")
 
 
 def _build_mesh_tab(result: dict | None):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_mesh(result), clear_figure=True)
+    _show_figure(plot_mesh(result), "mesh_section", "dl_png_mesh")
 
 
 def _build_results_tab(result: dict | None, layup_for_title: str):
     if result is None:
         _placeholder_tab()
         return
-    st.pyplot(plot_results(result, layup_for_title), clear_figure=True)
+    _show_figure(plot_results(result, layup_for_title), "knockdown_results",
+                 "dl_png_results")
+    _build_uq_expander(result)
+
+
+def _build_uq_expander(result: dict):
+    """Opt-in uncertainty propagation on the analysed laminate (plan 3.4)."""
+    with st.expander("Uncertainty (Latin hypercube sampling)"):
+        st.caption(
+            "Propagates scatter in the Judd-Wright calibration coefficient, "
+            "the measured porosity and the pristine strength through the "
+            "empirical knockdown. Each CoV is a fraction (0.10 = 10 % of the "
+            "value), not a percent of porosity. The defaults are assumptions; "
+            "set them to your own data.")
+        modes = list(EmpiricalSolver.PRISTINE_STRENGTH_KEY)
+        cfg = result["config"]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            mode = st.selectbox(
+                "Mode", modes, key="uq_mode",
+                index=modes.index(cfg["loading_mode"])
+                if cfg["loading_mode"] in modes else 0)
+            n_samples = st.number_input(
+                "Draws", min_value=50, max_value=5000, value=500, step=50,
+                key="uq_samples")
+        with c2:
+            coef_cov = st.number_input(
+                "Coefficient CoV", min_value=0.0, max_value=1.0, value=0.10,
+                step=0.01, key="uq_coef_cov",
+                help="Coefficient of variation of the coefficient, as a fraction: 0.10 means 10 %.")
+            vp_cov = st.number_input(
+                "Porosity CoV", min_value=0.0, max_value=1.0, value=0.10,
+                step=0.01, key="uq_vp_cov",
+                help="Coefficient of variation of the measured porosity, as a fraction: 0.10 means 10 %.")
+        with c3:
+            strength_cov = st.number_input(
+                "Strength CoV", min_value=0.0, max_value=1.0, value=0.05,
+                step=0.01, key="uq_strength_cov",
+                help="Coefficient of variation of the pristine strength, as a fraction: 0.10 means 10 %.")
+        params = (_config_to_key(cfg), mode, int(n_samples), float(coef_cov),
+                  float(vp_cov), float(strength_cov))
+        if st.button("Run uncertainty analysis", key="uq_run"):
+            st.session_state["uq_params"] = params
+        if st.session_state.get("uq_params") != params:
+            return
+        with st.spinner("Sampling..."):
+            uq, messages = run_uq_cached(*params)
+        for msg in messages:
+            st.warning(msg)
+        kd, fs = uq["knockdown"]["percentiles"], uq["failure_stress"]["percentiles"]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Knockdown p5", f"{kd['p5']:.3f}", f"{fs['p5']:.0f} MPa",
+                  delta_color="off")
+        m2.metric("Knockdown p50", f"{kd['p50']:.3f}", f"{fs['p50']:.0f} MPa",
+                  delta_color="off")
+        m3.metric("Knockdown p95", f"{kd['p95']:.3f}", f"{fs['p95']:.0f} MPa",
+                  delta_color="off")
+        _show_figure(plot_uq(uq), f"knockdown_uq_{mode}", "dl_png_uq")
 
 
 def _build_stress_tab(result: dict | None):
@@ -718,7 +816,10 @@ def _build_stress_tab(result: dict | None):
         options=list(_STRESS_COMPONENTS.keys()),
         index=0,
     )
-    st.pyplot(plot_stress(result, comp_name), clear_figure=True)
+    comp_idx = _STRESS_COMPONENTS[comp_name][0]
+    slug = ("s11", "s22", "s33", "t23", "t13", "t12")[comp_idx] \
+        if comp_idx >= 0 else "von_mises"
+    _show_figure(plot_stress(result, comp_name), f"stress_{slug}", "dl_png_stress")
 
 
 def _build_export_tab(result: dict | None, layup_for_title: str):
@@ -727,9 +828,10 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         return
     payload = build_export_payload(result)
     export_stem = download_filename_stem(payload)
+    payload_json = _serialise_payload_json(payload)
     st.download_button(
         "Download JSON",
-        data=_serialise_payload_json(payload),
+        data=payload_json,
         file_name=f"{export_stem}.json",
         mime="application/json",
         use_container_width=True,
@@ -744,7 +846,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         key="dl_export_csv",
     )
     with st.expander("Preview JSON"):
-        st.code(_serialise_payload_json(payload), language="json")
+        st.code(payload_json, language="json")
 
     st.divider()
     st.subheader("NCR validation summary")

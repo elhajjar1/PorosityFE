@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """Master validation runner: loads all datasets and runs model predictions."""
 
+import dataclasses
+import glob
 import json
 import logging
 import os
 import sys
-from typing import Dict, Any
+import warnings
+from concurrent.futures import ProcessPoolExecutor
+from typing import Any, Dict
+
+import jsonschema
+import matplotlib
+
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +28,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.append(_REPO_ROOT)
 
-import jsonschema
+from porosity_fe_analysis import (
+    LABEL_MAE_PCT,
+    MATERIALS,
+    CompositeMesh,
+    EmpiricalSolver,
+    MaterialProperties,
+    PorosityField,
+    _configure_matplotlib_style,
+    compute_degraded_clt_flexural_modulus,
+    compute_degraded_clt_moduli,
+)
+
+# Share the project-wide rcParams (fonts, DPI, cividis colormap, etc.)
+# with the static-PNG path in ``porosity_fe_analysis`` and the Streamlit
+# app in ``app.py`` so all three cannot drift (#53).
+_configure_matplotlib_style()
 
 
 class ValidationError(Exception):
@@ -59,10 +85,6 @@ def load_dataset(path: str) -> Dict[str, Any]:
     return data
 
 
-import dataclasses
-from porosity_fe_analysis import MATERIALS, MaterialProperties
-
-
 # Mapping from a dataset's (fiber, matrix) pair to a named preset in
 # ``porosity_fe_analysis.MATERIALS``.  Every dataset shipped under
 # ``validation/datasets/`` MUST have an entry here; ``resolve_material`` now
@@ -97,7 +119,7 @@ _FIBER_MATRIX_TO_PRESET = {
 }
 
 
-def resolve_material(dataset: Dict[str, Any], strict: bool = True) -> MaterialProperties:
+def resolve_material(dataset: Dict[str, Any], strict: bool | None = None) -> MaterialProperties:
     """Build a MaterialProperties instance from a dataset's material block.
 
     Selects the closest preset from ``MATERIALS`` based on fiber/matrix, then
@@ -116,10 +138,9 @@ def resolve_material(dataset: Dict[str, Any], strict: bool = True) -> MaterialPr
     dataset:
         A validated dataset dict containing a ``'material'`` block.
     strict:
-        Retained for backward compatibility.  As of #34 the function raises
-        ``KeyError`` on an unknown ``(fiber, matrix)`` pair regardless of
-        this flag; ``strict=False`` is therefore a no-op and is kept only so
-        existing call sites do not break.
+        Deprecated and ignored. As of #34 the function raises ``KeyError``
+        on an unknown ``(fiber, matrix)`` pair regardless; passing it emits
+        a ``DeprecationWarning``.
 
     Raises
     ------
@@ -130,6 +151,11 @@ def resolve_material(dataset: Dict[str, Any], strict: bool = True) -> MaterialPr
         add a ``MATERIALS`` entry in ``porosity_fe_analysis.py`` and map it
         in ``_FIBER_MATRIX_TO_PRESET``.
     """
+    if strict is not None:
+        warnings.warn(
+            "resolve_material(strict=...) is ignored and will be removed; an "
+            "unknown (fiber, matrix) pair always raises KeyError.",
+            DeprecationWarning, stacklevel=2)
     m = dataset['material']
     key = (m['fiber'], m['matrix'])
     if key not in _FIBER_MATRIX_TO_PRESET:
@@ -150,11 +176,6 @@ def resolve_material(dataset: Dict[str, Any], strict: bool = True) -> MaterialPr
     )
 
 
-from porosity_fe_analysis import (
-    PorosityField, CompositeMesh, EmpiricalSolver,
-)
-
-
 _PROPERTY_TO_MODE = {
     'compression_strength': 'compression',
     'tensile_strength': 'tension',
@@ -167,11 +188,6 @@ _PROPERTY_TO_MODE = {
     'shear_strength': 'shear',
     'ilss': 'ilss',
 }
-
-# Properties that cannot currently be predicted by EmpiricalSolver due to
-# missing calibrated failure modes.  Currently empty: 'transverse_tensile_strength'
-# is now supported via the dedicated 'transverse_tension' mode (issue #35).
-_UNSUPPORTED_STRENGTH_PROPS: set = set()
 
 
 def predict_strength(dataset: Dict[str, Any], prop_key: str,
@@ -215,24 +231,7 @@ def predict_strength(dataset: Dict[str, Any], prop_key: str,
         ``predicted`` is the central list of normalized knockdowns (as
         before).  ``predicted_band`` is a parallel list of
         ``(lower, upper)`` 1-sigma bounds, also in normalized units.
-
-    Raises
-    ------
-    ValueError
-        If *prop_key* is in ``_UNSUPPORTED_STRENGTH_PROPS``, because
-        EmpiricalSolver has no calibrated failure mode for it and silently
-        misrouting it would yield incorrect physics.  The caller
-        (``run_all_datasets``) logs a warning and records an error entry
-        instead of raising to the user.
     """
-    if prop_key in _UNSUPPORTED_STRENGTH_PROPS:
-        msg = (
-            f"Property '{prop_key}' is not supported by EmpiricalSolver: no "
-            "calibrated failure mode exists.  Skipping MAE calculation "
-            "to avoid physically incorrect predictions."
-        )
-        logger.warning(msg)
-        raise ValueError(msg)
     mat = resolve_material(dataset)
     ply_angles = dataset['material']['ply_angles']
     mode = _PROPERTY_TO_MODE[prop_key]
@@ -281,12 +280,6 @@ def predict_strength(dataset: Dict[str, Any], prop_key: str,
     return predicted, predicted_band
 
 
-from porosity_fe_analysis import (
-    compute_degraded_clt_moduli,
-    compute_degraded_clt_flexural_modulus,
-)
-
-
 def predict_modulus(dataset: Dict[str, Any], prop_key: str,
                     vp_pcts, method: str = 'mori_tanaka') -> list:
     """Predict normalized modulus at each porosity level via CLT.
@@ -319,9 +312,6 @@ def predict_modulus(dataset: Dict[str, Any], prop_key: str,
 
     base_val = compute_fn(baseline_vp) if baseline_vp > 1e-9 else compute_fn(0.0)
     return [float(compute_fn(vp / 100.0) / base_val) for vp in vp_pcts]
-
-
-import numpy as np
 
 
 def compute_mae(predicted, experimental) -> float:
@@ -375,9 +365,6 @@ def summarize_mae(results: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
-import glob
-from concurrent.futures import ProcessPoolExecutor
-
 _MODULUS_PROPS = {'tensile_modulus', 'transverse_tensile_modulus',
                   'flexural_modulus', 'shear_modulus'}
 
@@ -409,14 +396,6 @@ def _run_one_dataset(path: str):
     for prop_key, prop_data in data['properties'].items():
         vp = prop_data['void_content_pct']
         exp = prop_data['normalized_values']
-        if prop_key in _UNSUPPORTED_STRENGTH_PROPS:
-            skip_msg = (
-                f"Skipping '{prop_key}' for dataset '{name}': no calibrated "
-                "EmpiricalSolver mode available (see issue #35)."
-            )
-            logger.warning(skip_msg)
-            dataset_results[prop_key] = {'skipped': skip_msg}
-            continue
         try:
             predicted_band = None
             if prop_key in _MODULUS_PROPS:
@@ -509,19 +488,6 @@ def run_all_datasets(datasets_dir: str = None,
             for p in paths}
 
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-# Share the project-wide rcParams (fonts, DPI, cividis colormap, etc.)
-# with the static-PNG path in ``porosity_fe_analysis`` and the Streamlit
-# app in ``app.py`` so all three cannot drift (#53).
-from porosity_fe_analysis import (  # noqa: E402
-    LABEL_MAE_PCT,
-    _configure_matplotlib_style,
-)
-
-_configure_matplotlib_style()
 
 
 def _emit_per_paper_band_pngs(results: Dict[str, Any], output_dir: str) -> list:

@@ -13,6 +13,17 @@ from ..transforms import rotate_stiffness_3d
 # SECTION 7d: HEX8 ELEMENT WITH POROSITY DEGRADATION
 # ============================================================
 
+# Void / degradation thresholds shared by stiffness assembly and failure
+# evaluation (IMPROVEMENT_PLAN 2.3). Keep these the only definitions.
+
+#: Upper clamp on the Gauss-point porosity fed to the micromechanics.
+VP_STIFFNESS_CLAMP = 0.99
+
+#: Elements whose nodal-mean porosity exceeds this carry no meaningful load
+#: and are left out of failure evaluation, as are geometric void elements
+#: (``CompositeMesh.void_elements``).
+VOID_VP_THRESHOLD = 0.95
+
 # Natural coordinates of 8 hex nodes
 _NODE_COORDS_REF = np.array([
     [-1.0, -1.0, -1.0],  # 0
@@ -218,7 +229,7 @@ class Hex8Element:
         else:
             N = self.shape_functions(xi, eta, zeta)
             Vp = float(N @ self.node_porosities)
-        Vp = max(0.0, min(Vp, 0.99))
+        Vp = max(0.0, min(Vp, VP_STIFFNESS_CLAMP))
 
         # 2. Component-wise degradation: degrade E11, E22, G12, etc. individually
         #    This correctly captures that E11 (fiber-dominated) is barely affected

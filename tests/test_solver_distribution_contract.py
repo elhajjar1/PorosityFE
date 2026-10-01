@@ -91,7 +91,7 @@ def test_distribution_shapes_produce_distinct_porosity_fields():
     for distribution in ('clustered', 'interface'):
         assert np.std(fields[distribution]) > 0.0
         assert np.max(fields[distribution]) > VP
-        assert not np.allclose(fields['uniform'], fields[distribution])
+        assert not np.allclose(fields["uniform"], fields[distribution], rtol=0, atol=1e-6)
 
 
 # --- FE path: distribution-sensitive -----------------------------------

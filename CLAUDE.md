@@ -88,7 +88,9 @@ implementations of the same physical claim.
 `PorosityField.__init__` enforces `Vp ∈ [0, 1]` and emits a percent-vs-fraction
 hint when the value looks like a percent (`Vp ≥ 1.001`). Any new API that
 accepts porosity input must keep that convention; plotting may multiply by
-100 for display only. See "Inputs and Conventions" in README.md for the
+100 for display only. The only percent inputs, each labelled as such, are the
+Streamlit "Void content Vp (%)" field, the CLI's `--vp-pct`, and
+`reporting.recommend_disposition(Vp_percent, ...)` (NCR convention). See "Inputs and Conventions" in README.md for the
 full table.
 
 ### Ply-angle resolution

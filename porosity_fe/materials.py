@@ -43,6 +43,11 @@ class MaterialProperties:
         Longitudinal compression and tension allowables, in MPa.
     sigma_2t, sigma_2c : float
         Transverse tension and compression allowables, in MPa.
+        ``sigma_2c`` enters the FE failure criteria (Tsai-Wu ``Y_c``,
+        Hashin matrix compression) but has no empirical loading mode: no
+        dataset in ``validation/datasets`` measures transverse compression
+        against porosity, so there is nothing to calibrate a knockdown
+        coefficient on.
     tau_12 : float
         In-plane shear allowable, in MPa.
     tau_ilss : float

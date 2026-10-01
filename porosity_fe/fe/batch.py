@@ -26,11 +26,7 @@ from ..homogenization import _degraded_composite_stiffness
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import rotate_stiffness_3d
-from .element import Hex8Element
-
-# Upper clamp on the Gauss-point porosity fed to the micromechanics, matching
-# Hex8Element._degraded_stiffness.
-_VP_CLAMP_MAX = 0.99
+from .element import VP_STIFFNESS_CLAMP, Hex8Element
 
 
 @dataclass(frozen=True)
@@ -177,7 +173,7 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
     p0 = node_por[:, :1]
     uniform = np.all(np.abs(node_por - p0) <= 1e-12 + 1e-5 * np.abs(p0), axis=1)
     Vp = np.where(uniform[:, None], p0, node_por @ N.T)       # (E, G)
-    Vp = np.clip(Vp, 0.0, _VP_CLAMP_MAX)
+    Vp = np.clip(Vp, 0.0, VP_STIFFNESS_CLAMP)
 
     # Evaluate the micromechanics once per distinct (Vp, angle) pair.
     angles = np.broadcast_to(

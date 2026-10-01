@@ -263,3 +263,26 @@ class TestCompositeMeshFindNodesNear:
             tol=1e-9,
         )
         assert ids_loose.size > ids_tight.size
+
+
+class TestMidYSectionIndices:
+    """IMPROVEMENT_PLAN 5.4: one helper for the mid-y cross-section."""
+
+    def _mesh(self):
+        mat = MATERIALS['T800_epoxy']
+        return CompositeMesh(PorosityField(mat, 0.02), mat, nx=5, ny=4, nz=3)
+
+    def test_nodes_match_reference_loop(self):
+        mesh = self._mesh()
+        nx1, ny1 = mesh.nx + 1, mesh.ny + 1
+        ref = np.array([[k * ny1 * nx1 + (mesh.ny // 2) * nx1 + i
+                         for i in range(nx1)] for k in range(mesh.nz + 1)])
+        np.testing.assert_array_equal(mesh.mid_y_section_indices(), ref)
+        y = mesh.nodes[mesh.mid_y_section_indices(), 1]
+        assert np.all(y == y.flat[0])
+
+    def test_elements_match_reference_loop(self):
+        mesh = self._mesh()
+        ref = np.array([[k * mesh.ny * mesh.nx + (mesh.ny // 2) * mesh.nx + i
+                         for i in range(mesh.nx)] for k in range(mesh.nz)])
+        np.testing.assert_array_equal(mesh.mid_y_element_indices(), ref)
