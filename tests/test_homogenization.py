@@ -372,6 +372,8 @@ class TestEshelbyTensorReference:
         (1.0, 3.0, 1.0),
         (1.0, 0.2, 1.0),
         (1.0, 1.0, 0.1),
+        (3.0, 1.0, 0.5),    # triaxial: exact tensor since plan 2.8
+        (1.0, 2.0, 4.0),
     ])
     def test_matches_mura_integrals(self, radii):
         S_code = self._recovered_eshelby(0.05, radii)
@@ -395,7 +397,7 @@ class TestEshelbyTensorReference:
         assert C_eff[0, 0] - 4.0 * C_eff[3, 3] / 3.0 == pytest.approx(K_ref, rel=1e-7)
 
     @pytest.mark.parametrize("radii", [
-        (3.0, 1.0, 1.0), (1.0, 1.0, 0.05), (1.0, 20.0, 1.0)])
+        (3.0, 1.0, 1.0), (1.0, 1.0, 0.05), (1.0, 20.0, 1.0), (3.0, 1.0, 0.5)])
     def test_effective_stiffness_is_symmetric(self, radii):
         from porosity_fe import _mt_effective_stiffness_cached
         _mt_effective_stiffness_cached.cache_clear()

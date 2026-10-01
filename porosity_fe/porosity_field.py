@@ -261,12 +261,27 @@ class PorosityField:
     def get_void_locations(self) -> list:
         return [(v.center.tolist(), v.radii.tolist()) for v in self.discrete_voids]
 
-    def effective_porosity_profile(self, nz: int = 100) -> tuple:
-        """Through-thickness profile including discrete void contributions."""
+    def effective_porosity_profile(self, nz: int = 100, x: float = 25.0,
+                                   y: float = 10.0) -> tuple:
+        """Through-thickness profile, including discrete voids, at ``(x, y)``.
+
+        Parameters
+        ----------
+        nz : int
+            Number of sample points through the thickness.
+        x, y : float
+            In-plane sampling location in mm. The defaults are the center of
+            the 50 x 20 mm ``CompositeMesh`` domain; pass the coordinates of
+            a discrete void to see its contribution.
+
+        Returns
+        -------
+        (z, Vp) : tuple of np.ndarray
+            Thickness coordinates (mm) and porosity fractions.
+        """
         z_coords = np.linspace(0, self.Lz, nz)
-        x_mid = np.full(nz, 25.0)  # Sample at domain center
-        y_mid = np.full(nz, 10.0)
-        Vp_vals = self.local_porosity(x_mid, y_mid, z_coords)
+        Vp_vals = self.local_porosity(np.full(nz, float(x)), np.full(nz, float(y)),
+                                      z_coords)
         return z_coords, Vp_vals
 
     def __repr__(self) -> str:

@@ -383,3 +383,32 @@ class TestEnvironmentalKnockdown:
             kd_env, rel=1e-12)
         assert combined.details['fatigue_knockdown'] == pytest.approx(
             kd_fat, rel=1e-12)
+
+
+class TestFiberConstituentFields:
+    """IMPROVEMENT_PLAN 2.8: fiber Poisson / shear modulus are inputs."""
+
+    def test_defaults_match_isotropic_fiber(self):
+        mat = MATERIALS['T800_epoxy']
+        assert mat.fiber_poisson == 0.2
+        assert mat.fiber_shear_modulus is None
+        assert mat.fiber_shear_modulus_eff == pytest.approx(mat.fiber_modulus / 2.4)
+
+    def test_measured_shear_modulus_changes_degradation(self):
+        import dataclasses
+        from porosity_fe.homogenization import _degraded_composite_stiffness
+        mat = MATERIALS['T800_epoxy']
+        aniso = dataclasses.replace(mat, fiber_shear_modulus=20000.0)
+        C_iso = _degraded_composite_stiffness(0.05, (1, 1, 1), mat)
+        C_aniso = _degraded_composite_stiffness(0.05, (1, 1, 1), aniso)
+        assert C_aniso[5, 5] != pytest.approx(C_iso[5, 5], rel=1e-6)
+        # G23 and G12 share the Halpin-Tsai ratio by construction.
+        assert C_aniso[3, 3] / mat.G23 == pytest.approx(C_aniso[5, 5] / mat.G12, rel=1e-12)
+
+    @pytest.mark.parametrize("kwargs", [{'fiber_poisson': 0.5}, {'fiber_poisson': float('nan')},
+                                        {'fiber_shear_modulus': 0.0},
+                                        {'fiber_shear_modulus': -1.0}])
+    def test_invalid_fiber_fields_rejected(self, kwargs):
+        import dataclasses
+        with pytest.raises(ValueError, match="fiber_"):
+            dataclasses.replace(MATERIALS['T800_epoxy'], **kwargs)

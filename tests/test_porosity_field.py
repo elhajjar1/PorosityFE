@@ -209,3 +209,16 @@ class TestProfileNormalizationCache:
         z = np.linspace(0, pf.Lz, 1000)
         zeros = np.zeros_like(z)
         assert pf.local_porosity(zeros, zeros, z).mean() == pytest.approx(0.04, rel=1e-12)
+
+
+def test_profile_can_sample_any_in_plane_location():
+    """IMPROVEMENT_PLAN 2.8: (x, y) are parameters, not hard-coded (25, 10)."""
+    from porosity_fe import MATERIALS, PorosityField, VoidGeometry
+    mat = MATERIALS['T800_epoxy']
+    void = VoidGeometry(center=(10.0, 5.0, mat.total_thickness / 2), radii=(2, 2, 0.5))
+    pf = PorosityField(mat, 0.02, discrete_voids=[void])
+    z, at_centre = pf.effective_porosity_profile(nz=50)
+    z2, default = pf.effective_porosity_profile(nz=50, x=25.0, y=10.0)
+    np.testing.assert_array_equal(at_centre, default)
+    _, through_void = pf.effective_porosity_profile(nz=50, x=10.0, y=5.0)
+    assert through_void.max() > at_centre.max()

@@ -74,6 +74,31 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     return cached.copy()
 
 
+def _mori_tanaka_voids(C_m: np.ndarray, S: np.ndarray, Vp: float) -> np.ndarray:
+    """Mori-Tanaka stiffness of a matrix with void volume fraction ``Vp``.
+
+    ``S`` is the Eshelby tensor in the engineering-shear Voigt form.
+    """
+    I6 = np.eye(6)
+    inner = I6 - (1 - Vp) * S
+    # The Mori-Tanaka concentration tensor `inner` becomes singular as Vp -> 1
+    # for high-aspect-ratio (oblate) voids even before the Vp > 0.99 early-out
+    # above is reached. Falling back to pinv keeps the result finite instead of
+    # propagating NaN/inf through the assembled stiffness.
+    try:
+        inner_inv = np.linalg.inv(inner)
+    except np.linalg.LinAlgError:
+        inner_inv = np.linalg.pinv(inner)
+    C_eff = C_m @ (I6 - Vp * inner_inv)
+    if not np.all(np.isfinite(C_eff)):
+        # Last-ditch: return the void-saturated zero stiffness rather than
+        # silently emitting NaN/inf from a near-singular inner. The wrapper
+        # always returns a defensive copy of whatever this inner returns,
+        # so callers stay safe from mutation either way.
+        return np.zeros((6, 6))
+    return C_eff
+
+
 @lru_cache(maxsize=_MT_CACHE_MAXSIZE)
 def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
                                    void_shape_radii: tuple[float, ...],
@@ -102,7 +127,21 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
 
     S = np.zeros((6, 6))
 
-    if (max(r) - min(r)) / max(r) < sphere_tol:
+    def _close(a, b):
+        return abs(a - b) / max(a, b) < sphere_tol
+
+    is_sphere = (max(r) - min(r)) / max(r) < sphere_tol
+    if not is_sphere and not (_close(r[1], r[2]) or _close(r[0], r[2])
+                              or _close(r[0], r[1])):
+        # Triaxial ellipsoid: no closed form. Use the general-ellipsoid
+        # tensor from Mura's integrals, already in the engineering-shear
+        # Voigt form (IMPROVEMENT_PLAN 2.8; this used to approximate the
+        # void as a spheroid about its longest axis).
+        from .void_geometry import _eshelby_tensor
+        S_eng = _eshelby_tensor((float(r[0]), float(r[1]), float(r[2])), nu)
+        return _mori_tanaka_voids(C_m, S_eng, Vp)
+
+    if is_sphere:
         # All three radii within 1% — treat as sphere.
         S[0, 0] = S[1, 1] = S[2, 2] = (7 - 5 * nu) / (15 * (1 - nu))
         S[0, 1] = S[0, 2] = S[1, 0] = S[1, 2] = S[2, 0] = S[2, 1] = \
@@ -111,21 +150,12 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
     else:
         # Axisymmetric: find the symmetry axis (the radius that differs
         # from the other two equal radii).
-        def _close(a, b):
-            return abs(a - b) / max(a, b) < sphere_tol
-
         if _close(r[1], r[2]):
             idx_axis = 0  # a_1 is the unique axis
         elif _close(r[0], r[2]):
             idx_axis = 1
-        elif _close(r[0], r[1]):
-            idx_axis = 2
         else:
-            # Triaxial: no axisymmetric closed form. Approximate by
-            # treating the largest axis as the symmetry axis (prolate
-            # fallback). Documented limitation; acceptable because the
-            # default VOID_SHAPES are all axisymmetric.
-            idx_axis = r.index(max(r))
+            idx_axis = 2
 
         a_axis = r[idx_axis]
         a_eq = r[(idx_axis + 1) % 3]  # equatorial radius
@@ -186,28 +216,7 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
     S[4, 4] *= 2.0
     S[5, 5] *= 2.0
 
-    I6 = np.eye(6)
-    inner = I6 - (1 - Vp) * S
-    # The Mori-Tanaka concentration tensor `inner` becomes singular as Vp -> 1
-    # for high-aspect-ratio (oblate) voids even before the Vp > 0.99 early-out
-    # above is reached. Falling back to pinv keeps the result finite instead of
-    # propagating NaN/inf through the assembled stiffness.
-    try:
-        inner_inv = np.linalg.inv(inner)
-    except np.linalg.LinAlgError:
-        inner_inv = np.linalg.pinv(inner)
-    C_eff = C_m @ (I6 - Vp * inner_inv)
-    if not np.all(np.isfinite(C_eff)):
-        # Last-ditch: return the void-saturated zero stiffness rather than
-        # silently emitting NaN/inf from a near-singular inner. The wrapper
-        # always returns a defensive copy of whatever this inner returns,
-        # so callers stay safe from mutation either way.
-        return np.zeros((6, 6))
-
-    # The lru_cache decorator handles storage + LRU eviction; the outer
-    # wrapper takes a defensive copy on return so callers can mutate the
-    # returned array without poisoning the cached value.
-    return C_eff
+    return _mori_tanaka_voids(C_m, S, Vp)
 
 
 def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
@@ -275,8 +284,8 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     # then apply ratios to actual measured composite properties.
     # This avoids mismatch between micromechanics predictions and actual data.
 
-    nu_f = 0.2  # typical carbon fiber Poisson's ratio
-    G_f = E_f / (2.0 * (1.0 + nu_f))
+    nu_f = mat.fiber_poisson
+    G_f = mat.fiber_shear_modulus_eff
 
     # E11 ratio (Rule of Mixtures — fiber-dominated, barely affected)
     E11_rom_prist = Vf * E_f + Vm * E_m
@@ -300,10 +309,10 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     G12_HT_deg = _halpin_tsai(G_f, G_m_eff, xi_G, Vf)
     r_G12 = G12_HT_deg / G12_HT_prist
 
-    # G23 ratio (Halpin-Tsai — matrix-dominated)
-    G23_HT_prist = _halpin_tsai(G_f, G_m, xi_G, Vf)
-    G23_HT_deg = _halpin_tsai(G_f, G_m_eff, xi_G, Vf)
-    r_G23 = G23_HT_deg / G23_HT_prist
+    # G23 ratio: the same Halpin-Tsai form (xi = 1, fiber G_f) as G12, so
+    # the two ratios are equal by construction. A G23-specific xi would
+    # change results without data to calibrate it against.
+    r_G23 = r_G12
 
     # nu12 ratio (Rule of Mixtures — weakly affected)
     nu12_rom_prist = Vf * nu_f + Vm * nu_m

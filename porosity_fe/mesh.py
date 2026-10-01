@@ -9,6 +9,7 @@ import numpy as np
 
 from ._ply_angles import _resolve_ply_angles
 from ._types import MeshFace
+from .gauss import gauss_points_hex
 from .materials import MaterialProperties
 from .porosity_field import PorosityField
 
@@ -414,8 +415,10 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     Returns
     -------
     dict
-        Quality metrics: min/max aspect ratio, min Jacobian determinant,
-        number of inverted elements, number of highly distorted elements.
+        Quality metrics: min/max aspect ratio, min Jacobian determinant over
+        the 8 Gauss points, number of inverted elements (non-positive
+        determinant at any Gauss point, matching what assembly rejects),
+        number of highly distorted elements.
 
     Raises
     ------
@@ -440,11 +443,15 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     with np.errstate(divide='ignore'):
         aspect_ratios = np.where(min_len > 1e-15, max_len / min_len, np.inf)
 
-    # Jacobian at element center
-    dN = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)
-    min_detJ_per_elem = np.linalg.det(np.einsum('ij,ejk->eik', dN, coords))
+    # Jacobian at the 8 Gauss points, the same points where assembly
+    # rejects a non-positive determinant; checking only the element center
+    # missed elements that are inverted near a corner (IMPROVEMENT_PLAN 2.8).
+    points, _ = gauss_points_hex(order=2)
+    dN = np.stack([Hex8Element.shape_derivatives(*p) for p in points])  # (G, 3, 8)
+    detJ = np.linalg.det(np.einsum('gij,ejk->egik', dN, coords))         # (E, G)
+    min_detJ_per_elem = detJ.min(axis=1)
 
-    n_inverted = int(np.sum(min_detJ_per_elem < 0))
+    n_inverted = int(np.sum(min_detJ_per_elem <= 0))
     n_distorted = int(np.sum(aspect_ratios > 20.0))
 
     result = {

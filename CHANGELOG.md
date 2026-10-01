@@ -5,6 +5,11 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Fiber constituent inputs.** `MaterialProperties` gains
+  `fiber_poisson` (default 0.2) and `fiber_shear_modulus` (default `None`,
+  meaning the isotropic `E_f / (2 (1 + nu_f))`). They replace a hard-coded
+  isotropic fiber in the Halpin-Tsai degradation ratios. The defaults
+  reproduce the earlier results bit for bit.
 - **PyPI release automation (IMPROVEMENT_PLAN 6.4).** A new
   `.github/workflows/publish.yml` runs on `v*` tags:
   - `.github/scripts/check_release.py` checks that the tag matches both
@@ -91,6 +96,30 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **Total mesh size is capped.** `CompositeMesh` rejected more than
+  10 000 elements per axis but still admitted 10 000^3 in total, so an
+  oversized mesh failed with an out-of-memory error partway through FE
+  assembly. It now rejects more than 1 000 000 elements up front and
+  states the estimated FE memory in the message. The app shows the error
+  under the mesh sliders and disables Run.
+- **Triaxial voids use the exact Eshelby tensor.** Voids with three
+  different radii were treated as a spheroid about their longest axis; the
+  Mori-Tanaka stiffness now uses the general-ellipsoid tensor (Mura's
+  integrals). **Result change** only for triaxial `void_shape_radii`; the
+  preset void shapes are axisymmetric and unchanged.
+- **UQ sweeps survive extreme draws.** A wide distribution could push
+  `fiber_volume_fraction` past 1, or a modulus or strength below 0 with
+  `'normal'`, and abort the sweep in validation. Perturbed values are now
+  clipped: fiber volume fraction to the hexagonal packing limit (0.907),
+  moduli and strengths to stay positive.
+- **Mesh quality check matches assembly.** `check_mesh_quality` tested the
+  Jacobian only at the element center, while assembly rejects a
+  non-positive determinant at any of the 8 Gauss points. It now checks the
+  same points, so a corner-inverted element is reported.
+- **`FatigueModel` says when `R` is ignored.** The S-N slopes are calibrated
+  at `R = 0.1` and no mean-stress correction is applied, so other values of
+  `R` do not change the result. A non-calibration `R` now emits a
+  `UserWarning` saying so.
 - **Knockdown-curve plot paired the wrong points.** `FEVisualizer.plot_knockdown_curves`
   sorted the x values numerically but read the y values in label text
   order. With `--vp 0.02 0.10 --plots` the 10% knockdowns were drawn at
@@ -222,6 +251,11 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **`effective_porosity_profile(nz, x=25.0, y=10.0)`** takes the in-plane
+  sampling location, which was hard-coded to the domain center.
+- **G23 degradation shares the G12 ratio explicitly.** Both used the same
+  Halpin-Tsai form with identical inputs; the duplicate computation is
+  removed and the equality is documented. Results are unchanged.
 - **Percent inputs are labelled as percent.** The only porosity inputs that
   take a percent now say so where the value is asked for:
   - the app field is "Void content Vp (%)", with help "3.0 means 3 % voids";
