@@ -286,3 +286,22 @@ class TestMidYSectionIndices:
         ref = np.array([[k * mesh.ny * mesh.nx + (mesh.ny // 2) * mesh.nx + i
                          for i in range(mesh.nx)] for k in range(mesh.nz)])
         np.testing.assert_array_equal(mesh.mid_y_element_indices(), ref)
+
+
+class TestTotalElementCap:
+    """IMPROVEMENT_PLAN 1.7: cap the total element count, not just each axis."""
+
+    def test_total_cap_rejects_large_mesh_before_building(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        # Every axis is far under the 10 000 per-axis cap.
+        with pytest.raises(ValueError, match="element cap"):
+            CompositeMesh(pf, mat, nx=200, ny=100, nz=100)
+
+    def test_mesh_at_the_cap_is_allowed(self, monkeypatch):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        monkeypatch.setattr(CompositeMesh, '_MAX_TOTAL_ELEMENTS', 4 * 2 * 3)
+        CompositeMesh(pf, mat, nx=4, ny=2, nz=3)
+        with pytest.raises(ValueError, match="GB before factorization"):
+            CompositeMesh(pf, mat, nx=4, ny=2, nz=4)

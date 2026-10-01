@@ -46,7 +46,9 @@ class CompositeMesh:
     nx, ny, nz : int, optional
         Number of elements along each axis (defaults
         ``nx=50``, ``ny=20``, ``nz=24``). Each must be a positive
-        integer not greater than ``_MAX_ELEMENTS_PER_AXIS`` (10 000).
+        integer not greater than ``_MAX_ELEMENTS_PER_AXIS`` (10 000), and
+        ``nx * ny * nz`` may not exceed ``_MAX_TOTAL_ELEMENTS`` (1 000 000;
+        an FE solve needs about 30 kB per element before factorization).
     ply_angles : list of float or {'QI', 'UD'}, optional
         Per-ply orientation in degrees, OR a string sentinel — ``'QI'``
         (default, expands to the 8-ply quasi-isotropic baseline
@@ -127,6 +129,13 @@ class CompositeMesh:
     # mesh is already ~100x what the GUI spinboxes allow; an order of magnitude
     # above that is almost certainly a typo or unit confusion.
     _MAX_ELEMENTS_PER_AXIS = 10_000
+    # The per-axis cap alone still admits 10_000**3 elements. FE assembly
+    # holds roughly 30 kB per element before the sparse factorization (B, C,
+    # element stiffness and COO triplets), so a million elements is already
+    # ~30 GB; refuse anything larger up front instead of failing with an
+    # out-of-memory error mid-assembly (IMPROVEMENT_PLAN 1.7).
+    _MAX_TOTAL_ELEMENTS = 1_000_000
+    _FE_BYTES_PER_ELEMENT = 30_000
 
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
                  nx: int = 50, ny: int = 20, nz: int = 24,
@@ -144,6 +153,15 @@ class CompositeMesh:
                     f"Such a fine mesh would exhaust memory; "
                     f"reduce or split the analysis."
                 )
+        n_total = int(nx) * int(ny) * int(nz)
+        if n_total > self._MAX_TOTAL_ELEMENTS:
+            gb = n_total * self._FE_BYTES_PER_ELEMENT / 1e9
+            raise ValueError(
+                f"CompositeMesh {nx}x{ny}x{nz} has {n_total:,} elements, above "
+                f"the {self._MAX_TOTAL_ELEMENTS:,}-element cap. An FE solve "
+                f"would need roughly {gb:,.0f} GB before factorization; "
+                f"reduce the resolution or split the analysis."
+            )
 
         self.porosity_field = porosity_field
         self.material = material
