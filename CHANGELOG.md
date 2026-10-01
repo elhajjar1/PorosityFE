@@ -251,6 +251,15 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Provenance short aliases are deprecated (IMPROVEMENT_PLAN 4.7).** The
+  canonical keys are `porosity_fe_version`, `python_version`,
+  `numpy_version`, `scipy_version`, `timestamp_utc` and `git_commit`. The
+  #55 short aliases (`package_version`, `python`, `numpy`, `scipy`,
+  `generated_utc`, `git_sha`) are still written with the same values, so
+  output is unchanged. The results schema no longer requires them, marks
+  them `deprecated`, and they will be removed in schema 2.0.
+- **`porosity-analyze --applied-stress` warns that it has no effect.** The
+  empirical sweep never used it; passing it explicitly now logs a warning.
 - **Packaging (IMPROVEMENT_PLAN 6.7).**
   - The `all` extra is now `porosity-fe[web,dev,docs]` instead of a
     hand-copied list.

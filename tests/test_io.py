@@ -646,3 +646,24 @@ class TestIssue55ProvenanceContract:
 # Tiny single-config dict keeps the argparse-driver tests fast (#58).
 _TINY_CONFIGS = {'uniform_spherical': {'distribution': 'uniform',
                                        'void_shape': 'spherical'}}
+
+
+def test_provenance_aliases_mirror_canonical_keys_and_are_optional():
+    """IMPROVEMENT_PLAN 4.7: one canonical spelling; the #55 aliases are still
+    written (same values) but the schema no longer requires them."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    import jsonschema
+    from porosity_fe.io import _DEPRECATED_PROVENANCE_ALIASES, _build_provenance
+    prov = _build_provenance(seed=3)
+    for alias, canonical in _DEPRECATED_PROVENANCE_ALIASES.items():
+        assert prov[alias] == prov[canonical]
+    schema_path = (_Path(__file__).resolve().parent.parent / 'validation' / 'schemas'
+                   / 'porosity_results_schema.json')
+    schema = _json.loads(schema_path.read_text(encoding='utf-8'))
+    required = set(schema['properties']['provenance']['required'])
+    assert required.isdisjoint(_DEPRECATED_PROVENANCE_ALIASES)
+    trimmed = {k: v for k, v in prov.items() if k not in _DEPRECATED_PROVENANCE_ALIASES}
+    jsonschema.validate({'schema_version': '1.1', 'format': 'porosity-fe.ncr',
+                         'provenance': trimmed}, schema)
