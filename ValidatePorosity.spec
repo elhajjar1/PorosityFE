@@ -19,6 +19,8 @@ Run:
 import glob
 import os
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
 
 _spec_dir = os.path.dirname(os.path.abspath(SPEC))
@@ -29,6 +31,14 @@ _dataset_files = [
     for path in glob.glob(os.path.join(_spec_dir, 'validation', 'datasets',
                                         '*.json'))
 ]
+
+# A missing or moved datasets directory would otherwise build an
+# executable that silently validates against nothing (IMPROVEMENT_PLAN 6.7).
+if not _dataset_files:
+    raise SystemExit(
+        "ValidatePorosity.spec: no validation/datasets/*.json found next to "
+        "the spec; refusing to build an executable without the datasets."
+    )
 
 # Bundle the schema
 _schema_files = [
@@ -64,9 +74,13 @@ a = Analysis(
         'mpl_toolkits.mplot3d.art3d',
         'jsonschema',
         'jsonschema.validators',
+        'scipy.integrate',
         'porosity_fe_analysis',
         'validation',
         'validation.validate_all',
+        # The shim imports the package lazily in places; list every
+        # submodule so none is left out of the frozen bundle.
+        *collect_submodules('porosity_fe'),
     ],
     hookspath=[],
     hooksconfig={},

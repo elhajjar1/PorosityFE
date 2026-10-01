@@ -251,6 +251,17 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Packaging (IMPROVEMENT_PLAN 6.7).**
+  - The `all` extra is now `porosity-fe[web,dev,docs]` instead of a
+    hand-copied list.
+  - A test fails if `requirements.txt`, `requirements-web.txt` or
+    `requirements-test.txt` drifts from `pyproject.toml`. The files stay
+    because the executable build, the security audit and the Streamlit
+    deployment guide use them.
+  - `CITATION.cff` ships in the sdist.
+  - `ValidatePorosity.spec` refuses to build when it finds no validation
+    datasets, instead of producing an executable with none, and bundles
+    every `porosity_fe` submodule.
 - **`effective_porosity_profile(nz, x=25.0, y=10.0)`** takes the in-plane
   sampling location, which was hard-coded to the domain center.
 - **G23 degradation shares the G12 ratio explicitly.** Both used the same
