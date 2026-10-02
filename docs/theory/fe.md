@@ -39,6 +39,103 @@ implementation; assembly runs on batched arrays). At each Gauss point:
 
 Void elements get a near-zero isotropic stiffness.
 
+## Element formulations
+
+`FESolver(..., formulation=...)` selects the element:
+
+| `formulation` | Element | Use |
+|---|---|---|
+| `'hex8'` (default) | trilinear brick, full $2 \times 2 \times 2$ Gauss | default; reproduces earlier results bit for bit |
+| `'hex8i'` | the same brick plus nine incompatible modes, condensed per element | bending (`ilss`), coarse in-plane meshes, transverse shear stresses |
+
+**Shear locking.** A fully integrated trilinear brick cannot bend without
+also shearing: in a bent element, the transverse shear strain at the Gauss
+points picks up a spurious term proportional to the curvature, so the
+element is too stiff in bending and reports too much transverse shear
+stress. The error depends on the element length along the span, $\Delta x$,
+relative to the laminate thickness $h$, *not* on the number of elements
+through the thickness. For a beam of one material it grows as
+
+$$
+\frac{E_\text{bend}^\text{hex8}}{E_\text{bend}} - 1
+\approx \frac{G_{13}}{E_{11}} \left(\frac{\Delta x}{h}\right)^2
+\approx 0.032 \left(\frac{\Delta x}{h}\right)^2
+\quad \text{(T800/epoxy)}.
+$$
+
+Composites lock about ten times more than steel at the same
+$\Delta x / h$ because $E_{11} / G_{13} \approx 31$. Pure bending of a UD
+T800 beam ($50 \times 20 \times 2$ mm, uniform moment) gives:
+
+| Mesh | $\Delta x / h$ | $E_\text{bend} / E_{11}$, `hex8` | `hex8i` |
+|---|---|---|---|
+| $4 \times 2 \times 2$ | 6.25 | 2.265 | 1.002 |
+| $8 \times 4 \times 2$ | 3.13 | 1.323 | 1.002 |
+| $16 \times 4 \times 2$ | 1.56 | 1.087 | 1.002 |
+| $16 \times 4 \times 8$ | 1.56 | 1.084 | 1.001 |
+| $64 \times 4 \times 8$ | 0.39 | 1.010 | 1.001 |
+
+The production mesh has $\Delta x / h = 0.38$ on the default 24-ply
+laminate, so the bending stiffness error is only about 0.5 %. The
+Gauss-point transverse shear stress is affected far more: in the ILSS
+three-point bend at $\Delta x / h = 1.56$, `hex8` reports about twice the
+beam-theory peak $0.75\,|P| / (b h)$ at the Gauss points near mid-span,
+while its element-mean shear is correct.
+
+**Incompatible modes (`'hex8i'`).** Each displacement component is
+enriched with the three bubble functions
+$P_m = 1 - \xi_m^2$ ($\xi_m \in \{\xi, \eta, \zeta\}$), the Wilson-Taylor
+element (equivalent to the enhanced-assumed-strain EAS-9 brick on
+parallelepiped elements):
+
+$$
+\boldsymbol\varepsilon = \mathbf B \mathbf u_e + \mathbf G \boldsymbol\alpha,
+\qquad
+\frac{\partial P_m}{\partial \mathbf x} =
+\frac{\det \mathbf J_0}{\det \mathbf J}\,
+\mathbf J_0^{-1} \frac{\partial P_m}{\partial \boldsymbol\xi},
+$$
+
+with $\mathbf J_0$ the Jacobian at the element centre. Taylor's scaling
+makes every mode carry zero mean strain over the element, so the element
+passes the patch test on distorted meshes. The nine internal amplitudes
+$\boldsymbol\alpha$ belong to one element and are condensed out exactly:
+
+$$
+\boldsymbol\alpha = \mathbf H \mathbf u_e,\quad
+\mathbf H = -\mathbf K_{\alpha\alpha}^{-1} \mathbf K_{\alpha u},
+\qquad
+\mathbf K_e = \sum_g \mathbf B_\text{eff}^\mathsf T \mathbf C\,
+\mathbf B_\text{eff} \det \mathbf J\, w
+= \mathbf K_{uu} - \mathbf K_{u\alpha} \mathbf K_{\alpha\alpha}^{-1}
+\mathbf K_{\alpha u},
+$$
+
+with $\mathbf B_\text{eff} = \mathbf B + \mathbf G \mathbf H$. The batched
+assembly stores $\mathbf B_\text{eff}$ in place of $\mathbf B$, so strain
+and stress recovery, failure evaluation and export are unchanged, and the
+global $\mathbf K$ has the same size and sparsity. The element has exactly
+the six rigid-body zero-energy modes.
+
+**When to use `'hex8i'`.** For `ilss` and any bending-dominated case, for
+meshes with $\Delta x / h$ not small, and whenever the transverse shear
+stresses ($\tau_{13}$, $\tau_{23}$) or the ILSS failure index and
+first-ply-failure load factor matter. On the production geometry
+(T800 QI, $30 \times 10 \times 12$) it leaves the compression, tension and
+shear knockdowns within $10^{-4}$ and moves the ILSS knockdown by
+$+0.0006$ to $+0.0034$; the peak ILSS $|\tau_{13}|$ drops by about 45 % and
+the ILSS first-ply-failure load factor rises by 17 to 25 %. The compression
+maximum failure index, which sits at the constrained corners, drops by
+about 13 %. Assembly costs more, because the condensation runs once per
+assembly (cached with $\mathbf K$): about $+0.1$ s at 3,600 elements and
+$+0.2$ to $0.3$ s at 7,200, so a first production solve, which also builds
+the pristine reference, takes about 7 % longer. Repeat solves and memory
+are unchanged. The stiffness and
+pristine-reference caches are keyed on the formulation (each LU
+factorization belongs to one assembled $\mathbf K$), and
+`FieldResults.formulation` and the JSON export (`solver.formulation`)
+record it. `'hex8'` stays the default for now.
+
 ## Boundary conditions
 
 | Mode | Control | Constraints |

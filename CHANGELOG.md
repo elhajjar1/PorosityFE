@@ -41,6 +41,30 @@ All notable changes to PorosityFE will be documented in this file.
   Hinton & Kaddour 1998); the other presets leave them `None` until
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
+- **Incompatible-mode hex8 element, opt-in (IMPROVEMENT_PLAN 3.6, step
+  A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
+  nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
+  correction), condensed out per element and folded into an effective
+  `B = B + G H` in the batched path, so stiffness, stress recovery,
+  failure and export run unchanged. The standard hex8 locks in bending
+  with an error of about `(G13 / E11) (dx / h)^2` (element length over
+  laminate thickness): on a UD T800 beam `E_bend / E11` is 2.265 at 4x2x2
+  and 1.084 at 16x4x8 with `'hex8'`, 1.002 and 1.001 with `'hex8i'`. The
+  new element passes the patch test on distorted meshes and has exactly
+  six zero-energy modes. On the production mesh (T800 QI, 30x10x12) it
+  leaves the compression, tension and shear knockdowns within 1e-4, moves
+  the ILSS knockdown by +0.0006 to +0.0034, lowers the peak ILSS
+  `|tau_13|` by about 45 % and raises the ILSS first-ply-failure load
+  factor by 17-25 %. The option is validated, recorded as
+  `FieldResults.formulation`, in `summary().details` and as
+  `solver.formulation` in the JSON export, and is part of the assembler's
+  `K` cache key and the shared pristine-reference cache key, so the two
+  formulations never share a cached result. `GlobalAssembler`,
+  `build_element_batch` and `Hex8Element` take the same keyword
+  (`Hex8Element.G_matrix` / `strain_operator` expose the enrichment); the
+  new `FEFormulation` type alias names the accepted values. `'hex8'`
+  remains the default and its results are unchanged bit for bit. See
+  "Element formulations" in `docs/theory/fe.md`.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
@@ -173,6 +197,18 @@ All notable changes to PorosityFE will be documented in this file.
   than CG at the same tolerance. Iterative solves are slower because they
   now actually converge: CG takes about 1,000 iterations (about 1.3 s) on
   the production mesh instead of stopping after about 85.
+- **ILSS beam-theory test reference.** `TestILSSBeamTheoryValidation`
+  compared the peak FE `|tau_xz|` with `1.5 |F| / (b h)`, but in a
+  three-point bend each half-span carries `V = F / 2`, so the beam-theory
+  peak is `0.75 |F| / (b h)` (the ASTM D2344 short-beam-strength formula).
+  The test passed only because hex8 shear locking roughly doubles the
+  Gauss-point `tau_xz` near mid-span. The test now uses the correct
+  reference, requires `'hex8i'` to match it (within 10 % at mid-width in
+  the shear spans; measured -7 %), checks the section-mean shear against
+  the parabolic profile for both elements, pins the known hex8 overshoot
+  (about 2.1x in the old band), and adds simply supported (Timoshenko,
+  within 2 %) and pinned-support (tied-arch) deflection checks. Library
+  results are unchanged.
 - **`MaterialProperties(tsai_wu_F12=...)` is now the normalized
   coefficient it was documented as.** The docstring called it a
   dimensionless value in `[-1, 0]`, but the FE Tsai-Wu check used it as
