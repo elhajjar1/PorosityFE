@@ -270,15 +270,16 @@ gives distinct compression knockdowns even at matched mean:
 
 ```
 mode = compression, FE Tsai-Wu, Vp_mean = 3 %
-  uniform               0.9844
-  clustered (midplane)  0.9839
-  clustered (surface)   0.9846
-  interface             0.9638   (penny voids, sharpest local field)
+  uniform               0.9922
+  clustered (midplane)  0.9923
+  clustered (surface)   0.9914
+  interface             0.9821   (penny voids, sharpest local field)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`;
-exact values depend on mesh resolution — the relative ordering is
-robust.)
+exact values depend on mesh resolution. The interface case is clearly
+the lowest; the uniform and clustered cases differ by less than 0.1
+percentage point, so their order can change with the mesh.)
 
 ### Guidance
 
@@ -316,6 +317,14 @@ Guidance on which to use:
 - **FE solver** -- stress-field analysis, per-element failure criteria
   (Tsai-Wu / Hashin / max-stress), and any study that needs the full
   mesh-level result.
+
+For the FE solver, give every ply its own element layer: `nz` a multiple
+of `n_plies`. Each element takes the angle of the ply at its centroid, so
+an element layer spanning plies of different angles keeps only one of
+them. The production mesh (`nz = 12`) resolves none of the presets: a
+24-ply `'QI'` layup becomes `[90, -45, 45, 0]` three times over, which is
+not symmetric. `FESolver` logs a warning with the element layup, and
+`CompositeMesh.layup_discrepancies()` returns the same findings.
 
 ## Output Files
 
