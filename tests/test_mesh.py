@@ -331,3 +331,144 @@ def test_quality_check_sees_corner_inversion():
         result = check_mesh_quality(mesh)
     assert result['n_inverted'] >= 1
     assert result['min_jacobian_det'] <= 0
+
+
+class TestElementLayup:
+    """Each element takes the ply at its centroid, computed exactly, and a
+    mesh whose element layers merge plies of different angles says so."""
+
+    _QI = [0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0]
+    _WARNING = "does not represent the requested"
+
+    @staticmethod
+    def _mesh(material, nz, ply_angles='QI', nx=2, ny=2, Vp=0.0):
+        return CompositeMesh(PorosityField(material, Vp), material,
+                             nx=nx, ny=ny, nz=nz, ply_angles=ply_angles)
+
+    @pytest.mark.parametrize("name", sorted(MATERIALS))
+    def test_ply_ids_are_exact_for_every_preset(self, name):
+        # The old float division put centroids that sit on a ply interface
+        # on either side depending on t_ply (T800 at nz=12 lost most of its
+        # 0-degree plies). The id must be the exact floor for every nz.
+        from fractions import Fraction
+        from math import floor
+        material = MATERIALS[name]
+        n = material.n_plies
+        for nz in range(1, 2 * n + 1):
+            mesh = self._mesh(material, nz, nx=1, ny=1)
+            elem_ref = [floor(Fraction((2 * k + 1) * n, 2 * nz)) for k in range(nz)]
+            node_ref = [min(floor(Fraction(k * n, nz)), n - 1) for k in range(nz + 1)]
+            np.testing.assert_array_equal(mesh.elem_ply_ids, elem_ref)
+            np.testing.assert_array_equal(
+                mesh.ply_ids.reshape(nz + 1, -1)[:, 0], node_ref)
+
+    def test_production_mesh_layup_independent_of_ply_thickness(self):
+        # T800 and T700 have the same 24-ply count but different t_ply.
+        for name in ('T800_epoxy', 'T700_epoxy'):
+            mesh = self._mesh(MATERIALS[name], 12)
+            np.testing.assert_array_equal(mesh.element_layup, [90, -45, 45, 0] * 3)
+            np.testing.assert_array_equal(mesh.elem_ply_ids.reshape(12, -1)[:, 0],
+                                          np.arange(1, 24, 2))
+
+    def test_element_layup_is_per_layer(self):
+        mesh = self._mesh(MATERIALS['T800_epoxy'], 12, nx=3, ny=2)
+        layers = mesh.ply_angles.reshape(mesh.nz, mesh.ny, mesh.nx)
+        np.testing.assert_array_equal(layers, mesh.element_layup[:, None, None]
+                                      * np.ones((1, mesh.ny, mesh.nx)))
+
+    @pytest.mark.parametrize("name", ['T800_epoxy', 'T300_934_epoxy', 'CF_PEEK'])
+    @pytest.mark.parametrize("per_ply", [1, 2])
+    def test_ply_resolving_mesh_reproduces_layup(self, name, per_ply):
+        material = MATERIALS[name]
+        n = material.n_plies
+        mesh = self._mesh(material, per_ply * n)
+        requested = (self._QI * n)[:n]
+        np.testing.assert_array_equal(mesh.element_layup, np.repeat(requested, per_ply))
+        assert mesh.layup_discrepancies() == []
+
+    def test_production_mesh_reports_lost_symmetry(self):
+        issues = self._mesh(MATERIALS['T800_epoxy'], 12).layup_discrepancies()
+        assert len(issues) == 2
+        assert issues[0].startswith("12 element layers for 24 plies merge plies")
+        # [90, -45, 45, 0] x 3 keeps the QI angle fractions and balance.
+        assert "fractions" not in issues[0]
+        assert "symmetric but the element layup is not" in issues[1]
+
+    def test_lost_balance_and_fractions_reported(self):
+        # 16 plies on 12 element layers keeps 4 of the 8 +/-45 plies as -45.
+        mesh = self._mesh(MATERIALS['T300_934_epoxy'], 12)
+        np.testing.assert_array_equal(
+            mesh.element_layup, [0, 45, -45, -45, 90, 0, 0, 45, -45, -45, 90, 0])
+        issues = mesh.layup_discrepancies()
+        assert "-45 deg 25% -> 33%" in issues[0]
+        assert "45 deg 25% -> 17%" in issues[0]
+        assert any("balanced but the element layup is not" in i for i in issues)
+        assert any("symmetric but the element layup is not" in i for i in issues)
+
+    def test_merging_plies_of_one_angle_is_not_flagged(self):
+        material = MATERIALS['T800_epoxy']
+        assert self._mesh(material, 12, ply_angles='UD').layup_discrepancies() == []
+        # Ply pairs of a single angle: two plies per element layer is exact.
+        pairs = [0, 0, 90, 90, 45, 45, -45, -45, 0, 0, 90, 90]
+        pairs = pairs + pairs[::-1]
+        mesh = self._mesh(material, 12, ply_angles=pairs)
+        np.testing.assert_array_equal(mesh.element_layup, pairs[::2])
+        assert mesh.layup_discrepancies() == []
+        # 90 and -90 are the same orientation.
+        mesh = self._mesh(material, 12, ply_angles=[90, -90])
+        assert mesh.layup_discrepancies() == []
+
+    def test_unsymmetric_request_is_not_called_unsymmetric(self):
+        # [0, 45, -45, 90] repeated is balanced but not symmetric by design.
+        mesh = self._mesh(MATERIALS['T800_epoxy'], 24, ply_angles=[0, 45, -45, 90])
+        assert mesh.layup_discrepancies() == []
+        issues = self._mesh(MATERIALS['T800_epoxy'], 12,
+                            ply_angles=[0, 45, -45, 90]).layup_discrepancies()
+        assert not any("symmetric" in i for i in issues)
+
+    def test_symmetry_check_reads_the_element_angles(self):
+        mesh = self._mesh(MATERIALS['T800_epoxy'], 24)
+        assert mesh.layup_discrepancies() == []
+        mesh.ply_angles = mesh.ply_angles.copy()
+        mesh.ply_angles[:mesh.nx * mesh.ny] = 90.0   # bottom layer 0 -> 90
+        issues = mesh.layup_discrepancies()
+        assert issues == ["The requested layup is symmetric but the element layup is not"]
+
+    def test_fe_solver_warns_once_per_mesh(self, caplog):
+        from porosity_fe import FESolver
+        material = MATERIALS['T800_epoxy']
+        mesh = self._mesh(material, 12, nx=10, ny=4, Vp=0.02)
+        with caplog.at_level("WARNING", logger="porosity_fe_analysis"):
+            solver = FESolver(mesh, material, mesh.porosity_field)
+            # The solve builds a pristine solver on a copy of the mesh, and a
+            # second solver reuses the mesh: neither repeats the warning.
+            solver.solve('compression', applied_strain=-0.001)
+            FESolver(mesh, material, mesh.porosity_field)
+        records = [r for r in caplog.records if self._WARNING in r.getMessage()]
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert "requested 24-ply layup" in message
+        assert "[90, -45, 45, 0, 90, -45, 45, 0, 90, -45, 45, 0]" in message
+        assert "Use nz = 24" in message
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="porosity_fe_analysis"):
+            mesh.generate_mesh()
+            FESolver(mesh, material, mesh.porosity_field)
+        assert sum(self._WARNING in r.getMessage() for r in caplog.records) == 1
+
+    def test_no_warning_for_ply_resolving_mesh(self, caplog):
+        from porosity_fe import FESolver
+        material = MATERIALS['T800_epoxy']
+        mesh = self._mesh(material, 24)
+        with caplog.at_level("WARNING", logger="porosity_fe_analysis"):
+            FESolver(mesh, material, mesh.porosity_field)
+        assert not any(self._WARNING in r.getMessage() for r in caplog.records)
+
+    def test_empirical_pipeline_does_not_warn(self, caplog):
+        # The empirical solver never reads the element layup.
+        from porosity_fe import build_empirical_pipeline
+        with caplog.at_level("WARNING", logger="porosity_fe_analysis"):
+            _, mesh, _ = build_empirical_pipeline(MATERIALS['T800_epoxy'], 0.02)
+        assert mesh.layup_discrepancies() != []
+        assert not any(self._WARNING in r.getMessage() for r in caplog.records)

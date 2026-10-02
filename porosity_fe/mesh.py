@@ -15,6 +15,39 @@ from .porosity_field import PorosityField
 
 logger = logging.getLogger("porosity_fe_analysis")
 
+# Two normalized ply angles closer than this (degrees) are the same angle.
+_ANGLE_TOL = 1e-6
+
+
+def _ply_at(num: np.ndarray, den: int, n_plies: int) -> np.ndarray:
+    """Ply index at the through-thickness positions ``num / den`` (ply units).
+
+    Evaluated in integer arithmetic, so a position exactly on a ply
+    interface always takes the ply above it instead of whichever side
+    floating-point rounding happens to land on. The top surface maps to
+    the last ply.
+    """
+    return np.clip(np.asarray(num) // den, 0, n_plies - 1)
+
+
+def _normalize_angles(angles: np.ndarray) -> np.ndarray:
+    """Map ply angles (degrees) into ``(-90, 90]``, so 90 and -90 compare equal."""
+    a = 90.0 - np.mod(90.0 - np.asarray(angles, dtype=float), 180.0)
+    return np.round(a, 6) + 0.0  # + 0.0 turns -0.0 into 0.0
+
+
+def _angle_fractions(angles: np.ndarray) -> dict[float, float]:
+    """Fraction of the entries at each normalized angle (equal thicknesses)."""
+    values, counts = np.unique(_normalize_angles(angles), return_counts=True)
+    return {float(v): int(c) / angles.size for v, c in zip(values, counts, strict=True)}
+
+
+def _is_balanced(fractions: dict[float, float]) -> bool:
+    """Every off-axis angle ``+theta`` has as much thickness as ``-theta``."""
+    return all(abs(f - fractions.get(-a, 0.0)) <= 1e-9
+               for a, f in fractions.items() if _ANGLE_TOL < abs(a) < 90.0 - _ANGLE_TOL)
+
+
 # ============================================================
 # SECTION 4: MESH GENERATION
 # ============================================================
@@ -24,8 +57,8 @@ class CompositeMesh:
 
     Builds a regular grid of 8-node hexahedral elements over a
     rectangular coupon of dimensions ``L_x x L_y x L_z``, samples the
-    porosity field at every node, assigns a ply id (and optional ply
-    angle in degrees) to each element from its centroid z, and flags
+    porosity field at every node, assigns each element the ply id and
+    ply angle (degrees) of the ply containing its centroid, and flags
     elements whose centroid falls inside any explicit
     :class:`VoidGeometry` for the explicit-inclusion solver path.
 
@@ -83,10 +116,16 @@ class CompositeMesh:
         Shape ``(n_nodes,)`` complementary ``1 - Vp`` field.
     ply_ids : np.ndarray
         Shape ``(n_nodes,)`` per-node ply id (``0`` to ``n_plies - 1``).
+        A node on a ply interface takes the ply above it; the top-surface
+        nodes take the last ply.
     elem_ply_ids : np.ndarray
-        Shape ``(n_elem,)`` per-element ply id from the centroid z.
+        Shape ``(n_elem,)`` id of the ply containing each element
+        centroid. A centroid exactly on a ply interface takes the ply
+        above it (exact integer arithmetic, no floating-point rounding).
     ply_angles : np.ndarray
-        Shape ``(n_elem,)`` per-element ply orientation in degrees.
+        Shape ``(n_elem,)`` per-element ply orientation in degrees: the
+        angle of ply ``elem_ply_ids``. :attr:`element_layup` gives the
+        through-thickness sequence.
     void_elements : np.ndarray
         Int indices of elements whose centroid lies inside any discrete
         void.
@@ -124,6 +163,15 @@ class CompositeMesh:
     explicit lists pass through unchanged. Pass ``ply_angles='UD'`` to
     reproduce the pre-#44 behaviour of leaving every element at
     ``ply_angle = 0``.
+
+    The element layers resolve the layup only when none of them spans
+    plies of different angles, which ``nz`` a multiple of ``n_plies``
+    guarantees. Otherwise each element layer keeps just the ply at its
+    centroid and the FE solver analyzes a different laminate: on the
+    production mesh (``nz = 12``) a 24-ply ``'QI'`` layup becomes
+    ``[90, -45, 45, 0]`` repeated three times, which is no longer
+    symmetric. :meth:`layup_discrepancies` lists what is lost, and
+    :class:`FESolver` logs it as a warning.
     """
 
     # Cap mesh dimensions to prevent accidental memory blowup. A million-element
@@ -209,11 +257,6 @@ class CompositeMesh:
         self.stiffness_reduction = self.porosity_field.local_stiffness_reduction(
             self.nodes[:, 0], self.nodes[:, 1], self.nodes[:, 2])
 
-        # Ply IDs
-        z_normalized = self.nodes[:, 2] / self.L_z
-        self.ply_ids = np.clip((z_normalized * self.material.n_plies).astype(int),
-                               0, self.material.n_plies - 1)
-
         # Vectorized hex element connectivity. Element ordering is
         # k (outer) -> j (middle) -> i (inner), matching the original
         # triple-nested loop. ``indexing='ij'`` with axis order
@@ -246,29 +289,119 @@ class CompositeMesh:
         # Also create a set for O(1) lookup
         self.void_element_set = set(self.void_elements.tolist())
 
-        # Assign per-element ply angles (degrees)
-        # Element ply_id is determined by the centroid z-coordinate
-        elem_centroids_z = np.mean(self.nodes[self.elements][:, :, 2], axis=1)
-        elem_ply_ids = np.clip(
-            (elem_centroids_z / self.L_z * self.material.n_plies).astype(int),
-            0, self.material.n_plies - 1)
-        self.elem_ply_ids = elem_ply_ids
+        # Ply ids in exact integer arithmetic, so a node or element centroid
+        # on a ply interface is not rounded either way by floating-point
+        # noise. Node layer k sits at k * n_plies / nz in ply units; each
+        # element takes the ply containing its centroid, which for element
+        # layer k is at (2k + 1) * n_plies / (2 nz).
+        n_plies = self.material.n_plies
+        self.ply_ids = np.repeat(
+            _ply_at(np.arange(self.nz + 1) * n_plies, self.nz, n_plies),
+            (self.ny + 1) * (self.nx + 1))
+        self.elem_ply_ids = np.repeat(
+            _ply_at((2 * np.arange(self.nz) + 1) * n_plies, 2 * self.nz, n_plies),
+            self.ny * self.nx)
 
         if self._input_ply_angles is not None:
             angle_list = list(self._input_ply_angles)
-            if len(angle_list) < self.material.n_plies:
+            if len(angle_list) < n_plies:
                 # Repeat to fill all plies
-                angle_list = (angle_list * (self.material.n_plies // len(angle_list) + 1))[:self.material.n_plies]
-            self.ply_angles = np.array([angle_list[pid] for pid in elem_ply_ids], dtype=float)
+                angle_list = (angle_list * (n_plies // len(angle_list) + 1))[:n_plies]
+            self._ply_layup = np.array(angle_list[:n_plies], dtype=float)
         else:
             # Default: all 0-degree plies
-            self.ply_angles = np.zeros(len(self.elements), dtype=float)
+            self._ply_layup = np.zeros(n_plies, dtype=float)
+        self.ply_angles = self._ply_layup[self.elem_ply_ids]
+        self._layup_warning_logged = False
 
         logger.info("Mesh generated: %d nodes, %d elements",
                     len(self.nodes), len(self.elements))
         logger.info("  Domain: %.1f x %.1f x %.2f mm",
                     self.L_x, self.L_y, self.L_z)
         logger.info("  Void elements: %d", len(self.void_elements))
+
+    @property
+    def element_layup(self) -> np.ndarray:
+        """Ply angle (degrees) of each element layer, bottom to top, shape ``(nz,)``.
+
+        This is the laminate the FE solver analyzes. It equals the
+        requested layup only when no element layer spans plies of
+        different angles, e.g. when ``nz`` is a multiple of ``n_plies``;
+        :meth:`layup_discrepancies` reports how it differs otherwise.
+        """
+        return np.asarray(self.ply_angles, dtype=float).reshape(self.nz, -1)[:, 0].copy()
+
+    def layup_discrepancies(self) -> list[str]:
+        """Ways the element layup misrepresents the requested laminate.
+
+        Each element layer takes the angle of the ply at its centroid, so
+        an element layer that spans several plies of different angles
+        drops all but one of them. That happens whenever ``nz`` is not a
+        multiple of ``n_plies`` (unless the merged plies share an angle).
+
+        Returns
+        -------
+        list of str
+            Empty when every element layer lies within plies of a single
+            angle. Otherwise one sentence (no final period) per finding:
+            element layers merge plies of different angles (with the
+            change in each angle's thickness fraction); a symmetric
+            requested layup is unsymmetric in the elements; a balanced
+            requested layup is unbalanced in the elements.
+        """
+        n_plies = self.material.n_plies
+        requested = _normalize_angles(self._ply_layup)
+        issues: list[str] = []
+
+        # Element layer k spans [k, k + 1] * n_plies / nz in ply units.
+        k = np.arange(self.nz)
+        first = k * n_plies // self.nz
+        last = -(-(k + 1) * n_plies // self.nz) - 1
+        if any(np.ptp(requested[a:b + 1]) > _ANGLE_TOL for a, b in zip(first, last, strict=True)):
+            req_frac = _angle_fractions(requested)
+            elem_frac = _angle_fractions(np.asarray(self.ply_angles, dtype=float))
+            msg = (f"{self.nz} element layers for {n_plies} plies merge plies "
+                   f"of different angles, so each layer keeps only the ply at "
+                   f"its centroid")
+            if req_frac != elem_frac:
+                changes = ", ".join(
+                    f"{a:g} deg {100 * req_frac.get(a, 0.0):.0f}% -> "
+                    f"{100 * elem_frac.get(a, 0.0):.0f}%"
+                    for a in sorted(set(req_frac) | set(elem_frac)))
+                msg += f" and the angle thickness fractions change ({changes})"
+            issues.append(msg)
+
+        elements = _normalize_angles(np.asarray(self.ply_angles, dtype=float))
+        elements = elements.reshape(self.nz, -1)
+        if (np.allclose(requested, requested[::-1], atol=_ANGLE_TOL)
+                and not np.allclose(elements, elements[::-1], atol=_ANGLE_TOL)):
+            issues.append("The requested layup is symmetric but the element "
+                          "layup is not")
+        if (_is_balanced(_angle_fractions(requested))
+                and not _is_balanced(_angle_fractions(elements))):
+            issues.append("The requested layup is balanced but the element "
+                          "layup is not")
+        return issues
+
+    def _log_layup_warning(self) -> None:
+        """Log :meth:`layup_discrepancies` as a warning, once per generated mesh.
+
+        Called by :class:`FESolver`: only the FE path uses the element
+        layup, so empirical-only runs on the same mesh stay quiet.
+        """
+        if self._layup_warning_logged:
+            return
+        self._layup_warning_logged = True
+        issues = self.layup_discrepancies()
+        if issues:
+            layup = ", ".join(f"{a:g}" for a in self.element_layup)
+            logger.warning(
+                "The FE mesh does not represent the requested %d-ply layup. "
+                "%s. FE stiffness, stresses and knockdown are computed for "
+                "the element layup [%s] (bottom to top). Use nz = %d, or a "
+                "multiple, to give every ply its own element layer.",
+                self.material.n_plies, ". ".join(issues), layup,
+                self.material.n_plies)
 
     @property
     def n_nodes(self) -> int:
