@@ -26,7 +26,8 @@ from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
 from .export import export_results as _export_results
-from .export import write_vtk
+from .export import write_vtk, write_vtu
+from .recovery import NodalAverage, extrapolate_to_nodes
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -208,8 +209,158 @@ class FieldResults:
             connectivity, porosity and ply metadata).
         filename : str or os.PathLike
             Output ``.vtk`` file path. ``pathlib.Path`` objects are accepted.
+
+        See Also
+        --------
+        to_vtu : Binary VTK XML, smaller and faster, with recovered nodal
+            stress and strain.
         """
         write_vtk(self, mesh, filename)
+
+    def to_vtu(self, mesh: CompositeMesh, filename: str | os.PathLike, *,
+               precision: Literal['float64', 'float32'] = 'float64',
+               encoding: Literal['raw', 'base64'] = 'raw',
+               nodal: bool = True,
+               exploded: bool = False,
+               average: NodalAverage = 'ply') -> None:
+        """Write the hex mesh and FE fields to a binary VTK XML file (``.vtu``).
+
+        Opens in ParaView, VisIt, PyVista and meshio. The writer is
+        dependency-free. The file holds everything :meth:`to_vtk` writes
+        (same names) plus nodal stress and strain recovered from the Gauss
+        points (:func:`~porosity_fe.extrapolate_to_nodes`). Binary storage
+        is lossless and compact: on the production mesh the
+        :meth:`to_vtk` fields take 1.1 MB instead of 2.0 MB, 1.6 MB with
+        the nodal fields added, and ``precision='float32'`` brings that to
+        0.9 MB. It is also several times faster to write.
+
+        Point data
+        ----------
+        - ``displacement`` (3-vector), ``porosity``, ``stiffness_reduction``
+          and ``ply_id`` as in :meth:`to_vtk`;
+        - with ``nodal=True``: ``sigma_xx_nodal`` .. ``tau_xy_nodal``,
+          ``eps_xx_nodal`` .. ``gamma_xy_nodal`` (global frame, engineering
+          shear strain) and ``von_mises_nodal``;
+        - with ``exploded=True``: ``node_id``, the original node of each
+          point.
+
+        Cell data
+        ---------
+        The :meth:`to_vtk` cell fields: element-mean ``von_mises``,
+        ``sigma_xx`` .. ``tau_xy``, ``eps_xx`` .. ``gamma_xy``,
+        ``tsai_wu_index``, ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
+        ``is_void`` and ``knockdown`` where available.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results.
+        filename : str or os.PathLike
+            Output ``.vtu`` file path.
+        precision : {'float64', 'float32'}
+            Floating-point type of coordinates and fields. ``'float64'``
+            (default) is lossless.
+        encoding : {'raw', 'base64'}
+            ``'raw'`` (default) appends the binary blocks after the XML
+            header (VTK's appended format: smallest and fastest). ``'base64'``
+            writes them inline as base64 text, which keeps the file
+            well-formed XML for tools that require it, at about 4/3 the
+            size.
+        nodal : bool
+            Add the recovered nodal stress and strain (default ``True``).
+        exploded : bool
+            Give every cell its own eight points (``8 * n_elem`` points),
+            so the recovered fields can jump between elements and show the
+            stress discontinuity at ply interfaces exactly. With the
+            default ``False`` the nodes are shared and each node carries
+            one value: at a ply interface, the average over the ply above.
+        average : {'ply', 'all', 'none'}
+            Averaging of the recovered fields between elements; see
+            :func:`~porosity_fe.extrapolate_to_nodes`. ``'none'`` matters
+            only with ``exploded=True``.
+
+        Raises
+        ------
+        ValueError
+            For an unknown option, a non-hex mesh, or results that do not
+            match the mesh.
+
+        See Also
+        --------
+        porosity_fe.write_pvd : Group several VTU files into a series.
+        """
+        write_vtu(self, mesh, filename, precision=precision,
+                  encoding=encoding, nodal=nodal, exploded=exploded,
+                  average=average)
+
+    def _nodal(self, field_gp: np.ndarray, mesh: CompositeMesh,
+               frame: str, average: NodalAverage,
+               ) -> tuple[np.ndarray, np.ndarray]:
+        if frame not in ('global', 'local'):
+            raise ValueError(f"frame must be 'global' or 'local', got {frame!r}.")
+        if frame == 'local' and average == 'all' and \
+                np.unique(np.asarray(mesh.ply_angles, dtype=float)).size > 1:
+            raise ValueError(
+                "average='all' would mix ply-local components of plies with "
+                "different orientations; use average='ply' or frame='global'."
+            )
+        return extrapolate_to_nodes(field_gp, mesh, average=average)
+
+    def nodal_stress(self, mesh: CompositeMesh, *,
+                     frame: Literal['global', 'local'] = 'global',
+                     average: NodalAverage = 'ply',
+                     ) -> tuple[np.ndarray, np.ndarray]:
+        """Stress recovered at the nodes from the Gauss points.
+
+        Extrapolates each element's eight Gauss-point stresses to its
+        corners and averages them between elements of the same ply (by
+        default), so a surface or interface peak is not under-read the way
+        the element mean or the Gauss-point values are. See
+        :func:`~porosity_fe.extrapolate_to_nodes` for the method and the
+        ``average`` options.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results.
+        frame : {'global', 'local'}
+            Recover :attr:`stress_global` (default) or :attr:`stress_local`
+            (ply material axes). ``'local'`` cannot be combined with
+            ``average='all'`` on a multi-angle laminate.
+        average : {'ply', 'all', 'none'}
+            Which elements a node averages over (default ``'ply'``).
+
+        Returns
+        -------
+        nodal : np.ndarray
+            ``(n_nodes, 6)`` stress (MPa), Voigt order
+            ``[11, 22, 33, 23, 13, 12]``; at a ply interface, the ply above.
+        corner : np.ndarray
+            ``(n_elem, 8, 6)`` per-element corner stress (discontinuous
+            across plies).
+        """
+        field = self.stress_global if frame == 'global' else self.stress_local
+        return self._nodal(field, mesh, frame, average)
+
+    def nodal_strain(self, mesh: CompositeMesh, *,
+                     frame: Literal['global', 'local'] = 'global',
+                     average: NodalAverage = 'ply',
+                     ) -> tuple[np.ndarray, np.ndarray]:
+        """Strain recovered at the nodes from the Gauss points.
+
+        Same method and options as :meth:`nodal_stress`, applied to
+        :attr:`strain_global` or :attr:`strain_local` (engineering shear
+        strain in the last three Voigt slots).
+
+        Returns
+        -------
+        nodal : np.ndarray
+            ``(n_nodes, 6)`` strain.
+        corner : np.ndarray
+            ``(n_elem, 8, 6)`` per-element corner strain.
+        """
+        field = self.strain_global if frame == 'global' else self.strain_local
+        return self._nodal(field, mesh, frame, average)
 
 
 _DEFAULT_APPLIED_STRAIN = {'compression': -0.01, 'tension': 0.01, 'shear': 0.01}
@@ -1006,22 +1157,25 @@ class FESolver:
 
         With ``fmt='vtk'`` it delegates to :meth:`FieldResults.to_vtk` and
         writes the full hex mesh plus per-element fields as a legacy ASCII
-        ``UNSTRUCTURED_GRID`` for ParaView / VisIt / PyVista. The richer
-        per-element/per-node API lives on ``FieldResults.to_vtk`` directly;
-        this ``fmt='vtk'`` path is a convenience shim for callers that
-        already hold an ``FESolver``.
+        ``UNSTRUCTURED_GRID`` for ParaView / VisIt / PyVista. With
+        ``fmt='vtu'`` it delegates to :meth:`FieldResults.to_vtu` with its
+        defaults (binary VTK XML, ``Float64``, plus recovered nodal stress
+        and strain). The options (precision, exploded output, averaging)
+        live on those methods; these two formats are a convenience shim for
+        callers that already hold an ``FESolver``.
 
         Parameters
         ----------
         field_results : FieldResults
             Results from FESolver.solve().
         filename : str or os.PathLike
-            Output file path (``.json`` or ``.vtk``). ``pathlib.Path``
-            objects are accepted.
+            Output file path (``.json``, ``.vtk`` or ``.vtu``).
+            ``pathlib.Path`` objects are accepted.
         fmt : str
-            ``'json'`` (default) or ``'vtk'``.
+            ``'json'`` (default), ``'vtk'`` or ``'vtu'``.
         mesh : CompositeMesh, optional
-            Required when ``fmt='vtk'`` (supplies geometry/connectivity).
+            Required when ``fmt`` is ``'vtk'`` or ``'vtu'`` (supplies
+            geometry/connectivity).
         include_raw : bool
             When ``True`` (and ``fmt='json'``), also write a sidecar
             ``<filename>.npz`` containing the raw displacement/stress/strain

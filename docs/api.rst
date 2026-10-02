@@ -73,6 +73,8 @@ Finite-element solver
    Hex8Element
    GlobalAssembler
    BoundaryHandler
+   extrapolate_to_nodes
+   write_pvd
 
 Laminate theory and transforms
 ------------------------------
