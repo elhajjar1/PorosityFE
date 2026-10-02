@@ -72,7 +72,7 @@ class TestEmpiricalSolver:
 
     def test_transverse_tension_matches_ilss_alpha_at_qi(self):
         """transverse_tension and ilss share the same matrix-dominated alpha
-        at the QI reference layup (f_md = 0.5, scale = 1.0)."""
+        at the QI reference layup (scale = 1.0)."""
         Vp = 0.04
         kd_ilss = self.solver._judd_wright(Vp, 'ilss')
         kd_tt = self.solver._judd_wright(Vp, 'transverse_tension')
@@ -86,14 +86,13 @@ class TestEmpiricalSolver:
         expected = self.material.sigma_2t * result['knockdown']
         assert abs(result['failure_stress'] - expected) < 1e-9
 
-    def test_transverse_tension_ud_uses_matrix_floor(self):
-        """UD [0]_n layup: transverse_tension should hit the matrix-dominated
-        floor (0.80), matching ILSS, not the fiber-dominated floor (0.15)."""
+    def test_transverse_tension_ud_is_layup_independent(self):
+        """UD [0]_n layup: transverse_tension is a ply matrix property, so,
+        like ILSS, it keeps the QI alpha (scale 1, IMPROVEMENT_PLAN 2.7)."""
         ud = [0.0] * 8
         solver = EmpiricalSolver(self.mesh, self.material, ply_angles=ud)
-        # alpha_QI = 10.0; scale = max(0/0.5, 0.80) = 0.80
-        assert abs(solver.JUDD_WRIGHT_ALPHA['transverse_tension'] - 10.0 * 0.80) < 1e-12
-        assert abs(solver.JUDD_WRIGHT_ALPHA['ilss'] - 10.0 * 0.80) < 1e-12
+        assert solver.JUDD_WRIGHT_ALPHA['transverse_tension'] == 10.0
+        assert solver.JUDD_WRIGHT_ALPHA['ilss'] == 10.0
 
     def test_get_failure_load_returns_dict(self):
         result = self.solver.get_failure_load(mode='compression', model='judd_wright')
@@ -114,20 +113,40 @@ class TestEmpiricalSolver:
         """Partial override leaves other modes at QI defaults."""
         solver = EmpiricalSolver(self.mesh, self.material,
                                   judd_wright_alpha={'ilss': 12.0})
-        # ILSS overridden (and layup scale = 1.0 for default ply_angles=None / f_md=0.5)
+        # ILSS overridden (layup scale = 1.0 for the default QI layup)
         assert abs(solver.JUDD_WRIGHT_ALPHA['ilss'] - 12.0) < 1e-12
-        # Other modes match the QI baseline at f_md = 0.5
+        # Other modes match the QI baseline
         assert abs(solver.JUDD_WRIGHT_ALPHA['compression'] - 6.9) < 1e-12
         assert abs(solver.JUDD_WRIGHT_ALPHA['tension'] - 3.9) < 1e-12
         assert abs(solver.JUDD_WRIGHT_ALPHA['shear'] - 8.0) < 1e-12
 
     def test_override_layup_scaling_applied(self):
-        """Override values are scaled by layup the same way as the QI baseline."""
-        ud = [0.0] * 16  # f_md = 0; ILSS floor = 0.80
+        """Override values are scaled by layup the same way as the QI baseline:
+        ILSS is layup-independent, so a UD override is used unscaled."""
+        ud = [0.0] * 16
         solver = EmpiricalSolver(self.mesh, self.material,
                                   ply_angles=ud,
                                   judd_wright_alpha={'ilss': 12.0})
-        assert abs(solver.JUDD_WRIGHT_ALPHA['ilss'] - 12.0 * 0.80) < 1e-12
+        assert solver.JUDD_WRIGHT_ALPHA['ilss'] == 12.0
+
+    def test_override_amplified_like_default_on_90_layup(self):
+        """A [90]_8 tension override is multiplied by the same layup scale as
+        the default (alpha_tt / alpha_t = 10 / 3.9); the scale is computed
+        from the QI tables, not from the override, and is shared by n and
+        beta."""
+        ninety = [90.0] * 8
+        solver = EmpiricalSolver(self.mesh, self.material,
+                                  ply_angles=ninety,
+                                  judd_wright_alpha={'tension': 5.0},
+                                  power_law_n={'tension': 2.0},
+                                  linear_beta={'tension': 4.0})
+        scale = 10.0 / 3.9
+        assert solver.layup_scale['tension'] == pytest.approx(scale, rel=1e-12)
+        assert solver.JUDD_WRIGHT_ALPHA['tension'] == pytest.approx(5.0 * scale, rel=1e-12)
+        assert solver.POWER_LAW_N['tension'] == pytest.approx(2.0 * scale, rel=1e-12)
+        assert solver.LINEAR_BETA['tension'] == pytest.approx(4.0 * scale, rel=1e-12)
+        default = EmpiricalSolver(self.mesh, self.material, ply_angles=ninety)
+        assert default.layup_scale == solver.layup_scale
 
     def test_override_n_and_beta(self):
         solver = EmpiricalSolver(self.mesh, self.material,
@@ -324,9 +343,8 @@ class TestEmpiricalLayupScaling:
         assert EmpiricalSolver._matrix_dominated_fraction([45, -45, 45, -45]) == 0.5
 
     def test_f_md_qi_layup_is_0p4(self):
-        # Documented QI calibration coupon -> 0.4 under the binning rule.
-        # See the comment above _F_MD_REF in porosity_fe_analysis.py and
-        # the README "Empirical Strength Knockdown" section.
+        # The Elhajjar calibration coupon bins to 0.4. ``f_md`` is a legacy
+        # descriptor now; it no longer drives the layup scaling.
         layup = [0, 45, 90, -45, 0, 0, -45, 90, 45, 0]
         assert abs(EmpiricalSolver._matrix_dominated_fraction(layup) - 0.4) < 1e-12
 
@@ -348,47 +366,118 @@ class TestEmpiricalLayupScaling:
         mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
         return EmpiricalSolver(mesh, material, ply_angles=ply_angles)
 
-    def test_layup_scale_unity_at_reference(self):
-        # f_md = 0.5 -> scale = 1.0 -> alpha_eff == alpha_QI
-        solver = self._solver_with_layup([45, -45, 45, -45])
-        for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
-            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - alpha_qi) < 1e-12
+    _MODES = ('compression', 'tension', 'shear', 'ilss', 'transverse_tension')
 
-    def test_layup_scale_floor_for_ud(self):
-        # f_md = 0.0 -> hits 0.15 floor for non-ILSS modes, 0.80 for ILSS.
+    def test_layup_scale_unity_at_reference(self):
+        # QI and every in-plane-isotropic layup -> scale exactly 1.0.
+        for layup in ([0, 45, -45, 90, 90, -45, 45, 0],
+                      [0, 60, -60, -60, 60, 0]):
+            solver = self._solver_with_layup(layup)
+            for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
+                assert solver.layup_scale[mode] == 1.0, (layup, mode)
+                assert solver.JUDD_WRIGHT_ALPHA[mode] == alpha_qi, (layup, mode)
+
+    def test_layup_scale_unity_for_ud(self):
+        # UD is as porosity-sensitive as QI on the bundled data (the old
+        # 0.15 / 0.80 floors are retired): scale 1.0 for every mode.
         solver = self._solver_with_layup([0] * 8)
-        for mode in ('compression', 'tension', 'shear'):
-            expected = EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI[mode] * 0.15
-            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - expected) < 1e-12
-        ilss_expected = EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI['ilss'] * 0.80
-        assert abs(solver.JUDD_WRIGHT_ALPHA['ilss'] - ilss_expected) < 1e-12
+        for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
+            assert solver.layup_scale[mode] == 1.0, mode
+            assert solver.JUDD_WRIGHT_ALPHA[mode] == alpha_qi, mode
 
     def test_layup_scale_above_reference(self):
-        # Pure 90 -> f_md = 1.0 -> scale = 2.0
+        # Pure 90 under an x load is a transverse-tension (tension) /
+        # matrix-dominated (compression) test: the blend reaches its matrix
+        # anchors, alpha_tt / alpha_t and alpha_shear / alpha_c.
         solver = self._solver_with_layup([90] * 8)
-        for mode, alpha_qi in EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI.items():
-            assert abs(solver.JUDD_WRIGHT_ALPHA[mode] - alpha_qi * 2.0) < 1e-12
+        alpha = EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI
+        assert solver.layup_scale['tension'] == pytest.approx(10.0 / 3.9, abs=1e-9)
+        assert solver.layup_scale['compression'] == pytest.approx(8.0 / 6.9, abs=1e-9)
+        assert solver.JUDD_WRIGHT_ALPHA['tension'] == pytest.approx(
+            alpha['transverse_tension'], rel=1e-9)
+        assert solver.JUDD_WRIGHT_ALPHA['compression'] == pytest.approx(
+            alpha['shear'], rel=1e-9)
+        for mode in ('shear', 'ilss', 'transverse_tension'):
+            assert solver.layup_scale[mode] == 1.0, mode
+
+    def test_matrix_modes_layup_independent(self):
+        for layup in ([0] * 8, [90] * 8, [45, -45, -45, 45], [0, 15, -15, 0]):
+            solver = self._solver_with_layup(layup)
+            for mode in ('shear', 'ilss', 'transverse_tension'):
+                assert solver.layup_scale[mode] == 1.0, (layup, mode)
+
+    def test_layup_scale_continuous_in_angle(self):
+        # No jumps at the old 10 / 80 degree binning thresholds.
+        thetas = np.linspace(0.0, 90.0, 181)
+        for mode in ('tension', 'compression'):
+            scales = np.array([
+                self._solver_with_layup([t, -t, -t, t]).layup_scale[mode]
+                for t in thetas])
+            assert np.all(np.abs(np.diff(scales)) < 0.05), mode
+            assert scales[0] == 1.0 and scales[-1] > 1.0
+
+    def test_layup_scale_invariant_to_stacking_order(self):
+        a = self._solver_with_layup([0, 45, 90, -45, 30]).layup_scale
+        b = self._solver_with_layup([30, -45, 0, 90, 45]).layup_scale
+        for mode in self._MODES:
+            assert a[mode] == pytest.approx(b[mode], rel=1e-12), mode
+
+    def test_matrix_energy_fraction(self):
+        assert self._solver_with_layup([0] * 8).matrix_energy_fraction == \
+            pytest.approx(0.0, abs=1e-12)
+        assert self._solver_with_layup([90] * 8).matrix_energy_fraction == \
+            pytest.approx(1.0, abs=1e-12)
+        qi = self._solver_with_layup([0, 45, -45, 90, 90, -45, 45, 0])
+        iso = self._solver_with_layup([0, 60, -60, -60, 60, 0])
+        assert qi.matrix_energy_fraction == pytest.approx(
+            iso.matrix_energy_fraction, rel=1e-12)
+
+
+class TestRetiredFmdConstants:
+    """The f_md reference and floors are deprecated no-ops (removal in 2.0)."""
+
+    @pytest.mark.parametrize("owner, name, value", [
+        ('Calibration', 'F_MD_REF', 0.5),
+        ('Calibration', 'F_MD_FLOOR', 0.15),
+        ('Calibration', 'F_MD_FLOOR_ILSS', 0.80),
+        ('EmpiricalSolver', '_F_MD_REF', 0.5),
+        ('EmpiricalSolver', '_F_MD_FLOOR', 0.15),
+        ('EmpiricalSolver', '_F_MD_FLOOR_ILSS', 0.80),
+    ])
+    def test_access_warns_and_keeps_value(self, owner, name, value):
+        from porosity_fe import Calibration
+        cls = {'Calibration': Calibration, 'EmpiricalSolver': EmpiricalSolver}[owner]
+        with pytest.warns(DeprecationWarning, match=rf"{owner}\.{name} is deprecated"):
+            assert getattr(cls, name) == value
+
+    def test_instance_access_warns(self):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
+        solver = EmpiricalSolver(mesh, material)
+        with pytest.warns(DeprecationWarning, match="no longer"):
+            assert solver._F_MD_FLOOR == 0.15
+
+    def test_constructing_a_solver_does_not_touch_them(self):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=3, nz=4)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', DeprecationWarning)
+            EmpiricalSolver(mesh, material, ply_angles=[0] * 8)
 
 
 class TestLayupScaleRegressionPin:
-    """Pin the current ``_layup_scale`` behavior across the intermediate
-    f_md range.
+    """Pin the ``_layup_scale`` behavior across representative layups.
 
-    Snapshot of post-#140 investigation findings. The linear
-    ``f_md / _F_MD_REF`` scaling is preserved pending the validation
-    campaign documented in #140; these values are the current behavior,
-    not an endorsement of correctness. Any future refactor (linear or
-    nonlinear) must explicitly update these snapshots so the change is
-    visible in review.
-
-    Measurement methodology used in #140: relative CLT stiffness
-    retention ratio vs the QI baseline, i.e.
-    ``sqrt(Ex_layup(Vp)/Ex_layup(0)) / sqrt(Ex_QI(Vp)/Ex_QI(0))``,
-    compared against the empirical
-    ``exp(-alpha_QI*(scale_lin - 1)*Vp)`` over Vp in
-    ``[0.005, 0.05]``. Max abs relative error observed across the
-    layups below was 33.5% (UD at Vp=0.05); >5% on UD-heavy, off-axis,
-    and UD layups.
+    Design R1 of IMPROVEMENT_PLAN 2.7 (replacing the ``f_md / 0.5`` rule and
+    its 0.15 / 0.80 floors, issues #139 / #140): ``shear``, ``ilss`` and
+    ``transverse_tension`` are layup-independent (scale 1). ``tension`` and
+    ``compression`` use ``max(1, alpha_blend / alpha_QI)``, where
+    ``alpha_blend`` weights the calibrated per-mode alphas by the fiber /
+    transverse / shear split of the pristine CLT membrane strain energy
+    under a unit ``N_x`` (T800_epoxy here). Any future change to the rule
+    must explicitly update these snapshots so it is visible in review.
     """
 
     def _solver_with_layup(self, ply_angles):
@@ -398,15 +487,15 @@ class TestLayupScaleRegressionPin:
         return EmpiricalSolver(mesh, material, ply_angles=ply_angles)
 
     def test_layup_scale_at_baseline_qi_returns_unity(self):
-        # QI [0,45,-45,90]_s -> f_md = 0.5 -> scale = 1.0 for all modes.
+        # QI [0,45,-45,90]_s -> scale = 1.0 exactly for all modes.
         solver = self._solver_with_layup([0, 45, -45, 90, 90, -45, 45, 0])
         for mode in ('compression', 'tension', 'shear', 'ilss',
                      'transverse_tension'):
-            assert solver._layup_scale(mode) == pytest.approx(1.0, abs=1e-12)
+            assert solver._layup_scale(mode) == 1.0
 
     def test_layup_scale_snapshot_at_intermediate_layups(self):
-        # 4-sig-fig snapshot of the current (linear) layup scale across the
-        # representative layups used in the #140 measurement set.
+        # 4-sig-fig snapshot of the layup scale across the #140 measurement
+        # set plus the off-axis / 90-rich layups the R1 blend amplifies.
         # Update only with an intentional algorithm change.
         layups = {
             'qi':       [0, 45, -45, 90, 90, -45, 45, 0],
@@ -414,14 +503,20 @@ class TestLayupScaleRegressionPin:
             'ud_heavy': [0, 0, 90, 90, 0, 0],
             'off_axis': [0, 15, -15, -15, 15, 0],
             'ud':       [0, 0, 0, 0, 0, 0],
+            'pm30':     [30, -30, -30, 30, 30, -30, -30, 30],
+            'pm45':     [45, -45, -45, 45, 45, -45, -45, 45],
+            'ninety':   [90] * 8,
         }
         expected = {
             # name: (f_md, compression, tension, shear, ilss, transverse_tension)
             'qi':       (0.5000, 1.000, 1.000, 1.000, 1.000, 1.000),
             'crossply': (0.5000, 1.000, 1.000, 1.000, 1.000, 1.000),
-            'ud_heavy': (0.3333, 0.6667, 0.6667, 0.6667, 0.8000, 0.8000),
-            'off_axis': (0.3333, 0.6667, 0.6667, 0.6667, 0.8000, 0.8000),
-            'ud':       (0.0000, 0.1500, 0.1500, 0.1500, 0.8000, 0.8000),
+            'ud_heavy': (0.3333, 1.000, 1.000, 1.000, 1.000, 1.000),
+            'off_axis': (0.3333, 1.000, 1.000, 1.000, 1.000, 1.000),
+            'ud':       (0.0000, 1.000, 1.000, 1.000, 1.000, 1.000),
+            'pm30':     (0.5000, 1.076, 1.550, 1.000, 1.000, 1.000),
+            'pm45':     (0.5000, 1.142, 1.939, 1.000, 1.000, 1.000),
+            'ninety':   (1.0000, 1.159, 2.564, 1.000, 1.000, 1.000),
         }
         for name, ply in layups.items():
             solver = self._solver_with_layup(ply)
@@ -433,6 +528,58 @@ class TestLayupScaleRegressionPin:
                 got = solver._layup_scale(mode)
                 assert got == pytest.approx(exp[i], abs=5e-4), \
                     f'{name}/{mode}: got {got!r}, expected {exp[i]!r}'
+
+
+class TestQIBitIdentical:
+    """IMPROVEMENT_PLAN 2.7 acceptance criterion 1: the default QI layup (and
+    any in-plane-isotropic layup) gives bit-identical knockdowns for every
+    mode and all three laws. ``_QI_SNAPSHOT`` was frozen from the pre-R1
+    code (T800_epoxy, Vp = 0.03, ``build_empirical_pipeline`` default QI)
+    as ``(knockdown, failure_stress)``."""
+
+    _QI_SNAPSHOT = {
+        'compression': {'judd_wright': (0.813019649987571, 1219.5294749813565),
+                        'power_law': (0.9182498285858592, 1377.3747428787888),
+                        'linear': (0.835, 1252.5)},
+        'tension': {'judd_wright': (0.8895851931634113, 2490.838540857552),
+                    'power_law': (0.9466493078204734, 2650.6180618973253),
+                    'linear': (0.895, 2506.0)},
+        'shear': {'judd_wright': (0.7866278610665534, 78.66278610665533),
+                  'power_law': (0.8988786596538656, 89.88786596538657),
+                  'linear': (0.79, 79.0)},
+        'ilss': {'judd_wright': (0.7408182206817179, 66.67363986135462),
+                 'power_law': (0.8719122998642496, 78.47210698778247),
+                 'linear': (0.73, 65.7)},
+        'transverse_tension': {'judd_wright': (0.7408182206817179, 59.26545765453743),
+                               'power_law': (0.8719122998642496, 69.75298398913996),
+                               'linear': (0.73, 58.4)},
+    }
+
+    @pytest.mark.parametrize("layup", [
+        'QI',
+        [0, 90, 45, -45, -45, 45, 90, 0],
+        [45, 0, -45, 90, 90, -45, 0, 45],
+        [0, 60, -60, -60, 60, 0],
+    ])
+    def test_qi_and_isotropic_layups_bit_identical(self, layup):
+        from porosity_fe import Calibration, build_empirical_pipeline
+        from porosity_fe.empirical import _KNOCKDOWN_LAWS
+        _pf, _mesh, emp = build_empirical_pipeline(
+            MATERIALS['T800_epoxy'], 0.03, ply_angles=layup, mesh_res=(4, 3, 3))
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')  # no layup-amplification warning
+            results = emp.get_all_failure_loads()
+        for mode, per_model in self._QI_SNAPSHOT.items():
+            for model, (kd, fs) in per_model.items():
+                res = results[mode][model]
+                assert res.knockdown == kd, (layup, mode, model)
+                assert res.failure_stress == fs, (layup, mode, model)
+                assert 'layup_scale' not in res.details
+                law, table = _KNOCKDOWN_LAWS[model]
+                coef_qi = getattr(Calibration, table + '_QI')[mode]
+                assert emp._builtin_law(model, mode)[1] == coef_qi
+                sens = emp.local_sensitivities(mode, model)
+                assert sens['KD'] == float(law(0.03, coef_qi))
 
 
 class TestEmpiricalLinearSaturation:
@@ -707,25 +854,34 @@ class TestLocalSensitivities:
         np.testing.assert_allclose(s['dKD_dVp'], -beta, rtol=1e-12)
 
     def test_layup_scaled_alpha_propagates(self):
-        """A non-QI (UD) layup must propagate its layup scaling into the
-        coefficient partial.  ``dKD/dcoef`` magnitude is ``Vp * KD`` — KD
-        moves with the layup-scaled alpha, so the partial scales too."""
-        ud = [0.0] * 8  # UD: f_md = 0 -> floor = 0.15 (compression)
+        """A non-QI layup must propagate its layup scaling into the partials.
+        [90]_8 tension is amplified by alpha_tt / alpha_t, UD and QI are not,
+        so |dKD/dVp| orders as [90]_8 > QI == UD, and dKD/dVp = -alpha*KD
+        holds with the amplified alpha."""
+        ninety = [90.0] * 8
+        ud = [0.0] * 8
         qi = [0.0, 45.0, 90.0, -45.0] * 2
-        solver_ud = EmpiricalSolver(self.mesh, self.material, ply_angles=ud)
-        solver_qi = EmpiricalSolver(self.mesh, self.material, ply_angles=qi)
-        s_ud = solver_ud.local_sensitivities(mode='compression',
-                                             model='judd_wright')
-        s_qi = solver_qi.local_sensitivities(mode='compression',
-                                             model='judd_wright')
-        # Sanity: the UD scale (0.15) is smaller than QI scale (1.0), so
-        # UD's alpha is smaller, KD is closer to 1, and the *magnitude*
-        # of dKD/dVp is smaller too (it's -alpha * KD).
-        assert abs(s_ud['dKD_dVp']) < abs(s_qi['dKD_dVp'])
-        # The coefficient partial magnitude is just |Vp| * KD; KD(UD) > KD(QI)
-        # at the same Vp because alpha(UD) < alpha(QI), so |dKD/dcoef|
-        # on UD must be larger than on QI.
-        assert abs(s_ud['dKD_dcoef']) > abs(s_qi['dKD_dcoef'])
+        sens = {}
+        for name, layup in (('90', ninety), ('ud', ud), ('qi', qi)):
+            solver = EmpiricalSolver(self.mesh, self.material, ply_angles=layup)
+            for model in ('judd_wright', 'power_law', 'linear'):
+                sens[name, model] = solver.local_sensitivities(
+                    mode='tension', model=model)
+            if name == '90':
+                alpha = solver.JUDD_WRIGHT_ALPHA['tension']
+                assert alpha == pytest.approx(10.0, rel=1e-12)
+                np.testing.assert_allclose(
+                    sens['90', 'judd_wright']['dKD_dVp'],
+                    -alpha * sens['90', 'judd_wright']['KD'], rtol=1e-12)
+                np.testing.assert_allclose(
+                    sens['90', 'linear']['dKD_dVp'],
+                    -solver.LINEAR_BETA['tension'], rtol=1e-12)
+        for model in ('judd_wright', 'power_law', 'linear'):
+            assert abs(sens['90', model]['dKD_dVp']) > abs(sens['qi', model]['dKD_dVp'])
+            assert sens['ud', model] == sens['qi', model]
+        # |dKD/dcoef| = Vp * KD for Judd-Wright: KD(90) < KD(QI), so smaller.
+        assert abs(sens['90', 'judd_wright']['dKD_dcoef']) < \
+            abs(sens['qi', 'judd_wright']['dKD_dcoef'])
 
     def test_default_Vp_matches_mesh_porosity(self):
         """Default Vp is ``mesh.porosity_field.Vp`` — same as
@@ -1060,6 +1216,101 @@ class TestExtrapolationWarning:
         """A uniform field has peak == mean, so Vp at the bound stays silent."""
         solver = self._build_solver(0.05, nz=12)
         assert self._extrapolation_warnings(solver) == []
+
+
+class TestLayupAmplificationWarning:
+    """IMPROVEMENT_PLAN 2.7 (R1): a tension / compression layup scale above 1
+    is outside the validated range. It is recorded in
+    ``FailureResult.details`` and flagged with one ``UserWarning`` per public
+    call; the numbers themselves are unaffected by the warning."""
+
+    PM45 = [45, -45, -45, 45]
+
+    def _solver(self, layup, Vp=0.03):
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, Vp, distribution='uniform')
+        mesh = CompositeMesh(pf, material, nx=4, ny=2, nz=2)
+        return EmpiricalSolver(mesh, material, ply_angles=layup)
+
+    @staticmethod
+    def _layup_warnings(fn, *args, **kwargs):
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter('always')
+            out = fn(*args, **kwargs)
+        hits = [w for w in record
+                if issubclass(w.category, UserWarning)
+                and 'unvalidated layup amplification' in str(w.message)]
+        return out, hits
+
+    def test_get_failure_load_warns_once_and_records_scale(self):
+        solver = self._solver(self.PM45)
+        res, hits = self._layup_warnings(solver.get_failure_load, 'tension',
+                                         'judd_wright')
+        assert len(hits) == 1
+        msg = str(hits[0].message)
+        assert 'tension x1.94' in msg
+        assert 'beyond the validated layup range' in msg
+        assert 'extrapolated' in msg
+        assert hits[0].filename == __file__
+        assert res.details['layup_scale'] == pytest.approx(1.939, abs=5e-4)
+        assert res.details['layup_extrapolated'] is True
+        assert res.knockdown == pytest.approx(
+            np.exp(-3.9 * res.details['layup_scale'] * 0.03), rel=1e-12)
+
+    @pytest.mark.parametrize("mode", ['shear', 'ilss', 'transverse_tension'])
+    def test_matrix_modes_never_warn(self, mode):
+        res, hits = self._layup_warnings(
+            self._solver([90] * 4).get_failure_load, mode, 'judd_wright')
+        assert hits == []
+        assert 'layup_scale' not in res.details
+
+    @pytest.mark.parametrize("layup", ['QI', 'UD', [0, 90, 90, 0],
+                                       [0, 60, -60, -60, 60, 0]])
+    def test_validated_layups_never_warn(self, layup):
+        solver = self._solver(layup)
+        results, hits = self._layup_warnings(solver.get_all_failure_loads)
+        assert hits == []
+        for per_model in results.values():
+            for res in per_model.values():
+                assert 'layup_scale' not in res.details
+
+    def test_get_all_failure_loads_warns_once(self):
+        solver = self._solver(self.PM45)
+        results, hits = self._layup_warnings(solver.get_all_failure_loads)
+        assert len(hits) == 1
+        msg = str(hits[0].message)
+        assert 'compression x1.14' in msg and 'tension x1.94' in msg
+        assert hits[0].filename == __file__
+        for mode in ('tension', 'compression'):
+            for model in ('judd_wright', 'power_law', 'linear'):
+                assert results[mode][model].details['layup_extrapolated'] is True
+        # The deferral flag is reset afterwards.
+        _res, hits = self._layup_warnings(solver.get_failure_load, 'tension')
+        assert len(hits) == 1
+
+    def test_apply_loading_warns_once(self):
+        solver = self._solver([90] * 4)
+        _out, hits = self._layup_warnings(solver.apply_loading, 'compression',
+                                          'power_law')
+        assert len(hits) == 1
+        assert 'compression x1.16' in str(hits[0].message)
+        assert hits[0].filename == __file__
+
+    def test_user_callable_is_exempt(self):
+        """User callables bypass the layup scaling, so nothing to flag."""
+        solver = self._solver(self.PM45)
+        res, hits = self._layup_warnings(
+            solver.get_failure_load, 'tension', lambda Vp, mode: 0.9)
+        assert hits == []
+        assert 'layup_scale' not in res.details
+
+    def test_uq_collapses_layup_warning_to_one(self):
+        from porosity_fe import propagate_uncertainty
+        _res, hits = self._layup_warnings(
+            propagate_uncertainty, 0.03, 'T800_epoxy', 'tension', 'judd_wright',
+            covs={'sigma_1t': 0.05, 'E11': 0.05}, coef_cov=0.1, n_samples=8,
+            seed=0, ply_angles=self.PM45)
+        assert len(hits) == 1
 
 
 class TestKnockdownDispatch:

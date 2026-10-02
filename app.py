@@ -144,7 +144,7 @@ def run_analysis(cfg: dict) -> dict:
     """Run the porosity analysis for one configuration.
 
     Returns a dict with keys: config, material, porosity_field, mesh,
-    empirical, fe_field, fe_loading, fe_skipped_reason, f_md.
+    empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale.
 
     The empirical results are always returned. If the FE solve fails,
     ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
@@ -189,7 +189,7 @@ def run_analysis(cfg: dict) -> dict:
         "fe_field": fe_field,
         "fe_loading": fe_loading,
         "fe_skipped_reason": fe_skipped_reason,
-        "f_md": empirical.f_md,
+        "layup_scale": dict(empirical.layup_scale),
     }
 
 
@@ -309,7 +309,7 @@ def plot_results(result: dict, layup_str: str):
     fe_field = result.get("fe_field")
     fe_loading = result.get("fe_loading", "compression")
     cfg = result["config"]
-    f_md = result.get("f_md", 0.5)
+    layup_scale = result.get("layup_scale", {})
 
     modes = ["compression", "tension", "shear", "ilss"]
     models = ["judd_wright", "power_law", "linear"]
@@ -360,9 +360,11 @@ def plot_results(result: dict, layup_str: str):
 
     note = ("Solid bars = strength knockdown (at mean Vp); "
             "hatched bar = stiffness knockdown (FE)")
-    if f_md < 0.49:
-        note += (f"\nLayup scaling: f_md = {f_md:.2f} "
-                 "(coefficients reduced for fiber-dominated layup)")
+    amplified = {m: s for m, s in layup_scale.items() if s > 1.0}
+    if amplified:
+        factors = ", ".join(f"{m} x{s:.2f}" for m, s in sorted(amplified.items()))
+        note += (f"\nLayup amplification ({factors}): layup more "
+                 "matrix-dominated than the QI calibration; not validated")
     # Footnote intentionally smaller than rcParams.font.size (annotation, not
     # primary data); explicit override kept here on purpose.
     ax.text(0.01, 0.01, note, transform=ax.transAxes,
