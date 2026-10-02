@@ -47,12 +47,34 @@ Void elements get a near-zero isotropic stiffness.
 | `shear` | displacement | $u_x = \tfrac{\gamma}{2} y$, $u_y = \tfrac{\gamma}{2} x$ on the four $x$ and $y$ faces; one corner fixed in $z$ |
 | `ilss` | force | bottom-face nodes along both end edges pinned in $x, y, z$; total `applied_load` along $-z$ shared equally by the top-face nodes at mid-span |
 
-Prescribed displacements are imposed by the penalty method: a stiffness of
-$\alpha = 10^6 \max_i K_{ii}$ (`penalty_factor`) is added to each
-constrained degree of freedom. The default solve is a sparse LU
-factorization, which is cached and reused until the mesh, material or
-porosity change. Conjugate-gradient and MINRES are available for large
-meshes.
+Prescribed displacements are imposed exactly by eliminating the
+constrained degrees of freedom. With $f$ the free and $c$ the constrained
+set, and $\bar{\mathbf u}_c$ the prescribed values, the solver solves
+
+$$
+\mathbf K_{ff}\, \mathbf u_f = \mathbf F_f - \mathbf K_{fc}\, \bar{\mathbf u}_c,
+\qquad \mathbf u_c = \bar{\mathbf u}_c ,
+$$
+
+so the boundary values hold to the last bit. The reported reactions are
+$\mathbf R_c = \mathbf K_{cf} \mathbf u_f + \mathbf K_{cc} \bar{\mathbf u}_c - \mathbf F_c$
+at the constrained degrees of freedom and zero elsewhere; a load applied at
+a supported node goes into that support's reaction. $\mathbf K_{ff}$ keeps
+the conditioning of the physical stiffness: on the production mesh its
+diagonal ratio is about 24, where the penalty method used before (a spring
+of $10^6 \max_i K_{ii}$ on each constrained degree of freedom) gave
+$2.4 \times 10^7$ and left a boundary slack of about $10^{-8}$ of the
+displacement.
+
+The default solve is a sparse LU factorization of $\mathbf K_{ff}$, cached
+and reused until the mesh, material, porosity or set of constrained degrees
+of freedom change. Jacobi-preconditioned conjugate gradients
+(`solver='cg'`) agree with it to about $10^{-8}$ at the default
+`rtol = 1e-9` and need no fill-in, which pays off above roughly 40,000
+degrees of freedom. MINRES (`solver='minres'`) is warm-restarted until its
+true residual meets `rtol`, but being a residual minimizer it is less
+accurate than CG at the same tolerance (about $10^{-6}$ on the production
+mesh).
 
 ```{note}
 The ILSS supports pin all three translations, so the model is a beam

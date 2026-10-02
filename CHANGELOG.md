@@ -118,6 +118,25 @@ All notable changes to PorosityFE will be documented in this file.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **`FESolver.solve(solver='cg')` and `solver='minres'` returned wrong
+  answers at the default `rtol` (result change for iterative-solver
+  users).** The penalty rows put `alpha * v ~ 1e11 * v` into the
+  right-hand side of the displacement-controlled modes, so `||F||` was
+  huge and the relative-residual test passed as soon as the constrained
+  DOFs were right, with the interior unconverged. On a 20x8x12 clustered
+  `Vp = 0.02` mesh, compression CG was 24 % off in displacement and 16 % in
+  stress, shear CG 17 % in the failure index, and compression MINRES 8 % in
+  displacement, all reported as converged. ILSS MINRES always failed its
+  residual check, because SciPy's MINRES stops on a preconditioned estimate
+  about 1,000x below the true residual. With the boundary conditions
+  eliminated (see Changed), CG agrees with the direct solve to within
+  4e-8 in displacement, stress and failure index on the production mesh.
+  MINRES is warm-restarted, at most 3 times, until its true residual
+  meets `rtol` (one restart on every shipped load case, ILSS included).
+  It agrees to within 2e-6, since a residual minimizer is less accurate
+  than CG at the same tolerance. Iterative solves are slower because they
+  now actually converge: CG takes about 1,000 iterations (about 1.3 s) on
+  the production mesh instead of stopping after about 85.
 - **`MaterialProperties(tsai_wu_F12=...)` is now the normalized
   coefficient it was documented as.** The docstring called it a
   dimensionless value in `[-1, 0]`, but the FE Tsai-Wu check used it as
@@ -328,6 +347,47 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Dirichlet boundary conditions are eliminated exactly instead of by a
+  penalty (IMPROVEMENT_PLAN 1.6).** `FESolver` solves
+  `K_ff u_f = F_f - K_fc u_c` with the prescribed values set exactly, in
+  place of adding `1e6 * max(diag K)` to each constrained DOF.
+  - Boundary values hold bit for bit (the penalty left a slack of about
+    1e-8 of the displacement), and the free-DOF stiffness keeps its
+    physical conditioning: the diagonal ratio on the production mesh drops
+    from 2.4e7 to 24.
+  - Direct-solver results move very little. On the 30x10x12 production
+    mesh (clustered, uniform and interface porosity, QI and UD, all four
+    loadings) the changes are:
+    - displacements: at most 4e-8 of `max|u|`;
+    - stresses: at most 3e-7 of `max|sigma|`;
+    - `effective_modulus`: +7e-9 to +8e-8, always up, because the penalty
+      springs absorbed part of the prescribed displacement;
+    - `knockdown`: at most 6e-9;
+    - `first_ply_failure_load_factor`: at most 1.3e-7;
+    - `max_failure_index`: at most 2e-7 (1.1e-6 for the near-zero UD
+      tension index).
+
+    The README tables, the JSON schema and the validation MAE (7.05 % /
+    6.53 %) are unchanged.
+  - `reaction_forces` are `K u - F` at the constrained DOFs and exactly
+    zero at the free DOFs, where they used to carry about 1e-10 N of solver
+    residual.
+  - A load at a constrained DOF now enters that support's reaction.
+    `apply_penalty` overwrote `F` there, silently dropping the load; none
+    of the shipped load cases does this.
+  - The LU factorization is cached per constrained-DOF set. CG and MINRES
+    reuse the cached free-DOF matrix and never factorize.
+  - A singular free-DOF stiffness (boundary conditions that leave a
+    rigid-body mode free) raises an error that says so.
+  - The `cond_diag_ratio` INFO line and the "conditioning near float64
+    limit" warning are replaced by one INFO line on the free-DOF diagonal
+    ratio.
+- **`FESolver.solve(penalty_factor=..., diag_scale=...)` are deprecated
+  and have no effect.** Both now default to `None`, and passing any value
+  emits a `DeprecationWarning`. `BoundaryHandler.apply_penalty` still
+  returns the penalty-modified system but warns. Use the new
+  `BoundaryHandler.apply_elimination(K, F, constrained)`, which returns
+  `(K_ff, rhs, free_dofs)`. All three will be removed in 2.0.
 - **Provenance short aliases are deprecated (IMPROVEMENT_PLAN 4.7).** The
   canonical keys are `porosity_fe_version`, `python_version`,
   `numpy_version`, `scipy_version`, `timestamp_utc` and `git_commit`. The
