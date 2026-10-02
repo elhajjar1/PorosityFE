@@ -105,6 +105,43 @@ All notable changes to PorosityFE will be documented in this file.
   An in-place edit of such a field also left a solver on its stale `K`.
   Both caches now key on `dataclasses.astuple(material)`. **Result change**
   only for callers that hit the collision.
+- **Element ply assignment is exact, and the FE solver warns when the
+  mesh does not resolve the layup.** Each element takes the angle of the
+  ply containing its centroid. With fewer element layers than plies the
+  centroid often sits exactly on a ply interface, and floating-point
+  division put it on either side depending on the ply thickness. On the
+  production mesh (`nz = 12`) the 24-ply T800 `'QI'` laminate became
+  `[90, -45, 45, 90, 90, -45, 45, 90, 90, -45, -45, 0]`, keeping one of
+  its six 0-degree plies, while T700 (same ply count) got
+  `[90, -45, 45, 0]` three times. Ply ids are now computed in integer
+  arithmetic, and an interface centroid (or node, for `ply_ids`) always
+  takes the ply above it.
+  - New `CompositeMesh.element_layup` gives the element angle of each
+    layer.
+  - New `CompositeMesh.layup_discrepancies()` lists how that layup differs
+    from the requested one: element layers that merge plies of different
+    angles (any `nz` that is not a multiple of `n_plies`, unless the
+    merged plies share an angle), the resulting change in each angle's
+    thickness fraction, and lost symmetry or balance.
+  - `FESolver` logs these findings as one warning per mesh. The empirical
+    path does not use the element layup, so it does not warn.
+
+  **Result change:** FE results change where rounding used to pick the
+  lower ply: T800 at `nz` 6, 12, 18, 20, 30 and 36; CF/PEEK at 12, 28 and
+  44; glass/epoxy at 42; T300/934 and HTA/EHkF420 at 40. Element layups
+  with `nz` a multiple of `n_plies` are unchanged. On the production mesh
+  T800 is now `[90, -45, 45, 0] x 3` like the other 24-ply presets, and
+  CF/PEEK goes from `[0, 90, 90, 45, -45, -45, -45, -45, 45, 90, 90, 0]`
+  to `[0, 90, 90, 45, -45, -45, -45, 45, 45, 90, 0, 0]`. The README FE
+  distribution table (T800, `nz = 12`, compression, `Vp = 0.03`) moves
+  from 0.9844 / 0.9839 / 0.9846 / 0.9638 to 0.9922 / 0.9923 / 0.9914 /
+  0.9821 (uniform / clustered midplane / clustered surface / interface).
+  The production mesh still resolves no preset: each element layer spans
+  two plies of a 24-ply preset and 4/3 of a 16-ply one, so the default FE
+  laminate is not the requested one, and none of the presets keeps its
+  symmetry. Resolving the plies by default (`nz = n_plies`) or giving a
+  multi-ply element the thickness-averaged stiffness of its plies awaits
+  a maintainer decision.
 - **Total mesh size is capped.** `CompositeMesh` rejected more than
   10 000 elements per axis but still admitted 10 000^3 in total, so an
   oversized mesh failed with an out-of-memory error partway through FE
