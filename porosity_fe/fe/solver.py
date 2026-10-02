@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import time
+import warnings
 from collections import OrderedDict
 from dataclasses import astuple, dataclass
 from typing import Literal
@@ -23,7 +24,7 @@ from ..porosity_field import PorosityField
 from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
-from .assembler import BoundaryHandler, GlobalAssembler
+from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
 from .export import export_results as _export_results
 from .export import write_vtk
 
@@ -73,9 +74,11 @@ class FieldResults:
         the unused entries are zero. Lets the GUI and JSON exporter report
         the dominant failure mode, not just severity.
     reaction_forces : np.ndarray or None
-        Shape (n_nodes, 3) nodal reaction forces ``K u - F`` (N). Non-zero
-        only at constrained DOFs, up to solver residual; summed over a
-        loaded face they give the resultant the boundary conditions apply.
+        Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
+        constrained DOFs and exactly zero at the free DOFs. A load applied
+        at a constrained DOF is carried by the support and enters its
+        reaction with the opposite sign. Summed over a loaded face they
+        give the resultant the boundary conditions apply.
     effective_modulus : float or None
         Homogenized modulus of the specimen (MPa) for the displacement-
         controlled modes: ``E_x`` for ``'compression'`` / ``'tension'``
@@ -227,8 +230,8 @@ def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float
 
 
 #: Pristine stiffness measures (see :func:`_stiffness_measure`) keyed by
-#: loading, mesh geometry, material and penalty factor. Shared across solvers
-#: so a porosity sweep on one mesh solves each pristine reference once.
+#: loading, mesh geometry and material. Shared across solvers so a porosity
+#: sweep on one mesh solves each pristine reference once.
 _PRISTINE_MEASURE_CACHE: OrderedDict[tuple, float] = OrderedDict()
 _PRISTINE_MEASURE_CACHE_MAXSIZE = 64
 
@@ -256,14 +259,86 @@ def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
     return pristine
 
 
+def _relative_residual(A: scipy.sparse.spmatrix, x: np.ndarray,
+                       b: np.ndarray) -> float:
+    """``||A x - b|| / ||b||``; the absolute residual when ``b = 0``."""
+    r = float(np.linalg.norm(A @ x - b))
+    norm_b = float(np.linalg.norm(b))
+    return r / norm_b if norm_b > 0.0 else r
+
+
+def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
+                     diag: np.ndarray, *, solver: str, rtol: float,
+                     max_restarts: int = 3) -> tuple[np.ndarray, float]:
+    """Jacobi-preconditioned CG or MINRES on the reduced SPD system.
+
+    A result is accepted when the true relative residual
+    ``||K_ff u - rhs|| / ||rhs||`` is at most ``10 * rtol`` (the slack
+    absorbs the floating-point floor). SciPy's CG stops on its recurrence
+    residual, which tracks the true one, so one call lands at about
+    ``rtol``. SciPy's MINRES stops on ``||r||_M / (||A|| ||x||)``, an
+    estimate in the preconditioner norm that sits a roughly constant factor
+    (10x to 1000x on these meshes) below the true relative residual. So
+    while the true residual is above ``rtol``, MINRES is warm-started from
+    its last iterate with the internal tolerance scaled by
+    ``rtol / achieved``, at most ``max_restarts`` times (one restart
+    suffices on the shipped load cases). MINRES minimizes the residual,
+    not the energy-norm error, so at the same residual its displacement
+    error is larger than CG's.
+
+    Raises
+    ------
+    RuntimeError
+        On a non-positive diagonal (no Jacobi preconditioner), or when the
+        solver stops without meeting the tolerance.
+    """
+    if not np.all(diag > 0.0):
+        raise RuntimeError(
+            "Cannot build Jacobi preconditioner: the free-DOF stiffness has "
+            "a non-positive diagonal entry. Check the assembly.")
+    M = scipy.sparse.diags(1.0 / diag)
+    maxiter = max(10 * rhs.size, 100)
+    accept = 10.0 * rtol
+    restarts = 0
+    if solver == 'cg':
+        u_f, info = scipy.sparse.linalg.cg(
+            K_ff, rhs, M=M, rtol=rtol, maxiter=maxiter)
+        rel_res = _relative_residual(K_ff, u_f, rhs)
+    else:  # solver == 'minres'
+        eps = float(np.finfo(float).eps)
+        inner = rtol
+        x0: np.ndarray | None = None
+        while True:
+            u_f, info = scipy.sparse.linalg.minres(
+                K_ff, rhs, x0=x0, M=M, rtol=inner, maxiter=maxiter)
+            rel_res = _relative_residual(K_ff, u_f, rhs)
+            if info != 0 or rel_res <= rtol or restarts >= max_restarts:
+                break
+            # Below eps the estimate cannot tighten further, but a warm
+            # restart from the better iterate can still make progress.
+            inner = max(inner * rtol / rel_res, eps)
+            x0 = u_f
+            restarts += 1
+    if not (info == 0 and rel_res <= accept):
+        raise RuntimeError(
+            f"{solver} failed to converge: info={info}, achieved relative "
+            f"residual {rel_res:.4e} (requested rtol={rtol:.4e}"
+            + (f", after {restarts} warm restarts" if restarts else "")
+            + ").")
+    logger.info(
+        "%s converged: relative residual %.4e (rtol=%.4e, restarts=%d)",
+        solver, rel_res, rtol, restarts)
+    return u_f, rel_res
+
+
 class FESolver:
     """Linear static FE solver for porosity-degraded composite laminates.
 
     Workflow:
     1. Assemble K via GlobalAssembler
     2. Build BCs via BoundaryHandler
-    3. Apply penalty method
-    4. Solve K*u = F via spsolve
+    3. Eliminate the prescribed DOFs: ``K_ff u_f = F_f - K_fc u_c``
+    4. Solve the reduced system (sparse LU, or CG / MINRES)
     5. Recover stresses at Gauss points
     6. Evaluate failure criterion at each GP (Tsai-Wu, Hashin, or max-stress)
     7. Compute knockdown factor
@@ -354,8 +429,9 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
         self.failure_criterion = failure_criterion
-        # Most recent sparse LU factorization, reused by direct solves whose
-        # penalty-modified matrix is unchanged: (K, key, SuperLU).
+        # Most recent free-DOF stiffness block and its sparse LU
+        # factorization (built lazily by direct solves), reused while K and
+        # the constrained-DOF set are unchanged: (K, key, K_ff, SuperLU|None).
         self._lu_cache: tuple | None = None
 
     def solve(self, loading: FELoadingMode = 'compression',
@@ -365,8 +441,8 @@ class FESolver:
               failure_criterion: Literal['tsai_wu', 'hashin', 'max_stress'] | None = None,
               solver: Literal['direct', 'cg', 'minres'] = 'direct',
               rtol: float = 1e-9,
-              diag_scale: bool = False,
-              penalty_factor: float = 1e6) -> FieldResults:
+              diag_scale: bool | None = None,
+              penalty_factor: float | None = None) -> FieldResults:
         """Solve the static FE problem.
 
         Parameters
@@ -394,35 +470,43 @@ class FESolver:
             behavior; ``'hashin'`` and ``'max_stress'`` populate the
             per-mode breakdown on :class:`FieldResults`.
         solver : {'direct', 'cg', 'minres'}
-            Linear solver to use for ``K u = F``. ``'direct'`` (default)
-            uses :func:`scipy.sparse.linalg.spsolve` (sparse LU). For
-            large meshes the LU fill-in dominates RAM; the penalty-modified
-            matrix is SPD, so ``'cg'`` (conjugate gradient) with a Jacobi
-            preconditioner is a memory-light alternative. ``'minres'``
-            is offered for completeness when the matrix is symmetric but
-            not strictly positive definite. Auto-switching is intentionally
-            *not* performed — callers select the path explicitly
-            (issue #57).
+            Linear solver for the reduced system ``K_ff u_f = F_f - K_fc u_c``
+            left after the prescribed DOFs are eliminated. ``'direct'``
+            (default) uses a sparse LU factorization
+            (:func:`scipy.sparse.linalg.splu`), cached and reused while
+            the mesh, material, porosity and constrained-DOF set are
+            unchanged. ``K_ff`` is symmetric positive definite, so
+            ``'cg'`` (conjugate gradient with a Jacobi preconditioner) is
+            a memory-light alternative; it needs no LU fill-in and is
+            the better choice above roughly 40k DOF (about 3x the default
+            production mesh), where LU time and memory grow fastest.
+            ``'minres'`` is offered for completeness; SciPy's MINRES
+            stops on a preconditioned residual estimate, so it is
+            warm-restarted with a tighter internal tolerance until the
+            true relative residual meets ``rtol``. MINRES minimizes the
+            residual rather than the energy-norm error, so at the same
+            ``rtol`` its displacements are less accurate than CG's (about
+            1e-6 vs 1e-8 relative to direct on the production mesh at the
+            default ``rtol``); prefer ``'cg'``. Auto-switching is
+            intentionally *not* performed: callers select the path
+            explicitly (issue #57).
         rtol : float
-            Relative-residual tolerance for the iterative solvers. Ignored
-            when ``solver='direct'``.
-        diag_scale : bool, optional
-            If ``True``, symmetrically Jacobi-pre-scale the penalty-
-            modified system before solving:
-            ``(D^{-1/2} K_mod D^{-1/2}) y = D^{-1/2} F_mod``,
-            ``u = D^{-1/2} y``, where ``D = diag(K_mod)``. The math is
-            unchanged but the diagonal-conditioning ratio is reduced by
-            2-3 decades on graded/voided meshes, which improves both LU
-            backward error and CG/MINRES convergence. Defaults to
-            ``False`` to preserve bit-identical legacy behavior; opt in
-            when conditioning is a concern (issue #60).
-        penalty_factor : float, optional
-            Multiplier on ``max(diag(K))`` used by
-            :meth:`BoundaryHandler.apply_penalty` to enforce Dirichlet
-            BCs. Lowered from ``1e8`` to ``1e6`` (default) in issue #60
-            to keep ``cond(K_mod)`` well below the float64 ceiling while
-            still enforcing BCs to six decades. Tune higher only if BC
-            slack is a problem; tune lower if conditioning is.
+            Relative-residual tolerance ``||K_ff u_f - rhs|| / ||rhs||``
+            for the iterative solvers; a result is accepted when the true
+            residual is at most ``10 * rtol``. Ignored when
+            ``solver='direct'``.
+        diag_scale : None
+            Deprecated, no effect. It Jacobi-scaled the penalty-modified
+            system; with exact elimination the reduced matrix is already
+            as well conditioned. Passing any value emits a
+            :class:`DeprecationWarning`; the argument will be removed in
+            2.0.
+        penalty_factor : None
+            Deprecated, no effect. Prescribed displacements are now
+            imposed exactly by eliminating the constrained DOFs instead of
+            a penalty stiffness. Passing any value emits a
+            :class:`DeprecationWarning`; the argument will be removed in
+            2.0.
 
         Returns
         -------
@@ -437,10 +521,22 @@ class FESolver:
             :attr:`SUPPORTED_FAILURE_CRITERIA`), or if ``solver`` is not
             one of ``'direct'``, ``'cg'``, ``'minres'``.
         RuntimeError
-            If the iterative solver fails to converge to ``rtol``, or if
-            the direct solve produces non-finite values / a residual above
-            ``1e-6``.
+            If the iterative solver fails to converge to ``rtol``, if the
+            direct solve produces non-finite values / a residual above
+            ``1e-6``, or if the free-DOF stiffness is singular (boundary
+            conditions that leave a rigid-body mode free).
         """
+        for name, value in (('penalty_factor', penalty_factor),
+                            ('diag_scale', diag_scale)):
+            if value is not None:
+                warnings.warn(
+                    f"FESolver.solve({name}=...) is deprecated and has no "
+                    "effect: prescribed displacements are now imposed "
+                    "exactly by eliminating the constrained DOFs. It will "
+                    "be removed in 2.0.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
         t0 = time.perf_counter()
         criterion = failure_criterion if failure_criterion is not None \
             else self.failure_criterion
@@ -469,14 +565,9 @@ class FESolver:
         constrained, F = self._apply_boundary_conditions(
             loading, applied_strain, applied_load, verbose=verbose)
 
-        # 3-4. Penalty/diag-scaling, conditioning diagnostics, solver
-        #      dispatch and the solve itself. Returns the unscaled physical
-        #      displacement vector ``u``.
-        u, _rel_res = self._modify_system_and_solve(
-            K, F, constrained, solver=solver, rtol=rtol,
-            diag_scale=diag_scale, penalty_factor=penalty_factor,
-            verbose=verbose,
-        )
+        # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
+        u, _rel_res = self._solve_constrained(
+            K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
 
         if verbose:
             t2 = time.perf_counter()
@@ -504,11 +595,11 @@ class FESolver:
 
         # 7. Knockdown: porous / pristine structural stiffness.
         knockdown = self._compute_knockdown(
-            loading, K, u, applied_strain, applied_load, penalty_factor)
+            loading, K, u, applied_strain, applied_load)
 
         displacement = u.reshape(-1, 3)
         reactions, effective_modulus = self._reactions_and_modulus(
-            loading, K, u, F, applied_strain)
+            loading, K, u, F, applied_strain, constrained)
 
         if verbose:
             t3 = time.perf_counter()
@@ -588,23 +679,27 @@ class FESolver:
 
         return constrained, F
 
-    def _modify_system_and_solve(
+    #: Warm restarts allowed after the first MINRES call (see
+    #: :func:`_iterative_solve`).
+    _MINRES_MAX_RESTARTS = 3
+
+    def _solve_constrained(
         self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
         *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
-        rtol: float = 1e-9, diag_scale: bool = False,
-        penalty_factor: float = 1e6, verbose: bool = False,
+        rtol: float = 1e-9, verbose: bool = False,
     ) -> tuple[np.ndarray, float]:
-        """Apply BCs to the system, condition it, and solve ``K u = F``.
+        """Impose the Dirichlet BCs exactly and solve ``K u = F``.
 
-        Enforces Dirichlet BCs via :meth:`BoundaryHandler.apply_penalty`,
-        logs the diagonal-conditioning diagnostic (issue #60), optionally
-        applies symmetric Jacobi pre-scaling, dispatches to the requested
-        linear solver, validates the residual, and unscales the solution.
+        Partitions the DOFs into free (``f``) and constrained (``c``) sets
+        (``_DirichletPartition`` in :mod:`porosity_fe.fe.assembler`), solves
+        ``K_ff u_f = F_f - K_fc u_c`` with the requested linear solver and
+        returns the full vector with ``u_c`` equal to the prescribed values
+        bit for bit.
 
         Parameters
         ----------
         K : scipy.sparse matrix
-            Assembled (pre-penalty) global stiffness matrix.
+            Assembled global stiffness matrix (not modified).
         F : np.ndarray
             Global force vector.
         constrained : dict[int, float]
@@ -613,207 +708,117 @@ class FESolver:
             Linear solver to use. See :meth:`solve` for details.
         rtol : float
             Relative-residual tolerance for the iterative solvers.
-        diag_scale : bool
-            Symmetric Jacobi pre-scaling toggle (issue #60).
-        penalty_factor : float
-            Penalty multiplier for the Dirichlet enforcement.
         verbose : bool
             Log progress information.
 
         Returns
         -------
         u : np.ndarray
-            Physical displacement vector (already unscaled if
-            ``diag_scale`` was applied).
+            Full displacement vector.
         rel_res : float
-            Achieved relative residual of the solve.
+            Achieved relative residual ``||K_ff u_f - rhs|| / ||rhs||``
+            of the reduced system (absolute residual when ``rhs = 0``).
 
         Raises
         ------
         ValueError
             If ``solver`` is not one of 'direct', 'cg', 'minres'.
         RuntimeError
-            On a non-positive diagonal for the scaling/preconditioner, a
-            non-finite or non-converged solution, or a residual above
-            tolerance.
+            On a singular free-DOF stiffness, a non-positive diagonal for
+            the preconditioner, a non-finite or non-converged solution, or
+            a residual above tolerance.
         """
-        # 3. Apply penalty
-        K_mod, F_mod = BoundaryHandler.apply_penalty(
-            K, F, constrained, penalty_factor=penalty_factor,
-        )
-
-        # 3a. Conditioning diagnostic (issue #60). The diagonal ratio is
-        # an inexpensive proxy for cond(K_mod) — full condest is O(n^2)
-        # for sparse matrices and we want this on every solve. Warn the
-        # user well before float64's ~1e16 headroom is exhausted.
-        _diag = K_mod.diagonal()
-        _diag_abs = np.abs(_diag)
-        _diag_min = float(_diag_abs[_diag_abs > 0.0].min()) \
-            if np.any(_diag_abs > 0.0) else 0.0
-        _diag_max = float(_diag_abs.max()) if _diag_abs.size else 0.0
-        cond_diag_ratio = (_diag_max / _diag_min) if _diag_min > 0.0 \
-            else float('inf')
-        logger.info(
-            "Matrix conditioning: cond_diag_ratio=%.4e "
-            "(penalty_factor=%.2e, diag_scale=%s)",
-            cond_diag_ratio, penalty_factor, diag_scale,
-        )
-        if cond_diag_ratio > 1e12:
-            logger.warning(
-                "Matrix conditioning near float64 limit "
-                "(cond_diag_ratio=%.2e); consider lowering "
-                "penalty_factor or enabling diag_scale.",
-                cond_diag_ratio,
-            )
-
-        # 4. Solve
         if solver not in ('direct', 'cg', 'minres'):
             raise ValueError(
                 f"Unknown solver '{solver}'. "
                 "Use 'direct', 'cg', or 'minres'."
             )
+        part = _DirichletPartition.from_constraints(K.shape[0], constrained)
+        if part.free.size == 0:
+            return part.lift(), 0.0
+
+        K_ff, lu = self._free_dof_system(K, part, factorize=solver == 'direct')
+        rhs = part.reduce_rhs(K, F)
+
+        # Cheap conditioning diagnostic: with exact elimination the ratio
+        # reflects the physical stiffness contrast (ply anisotropy, void
+        # elements), not a boundary-condition artefact.
+        diag = K_ff.diagonal()
+        positive = diag[diag > 0.0]
+        diag_ratio = float(positive.max() / positive.min()) \
+            if positive.size == diag.size else float('inf')
+        logger.info(
+            "Free-DOF stiffness: diag ratio=%.3e (n_free=%d, n_fixed=%d)",
+            diag_ratio, part.free.size, part.fixed.size)
         if verbose:
             logger.info(
-                "Solving system (%d DOFs) with solver='%s'...",
-                self.mesh.n_dof, solver,
-            )
-
-        # 4a. Optional symmetric Jacobi pre-scaling (issue #60).
-        # Replace (K_mod, F_mod) with (K_scaled, F_scaled) for the solve;
-        # after solving, unscale y -> u via u = d_inv_sqrt * y.
-        if diag_scale:
-            _d = K_mod.diagonal()
-            if not np.all(_d > 0):
-                raise RuntimeError(
-                    "Cannot apply diag_scale: K_mod has a non-positive "
-                    "diagonal entry. Check assembly / penalty."
-                )
-            d_inv_sqrt = 1.0 / np.sqrt(_d)
-            _D_is = scipy.sparse.diags(d_inv_sqrt)
-            K_solve = (_D_is @ K_mod) @ _D_is
-            F_solve = d_inv_sqrt * F_mod
-            # Log the post-scaling diagonal ratio so the user can see
-            # what the rescaling bought them.
-            _d_scaled = K_solve.diagonal()
-            _d_scaled_abs = np.abs(_d_scaled)
-            _ds_min = float(_d_scaled_abs[_d_scaled_abs > 0.0].min()) \
-                if np.any(_d_scaled_abs > 0.0) else 0.0
-            _ds_max = float(_d_scaled_abs.max()) \
-                if _d_scaled_abs.size else 0.0
-            cond_diag_ratio_scaled = (_ds_max / _ds_min) \
-                if _ds_min > 0.0 else float('inf')
-            logger.info(
-                "Matrix conditioning after diag_scale: "
-                "cond_diag_ratio=%.4e (was %.4e)",
-                cond_diag_ratio_scaled, cond_diag_ratio,
-            )
-        else:
-            K_solve = K_mod
-            F_solve = F_mod
-            d_inv_sqrt = None
+                "Solving system (%d free of %d DOFs) with solver='%s'...",
+                part.free.size, part.n_dof, solver)
 
         if solver == 'direct':
-            y = self._direct_solve(K, K_solve, F_solve, constrained,
-                                   penalty_factor, diag_scale)
-
-            # Hygiene checks on the solution vector
-            if not np.isfinite(y).all():
+            assert lu is not None
+            u_f = lu.solve(rhs)
+            if not np.isfinite(u_f).all():
                 raise RuntimeError(
-                    "spsolve produced non-finite values (NaN or Inf) in the solution "
-                    "vector. Check matrix conditioning and boundary conditions."
-                )
-            _r = K_solve @ y - F_solve
-            _rel_res = np.linalg.norm(_r) / max(np.linalg.norm(F_solve), 1.0)  # type: ignore[call-overload,operator]
-            if _rel_res >= 1e-6:
+                    "The sparse LU solve produced non-finite values (NaN or "
+                    "Inf). Check the material stiffness and the boundary "
+                    "conditions.")
+            rel_res = _relative_residual(K_ff, u_f, rhs)
+            if rel_res >= 1e-6:
                 raise RuntimeError(
-                    f"spsolve residual {_rel_res:.4e} exceeds tolerance 1e-6. "
-                    "Check matrix conditioning or penalty factor."
-                )
+                    f"Sparse LU residual {rel_res:.4e} exceeds tolerance "
+                    "1e-6. Check the material stiffness and the boundary "
+                    "conditions.")
         else:
-            # Jacobi (diagonal) preconditioner: K is SPD after penalty,
-            # diag(K) is strictly positive.
-            diag = K_solve.diagonal()
-            if not np.all(diag > 0):
-                raise RuntimeError(
-                    "Cannot build Jacobi preconditioner: K_mod has a "
-                    "non-positive diagonal entry. Check assembly / penalty."
-                )
-            M = scipy.sparse.diags(1.0 / diag)
+            u_f, rel_res = _iterative_solve(
+                K_ff, rhs, diag, solver=solver, rtol=rtol,
+                max_restarts=self._MINRES_MAX_RESTARTS)
 
-            if solver == 'cg':
-                y, info = scipy.sparse.linalg.cg(
-                    K_solve, F_solve, M=M, rtol=rtol,
-                )
-            else:  # solver == 'minres'
-                y, info = scipy.sparse.linalg.minres(
-                    K_solve, F_solve, M=M, rtol=rtol,
-                )
+        return part.expand(u_f), rel_res
 
-            _r = K_solve @ y - F_solve
-            _norm_b = float(np.linalg.norm(F_solve))  # type: ignore[call-overload]
-            _rel_res = float(
-                np.linalg.norm(_r) / _norm_b if _norm_b > 0.0 else 0.0  # type: ignore[call-overload,operator]
-            )
-            # Compare the achieved relative residual against the user-
-            # requested rtol directly. SciPy's iterative solvers can
-            # report info=0 while still bouncing off the machine-
-            # precision floor — if the user asked for sub-eps tolerance
-            # they will (correctly) get a non-convergence error.
-            _converged = info == 0 and _rel_res <= rtol * 10.0
-            if not _converged:
-                raise RuntimeError(
-                    f"{solver} failed to converge: info={info}, "
-                    f"achieved relative residual {_rel_res:.4e} "
-                    f"(requested rtol={rtol:.4e})."
-                )
-            logger.info(
-                "%s converged: relative residual %.4e (rtol=%.4e)",
-                solver, _rel_res, rtol,
-            )
+    def _free_dof_system(
+        self, K: scipy.sparse.spmatrix, part: _DirichletPartition,
+        *, factorize: bool,
+    ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
+        """``K_ff`` and (when ``factorize``) its sparse LU, cached.
 
-        # 4b. Unscale if we Jacobi-pre-scaled. ``y`` solves the scaled
-        # system; the physical displacement is ``u = D^{-1/2} y``.
-        if diag_scale:
-            u = d_inv_sqrt * y
-        else:
-            u = y
-
-        return u, float(_rel_res)
-
-    def _direct_solve(self, K: scipy.sparse.spmatrix, K_solve: scipy.sparse.spmatrix,
-                      F_solve: np.ndarray, constrained: dict[int, float],
-                      penalty_factor: float, diag_scale: bool) -> np.ndarray:
-        """Sparse-LU solve, reusing the last factorization when possible.
-
-        The penalty-modified matrix depends only on the assembled ``K``, the
-        *set* of constrained DOFs (not their prescribed values), the penalty
-        factor and the diagonal scaling, so e.g. compression and tension on
-        the same mesh, or repeat solves of one load case, share a
-        factorization. Only the most recent one is kept, bounding memory.
+        ``K_ff`` depends only on the assembled ``K`` and the *set* of
+        constrained DOFs, not their prescribed values, so e.g. compression
+        and tension on the same mesh, or repeat solves of one load case,
+        share it and its factorization. Only the most recent one is kept,
+        bounding memory; the LU is built only for direct solves.
         """
-        dofs = np.sort(np.fromiter(constrained.keys(), dtype=np.intp,
-                                   count=len(constrained)))
-        key = (dofs.tobytes(), float(penalty_factor), bool(diag_scale))
         cached = self._lu_cache
-        if cached is not None and cached[0] is K and cached[1] == key:
-            lu = cached[2]
+        if cached is not None and cached[0] is K and cached[1] == part.key:
+            K_ff, lu = cached[2], cached[3]
         else:
-            # K_solve is symmetric (penalty and Jacobi scaling keep it so):
-            # a symmetric fill-reducing ordering with diagonal pivoting
-            # factors ~20% faster than SuperLU's default COLAMD here.
-            lu = scipy.sparse.linalg.splu(
-                scipy.sparse.csc_matrix(K_solve),
-                permc_spec='MMD_AT_PLUS_A',
-                options={'SymmetricMode': True},
-            )
-            self._lu_cache = (K, key, lu)
-        return lu.solve(np.asarray(F_solve, dtype=float))
+            K_ff, lu = part.reduce_matrix(K), None
+        if factorize and lu is None:
+            # K_ff is symmetric: a symmetric fill-reducing ordering with
+            # diagonal pivoting factors ~20% faster than SuperLU's default
+            # COLAMD here.
+            try:
+                lu = scipy.sparse.linalg.splu(
+                    K_ff, permc_spec='MMD_AT_PLUS_A',
+                    options={'SymmetricMode': True})
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Sparse LU factorization of the free-DOF stiffness "
+                    f"failed ({exc}). A singular matrix usually means the "
+                    "boundary conditions leave a rigid-body mode "
+                    "unrestrained.") from exc
+        self._lu_cache = (K, part.key, K_ff, lu)
+        return K_ff, lu
 
     def _reactions_and_modulus(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
-        F: np.ndarray, applied_strain: float,
+        F: np.ndarray, applied_strain: float, constrained: dict[int, float],
     ) -> tuple[np.ndarray, float | None]:
-        """Nodal reactions ``K u - F`` and the strain-energy effective modulus.
+        """Nodal reactions and the strain-energy effective modulus.
+
+        Reactions are ``K u - F`` at the constrained DOFs (including any
+        load applied there, which the support carries) and exactly zero at
+        the free DOFs, where ``K u - F`` is only the solver residual.
 
         For the displacement-controlled modes only the prescribed boundary
         moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
@@ -822,7 +827,16 @@ class FESolver:
         homogeneous pure-shear BCs.
         """
         Ku = K @ u
-        reactions = (Ku - F).reshape(-1, 3)
+        residual = Ku - F
+        is_fixed = np.zeros(residual.size, dtype=bool)
+        is_fixed[np.fromiter(constrained.keys(), dtype=np.intp,
+                             count=len(constrained))] = True
+        if logger.isEnabledFor(logging.DEBUG) and not is_fixed.all():
+            logger.debug(
+                "Equilibrium residual at free DOFs: max|K u - F| = %.3e",
+                float(np.abs(residual[~is_fixed]).max()))
+        residual[~is_fixed] = 0.0
+        reactions = residual.reshape(-1, 3)
         if loading == 'ilss' or applied_strain == 0.0:
             return reactions, None
         volume = self.mesh.L_x * self.mesh.L_y * self.mesh.L_z
@@ -877,7 +891,7 @@ class FESolver:
 
     def _compute_knockdown(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
-        applied_strain: float, applied_load: float, penalty_factor: float,
+        applied_strain: float, applied_load: float,
     ) -> float:
         """Stiffness knockdown: porous over pristine structural stiffness.
 
@@ -901,7 +915,7 @@ class FESolver:
         if (applied_load if loading == 'ilss' else applied_strain) == 0.0:
             return 1.0
         porous = _stiffness_measure(loading, K, u, applied_strain, applied_load)
-        pristine = self._pristine_stiffness_measure(loading, penalty_factor)
+        pristine = self._pristine_stiffness_measure(loading)
         knockdown = porous / pristine
         if knockdown > 1.0 + 1e-6:
             logger.warning(
@@ -909,8 +923,7 @@ class FESolver:
                 "came out stiffer than the pristine one.", knockdown, loading)
         return float(knockdown)
 
-    def _pristine_stiffness_measure(self, loading: str,
-                                    penalty_factor: float) -> float:
+    def _pristine_stiffness_measure(self, loading: str) -> float:
         """:func:`_stiffness_measure` of this mesh with no porosity or voids."""
         # Tension and compression share one linear pristine problem.
         key_loading = 'compression' if loading == 'tension' else loading
@@ -920,8 +933,7 @@ class FESolver:
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
         # Key on every material field: repr() omits E33, G13, G23, ... .
-        key = (key_loading, h.hexdigest(), astuple(self.material),
-               float(penalty_factor))
+        key = (key_loading, h.hexdigest(), astuple(self.material))
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:
             _PRISTINE_MEASURE_CACHE.move_to_end(key)
@@ -934,8 +946,7 @@ class FESolver:
         constrained, F = pristine._apply_boundary_conditions(
             key_loading, strain, load)
         K0 = pristine.assembler.stiffness()
-        u0, _ = pristine._modify_system_and_solve(
-            K0, F, constrained, penalty_factor=penalty_factor)
+        u0, _ = pristine._solve_constrained(K0, F, constrained)
         measure = _stiffness_measure(key_loading, K0, u0, strain, load)
 
         _PRISTINE_MEASURE_CACHE[key] = measure

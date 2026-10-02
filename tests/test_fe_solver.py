@@ -19,6 +19,12 @@ from porosity_fe_analysis import (MaterialProperties, MATERIALS, PorosityField,
                                    BoundaryHandler, FESolver, FieldResults, VoidGeometry)
 
 
+def _default_strain(loading):
+    """The default ``applied_strain`` FESolver.solve uses for ``loading``."""
+    from porosity_fe.fe.solver import _resolve_applied_strain
+    return _resolve_applied_strain(loading, None)
+
+
 class TestHex8Element:
     def setup_method(self):
         # Create a simple unit cube element
@@ -463,7 +469,8 @@ class TestBoundaryHandler:
         assembler = GlobalAssembler(self.mesh, self.material, self.pf)
         K = assembler.assemble_stiffness()
         constrained, F = self.handler.compression_bcs()
-        K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
+        with pytest.warns(DeprecationWarning, match="apply_elimination"):
+            K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
         assert K_mod.shape == K.shape
         assert len(F_mod) == len(F)
 
@@ -471,10 +478,61 @@ class TestBoundaryHandler:
         assembler = GlobalAssembler(self.mesh, self.material, self.pf)
         K = assembler.assemble_stiffness()
         constrained, F = self.handler.compression_bcs()
-        K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
+        with pytest.warns(DeprecationWarning):
+            K_mod, F_mod = BoundaryHandler.apply_penalty(K, F, constrained)
         # Constrained DOF diagonals should be much larger
         for dof in list(constrained.keys())[:5]:
             assert K_mod[dof, dof] > K[dof, dof]
+
+    @pytest.mark.parametrize("loading", ["compression", "shear", "ilss"])
+    def test_apply_elimination_matches_dense_partitioned_solve(self, loading):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        constrained, F = {
+            'compression': lambda: self.handler.compression_bcs(-0.001),
+            'shear': lambda: self.handler.shear_bcs(0.01),
+            'ilss': lambda: self.handler.ilss_bcs(-10.0),
+        }[loading]()
+        K_ff, rhs, free = BoundaryHandler.apply_elimination(K, F, constrained)
+
+        fixed = np.array(sorted(constrained), dtype=int)
+        values = np.array([constrained[d] for d in fixed])
+        expected_free = np.setdiff1d(np.arange(self.mesh.n_dof), fixed)
+        np.testing.assert_array_equal(free, expected_free)
+        Kd = K.toarray()
+        np.testing.assert_array_equal(K_ff.toarray(), Kd[np.ix_(free, free)])
+        np.testing.assert_allclose(
+            rhs, F[free] - Kd[np.ix_(free, fixed)] @ values,
+            rtol=1e-12, atol=1e-12 * max(np.abs(rhs).max(), 1.0))
+
+        u = np.zeros(self.mesh.n_dof)
+        u[fixed] = values
+        u[free] = np.linalg.solve(K_ff.toarray(), rhs)
+        # Prescribed values hold exactly; the free rows are in equilibrium.
+        np.testing.assert_array_equal(u[fixed], values)
+        r_free = (Kd @ u - F)[free]
+        assert np.abs(r_free).max() <= 1e-9 * np.abs(Kd).max() * np.abs(u).max()
+        # The same displacement field the solver produces.
+        res = FESolver(self.mesh, self.material, self.pf).solve(
+            loading, applied_strain=-0.001 if loading == 'compression' else 0.01)
+        np.testing.assert_allclose(res.displacement.ravel(), u, rtol=0,
+                                   atol=1e-9 * np.abs(u).max())
+
+    def test_apply_elimination_does_not_modify_inputs(self):
+        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        K = assembler.assemble_stiffness()
+        constrained, F = self.handler.compression_bcs(-0.001)
+        K0, F0 = K.copy(), F.copy()
+        BoundaryHandler.apply_elimination(K, F, constrained)
+        assert (K != K0).nnz == 0
+        np.testing.assert_array_equal(F, F0)
+
+    def test_apply_elimination_rejects_out_of_range_dof(self):
+        K = scipy.sparse.identity(6, format='csc')
+        with pytest.raises(ValueError, match="out of range"):
+            BoundaryHandler.apply_elimination(K, np.zeros(6), {6: 0.0})
+        with pytest.raises(ValueError, match="finite"):
+            BoundaryHandler.apply_elimination(K, np.zeros(6), {0: float('nan')})
 
     def test_ilss_bcs_returns_tuple(self):
         constrained, F = self.handler.ilss_bcs(applied_load=-10.0)
@@ -639,19 +697,30 @@ class TestFESolver:
         assert isinstance(results, FieldResults)
 
     def test_displacement_boundary_conditions_applied(self):
-        """Check that BCs are approximately satisfied."""
+        """Prescribed displacements hold exactly (they are eliminated)."""
         solver = FESolver(self.mesh, self.material, self.pf)
         strain = -0.001
         results = solver.solve(loading='compression', applied_strain=strain)
 
-        # x_min nodes should have ~0 x-displacement
         xmin_nodes = self.mesh.nodes_on_face('x_min')
-        np.testing.assert_allclose(results.displacement[xmin_nodes, 0], 0.0, atol=1e-8)
+        np.testing.assert_array_equal(results.displacement[xmin_nodes, 0], 0.0)
 
-        # x_max nodes should have ~strain*Lx displacement
         xmax_nodes = self.mesh.nodes_on_face('x_max')
         expected = strain * self.mesh.L_x
-        np.testing.assert_allclose(results.displacement[xmax_nodes, 0], expected, atol=1e-6)
+        np.testing.assert_array_equal(results.displacement[xmax_nodes, 0], expected)
+
+    @pytest.mark.parametrize("loading,solver_name", [
+        ("compression", "direct"), ("shear", "direct"), ("ilss", "direct"),
+        ("compression", "cg"), ("shear", "minres"), ("ilss", "cg"),
+    ])
+    def test_every_constrained_dof_is_exact(self, loading, solver_name):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        results = solver.solve(loading=loading, solver=solver_name)
+        constrained, _ = solver._apply_boundary_conditions(
+            loading, _default_strain(loading), -10.0)
+        dofs = np.fromiter(constrained, dtype=int)
+        values = np.fromiter(constrained.values(), dtype=float)
+        np.testing.assert_array_equal(results.displacement.ravel()[dofs], values)
 
     def test_solve_ilss_runs(self):
         """Smoke: FESolver should accept loading='ilss' and produce a FieldResults."""
@@ -780,12 +849,11 @@ class TestFESolverIterative:
         self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
 
     def test_iterative_cg_matches_direct(self):
-        """CG with Jacobi precond should match spsolve within rtol.
+        """CG with a Jacobi preconditioner matches the LU solve.
 
-        The penalty-method conditioning (max(diag)/min(diag) ~ 1e9) caps
-        how closely CG/MINRES can match LU on this problem; we accept any
-        agreement at the few-times-1e-5 level (still well within
-        engineering accuracy).
+        With the prescribed DOFs eliminated the reduced matrix keeps the
+        physical conditioning, so at a tight ``rtol`` CG agrees with LU to
+        near machine precision (measured ~1e-14).
         """
         solver_direct = FESolver(self.mesh, self.material, self.pf)
         r_direct = solver_direct.solve(
@@ -802,12 +870,12 @@ class TestFESolverIterative:
         ux_cg = r_cg.displacement[:, 0]
         scale = float(np.max(np.abs(ux_direct)))
         max_err = float(np.max(np.abs(ux_cg - ux_direct)))
-        assert max_err / max(scale, 1e-30) < 1e-4, (
+        assert max_err / max(scale, 1e-30) < 1e-9, (
             f"CG vs direct max|du|/max|u| = {max_err / max(scale, 1e-30):.4e}"
         )
 
     def test_minres_matches_direct(self):
-        """MINRES should also match spsolve within rtol."""
+        """MINRES also matches the LU solve at a tight rtol."""
         solver_direct = FESolver(self.mesh, self.material, self.pf)
         r_direct = solver_direct.solve(
             loading='compression', applied_strain=-0.001, solver='direct',
@@ -821,7 +889,7 @@ class TestFESolverIterative:
         ux_mr = r_minres.displacement[:, 0]
         scale = float(np.max(np.abs(ux_direct)))
         max_err = float(np.max(np.abs(ux_mr - ux_direct)))
-        assert max_err / max(scale, 1e-30) < 1e-4, (
+        assert max_err / max(scale, 1e-30) < 1e-9, (
             f"MINRES vs direct max|du|/max|u| = "
             f"{max_err / max(scale, 1e-30):.4e}"
         )
@@ -855,19 +923,135 @@ class TestFESolverIterative:
                 solver='cg', rtol=1e-30,
             )
 
+    def test_minres_nonconvergence_raises(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        with pytest.raises(RuntimeError, match="minres failed to converge"):
+            solver.solve(
+                loading='compression', applied_strain=-0.001,
+                solver='minres', rtol=1e-30,
+            )
 
-class TestPenaltyFactorAndConditioning:
-    """Regression tests for the matrix-conditioning diagnostic, the
-    user-exposed ``penalty_factor`` kwarg, and the optional Jacobi
-    pre-scaling path (issue #60).
+    def test_minres_restarts_are_bounded(self, monkeypatch):
+        """A MINRES that reports success without reducing the true residual
+        is warm-restarted at most ``_MINRES_MAX_RESTARTS`` times."""
+        import scipy.sparse.linalg as sla
+        x0s = []
 
-    Background: the penalty-method BC enforcement uses
-    ``alpha = penalty_factor * max(diag(K))``. Pre-#60 this was hardwired
-    at ``penalty_factor=1e8`` which pushed cond(K_mod) to ~2.4e9 and
-    capped LU-vs-CG agreement at ~3e-6 even when the CG residual was at
-    machine precision. PR #60 lowers the default to ``1e6``, exposes the
-    knob, logs ``cond_diag_ratio`` on every solve, and adds a
-    symmetric-Jacobi pre-scaling path.
+        def stalled_minres(A, b, x0=None, **kwargs):
+            x0s.append(x0)
+            return np.zeros_like(b), 0
+
+        monkeypatch.setattr(sla, 'minres', stalled_minres)
+        solver = FESolver(self.mesh, self.material, self.pf)
+        n = FESolver._MINRES_MAX_RESTARTS
+        with pytest.raises(RuntimeError,
+                           match=rf"minres failed to converge.*after {n} warm restarts"):
+            solver.solve(loading='compression', applied_strain=-0.001,
+                         solver='minres')
+        assert len(x0s) == 1 + n
+        assert x0s[0] is None and all(x is not None for x in x0s[1:])
+
+
+def _relative_differences(r_iter, r_direct):
+    du = (np.abs(r_iter.displacement - r_direct.displacement).max()
+          / np.abs(r_direct.displacement).max())
+    ds = (np.abs(r_iter.stress_global - r_direct.stress_global).max()
+          / np.abs(r_direct.stress_global).max())
+    dfi = (abs(r_iter.max_failure_index - r_direct.max_failure_index)
+           / abs(r_direct.max_failure_index))
+    return du, ds, dfi
+
+
+@pytest.fixture(scope="module")
+def clustered_6x3x4():
+    """6x3x4 clustered Vp=0.03 QI solver."""
+    mat = MATERIALS['T800_epoxy']
+    pf = PorosityField(mat, 0.03, distribution='clustered', seed=42)
+    mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=4)
+    return FESolver(mesh, mat, pf)
+
+
+@pytest.fixture(scope="module")
+def clustered_20x8x12():
+    """20x8x12 clustered Vp=0.02 QI solver and its direct solutions."""
+    mat = MATERIALS['T800_epoxy']
+    pf = PorosityField(mat, 0.02, distribution='clustered', seed=42)
+    mesh = CompositeMesh(pf, mat, nx=20, ny=8, nz=12)
+    solver = FESolver(mesh, mat, pf)
+    direct = {loading: solver.solve(loading)
+              for loading in ('compression', 'shear')}
+    return solver, direct
+
+
+class TestIterativeSolversAtDefaultTolerance:
+    """IMPROVEMENT_PLAN 1.6: CG and MINRES at the *default* ``rtol`` give
+    the direct answer.
+
+    With penalty BCs the constrained rows put ``alpha * v ~ 1e11 * v`` in the
+    right-hand side, so ``||F||`` was huge and CG met ``rtol=1e-9`` as soon
+    as the constrained DOFs were right, with the interior unconverged: on a
+    20x8x12 mesh compression CG was 24% off in displacement while reporting
+    convergence. MINRES was 8% off the same way, and for ILSS it stopped
+    on its preconditioned estimate, ~1000x below the true residual, and
+    failed the residual check. Eliminating the prescribed DOFs and warm-restarting MINRES
+    fixes both.
+    """
+
+    @pytest.mark.parametrize("solver_name", ["cg", "minres"])
+    @pytest.mark.parametrize("loading", ["compression", "tension", "shear", "ilss"])
+    def test_small_mesh_all_modes(self, clustered_6x3x4, loading, solver_name):
+        r_direct = clustered_6x3x4.solve(loading)
+        r_iter = clustered_6x3x4.solve(loading, solver=solver_name)
+        du, ds, dfi = _relative_differences(r_iter, r_direct)
+        assert du < 1e-7, f"max|du|/max|u| = {du:.2e}"
+        assert ds < 1e-7, f"max|ds|/max|s| = {ds:.2e}"
+        assert dfi < 1e-6, f"dFI/FI = {dfi:.2e}"
+        assert r_iter.knockdown == pytest.approx(r_direct.knockdown, rel=1e-9)
+
+    @pytest.mark.parametrize("loading", ["compression", "shear"])
+    def test_moderate_mesh_cg(self, clustered_20x8x12, loading):
+        # Measured: du 4e-9 / 6e-9, stress 6e-9 / 2e-8, FI 3e-9 / 3e-8.
+        # With penalty BCs: du 0.24 / 0.013, stress 0.16 / 0.16, FI 0.02 / 0.17.
+        solver, direct = clustered_20x8x12
+        r_cg = solver.solve(loading, solver='cg')
+        du, ds, dfi = _relative_differences(r_cg, direct[loading])
+        assert du < 1e-7, f"max|du|/max|u| = {du:.2e}"
+        assert ds < 2e-7, f"max|ds|/max|s| = {ds:.2e}"
+        assert dfi < 2e-7, f"dFI/FI = {dfi:.2e}"
+        assert r_cg.effective_modulus == pytest.approx(
+            direct[loading].effective_modulus, rel=1e-12)
+
+    @pytest.mark.parametrize("loading", ["compression", "shear"])
+    def test_moderate_mesh_minres(self, clustered_20x8x12, loading):
+        # MINRES minimizes the residual, not the energy-norm error, so at
+        # the same rtol its displacements are less accurate than CG's
+        # (measured du 1.3e-6 / 1.8e-7; with penalty BCs 0.08 / 0.007).
+        solver, direct = clustered_20x8x12
+        r_mr = solver.solve(loading, solver='minres')
+        du, ds, dfi = _relative_differences(r_mr, direct[loading])
+        assert du < 1e-5, f"max|du|/max|u| = {du:.2e}"
+        assert ds < 1e-5, f"max|ds|/max|s| = {ds:.2e}"
+        assert dfi < 1e-5, f"dFI/FI = {dfi:.2e}"
+        assert r_mr.effective_modulus == pytest.approx(
+            direct[loading].effective_modulus, rel=1e-10)
+
+    def test_minres_ilss_needs_the_restart(self, clustered_6x3x4, monkeypatch):
+        """The ILSS point load puts SciPy's MINRES estimate ~1000x below the
+        true residual: one call fails the check, the warm restart passes."""
+        monkeypatch.setattr(FESolver, '_MINRES_MAX_RESTARTS', 0)
+        with pytest.raises(RuntimeError, match="minres failed to converge"):
+            clustered_6x3x4.solve('ilss', solver='minres')
+        monkeypatch.undo()
+        clustered_6x3x4.solve('ilss', solver='minres')
+
+
+class TestDirichletElimination:
+    """IMPROVEMENT_PLAN 1.6: prescribed displacements are eliminated exactly.
+
+    Replaces the penalty method (``alpha = penalty_factor * max(diag K)``
+    added to each constrained DOF, issue #60). ``solve(penalty_factor=,
+    diag_scale=)`` and ``BoundaryHandler.apply_penalty`` remain for one
+    deprecation cycle: they warn, and the solve arguments have no effect.
     """
 
     def setup_method(self):
@@ -875,145 +1059,124 @@ class TestPenaltyFactorAndConditioning:
         self._inspect = inspect
         self.material = MATERIALS['T800_epoxy']
         self.pf = PorosityField(self.material, 0.03, distribution='uniform')
-        # Small but non-trivial mesh — keeps the suite fast while still
-        # exercising the iterative solvers and giving a measurable
-        # cond_diag_ratio.
         self.mesh = CompositeMesh(self.pf, self.material, nx=3, ny=2, nz=2)
 
     def test_default_penalty_lowered(self):
-        """``BoundaryHandler.apply_penalty`` default must be 1e6, not 1e8."""
+        """The deprecated ``apply_penalty`` keeps its 1e6 default."""
         sig = self._inspect.signature(BoundaryHandler.apply_penalty)
         default = sig.parameters['penalty_factor'].default
         assert default == 1e6, (
             f"Expected apply_penalty default penalty_factor=1e6, got {default!r}"
         )
 
-    def test_penalty_factor_kwarg_threaded_through_solve(self):
-        """Passing penalty_factor through solve must reach apply_penalty.
-
-        We use a deliberately-loose penalty (1e2) which makes BC
-        enforcement slack enough to perturb the solution detectably
-        relative to the default (1e6).
-        """
+    def test_solve_defaults_emit_no_deprecation_warning(self):
+        import warnings
         solver = FESolver(self.mesh, self.material, self.pf)
-        r_default = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-        )
-        r_loose = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-            penalty_factor=1e2,
-        )
-        scale = float(np.max(np.abs(r_default.displacement)))
-        delta = float(np.max(np.abs(
-            r_loose.displacement - r_default.displacement
-        )))
-        # Loose penalty must produce a *detectable* perturbation
-        # (otherwise the kwarg is being ignored).
-        assert delta / max(scale, 1e-30) > 1e-4, (
-            f"penalty_factor kwarg appears not to be threaded through "
-            f"to apply_penalty: relative delta {delta/max(scale,1e-30):.3e}"
-        )
+        sig = self._inspect.signature(FESolver.solve)
+        assert sig.parameters['penalty_factor'].default is None
+        assert sig.parameters['diag_scale'].default is None
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', DeprecationWarning)
+            solver.solve(loading='compression', applied_strain=-0.001)
 
-    def test_conditioning_warning_logged(self, caplog):
-        """penalty_factor=1e15 must trip the float64-headroom warning."""
-        import logging
+    @pytest.mark.parametrize("value", [1e2, 1e6, 1e15])
+    def test_penalty_factor_is_deprecated_no_op(self, value):
         solver = FESolver(self.mesh, self.material, self.pf)
-        with caplog.at_level(logging.WARNING, logger='porosity_fe_analysis'):
-            solver.solve(
-                loading='compression', applied_strain=-0.001, solver='direct',
-                penalty_factor=1e15,
-            )
-        msgs = [rec.message for rec in caplog.records
-                if rec.levelno >= logging.WARNING]
-        assert any('Matrix conditioning near float64 limit' in m
-                   for m in msgs), (
-            f"Expected conditioning warning, got records: {msgs!r}"
-        )
+        r_default = solver.solve(loading='compression', applied_strain=-0.001)
+        with pytest.warns(DeprecationWarning, match="penalty_factor.*no effect"):
+            r = solver.solve(loading='compression', applied_strain=-0.001,
+                             penalty_factor=value)
+        np.testing.assert_array_equal(r.displacement, r_default.displacement)
+        np.testing.assert_array_equal(r.stress_global, r_default.stress_global)
+        assert r.knockdown == r_default.knockdown
 
-    def test_diag_scale_off_matches_legacy(self):
-        """diag_scale=False (default) must reproduce the un-rescaled path
-        bit-identically — diag_scale should be opt-in only.
-        """
+    @pytest.mark.parametrize("value", [True, False])
+    def test_diag_scale_is_deprecated_no_op(self, value):
         solver = FESolver(self.mesh, self.material, self.pf)
-        r_default = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-        )
-        r_explicit_off = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-            diag_scale=False,
-        )
-        np.testing.assert_allclose(
-            r_explicit_off.displacement, r_default.displacement,
-            rtol=0.0, atol=0.0,
-            err_msg="diag_scale=False should be bit-identical to default",
-        )
+        r_default = solver.solve(loading='shear', applied_strain=0.01)
+        with pytest.warns(DeprecationWarning, match="diag_scale.*no effect"):
+            r = solver.solve(loading='shear', applied_strain=0.01,
+                             diag_scale=value)
+        np.testing.assert_array_equal(r.displacement, r_default.displacement)
 
-    def test_diag_scale_on_matches_off_for_well_conditioned(self):
-        """The Jacobi rescaling is a similarity transform on the linear
-        system — math unchanged, only conditioning. For a well-
-        conditioned problem the two paths must agree to ~1e-7.
-        """
+    def test_deprecation_warning_points_at_the_caller(self):
         solver = FESolver(self.mesh, self.material, self.pf)
-        r_off = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-            diag_scale=False,
-        )
-        r_on = solver.solve(
-            loading='compression', applied_strain=-0.001, solver='direct',
-            diag_scale=True,
-        )
-        scale = float(np.max(np.abs(r_off.displacement)))
-        delta = float(np.max(np.abs(r_on.displacement - r_off.displacement)))
-        assert delta / max(scale, 1e-30) < 1e-7, (
-            f"diag_scale on/off mismatch on well-conditioned mesh: "
-            f"max|du|/max|u| = {delta/max(scale, 1e-30):.3e}"
-        )
+        with pytest.warns(DeprecationWarning) as record:
+            solver.solve(loading='compression', penalty_factor=1e6)
+        assert record[0].filename == __file__
 
-    def test_diag_scale_reduces_conditioning_ratio(self, caplog):
-        """On a voided/graded mesh diag_scale must measurably reduce
-        the diagonal-conditioning ratio. We capture the INFO line both
-        ways and assert the rescaled ratio is strictly smaller.
-        """
+    @pytest.mark.parametrize("loading,bound", [
+        ("compression", 1e2), ("shear", 1e2), ("ilss", 1e2)])
+    def test_free_dof_conditioning_is_physical(self, caplog, loading, bound):
+        """The diagonal ratio of K_ff is O(10) (it was ~1e7 with the
+        penalty rows), so no conditioning workaround is needed."""
         import logging
         import re
+        solver = FESolver(self.mesh, self.material, self.pf)
+        with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
+            solver.solve(loading=loading)
+        ratios = [float(m.group(1)) for rec in caplog.records
+                  if (m := re.search(r'Free-DOF stiffness: diag ratio=([0-9.eE+\-]+)',
+                                     rec.message))]
+        assert ratios, [r.message for r in caplog.records]
+        assert 1.0 <= ratios[0] < bound
 
-        # Voided/graded mesh — clustered distribution drives spatial
-        # variation in stiffness, which widens the diagonal spread.
-        pf_voided = PorosityField(self.material, 0.10,
-                                  distribution='clustered', seed=42)
-        mesh_voided = CompositeMesh(pf_voided, self.material, nx=4, ny=3, nz=3)
-        solver = FESolver(mesh_voided, self.material, pf_voided)
+    def test_reactions_are_exactly_zero_at_free_dofs(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        for loading in ('compression', 'shear', 'ilss'):
+            r = solver.solve(loading=loading)
+            constrained, _ = solver._apply_boundary_conditions(
+                loading, _default_strain(loading), -10.0)
+            free = np.ones(self.mesh.n_dof, dtype=bool)
+            free[list(constrained)] = False
+            assert np.all(r.reaction_forces.ravel()[free] == 0.0)
+            assert np.any(r.reaction_forces.ravel()[~free] != 0.0)
 
-        def _capture_ratio(diag_scale_value):
-            caplog.clear()
-            with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
-                solver.solve(
-                    loading='compression', applied_strain=-0.001,
-                    solver='direct', diag_scale=diag_scale_value,
-                )
-            # The post-scaling line (when diag_scale=True) takes priority;
-            # otherwise grab the initial diagnostic.
-            target_prefix = ('Matrix conditioning after diag_scale'
-                             if diag_scale_value
-                             else 'Matrix conditioning:')
-            for rec in caplog.records:
-                if rec.message.startswith(target_prefix):
-                    m = re.search(r'cond_diag_ratio=([0-9.eE+\-]+)',
-                                  rec.message)
-                    if m:
-                        return float(m.group(1))
-            raise AssertionError(
-                f"Did not find cond_diag_ratio log line for "
-                f"diag_scale={diag_scale_value}; got: "
-                f"{[r.message for r in caplog.records]!r}"
-            )
+    def test_load_on_a_constrained_dof_is_carried_by_the_support(self):
+        """The penalty method overwrote F at constrained DOFs, silently
+        dropping a load applied there; elimination keeps it in R_c."""
+        solver = FESolver(self.mesh, self.material, self.pf)
+        K = solver.assembler.stiffness()
+        constrained, F = solver.bc_handler.ilss_bcs(applied_load=-10.0)
+        support = next(iter(constrained))
+        F_extra = F.copy()
+        F_extra[support] += 7.5
+        u, _ = solver._solve_constrained(K, F, constrained)
+        u_extra, _ = solver._solve_constrained(K, F_extra, constrained)
+        # The support does not move, so the field is unchanged ...
+        np.testing.assert_array_equal(u_extra, u)
+        R, _ = solver._reactions_and_modulus('ilss', K, u, F, 0.0, constrained)
+        R_extra, _ = solver._reactions_and_modulus(
+            'ilss', K, u_extra, F_extra, 0.0, constrained)
+        # ... and the support reaction takes the extra load (R_c = K_c u - F_c).
+        delta = (R_extra - R).ravel()
+        assert delta[support] == pytest.approx(-7.5, rel=1e-12)
+        delta[support] = 0.0
+        assert np.all(delta == 0.0)
+        # Global equilibrium includes the load at the support.
+        np.testing.assert_allclose(R_extra.sum(axis=0) + F_extra.reshape(-1, 3).sum(axis=0),
+                                   0.0, atol=1e-9)
 
-        ratio_off = _capture_ratio(False)
-        ratio_on = _capture_ratio(True)
-        assert ratio_on < ratio_off, (
-            f"diag_scale=True did not reduce cond_diag_ratio: "
-            f"off={ratio_off:.3e}, on={ratio_on:.3e}"
-        )
+    def test_singular_free_block_raises_a_clear_error(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        K = scipy.sparse.diags([1.0, 0.0, 2.0, 3.0]).tocsc()
+        with pytest.raises(RuntimeError, match="boundary conditions"):
+            solver._solve_constrained(K, np.ones(4), {3: 0.0})
+
+    def test_fully_constrained_system_returns_prescribed_values(self):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        K = scipy.sparse.identity(3, format='csc')
+        u, rel = solver._solve_constrained(K, np.zeros(3), {0: 1.0, 1: 2.0, 2: 3.0})
+        np.testing.assert_array_equal(u, [1.0, 2.0, 3.0])
+        assert rel == 0.0
+
+    @pytest.mark.parametrize("solver_name", ["direct", "cg", "minres"])
+    def test_zero_load_gives_zero_field(self, solver_name):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        r = solver.solve('compression', applied_strain=0.0, solver=solver_name)
+        assert np.all(r.displacement == 0.0)
+        assert r.knockdown == 1.0
+        assert r.effective_modulus is None
 
 
 class TestILSSBeamTheoryValidation:
@@ -1793,7 +1956,7 @@ class TestStiffnessAndFactorizationReuse:
         # Count only this solver's assembly and factorizations, not the
         # (separately cached) pristine knockdown reference solve.
         monkeypatch.setattr(FESolver, '_pristine_stiffness_measure',
-                            lambda self, loading, penalty_factor: 1.0)
+                            lambda self, loading: 1.0)
         return counts
 
     @staticmethod
@@ -1822,12 +1985,31 @@ class TestStiffnessAndFactorizationReuse:
         assert counters == {'batch': 1, 'splu': 2}
         self._assert_same(r, FESolver(mesh, mat, pf).solve('shear', applied_strain=0.01))
 
-    def test_penalty_factor_change_refactors(self, counters):
+    def test_penalty_factor_is_ignored_and_does_not_refactor(self, counters):
+        # The cache is keyed on the constrained-DOF set only.
         mat, pf, mesh = self._problem()
         solver = FESolver(mesh, mat, pf)
+        ref = solver.solve('tension', applied_strain=0.01)
+        with pytest.warns(DeprecationWarning):
+            r = solver.solve('tension', applied_strain=0.01, penalty_factor=1e7)
+        with pytest.warns(DeprecationWarning):
+            solver.solve('tension', applied_strain=0.01, diag_scale=True)
+        assert counters == {'batch': 1, 'splu': 1}
+        np.testing.assert_array_equal(r.displacement, ref.displacement)
+
+    def test_iterative_solves_reuse_the_free_block_without_factorizing(self, counters):
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('tension', applied_strain=0.01, solver='cg')
+        assert counters['splu'] == 0
+        K_ff = solver._lu_cache[2]
+        solver.solve('compression', applied_strain=-0.01, solver='minres')
+        assert solver._lu_cache[2] is K_ff
+        solver.solve('compression', applied_strain=-0.01)
         solver.solve('tension', applied_strain=0.01)
-        solver.solve('tension', applied_strain=0.01, penalty_factor=1e7)
-        assert counters['splu'] == 2
+        solver.solve('tension', applied_strain=0.01, solver='cg')
+        assert solver._lu_cache[2] is K_ff
+        assert counters == {'batch': 1, 'splu': 1}
 
     def test_in_place_porosity_edit_triggers_reassembly(self, counters):
         mat, pf, mesh = self._problem()
@@ -1877,31 +2059,32 @@ class TestReactionsAndEffectiveModulus:
 
     def test_pristine_ud_recovers_ply_moduli(self):
         mat, _, solver = self._solver(0.0, 'UD')
+        # Exact BCs: measured within ~3e-14 (the penalty slack gave ~5e-8).
         assert solver.solve('tension', applied_strain=0.01).effective_modulus == \
-            pytest.approx(mat.E11, rel=1e-6)
+            pytest.approx(mat.E11, rel=1e-10)
         assert solver.solve('compression', applied_strain=-0.005).effective_modulus == \
-            pytest.approx(mat.E11, rel=1e-6)
+            pytest.approx(mat.E11, rel=1e-10)
         assert solver.solve('shear', applied_strain=0.01).effective_modulus == \
-            pytest.approx(mat.G12, rel=1e-6)
+            pytest.approx(mat.G12, rel=1e-10)
 
     def test_axial_modulus_equals_face_reaction_over_area_and_strain(self):
         _, mesh, solver = self._solver(0.04, 'QI')
         r = solver.solve('tension', applied_strain=0.01)
         P = r.reaction_forces[mesh.nodes_on_face('x_max'), 0].sum()
         assert r.effective_modulus == pytest.approx(
-            P / (mesh.L_y * mesh.L_z * 0.01), rel=1e-6)
+            P / (mesh.L_y * mesh.L_z * 0.01), rel=1e-10)
 
     @pytest.mark.parametrize("Vp", [0.0, 0.04])
     def test_quasi_isotropic_moduli_match_clt(self, Vp):
         from porosity_fe.homogenization import compute_degraded_clt_moduli
         mat, mesh, solver = self._solver(Vp, 'QI', nz=16)
         clt = compute_degraded_clt_moduli(
-            mat, [0, 90, 45, -45, -45, 45, 90, 0], max(Vp, 1e-12))
+            mat, [0, 90, 45, -45, -45, 45, 90, 0], Vp)
         Gxy = solver.solve('shear', applied_strain=0.01).effective_modulus
         Ex = solver.solve('tension', applied_strain=0.01).effective_modulus
         # Homogeneous shear BCs reproduce the in-plane CLT assumption; the
         # axial modulus carries a small 3D (free-edge, sigma_zz) effect.
-        assert Gxy == pytest.approx(clt['Gxy'], rel=1e-6)
+        assert Gxy == pytest.approx(clt['Gxy'], rel=1e-10)
         assert Ex == pytest.approx(clt['Ex'], rel=0.02)
 
     def test_porosity_lowers_effective_modulus(self):
@@ -1916,7 +2099,7 @@ class TestReactionsAndEffectiveModulus:
         r = solver.solve('ilss', applied_load=-10.0)
         assert r.effective_modulus is None
         np.testing.assert_allclose(r.reaction_forces.sum(axis=0), [0.0, 0.0, 10.0],
-                                   atol=1e-6)
+                                   atol=1e-9)
 
     def test_json_export_carries_stiffness_block(self, tmp_path):
         import json

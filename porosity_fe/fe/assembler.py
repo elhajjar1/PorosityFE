@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import astuple
+import warnings
+from dataclasses import astuple, dataclass
 
 import numpy as np
 import scipy.sparse
@@ -113,7 +114,8 @@ class GlobalAssembler:
         """Global K, re-assembled only when its inputs have changed.
 
         The returned matrix is shared with later calls; treat it as
-        read-only (``BoundaryHandler.apply_penalty`` returns a new matrix).
+        read-only (``BoundaryHandler.apply_elimination`` returns a new
+        matrix).
         """
         if self._K is None or self._state_key() != self._key:
             self.assemble_stiffness(verbose=verbose)
@@ -179,6 +181,81 @@ class GlobalAssembler:
 # ============================================================
 # SECTION 7f: BOUNDARY HANDLER
 # ============================================================
+
+@dataclass(frozen=True)
+class _DirichletPartition:
+    """Split of the global DOFs into free and prescribed (Dirichlet) sets.
+
+    The one place where constrained DOFs are removed from the system:
+    ``K_ff u_f = F_f - K_fc u_c`` with ``u_c`` set exactly. Every
+    reduction goes through :meth:`reduce_matrix`, :meth:`reduce_rhs` and
+    :meth:`expand`, so multi-point or periodic constraints can later
+    replace "select the free columns" with a transformation ``u = T u_r + g``
+    here without touching the solver.
+
+    Attributes
+    ----------
+    n_dof : int
+        Total number of DOFs.
+    free : np.ndarray
+        Sorted free DOF indices, shape ``(n_f,)``.
+    fixed : np.ndarray
+        Sorted constrained DOF indices, shape ``(n_c,)``.
+    values : np.ndarray
+        Prescribed values aligned with ``fixed``.
+    key : bytes
+        ``fixed.tobytes()``: identifies the reduced matrix ``K_ff``, which
+        depends on the constrained *set* only, not on the values.
+    """
+
+    n_dof: int
+    free: np.ndarray
+    fixed: np.ndarray
+    values: np.ndarray
+    key: bytes
+
+    @classmethod
+    def from_constraints(cls, n_dof: int, constrained: dict[int, float]
+                         ) -> _DirichletPartition:
+        """Build the partition from a ``{dof: prescribed_value}`` map."""
+        n = len(constrained)
+        fixed = np.fromiter(constrained.keys(), dtype=np.intp, count=n)
+        values = np.fromiter(constrained.values(), dtype=float, count=n)
+        if n and (fixed.min() < 0 or fixed.max() >= n_dof):
+            raise ValueError(
+                f"Constrained DOF index out of range [0, {n_dof}): "
+                f"min {int(fixed.min())}, max {int(fixed.max())}.")
+        if not np.isfinite(values).all():
+            raise ValueError("Prescribed displacements must be finite.")
+        order = np.argsort(fixed, kind='stable')
+        fixed, values = fixed[order], values[order]
+        is_free = np.ones(n_dof, dtype=bool)
+        is_free[fixed] = False
+        return cls(n_dof=n_dof, free=np.flatnonzero(is_free), fixed=fixed,
+                   values=values, key=fixed.tobytes())
+
+    def lift(self) -> np.ndarray:
+        """Full vector with ``u_c`` = prescribed values and ``u_f = 0``."""
+        u = np.zeros(self.n_dof, dtype=float)
+        u[self.fixed] = self.values
+        return u
+
+    def reduce_matrix(self, K: scipy.sparse.spmatrix) -> scipy.sparse.csc_matrix:
+        """``K_ff``: the free-DOF block of ``K`` (column slice, then rows)."""
+        K_csc = scipy.sparse.csc_matrix(K)
+        return K_csc[:, self.free][self.free, :].tocsc()
+
+    def reduce_rhs(self, K: scipy.sparse.spmatrix, F: np.ndarray) -> np.ndarray:
+        """``F_f - K_fc u_c``, without building ``K_fc``."""
+        F = np.asarray(F, dtype=float)
+        return F[self.free] - (K @ self.lift())[self.free]
+
+    def expand(self, u_f: np.ndarray) -> np.ndarray:
+        """Full displacement vector from the free-DOF solution ``u_f``."""
+        u = self.lift()
+        u[self.free] = u_f
+        return u
+
 
 class BoundaryHandler:
     """Handles boundary conditions for the porosity FE model.
@@ -333,10 +410,10 @@ class BoundaryHandler:
           distributed equally across the midspan-top nodes.
 
         Unlike the compression/tension/shear BCs which are *displacement*
-        controlled, ILSS is **force controlled** — the returned ``F``
-        vector carries the load directly rather than being routed through
-        ``apply_penalty``. The penalty path is still used for the support
-        DOF constraints.
+        controlled, ILSS is **force controlled**: the returned ``F``
+        vector carries the load, and the support DOFs are prescribed to
+        zero and eliminated like any other constraint (see
+        :meth:`apply_elimination`).
 
         Parameters
         ----------
@@ -403,15 +480,68 @@ class BoundaryHandler:
         return constrained, F
 
     @staticmethod
+    def apply_elimination(K: scipy.sparse.spmatrix, F: np.ndarray,
+                          constrained_dofs: dict[int, float]
+                          ) -> tuple[scipy.sparse.csc_matrix, np.ndarray, np.ndarray]:
+        """Eliminate prescribed DOFs exactly (partitioned system).
+
+        Splits the DOFs into free (``f``) and constrained (``c``) sets and
+        returns the reduced system ``K_ff u_f = F_f - K_fc u_c``. Solve it
+        with any linear solver, then assemble the full vector::
+
+            K_ff, rhs, free = BoundaryHandler.apply_elimination(K, F, constrained)
+            u = np.zeros(K.shape[0])
+            u[list(constrained)] = list(constrained.values())
+            u[free] = scipy.sparse.linalg.spsolve(K_ff, rhs)
+
+        The constrained DOFs then hold their prescribed values exactly, and
+        ``K_ff`` keeps the conditioning of the physical stiffness (no
+        penalty term). A load in ``F`` at a constrained DOF is carried by
+        the support: it appears in the reaction ``(K u - F)[c]``.
+
+        Parameters
+        ----------
+        K : scipy.sparse matrix
+            Global stiffness matrix (not modified).
+        F : np.ndarray
+            Global force vector (not modified).
+        constrained_dofs : dict
+            ``{dof_index: prescribed_value}``.
+
+        Returns
+        -------
+        K_ff : scipy.sparse.csc_matrix
+            Free-DOF block of ``K``, shape ``(n_f, n_f)``.
+        rhs : np.ndarray
+            ``F_f - K_fc u_c``, shape ``(n_f,)``.
+        free_dofs : np.ndarray
+            Sorted free DOF indices, shape ``(n_f,)``.
+
+        Raises
+        ------
+        ValueError
+            If a constrained DOF index is out of range or a prescribed
+            value is not finite.
+        """
+        part = _DirichletPartition.from_constraints(K.shape[0], constrained_dofs)
+        return part.reduce_matrix(K), part.reduce_rhs(K, F), part.free
+
+    @staticmethod
     def apply_penalty(K: scipy.sparse.csc_matrix, F: np.ndarray,
                       constrained_dofs: dict[int, float],
                       penalty_factor: float = 1e6
                       ) -> tuple[scipy.sparse.csc_matrix, np.ndarray]:
-        """Apply penalty method for prescribed displacements.
+        """Apply penalty method for prescribed displacements (deprecated).
+
+        Deprecated: :class:`FESolver` now eliminates prescribed DOFs
+        exactly; use :meth:`apply_elimination`. This method still returns
+        the same penalty-modified system, emits a
+        :class:`DeprecationWarning`, and will be removed in 2.0.
 
         For each constrained DOF ``i`` with value ``v``,
         ``K[i, i] += alpha`` and ``F[i] = alpha * v``, where
-        ``alpha = penalty_factor * max(diag(K))``.
+        ``alpha = penalty_factor * max(diag(K))``. Any load already in
+        ``F`` at a constrained DOF is overwritten.
 
         Parameters
         ----------
@@ -433,6 +563,14 @@ class BoundaryHandler:
         K_mod : scipy.sparse.csc_matrix
         F_mod : np.ndarray
         """
+        warnings.warn(
+            "BoundaryHandler.apply_penalty is deprecated: FESolver imposes "
+            "prescribed displacements exactly by elimination. Use "
+            "BoundaryHandler.apply_elimination instead; apply_penalty will be "
+            "removed in 2.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not constrained_dofs:
             return K, F
 
