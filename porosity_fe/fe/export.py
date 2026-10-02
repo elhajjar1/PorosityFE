@@ -479,6 +479,9 @@ def export_results(field_results: FieldResults,
                 field_results.first_ply_failure_load_factor),
         },
     }
+    results_data['solver'] = {
+        'formulation': str(getattr(field_results, 'formulation', 'hex8')),
+    }
     if field_results.reaction_forces is not None:
         results_data['stiffness'] = {
             'effective_modulus_MPa': (

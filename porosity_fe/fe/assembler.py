@@ -10,11 +10,12 @@ from dataclasses import astuple, dataclass
 import numpy as np
 import scipy.sparse
 
+from .._types import FEFormulation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..porosity_field import PorosityField
 from .batch import ElementBatch, build_element_batch, element_dofs
-from .element import Hex8Element
+from .element import Hex8Element, _check_formulation
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -35,13 +36,19 @@ class GlobalAssembler:
         Material properties.
     porosity_field : PorosityField
         Porosity field for degradation.
+    formulation : {'hex8', 'hex8i'}, optional
+        Element formulation (see :class:`Hex8Element`). Part of the
+        assembly cache key, so changing ``self.formulation`` re-assembles.
     """
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
-                 porosity_field: PorosityField) -> None:
+                 porosity_field: PorosityField, *,
+                 formulation: FEFormulation = 'hex8') -> None:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
+        _check_formulation(formulation)
+        self.formulation: FEFormulation = formulation
         self._C_base = material.get_stiffness_matrix()
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
@@ -73,6 +80,7 @@ class GlobalAssembler:
             C_m=self._C_m,
             is_void=is_void,
             material=self.material,
+            formulation=self.formulation,
         )
 
     def element_dof_indices(self, elem_idx: int) -> np.ndarray:
@@ -83,8 +91,8 @@ class GlobalAssembler:
         """Fingerprint of every input the stiffness depends on.
 
         Hashes the mesh arrays by content (so in-place edits are seen) and
-        the material (every field, not its abbreviated ``repr``) and void
-        shape by value.
+        the material (every field, not its abbreviated ``repr``), void
+        shape and element formulation by value.
         """
         h = hashlib.blake2b(digest_size=16)
         mesh = self.mesh
@@ -94,7 +102,8 @@ class GlobalAssembler:
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
         return (h.hexdigest(), astuple(self.material),
-                tuple(self.porosity_field.void_shape_radii))
+                tuple(self.porosity_field.void_shape_radii),
+                self.formulation)
 
     def element_batch(self) -> ElementBatch:
         """Per-element, per-Gauss-point ``B``, ``C`` and ``det(J) w`` arrays.
@@ -105,7 +114,8 @@ class GlobalAssembler:
         key = self._state_key()
         if self._batch is None or key != self._key:
             self._batch = build_element_batch(
-                self.mesh, self.material, self.porosity_field.void_shape_radii)
+                self.mesh, self.material, self.porosity_field.void_shape_radii,
+                formulation=self.formulation)
             self._key = key
             self._K = None
         return self._batch
@@ -131,7 +141,8 @@ class GlobalAssembler:
         :meth:`stiffness` returns the cached result when inputs are unchanged.
         """
         self._batch = build_element_batch(
-            self.mesh, self.material, self.porosity_field.void_shape_radii)
+            self.mesh, self.material, self.porosity_field.void_shape_radii,
+            formulation=self.formulation)
         self._key = self._state_key()
         batch = self._batch
         Ke = batch.stiffness_matrices()

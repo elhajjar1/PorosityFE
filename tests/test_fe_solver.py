@@ -1749,10 +1749,11 @@ class TestFailureCriteria:
 class TestElementBatchMatchesHex8Element:
     """The vectorized assembly/recovery path must reproduce Hex8Element
     element by element, including void elements, non-uniform porosity and
-    rotated plies."""
+    rotated plies, for both element formulations."""
 
-    @pytest.fixture(scope="class")
-    def setup(self):
+    @pytest.fixture(scope="class", params=['hex8', 'hex8i'])
+    @classmethod
+    def setup(cls, request):
         from porosity_fe.fe.batch import build_element_batch
         mat = MATERIALS['T800_epoxy']
         void = VoidGeometry(center=(25, 10, mat.total_thickness / 2),
@@ -1762,8 +1763,12 @@ class TestElementBatchMatchesHex8Element:
         mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=6,
                              ply_angles=[0, 45, -45, 90, 90, -45, 45, 0])
         assert len(mesh.void_elements) > 0, "fixture must contain void elements"
-        assembler = GlobalAssembler(mesh, mat, pf)
-        batch = build_element_batch(mesh, mat, pf.void_shape_radii)
+        formulation = request.param
+        assembler = GlobalAssembler(mesh, mat, pf, formulation=formulation)
+        batch = build_element_batch(mesh, mat, pf.void_shape_radii,
+                                    formulation=formulation)
+        assert batch.formulation == formulation
+        assert assembler.create_element(0).formulation == formulation
         return mesh, assembler, batch
 
     def test_element_stiffness_matches(self, setup):
@@ -2298,3 +2303,280 @@ class TestAppliedStrainDefault:
         with caplog.at_level(logging.WARNING, logger="porosity_fe_analysis"):
             small_ud_solver.solve('tension', applied_strain=-0.01)
         assert "contradicts the loading mode" in caplog.text
+
+
+# ============================================================
+# IMPROVEMENT_PLAN 3.6 (A1): incompatible-mode element 'hex8i'
+# ============================================================
+
+def _ud_beam_material():
+    """UD T800/epoxy, 4 plies of 0.5 mm: a 50 x 20 x 2 mm default coupon."""
+    return dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=4, t_ply=0.5)
+
+
+def _solve_by_elimination(K, F, constrained):
+    """Exact Dirichlet elimination, independent of FESolver's BC handling."""
+    import scipy.sparse.linalg
+    n = K.shape[0]
+    dofs = np.fromiter(constrained.keys(), dtype=np.intp, count=len(constrained))
+    vals = np.fromiter(constrained.values(), dtype=float, count=len(constrained))
+    free = np.setdiff1d(np.arange(n), dofs)
+    K = scipy.sparse.csr_matrix(K)
+    u = np.zeros(n)
+    u[dofs] = vals
+    rhs = F[free] - K[free][:, dofs] @ vals
+    u[free] = scipy.sparse.linalg.spsolve(K[free][:, free].tocsc(), rhs)
+    return u
+
+
+class TestIncompatibleModes:
+    """``formulation='hex8i'``: Wilson-Taylor incompatible modes condensed
+    into an effective ``B``. Opt-in; ``'hex8'`` stays the default."""
+
+    def test_unknown_formulation_is_rejected(self):
+        from porosity_fe.fe.batch import build_element_batch
+        mat = _ud_beam_material()
+        pf = PorosityField(mat, 0.0)
+        mesh = CompositeMesh(pf, mat, nx=2, ny=2, nz=2, ply_angles=[0.0] * 4)
+        with pytest.raises(ValueError, match="Unknown element formulation"):
+            FESolver(mesh, mat, pf, formulation='hex20')
+        with pytest.raises(ValueError, match="Unknown element formulation"):
+            GlobalAssembler(mesh, mat, pf, formulation='HEX8I')
+        with pytest.raises(ValueError, match="Unknown element formulation"):
+            build_element_batch(mesh, mat, pf.void_shape_radii, formulation='q1')
+        with pytest.raises(ValueError, match="Unknown element formulation"):
+            Hex8Element(
+                node_coords=mesh.nodes[mesh.elements[0]],
+                C_base=mat.get_stiffness_matrix(), ply_angle_deg=0.0,
+                node_porosities=np.zeros(8), void_shape_radii=(1, 1, 1),
+                nu_m=mat.matrix_poisson,
+                C_m=mat.get_isotropic_matrix_stiffness(), material=mat,
+                formulation='bbar')
+
+    @staticmethod
+    def _distorted_element(formulation):
+        from porosity_fe.fe.element import _NODE_COORDS_REF
+        mat = _ud_beam_material()
+        rng = np.random.default_rng(1)
+        coords = (0.5 * (_NODE_COORDS_REF + 1.0)) * np.array([5.0, 1.0, 1.0])
+        coords = coords + rng.normal(scale=0.08, size=coords.shape)
+        return Hex8Element(
+            node_coords=coords, C_base=mat.get_stiffness_matrix(),
+            ply_angle_deg=30.0, node_porosities=np.full(8, 0.02),
+            void_shape_radii=(1, 1, 1), nu_m=mat.matrix_poisson,
+            C_m=mat.get_isotropic_matrix_stiffness(), material=mat,
+            formulation=formulation)
+
+    @pytest.mark.parametrize('formulation', ['hex8', 'hex8i'])
+    def test_exactly_six_zero_energy_modes(self, formulation):
+        # A single distorted 5:1:1 element: only the six rigid-body modes
+        # may cost no energy (no spurious mechanisms from the condensation).
+        Ke = self._distorted_element(formulation).stiffness_matrix()
+        Ke = 0.5 * (Ke + Ke.T)
+        ev = np.linalg.eigvalsh(Ke)
+        assert int(np.sum(ev < 1e-8 * ev.max())) == 6
+        assert ev.min() > -1e-8 * ev.max()
+
+    def test_incompatible_modes_carry_no_mean_strain(self):
+        # Taylor's correction: each mode integrates to zero strain over the
+        # (distorted) element, the condition for passing the patch test.
+        elem = self._distorted_element('hex8i')
+        total = np.zeros((6, 9))
+        for (xi, eta, zeta), w in zip(elem._gauss_points, elem._gauss_weights,
+                                      strict=True):
+            detJ = np.linalg.det(elem.jacobian(xi, eta, zeta))
+            total += elem.G_matrix(xi, eta, zeta) * detJ * w
+        G0 = elem.G_matrix(0.577, -0.577, 0.577)
+        assert np.abs(total).max() < 1e-12 * np.abs(G0).max()
+
+    @pytest.mark.parametrize('formulation', ['hex8', 'hex8i'])
+    def test_patch_test_on_distorted_mesh(self, formulation):
+        # Linear displacement prescribed on the boundary of a distorted
+        # 3 x 3 x 4 mesh of a 30-degree ply: every Gauss point of every
+        # element must recover the constant strain exactly.
+        from porosity_fe.fe.batch import build_element_batch
+        mat = _ud_beam_material()
+        pf = PorosityField(mat, 0.0)
+        mesh = CompositeMesh(pf, mat, nx=3, ny=3, nz=4, ply_angles=[30.0] * 4)
+        mesh.L_x, mesh.L_y = 3.0, 3.0
+        mesh.generate_mesh()
+        X = mesh.nodes.copy()
+        tol = 1e-9
+        interior = np.flatnonzero(
+            (X[:, 0] > tol) & (X[:, 0] < mesh.L_x - tol)
+            & (X[:, 1] > tol) & (X[:, 1] < mesh.L_y - tol)
+            & (X[:, 2] > tol) & (X[:, 2] < mesh.L_z - tol))
+        assert interior.size
+        rng = np.random.default_rng(2)
+        X[interior] += rng.uniform(-0.25, 0.25, size=(interior.size, 3)) \
+            * np.array([1.0, 1.0, mesh.L_z / 4])
+        mesh.nodes = X
+        grad = np.array([[1e-3, 2e-4, -3e-4],
+                         [1e-4, -5e-4, 2e-4],
+                         [3e-4, 1e-4, 4e-4]])
+        u_exact = (X @ grad.T).ravel()
+        boundary = np.setdiff1d(np.arange(mesh.n_nodes), interior)
+        constrained = {3 * int(n) + k: u_exact[3 * n + k]
+                       for n in boundary for k in range(3)}
+        K = GlobalAssembler(mesh, mat, pf, formulation=formulation).stiffness()
+        u = _solve_by_elimination(K, np.zeros(mesh.n_dof), constrained)
+        eps = build_element_batch(mesh, mat, pf.void_shape_radii,
+                                  formulation=formulation).strains(u)
+        eps_exact = np.array([grad[0, 0], grad[1, 1], grad[2, 2],
+                              grad[1, 2] + grad[2, 1], grad[0, 2] + grad[2, 0],
+                              grad[0, 1] + grad[1, 0]])
+        assert np.abs(u - u_exact).max() < 1e-10 * np.abs(u_exact).max()
+        assert np.abs(eps - eps_exact).max() < 1e-10 * np.abs(eps_exact).max()
+
+    @staticmethod
+    def _bending_modulus_ratio(nx, ny, nz, formulation, theta=1e-3):
+        """``E_bend / E11`` of a UD beam under a uniform moment.
+
+        One end is held in ``u_x``; the other is rotated by ``theta`` about
+        the neutral axis (``u_x = -theta (z - h/2)``). The exact solution is
+        a uniform moment ``M = E11 I theta / L``, and ``u^T K u = M theta``.
+        """
+        mat = _ud_beam_material()
+        pf = PorosityField(mat, 0.0)
+        mesh = CompositeMesh(pf, mat, nx=nx, ny=ny, nz=nz, ply_angles=[0.0] * 4)
+        L, b, h = mesh.L_x, mesh.L_y, mesh.L_z
+        constrained = {}
+        for n in mesh.nodes_on_face('x_min'):
+            constrained[3 * int(n)] = 0.0
+        for n in mesh.nodes_on_face('x_max'):
+            constrained[3 * int(n)] = -theta * (mesh.nodes[n, 2] - h / 2)
+        axis = mesh.find_nodes_near(x=0.0, z=h / 2, tol=1e-9)
+        assert axis.size, "the neutral axis must be a node line (even nz)"
+        for n in axis:
+            constrained[3 * int(n) + 2] = 0.0
+        constrained[3 * int(axis[0]) + 1] = 0.0
+        K = GlobalAssembler(mesh, mat, pf, formulation=formulation).stiffness()
+        u = _solve_by_elimination(K, np.zeros(mesh.n_dof), constrained)
+        E_bend = L * float(u @ (K @ u)) / (b * h ** 3 / 12.0 * theta ** 2)
+        return E_bend / mat.E11
+
+    @pytest.mark.parametrize('res, hex8_ratio', [
+        ((4, 2, 2), 2.265),    # element length / thickness = 6.25
+        ((16, 4, 8), 1.084),   # 1.56, the ILSS test mesh
+    ])
+    def test_pure_bending_is_lock_free(self, res, hex8_ratio):
+        # Standard hex8 locks: its bending stiffness error grows as about
+        # (G13 / E11) (dx / h)^2 and does not shrink with nz. hex8i is
+        # within 0.5 % of exact on both meshes.
+        assert self._bending_modulus_ratio(*res, 'hex8i') == \
+            pytest.approx(1.0, abs=0.005)
+        assert self._bending_modulus_ratio(*res, 'hex8') == \
+            pytest.approx(hex8_ratio, rel=0.01)
+
+    def test_default_is_hex8_and_unchanged(self):
+        # Not passing the option must give exactly the 'hex8' results.
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=8)
+        default = FESolver(mesh, mat, pf)
+        explicit = FESolver(mesh, mat, pf, formulation='hex8')
+        assert default.formulation == 'hex8'
+        assert default.assembler.element_batch().formulation == 'hex8'
+        for mode in ('compression', 'ilss'):
+            a, b = default.solve(mode), explicit.solve(mode)
+            assert a.formulation == b.formulation == 'hex8'
+            np.testing.assert_array_equal(a.displacement, b.displacement)
+            np.testing.assert_array_equal(a.stress_global, b.stress_global)
+            assert a.knockdown == b.knockdown
+            assert a.max_failure_index == b.max_failure_index
+            assert a.first_ply_failure_load_factor == \
+                b.first_ply_failure_load_factor
+
+    def test_membrane_response_nearly_unchanged(self):
+        # hex8i passes the patch test, so a homogeneous in-plane state is
+        # unchanged: pure shear agrees to round-off. Under compression the
+        # angle plies of this QI laminate develop free-edge interlaminar
+        # gradients that hex8 resolves slightly too stiffly (about 0.2 % on
+        # E_x at this coarse mesh); the knockdown, a ratio of two solves
+        # with the same element, moves by about 1e-4. The bending (ILSS)
+        # response is where the formulations really differ.
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=8)
+        r = {f: {m: FESolver(mesh, mat, pf, formulation=f).solve(m)
+                 for m in ('compression', 'shear', 'ilss')}
+             for f in ('hex8', 'hex8i')}
+        assert r['hex8i']['shear'].effective_modulus == pytest.approx(
+            r['hex8']['shear'].effective_modulus, rel=1e-6)
+        assert r['hex8i']['compression'].effective_modulus == pytest.approx(
+            r['hex8']['compression'].effective_modulus, rel=5e-3)
+        for mode in ('compression', 'shear'):
+            assert r['hex8i'][mode].knockdown == pytest.approx(
+                r['hex8'][mode].knockdown, abs=5e-4)
+        assert abs(r['hex8i']['ilss'].knockdown
+                   - r['hex8']['ilss'].knockdown) > 5e-3
+        ilss_tau = {f: np.abs(r[f]['ilss'].stress_global[..., 4]).max()
+                    for f in r}
+        assert ilss_tau['hex8i'] < 0.9 * ilss_tau['hex8']
+
+    def test_formulation_recorded_in_results_and_export(self, tmp_path):
+        import json
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.02)
+        mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=8)
+        solver = FESolver(mesh, mat, pf, formulation='hex8i')
+        assert solver.formulation == 'hex8i'
+        r = solver.solve('compression')
+        assert r.formulation == 'hex8i'
+        assert r.summary().details['formulation'] == 'hex8i'
+        path = tmp_path / "fe.json"
+        FESolver.export_results(r, path)
+        with open(path, encoding='utf-8') as f:
+            assert json.load(f)['solver'] == {'formulation': 'hex8i'}
+        # FieldResults built directly keeps the historical default.
+        bare = FieldResults(r.displacement, r.stress_global, r.stress_local,
+                            r.strain_global, r.strain_local, 1.0, 1.0)
+        assert bare.formulation == 'hex8'
+
+    def test_assembly_cache_is_keyed_on_formulation(self):
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=8)
+        assembler = GlobalAssembler(mesh, mat, pf)
+        K_hex8 = assembler.stiffness()
+        assert assembler.stiffness() is K_hex8
+        assembler.formulation = 'hex8i'
+        K_hex8i = assembler.stiffness()
+        assert K_hex8i is not K_hex8
+        assert assembler.element_batch().formulation == 'hex8i'
+        fresh = GlobalAssembler(mesh, mat, pf, formulation='hex8i')
+        np.testing.assert_allclose(K_hex8i.toarray(),
+                                   fresh.assemble_stiffness().toarray(),
+                                   rtol=0, atol=1e-12 * abs(K_hex8i).max())
+        assert abs(K_hex8i - K_hex8).max() > 1e-6 * abs(K_hex8).max()
+
+    def test_pristine_reference_is_keyed_on_formulation(self):
+        # A hex8 pristine reference must never be reused for a hex8i porous
+        # solve (or vice versa): the ILSS beam stiffness differs between the
+        # two, so the knockdown would be wrong.
+        from porosity_fe.fe import solver as solver_mod
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=8, ny=3, nz=8)
+
+        def kd(formulation):
+            return FESolver(mesh, mat, pf, formulation=formulation).solve(
+                'ilss').knockdown
+
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        kd('hex8')
+        after_hex8 = kd('hex8i')
+        assert len(solver_mod._PRISTINE_MEASURE_CACHE) == 2
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        fresh = kd('hex8i')
+        assert after_hex8 == pytest.approx(fresh, rel=1e-12)
+
+    def test_singular_internal_stiffness_falls_back_to_hex8(self):
+        from porosity_fe.fe.element import _condensation_operator
+        Kaa = np.stack([np.eye(9), np.zeros((9, 9)), np.full((9, 9), np.inf)])
+        Kau = np.ones((3, 9, 24))
+        H = _condensation_operator(Kaa, Kau)
+        np.testing.assert_array_equal(H[0], -np.ones((9, 24)))
+        np.testing.assert_array_equal(H[1:], 0.0)
+        np.testing.assert_array_equal(
+            _condensation_operator(np.zeros((9, 9)), np.ones((9, 24))), 0.0)

@@ -17,7 +17,7 @@ import scipy.sparse
 import scipy.sparse.linalg
 
 from .._ply_angles import _resolve_ply_angles
-from .._types import FELoadingMode
+from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
@@ -91,6 +91,10 @@ class FieldResults:
         reaches 1 at any Gauss point of a non-void element (linear
         scaling); the margin of safety is this value minus 1. ``inf`` if no
         point is stressed.
+    formulation : str
+        Element formulation of the solve, ``'hex8'`` (default, for
+        callers that construct ``FieldResults`` directly) or ``'hex8i'``;
+        see :class:`FESolver`.
 
     Notes
     -----
@@ -118,6 +122,7 @@ class FieldResults:
     reaction_forces: np.ndarray | None = None
     effective_modulus: float | None = None
     first_ply_failure_load_factor: float | None = None
+    formulation: str = 'hex8'
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -173,6 +178,7 @@ class FieldResults:
                 ),
                 'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
                 'effective_modulus': self.effective_modulus,
+                'formulation': self.formulation,
             },
         )
 
@@ -529,6 +535,21 @@ class FESolver:
         against each lamina strength. Validated against
         :attr:`SUPPORTED_FAILURE_CRITERIA`; an unknown value raises
         :class:`ValueError`.
+    formulation : {'hex8', 'hex8i'}, optional
+        Keyword-only element formulation (see :data:`FEFormulation`).
+        ``'hex8'`` (default) is the standard fully integrated trilinear
+        brick and reproduces earlier results bit for bit. ``'hex8i'`` adds
+        nine Wilson-Taylor incompatible modes per element, condensed out
+        during assembly, which removes the shear locking that makes
+        ``'hex8'`` too stiff in bending: the error grows roughly as
+        ``(G13 / E11) (dx / h)^2`` with element length ``dx`` and laminate
+        thickness ``h`` (about 0.5 % at the production mesh, 8 % at
+        ``dx / h = 1.56``, 127 % at ``dx / h = 6.25`` for UD T800). Membrane
+        modes are essentially unchanged; bending (``'ilss'``) stiffness,
+        transverse shear stress and the load factors move. Recorded on
+        :attr:`FieldResults.formulation` and in the JSON export; the
+        stiffness and pristine-reference caches are keyed on it. Unknown
+        values raise :class:`ValueError`.
 
     Notes
     -----
@@ -557,7 +578,8 @@ class FESolver:
                  porosity_field: PorosityField,
                  ply_angles: list[float] | str | None = 'QI',
                  failure_criterion: Literal[
-                     'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu') -> None:
+                     'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu',
+                 *, formulation: FEFormulation = 'hex8') -> None:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
@@ -572,7 +594,8 @@ class FESolver:
         # Warn (once per mesh) when the element layers merge plies of
         # different angles, so the solve sees a different laminate.
         mesh._log_layup_warning()
-        self.assembler = GlobalAssembler(mesh, material, porosity_field)
+        self.assembler = GlobalAssembler(mesh, material, porosity_field,
+                                         formulation=formulation)
         self.bc_handler = BoundaryHandler(mesh)
         if failure_criterion not in self.SUPPORTED_FAILURE_CRITERIA:
             raise ValueError(
@@ -584,6 +607,14 @@ class FESolver:
         # factorization (built lazily by direct solves), reused while K and
         # the constrained-DOF set are unchanged: (K, key, K_ff, SuperLU|None).
         self._lu_cache: tuple | None = None
+
+    @property
+    def formulation(self) -> FEFormulation:
+        """Element formulation, ``'hex8'`` or ``'hex8i'`` (read-only).
+
+        Held by :attr:`assembler`, whose stiffness cache is keyed on it.
+        """
+        return self.assembler.formulation
 
     def solve(self, loading: FELoadingMode = 'compression',
               applied_strain: float | None = None,
@@ -773,6 +804,7 @@ class FESolver:
             reaction_forces=reactions,
             effective_modulus=effective_modulus,
             first_ply_failure_load_factor=fpf_load_factor,
+            formulation=self.formulation,
         )
 
     def _apply_boundary_conditions(
@@ -1084,14 +1116,16 @@ class FESolver:
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
         # Key on every material field: repr() omits E33, G13, G23, ... .
-        key = (key_loading, h.hexdigest(), astuple(self.material))
+        key = (key_loading, h.hexdigest(), astuple(self.material),
+               self.formulation)
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:
             _PRISTINE_MEASURE_CACHE.move_to_end(key)
             return cached
 
         pristine = FESolver(_pristine_mesh(self.mesh), self.material,
-                            self.porosity_field, ply_angles=self.ply_angles)
+                            self.porosity_field, ply_angles=self.ply_angles,
+                            formulation=self.formulation)
         strain = _DEFAULT_APPLIED_STRAIN.get(key_loading, -0.01)
         load = -10.0
         constrained, F = pristine._apply_boundary_conditions(

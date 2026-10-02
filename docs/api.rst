@@ -195,6 +195,12 @@ type checkers use them; at run time each function validates its own input.
    ``'compression' | 'tension' | 'shear' | 'ilss'``, the loading modes
    :meth:`FESolver.solve` has boundary conditions for.
 
+.. py:data:: FEFormulation
+
+   ``'hex8' | 'hex8i'``, the element formulations :class:`FESolver` accepts
+   (``formulation=``): the standard trilinear brick, or the brick with
+   condensed incompatible modes that does not lock in bending.
+
 .. py:data:: KnockdownModel
 
    ``'judd_wright' | 'power_law' | 'linear'``, the built-in empirical

@@ -64,6 +64,7 @@ from ._ply_angles import _PLY_ANGLES_UD as _PLY_ANGLES_UD  # noqa: F401, E402
 from ._ply_angles import _resolve_ply_angles as _resolve_ply_angles  # noqa: F401, E402
 from ._types import ClusterLocation as ClusterLocation  # noqa: F401, E402
 from ._types import Distribution as Distribution  # noqa: F401, E402
+from ._types import FEFormulation as FEFormulation  # noqa: F401, E402
 from ._types import FELoadingMode as FELoadingMode  # noqa: F401, E402
 from ._types import KnockdownModel as KnockdownModel  # noqa: F401, E402
 from ._types import LoadingMode as LoadingMode  # noqa: F401, E402
@@ -213,6 +214,7 @@ __all__ = [
     "ClusterLocation",
     "Distribution",
     "FELoadingMode",
+    "FEFormulation",
     "KnockdownModel",
     "LoadingMode",
     "MeshFace",
