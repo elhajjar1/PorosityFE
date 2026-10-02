@@ -26,7 +26,9 @@ class MaterialProperties:
     and strengths must be positive finite floats; Poisson ratios must lie
     in ``(-1, 0.5)``; ``n_plies`` must be a positive integer; and
     ``fiber_volume_fraction`` must be a fraction in ``(0, 1)`` (a percent
-    such as ``60`` is rejected with a hint).
+    such as ``60`` is rejected with a hint). The optional thermal
+    expansion coefficients must be finite and given in 1/K (a ppm/K value
+    such as ``26`` is rejected with a hint).
 
     Parameters
     ----------
@@ -84,6 +86,27 @@ class MaterialProperties:
         ratios. ``None`` (default) uses the isotropic estimate
         ``E_f / (2 (1 + nu_f))``; carbon fibers are anisotropic, so set the
         measured value when it is known.
+    alpha_1, alpha_2 : float, optional
+        Lamina coefficients of thermal expansion along the fiber (1) and
+        transverse (2) directions, in **1/K** (pass ``26e-6``, not ``26``;
+        a magnitude of ``1e-3`` /K or more is rejected as a probable
+        ppm/K value). ``None`` (default) means no thermal data. Give both
+        or neither. ``alpha_1`` may be negative (carbon fibers contract
+        axially when heated); ``alpha_2`` must be positive. Inputs for the
+        planned thermal / cure-residual-stress load case: no solver reads
+        them yet, and they leave every current result unchanged. Held at
+        the pristine value: porosity barely changes the ply CTE (an empty
+        void does not change the free thermal expansion of the matrix
+        around it).
+    alpha_3 : float, optional
+        Through-thickness CTE in 1/K, positive. ``None`` (default) uses
+        ``alpha_2`` (transverse isotropy of a UD tape); see
+        :attr:`alpha_3_eff`. Requires ``alpha_1`` and ``alpha_2``.
+    T_stress_free : float, optional
+        Stress-free temperature in deg C (typically near the cure
+        temperature), from which the thermal load case will take its
+        temperature difference. ``None`` (default) means unspecified.
+        Must be finite and above absolute zero.
 
     Attributes
     ----------
@@ -106,6 +129,10 @@ class MaterialProperties:
     fiber_modulus, fiber_volume_fraction : float
         Constituent fiber modulus (MPa) and pristine fiber volume
         fraction (dimensionless, in ``(0, 1)``).
+    alpha_1, alpha_2, alpha_3 : float or None
+        Lamina CTEs (1/K); ``None`` when not supplied.
+    T_stress_free : float or None
+        Stress-free temperature (deg C); ``None`` when not supplied.
     total_thickness : float
         Read-only property: ``t_ply * n_plies`` (mm). Used as ``L_z`` by
         :class:`CompositeMesh`.
@@ -185,12 +212,65 @@ class MaterialProperties:
     fiber_poisson: float = 0.2
     fiber_shear_modulus: float | None = None
 
+    # Lamina coefficients of thermal expansion (1/K, not ppm/K) and the
+    # stress-free temperature (deg C) for the planned thermal / cure
+    # residual-stress load case (IMPROVEMENT_PLAN 3.5). Optional; no
+    # solver reads them yet. alpha_3 = None means alpha_3 = alpha_2.
+    alpha_1: float | None = None        # Fiber-direction CTE (1/K)
+    alpha_2: float | None = None        # Transverse CTE (1/K)
+    alpha_3: float | None = None        # Through-thickness CTE (1/K)
+    T_stress_free: float | None = None  # Stress-free temperature (deg C)
+
+    # A CTE magnitude at or above this (1/K) is taken to be ppm/K passed by
+    # mistake: polymer-matrix plies sit roughly between -5e-6 and 6e-5 /K.
+    _CTE_MAX = 1e-3
+    _ABSOLUTE_ZERO_C = -273.15
+
     @property
     def fiber_shear_modulus_eff(self) -> float:
         """``fiber_shear_modulus``, or the isotropic ``E_f / (2 (1 + nu_f))``."""
         if self.fiber_shear_modulus is not None:
             return float(self.fiber_shear_modulus)
         return self.fiber_modulus / (2.0 * (1.0 + self.fiber_poisson))
+
+    @property
+    def alpha_3_eff(self) -> float | None:
+        """``alpha_3``, or ``alpha_2`` when ``alpha_3`` is ``None`` (1/K)."""
+        if self.alpha_3 is not None:
+            return float(self.alpha_3)
+        return None if self.alpha_2 is None else float(self.alpha_2)
+
+    @property
+    def has_cte(self) -> bool:
+        """``True`` when the lamina CTEs (``alpha_1``, ``alpha_2``) are set."""
+        return self.alpha_1 is not None and self.alpha_2 is not None
+
+    def cte_vector(self) -> np.ndarray:
+        """Lamina CTE vector in the material frame, in 1/K.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(6,)``: ``[alpha_1, alpha_2, alpha_3, 0, 0, 0]`` in the
+            Voigt order ``[11, 22, 33, 23, 13, 12]`` of
+            :meth:`get_stiffness_matrix`. The shear entries are zero for an
+            orthotropic ply in its material axes. ``alpha_3`` falls back to
+            ``alpha_2`` (:attr:`alpha_3_eff`).
+
+        Raises
+        ------
+        ValueError
+            If ``alpha_1`` / ``alpha_2`` are not set (:attr:`has_cte` is
+            ``False``).
+        """
+        a1, a2 = self.alpha_1, self.alpha_2
+        if a1 is None or a2 is None:
+            raise ValueError(
+                "MaterialProperties has no thermal expansion coefficients: "
+                "set alpha_1 and alpha_2 (in 1/K, e.g. alpha_2=26e-6)."
+            )
+        a3 = a2 if self.alpha_3 is None else self.alpha_3
+        return np.array([a1, a2, a3, 0.0, 0.0, 0.0], dtype=float)
 
     def __post_init__(self):
         # Stiffness moduli must be positive finite (non-zero for 1/E in compliance).
@@ -295,6 +375,67 @@ class MaterialProperties:
                     f"coefficient; values outside this range open the "
                     f"failure envelope), got {self.tsai_wu_F12!r}."
                 )
+
+        self._validate_thermal_fields()
+
+    @staticmethod
+    def _is_real_number(value) -> bool:
+        return (isinstance(value, (int, float, np.integer, np.floating))
+                and not isinstance(value, (bool, np.bool_))
+                and bool(np.isfinite(float(value))))
+
+    def _validate_thermal_fields(self) -> None:
+        """Check the optional CTEs (1/K) and stress-free temperature (deg C).
+
+        Mirrors the percent-vs-fraction hint for ``Vp``: a CTE written in
+        ppm/K (``26`` instead of ``26e-6``) is rejected with a hint.
+        """
+        for name in ('alpha_1', 'alpha_2', 'alpha_3'):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not self._is_real_number(value):
+                raise ValueError(
+                    f"MaterialProperties.{name} must be None or a finite "
+                    f"thermal expansion coefficient in 1/K, got {value!r}."
+                )
+            if abs(float(value)) >= self._CTE_MAX:
+                raise ValueError(
+                    f"MaterialProperties.{name}={value!r} is too large for a "
+                    f"thermal expansion coefficient in 1/K (|alpha| must be "
+                    f"below {self._CTE_MAX:g} /K). It looks like a ppm/K "
+                    f"value: pass the coefficient in 1/K, e.g. 26e-6, not 26."
+                )
+        # The transverse and through-thickness CTEs of a polymer-matrix ply
+        # are matrix-dominated and positive. alpha_1 may be negative (carbon
+        # fibers contract axially on heating), so it gets no sign rule.
+        for name in ('alpha_2', 'alpha_3'):
+            value = getattr(self, name)
+            if value is not None and float(value) <= 0.0:
+                raise ValueError(
+                    f"MaterialProperties.{name} must be positive (1/K); "
+                    f"got {value!r}. Only alpha_1 (fiber direction) may be "
+                    f"negative."
+                )
+        if (self.alpha_1 is None) != (self.alpha_2 is None):
+            raise ValueError(
+                "MaterialProperties.alpha_1 and alpha_2 must be given "
+                f"together or both left None, got alpha_1={self.alpha_1!r}, "
+                f"alpha_2={self.alpha_2!r}."
+            )
+        if self.alpha_3 is not None and self.alpha_2 is None:
+            raise ValueError(
+                "MaterialProperties.alpha_3 needs alpha_1 and alpha_2 "
+                f"(1/K) as well, got alpha_3={self.alpha_3!r} alone."
+            )
+        if self.T_stress_free is not None and (
+                not self._is_real_number(self.T_stress_free)
+                or float(self.T_stress_free) <= self._ABSOLUTE_ZERO_C):
+            raise ValueError(
+                f"MaterialProperties.T_stress_free must be None or a finite "
+                f"temperature in deg C above absolute zero, got "
+                f"{self.T_stress_free!r}."
+            )
 
     @property
     def total_thickness(self) -> float:
@@ -458,6 +599,13 @@ class MaterialProperties:
     # only consume strengths/moduli, and perturbing a bounded Poisson ratio or
     # an integer ply count is rarely the intent. Callers may still target any
     # of these via an explicit `covs`/`spec` key if needed.
+    #
+    # The thermal fields (alpha_1/2/3, T_stress_free) are deliberately not
+    # perturbable: no solver consumes them yet, so a draw would change
+    # nothing; alpha_1 can be zero or negative, which the CoV-scaled draws
+    # and the positive floor in _clip_perturbed do not handle; and alpha_3 is
+    # tied to alpha_2 when unset, so perturbing one alone would break
+    # transverse isotropy. Revisit with the thermal solve.
     PERTURBABLE_FIELDS = (
         'E11', 'E22', 'E33', 'G12', 'G13', 'G23',
         'sigma_1c', 'sigma_1t', 'sigma_2t', 'sigma_2c', 'tau_12', 'tau_ilss',
@@ -547,6 +695,10 @@ class MaterialProperties:
                 f"Vf={self.fiber_volume_fraction})")
 
 
+# Thermal expansion coefficients (alpha_1 / alpha_2) are set only on presets
+# with a cited lamina value for that material system (currently
+# AS4_3501_6_epoxy). The others leave them None rather than carry a proxy or
+# micromechanics estimate; pass measured values with dataclasses.replace.
 MATERIALS = {
     'T800_epoxy': MaterialProperties(
         E11=161000.0, E22=11380.0, E33=11380.0,
@@ -625,6 +777,13 @@ MATERIALS = {
         t_ply=0.125, n_plies=24,
         matrix_modulus=4270.0, matrix_poisson=0.34,
         fiber_modulus=235000.0, fiber_volume_fraction=0.60,
+        # Lamina CTEs (1/K): alpha_1 = -1.0e-6, alpha_2 = 26e-6 from the
+        # WWFE-I lamina-properties table for AS4/3501-6 (Soden, Hinton &
+        # Kaddour, Compos. Sci. Technol. 58 (1998) 1011-1022). Daniel &
+        # Ishai (2006, Table A.4) give -0.9e-6 / 27e-6 for the same system.
+        # alpha_3 = alpha_2 (transverse isotropy). T_stress_free is left
+        # unset: the thermal load case should get it from the user.
+        alpha_1=-1.0e-6, alpha_2=26.0e-6,
     ),
     # HTA 24k / EHkF 420 epoxy — Tenax HTA (Toho Tenax) high-tenacity
     # carbon fibre with a toughened aerospace epoxy system. Lamina

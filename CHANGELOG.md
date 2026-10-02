@@ -27,6 +27,20 @@ All notable changes to PorosityFE will be documented in this file.
     `FESolver.export_results(fmt='vtu')` delegates to it. `write_pvd`
     (new) groups VTU files into a ParaView series. `to_vtk` and its
     output are unchanged and remain the default for `fmt='vtk'`.
+- **Thermal expansion inputs (IMPROVEMENT_PLAN 3.5, first part).**
+  `MaterialProperties` gains optional `alpha_1`, `alpha_2`, `alpha_3`
+  (lamina CTEs in 1/K) and `T_stress_free` (deg C), all defaulting to
+  `None`; `alpha_3=None` means `alpha_3 = alpha_2`. A CTE of `1e-3` /K or
+  more is rejected as a probable ppm/K value ("pass 26e-6, not 26"),
+  `alpha_1` and `alpha_2` must be given together, and only `alpha_1` may be
+  negative. `has_cte` and `cte_vector()` (Voigt `[a1, a2, a3, 0, 0, 0]`)
+  are there for the solver. **The thermal / cure-residual-stress solve
+  itself is not implemented yet**: no solver reads these fields, and every
+  existing result is unchanged. Only `AS4_3501_6_epoxy` carries CTEs
+  (`alpha_1 = -1.0e-6`, `alpha_2 = 26e-6` /K, WWFE-I lamina data, Soden,
+  Hinton & Kaddour 1998); the other presets leave them `None` until
+  sourced values are confirmed. No preset sets `T_stress_free`. The CTE
+  fields are not UQ-perturbable.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown

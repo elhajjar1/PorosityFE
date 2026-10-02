@@ -163,6 +163,10 @@ Notes:
 - All `MaterialProperties` fields are required — there are no defaults for
   the engineering constants. Cross-check anisotropy bounds (`ν12 < 0.5`,
   `E11 > E22`, etc.) before running.
+- Optional thermal inputs `alpha_1`, `alpha_2`, `alpha_3` (CTEs in **1/K**,
+  e.g. `alpha_2=26e-6`, not `26`) and `T_stress_free` (°C) default to
+  `None`; they are stored for a planned thermal load case and no solver
+  uses them yet.
 - The FE micromechanics path uses `matrix_modulus`, `matrix_poisson`,
   `fiber_modulus`, and `fiber_volume_fraction` to compute the Eshelby
   stiffness degradation. Supply realistic constituent values even if you
