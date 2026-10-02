@@ -96,6 +96,15 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **FE caches key on every material field.** The shared pristine-reference
+  cache (`FESolver` knockdown) and the assembler's `K` cache keyed the
+  material by its `repr`, which omits `E33`, `G13`, `G23`, `nu13`, `nu23`
+  and the other non-printed fields. Two materials differing only there
+  shared one pristine reference: a T800 ILSS solve followed by a copy with
+  softer `G13` / `G23` / `E33` gave a knockdown of 0.613 instead of 0.952.
+  An in-place edit of such a field also left a solver on its stale `K`.
+  Both caches now key on `dataclasses.astuple(material)`. **Result change**
+  only for callers that hit the collision.
 - **Total mesh size is capped.** `CompositeMesh` rejected more than
   10 000 elements per axis but still admitted 10 000^3 in total, so an
   oversized mesh failed with an out-of-memory error partway through FE
