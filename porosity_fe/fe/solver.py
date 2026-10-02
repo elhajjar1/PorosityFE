@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from typing import Literal
 
 import numpy as np
@@ -919,7 +919,8 @@ class FESolver:
             a = np.ascontiguousarray(arr)
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
-        key = (key_loading, h.hexdigest(), repr(self.material),
+        # Key on every material field: repr() omits E33, G13, G23, ... .
+        key = (key_loading, h.hexdigest(), astuple(self.material),
                float(penalty_factor))
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:

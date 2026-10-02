@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import astuple
 
 import numpy as np
 import scipy.sparse
@@ -81,7 +82,8 @@ class GlobalAssembler:
         """Fingerprint of every input the stiffness depends on.
 
         Hashes the mesh arrays by content (so in-place edits are seen) and
-        the material and void shape by value.
+        the material (every field, not its abbreviated ``repr``) and void
+        shape by value.
         """
         h = hashlib.blake2b(digest_size=16)
         mesh = self.mesh
@@ -90,7 +92,7 @@ class GlobalAssembler:
             a = np.ascontiguousarray(arr)
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
-        return (h.hexdigest(), repr(self.material),
+        return (h.hexdigest(), astuple(self.material),
                 tuple(self.porosity_field.void_shape_radii))
 
     def element_batch(self) -> ElementBatch:
