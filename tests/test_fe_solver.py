@@ -1179,73 +1179,184 @@ class TestDirichletElimination:
         assert r.effective_modulus is None
 
 
+def _three_point_roller_bcs(mesh, applied_load):
+    """Simply supported 3-point bend on ``mesh`` (test-only BC builder).
+
+    Rollers (``u_z = 0``) along both bottom end edges, ``u_x`` held along the
+    left one only and ``u_y`` at one node, so the supports exert no
+    horizontal force. The load is a consistent line load along the top
+    mid-span node line (needs an even ``nx``).
+    """
+    zmin = mesh.nodes_on_face('z_min')
+    left = np.intersect1d(zmin, mesh.nodes_on_face('x_min'))
+    right = np.intersect1d(zmin, mesh.nodes_on_face('x_max'))
+    constrained = {3 * int(n) + 2: 0.0 for n in np.concatenate([left, right])}
+    constrained.update({3 * int(n): 0.0 for n in left})
+    constrained[3 * int(left[0]) + 1] = 0.0
+    top = mesh.find_nodes_near(x=mesh.L_x / 2, z=mesh.L_z, tol=1e-9)
+    top = top[np.argsort(mesh.nodes[top, 1])]
+    seg = np.diff(mesh.nodes[top, 1])
+    weights = np.zeros(len(top))
+    weights[:-1] += seg / 2
+    weights[1:] += seg / 2
+    F = np.zeros(mesh.n_dof)
+    F[3 * top + 2] = applied_load * weights / weights.sum()
+    return constrained, F
+
+
 class TestILSSBeamTheoryValidation:
-    """Beam-theory validation for the ILSS short-beam-shear FE BCs.
+    """Beam-theory checks of the three-point-bend (``'ilss'``) FE model.
 
-    For a 3-point bend on a rectangular cross-section with width b and
-    height h under a center load F, Timoshenko shear theory gives a peak
-    transverse shear stress at the neutral axis::
+    A pristine UD beam, 50 x 20 x 2 mm, on a 16 x 4 x 8 mesh, carries a
+    mid-span load ``F``. Each half-span carries the shear force
+    ``V = F / 2``, so the parabolic beam-theory profile peaks at the
+    neutral axis at::
 
-        tau_xz_peak = 1.5 * |F| / (b * h)
+        tau* = 1.5 * V / (b * h) = 0.75 * |F| / (b * h)
 
-    We solve a pristine (zero porosity) short beam and check the
-    recovered peak |tau_xz| against the closed-form value.
+    which is the ASTM D2344 short-beam-strength formula. Vertical
+    equilibrium fixes ``V`` whatever the supports do horizontally, so
+    ``tau*`` also holds for the package's pinned supports.
+
+    Earlier versions of this test compared the peak against
+    ``1.5 * |F| / (b * h)``, twice ``tau*``, and passed only because the
+    standard hex8 element locks in bending: parasitic transverse shear at
+    its Gauss points, proportional to the local bending moment, roughly
+    doubles the Gauss-point ``tau_xz`` in the high-moment band near
+    mid-span. These tests compare against ``tau*``, require the
+    incompatible-mode element (``formulation='hex8i'``) to meet it, and pin
+    the hex8 overshoot as a known discretization error rather than a match.
     """
 
-    def test_peak_tau_xz_matches_beam_theory(self):
+    LOAD = -10.0  # N, downward
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def beam(cls):
         material = dataclasses.replace(
             MATERIALS['T800_epoxy'], n_plies=4, t_ply=0.5,
         )
-        # Pristine reference: no porosity so beam theory is the direct target.
         pf = PorosityField(material, 0.0, distribution='uniform')
-        # All zero-degree plies — isotropic-ish in the x-z plane for shear.
-        mesh = CompositeMesh(
-            pf, material, nx=16, ny=4, nz=8,
-            ply_angles=[0.0, 0.0, 0.0, 0.0],
-        )
-        solver = FESolver(mesh, material, pf)
-        applied_load = -10.0  # N, downward
-        results = solver.solve(loading='ilss', applied_load=applied_load)
+        mesh = CompositeMesh(pf, material, nx=16, ny=4, nz=8,
+                             ply_angles=[0.0, 0.0, 0.0, 0.0])
+        results = {
+            form: FESolver(mesh, material, pf, formulation=form).solve(
+                loading='ilss', applied_load=cls.LOAD)
+            for form in ('hex8', 'hex8i')
+        }
+        return material, pf, mesh, results
 
-        b = mesh.L_y
-        h = mesh.L_z
-        tau_analytical = 1.5 * abs(applied_load) / (b * h)
+    @classmethod
+    def _tau_star(cls, mesh):
+        return 0.75 * abs(cls.LOAD) / (mesh.L_y * mesh.L_z)
 
-        # Recover tau_xz at the neutral axis midspan. Gather GPs in the
-        # mid-third of the span (avoid the load/support singularities) and
-        # near the neutral axis (mid-thickness).
-        # Compute per-element centroids.
-        elem_nodes = mesh.elements  # (n_elem, 8)
-        coords = mesh.nodes
-        centers = np.mean(coords[elem_nodes], axis=1)  # (n_elem, 3)
+    @staticmethod
+    def _band(mesh, x_windows, y=(0.0, 1.0), z=(0.35, 0.65)):
+        """Elements whose centroid lies in the given fractional windows."""
+        c = np.mean(mesh.nodes[mesh.elements], axis=1)
+        xf, yf, zf = c[:, 0] / mesh.L_x, c[:, 1] / mesh.L_y, c[:, 2] / mesh.L_z
+        in_x = np.zeros(len(c), dtype=bool)
+        for lo, hi in x_windows:
+            in_x |= (xf > lo) & (xf < hi)
+        mask = in_x & (yf > y[0]) & (yf < y[1]) & (zf > z[0]) & (zf < z[1])
+        assert mask.any(), "empty element band"
+        return mask
 
-        Lx = mesh.L_x
-        Lz = mesh.L_z
-        # Mid-span band: 35% .. 65% of x to avoid load point.
-        x_band = (centers[:, 0] > 0.35 * Lx) & (centers[:, 0] < 0.65 * Lx)
-        # Neutral-axis band: 35% .. 65% of thickness.
-        z_band = (centers[:, 2] > 0.35 * Lz) & (centers[:, 2] < 0.65 * Lz)
-        mask = x_band & z_band
-        assert mask.sum() > 0, "No elements in the midspan/neutral-axis band"
+    @staticmethod
+    def _timoshenko_deflection(material, mesh, load):
+        b, h, L = mesh.L_y, mesh.L_z, mesh.L_x
+        bending = abs(load) * L ** 3 / (48.0 * material.E11 * b * h ** 3 / 12.0)
+        shear = abs(load) * L / (4.0 * (5.0 / 6.0) * material.G13 * b * h)
+        return bending + shear
 
-        # Peak tau_xz over the GPs of selected elements (mid-span / neutral
-        # axis band). tau_xz is at Voigt index 4 (tau_13). The shear-stress
-        # profile through thickness is parabolic, so the *peak* value
-        # in the band is what beam theory predicts; the band-average is
-        # naturally lower (~2/3 of peak for the full parabola).
-        tau_band = results.stress_global[mask, :, 4]
-        tau_recovered = float(np.max(np.abs(tau_band)))
+    @staticmethod
+    def _neutral_axis_midspan_deflection(mesh, results):
+        ids = mesh.find_nodes_near(x=mesh.L_x / 2, z=mesh.L_z / 2, tol=1e-9)
+        assert ids.size
+        return -float(np.mean(results.displacement[ids, 2]))
 
-        rel_err = abs(tau_recovered - tau_analytical) / tau_analytical
-        # Coarse hex8 short beam: 15% relative-error tolerance is the
-        # practical target. Tighter (~2–3%) requires a much finer mesh and
-        # would make the test slow; we keep the asymptotic check loose but
-        # informative.
-        assert rel_err < 0.15, (
-            f"Recovered peak |tau_xz| = {tau_recovered:.4f} MPa, "
-            f"analytical = {tau_analytical:.4f} MPa, "
-            f"rel_err = {rel_err:.3f}"
-        )
+    def test_peak_tau_xz_matches_beam_theory(self, beam):
+        # Gauss-point peak |tau_xz| at the neutral axis, mid-width, in the
+        # two shear spans (away from the load nose and the supports). The
+        # wide beam (b/h = 10) carries more shear near its free edges, so
+        # mid-width sits a few percent below the width average (measured
+        # 0.93 tau*).
+        _, _, mesh, results = beam
+        mask = self._band(mesh, [(0.15, 0.40), (0.60, 0.85)], y=(0.3, 0.7))
+        tau = np.abs(results['hex8i'].stress_global[mask, :, 4]).max()
+        tau_star = self._tau_star(mesh)
+        assert tau == pytest.approx(tau_star, rel=0.10), (
+            f"hex8i peak |tau_xz| = {tau:.4f} MPa, tau* = {tau_star:.4f} MPa")
+
+    @pytest.mark.parametrize('formulation', ['hex8', 'hex8i'])
+    def test_section_shear_matches_parabolic_profile(self, beam, formulation):
+        # Equilibrium check that holds for both elements: the element-mean
+        # tau_xz of the two neutral-axis element layers, averaged over the
+        # width in the columns next to x = L/4, equals the mean of the
+        # parabolic profile over those layers, (1 - (4/3) (dz/h)^2) tau*.
+        _, _, mesh, results = beam
+        dx = mesh.L_x / mesh.nx
+        dz_over_h = 1.0 / mesh.nz
+        lo, hi = 0.25 - dx / mesh.L_x, 0.25 + dx / mesh.L_x
+        mask = self._band(mesh, [(lo, hi)], z=(0.5 - dz_over_h, 0.5 + dz_over_h))
+        tau = abs(float(np.mean(results[formulation].stress_global[mask, :, 4])))
+        expected = (1.0 - 4.0 / 3.0 * dz_over_h ** 2) * self._tau_star(mesh)
+        assert tau == pytest.approx(expected, rel=0.05)
+
+    def test_hex8_gauss_point_shear_overshoot_is_pinned(self, beam):
+        # Known hex8 discretization error: shear locking adds parasitic
+        # tau_xz at the Gauss points in proportion to the bending moment.
+        # In the band the old test used (35-65 % of span and thickness),
+        # the hex8 peak is about 2.1 tau* (which is why the old 2 tau*
+        # reference passed); hex8i removes most of it. What remains in that
+        # band for hex8i (about 1.4 tau*) is the 3D concentration under the
+        # load line and at the free edges, not locking.
+        _, _, mesh, results = beam
+        tau_star = self._tau_star(mesh)
+        old_band = self._band(mesh, [(0.35, 0.65)])
+        peak = {form: np.abs(r.stress_global[old_band, :, 4]).max() / tau_star
+                for form, r in results.items()}
+        assert 1.8 < peak['hex8'] < 2.4, peak
+        assert peak['hex8i'] < 0.75 * peak['hex8'], peak
+        # Mid-width shear spans: hex8 still overshoots at its Gauss points
+        # (about 1.37 tau*), although its element means are right (see
+        # test_section_shear_matches_parabolic_profile).
+        span = self._band(mesh, [(0.15, 0.40), (0.60, 0.85)], y=(0.3, 0.7))
+        hex8_span = np.abs(results['hex8'].stress_global[span, :, 4]).max()
+        assert hex8_span > 1.25 * tau_star
+
+    def test_simply_supported_deflection_matches_timoshenko(self, beam):
+        # With rollers (no horizontal reaction) the beam is simply supported
+        # and the neutral-axis mid-span deflection follows Timoshenko beam
+        # theory (shear correction 5/6). hex8i meets it; hex8 is too stiff
+        # because it locks (element length / thickness = 1.56).
+        material, pf, mesh, _ = beam
+        expected = self._timoshenko_deflection(material, mesh, self.LOAD)
+        ratio = {}
+        for form in ('hex8', 'hex8i'):
+            solver = FESolver(mesh, material, pf, formulation=form)
+            solver.bc_handler.ilss_bcs = (
+                lambda applied_load: _three_point_roller_bcs(mesh, applied_load))
+            r = solver.solve(loading='ilss', applied_load=self.LOAD)
+            np.testing.assert_allclose(
+                r.reaction_forces[:, 0].sum(), 0.0, atol=1e-6 * abs(self.LOAD))
+            ratio[form] = self._neutral_axis_midspan_deflection(mesh, r) / expected
+        assert ratio['hex8i'] == pytest.approx(1.0, abs=0.02), ratio
+        assert ratio['hex8'] < 0.95, ratio
+
+    def test_pinned_supports_act_as_tied_arch(self, beam):
+        # The package's ILSS supports pin u_x at both bottom edges, so the
+        # supports exert a large horizontal reaction and the beam deflects
+        # far less than a simply supported one (docs/theory/fe.md).
+        material, _, mesh, results = beam
+        r = results['hex8i']
+        expected = self._timoshenko_deflection(material, mesh, self.LOAD)
+        ratio = self._neutral_axis_midspan_deflection(mesh, r) / expected
+        assert 0.40 < ratio < 0.65, ratio
+        left = np.intersect1d(mesh.nodes_on_face('z_min'),
+                              mesh.nodes_on_face('x_min'))
+        horizontal = abs(float(r.reaction_forces[left, 0].sum()))
+        assert horizontal > 3.0 * abs(self.LOAD)
 
 
 class TestKeCacheKeyGeometry:
