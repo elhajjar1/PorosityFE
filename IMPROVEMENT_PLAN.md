@@ -223,6 +223,11 @@ fix `material_name` reporting `"MaterialProperties"` for passed instances
 Cure-induced thermal stress interacts strongly with porosity-degraded matrix
 strength. A `loading='thermal'` mode building `∫ Bᵀ C α ΔT dV` reuses the
 existing assembly machinery; needs CTE fields on `MaterialProperties`.
+Prerequisite: the production mesh (`nz = 12`) resolves no preset's plies,
+so its element layup is unsymmetric and a free laminate warps under
+`ΔT`. Decide first between a ply-resolving default (`nz = n_plies`, about
+5x the first FE solve) and thickness-averaged multi-ply elements;
+`CompositeMesh.layup_discrepancies()` reports the mismatch.
 
 ### 3.6 Stretch: richer FE toolbox — [L each]
 - **Locking mitigation**: fully integrated hex8 locks in bending — the likely

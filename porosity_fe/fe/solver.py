@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from typing import Literal
 
 import numpy as np
@@ -315,6 +315,12 @@ class FESolver:
     actual per-element angles used during ``solve()`` come from
     ``self.mesh.ply_angles``, which is set when the mesh was constructed
     (passing ``ply_angles`` here does *not* relayup the mesh).
+
+    Each element takes the angle of the ply at its centroid, so a mesh
+    whose element layers span several plies of different angles (``nz``
+    not a multiple of ``n_plies``) analyzes a different laminate. The
+    constructor logs a warning, once per mesh, naming the element layup
+    and what it loses (see :meth:`CompositeMesh.layup_discrepancies`).
     """
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime
@@ -337,6 +343,9 @@ class FESolver:
         # explicit contract.
         self.ply_angles = _resolve_ply_angles(
             ply_angles, none_means='QI', caller='FESolver.ply_angles')
+        # Warn (once per mesh) when the element layers merge plies of
+        # different angles, so the solve sees a different laminate.
+        mesh._log_layup_warning()
         self.assembler = GlobalAssembler(mesh, material, porosity_field)
         self.bc_handler = BoundaryHandler(mesh)
         if failure_criterion not in self.SUPPORTED_FAILURE_CRITERIA:
@@ -910,7 +919,8 @@ class FESolver:
             a = np.ascontiguousarray(arr)
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
-        key = (key_loading, h.hexdigest(), repr(self.material),
+        # Key on every material field: repr() omits E33, G13, G23, ... .
+        key = (key_loading, h.hexdigest(), astuple(self.material),
                float(penalty_factor))
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:

@@ -1741,6 +1741,26 @@ class TestKnockdownFromPristineReference:
         b.solve('shear')
         assert len(calls) == 2
 
+    def test_pristine_cache_keys_on_fields_missing_from_repr(self):
+        # E33 / G13 / G23 are absent from MaterialProperties.__repr__, so a
+        # repr-keyed cache handed the soft material the T800 reference.
+        from porosity_fe.fe import solver as solver_mod
+        base = MATERIALS['T800_epoxy']
+        soft = dataclasses.replace(base, G13=1500.0, G23=1200.0, E33=6000.0)
+        assert repr(soft) == repr(base)
+
+        def kd(mat):
+            pf = PorosityField(mat, 0.03)
+            mesh = CompositeMesh(pf, mat, nx=8, ny=3, nz=6)
+            return FESolver(mesh, mat, pf).solve('ilss').knockdown
+
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        kd(base)
+        after_base = kd(soft)
+        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        fresh = kd(soft)
+        assert after_base == pytest.approx(fresh, rel=1e-12)
+
 
 class TestStiffnessAndFactorizationReuse:
     """IMPROVEMENT_PLAN 1.2: K and its LU factorization are reused across
@@ -1818,6 +1838,22 @@ class TestStiffnessAndFactorizationReuse:
         assert counters['batch'] == 2
         assert after.knockdown < before.knockdown
         self._assert_same(after, FESolver(mesh, mat, pf).solve('tension', applied_strain=0.01))
+
+    def test_in_place_material_edit_triggers_reassembly(self, counters):
+        # Fields absent from MaterialProperties.__repr__ must still
+        # invalidate the cached K.
+        _, pf, mesh = self._problem()
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'])
+        solver = FESolver(mesh, mat, pf)
+        before = solver.solve('tension', applied_strain=0.01)
+        mat.E33, mat.G13, mat.G23 = 6000.0, 1500.0, 1200.0
+        after = solver.solve('tension', applied_strain=0.01)
+        assert counters['batch'] == 2
+        assert not np.allclose(after.displacement, before.displacement)
+        fresh = FESolver(mesh, mat, pf).solve('tension', applied_strain=0.01)
+        np.testing.assert_allclose(after.displacement, fresh.displacement,
+                                   rtol=1e-10,
+                                   atol=1e-12 * np.abs(fresh.displacement).max())
 
     def test_assemble_stiffness_returns_independent_copy(self):
         mat, pf, mesh = self._problem()
