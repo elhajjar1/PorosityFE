@@ -292,10 +292,10 @@ class FESolver:
         override is supplied. ``'tsai_wu'`` (default) applies the
         quadratic Tsai-Wu interaction polynomial and preserves the
         historical bit-identical behavior. The Tsai-Wu in-plane
-        interaction coefficient ``F_12`` is taken from
-        :attr:`MaterialProperties.tsai_wu_F12` when set; otherwise the
-        Tsai & Wu (1971) recommendation
-        ``F_12 = -0.5 * sqrt(F_11 * F_22)`` is used (see
+        interaction coefficient is ``F_12 = F*_12 * sqrt(F_11 * F_22)``
+        with the normalized ``F*_12`` from
+        :attr:`MaterialProperties.tsai_wu_F12` when set, otherwise the
+        Tsai & Wu (1971) recommendation ``F*_12 = -0.5`` (see
         :meth:`_evaluate_tsai_wu`). ``'hashin'`` uses the Hashin
         2D criterion with separate fiber/matrix tension/compression
         modes, plus a Brewer-Lagace delamination mode for the

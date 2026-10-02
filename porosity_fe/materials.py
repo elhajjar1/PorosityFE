@@ -68,12 +68,14 @@ class MaterialProperties:
         Pristine fiber volume fraction ``V_f``, as a fraction in
         ``(0, 1)`` (e.g. ``0.60`` for a 60 % fiber laminate).
     tsai_wu_F12 : float, optional
-        Tsai-Wu in-plane interaction coefficient (dimensionless).
-        ``None`` (default) defers to Tsai's recommendation
-        ``F_12 = -0.5 * sqrt(F_11 * F_22)`` (Tsai & Wu 1971) inside
-        :meth:`FESolver._evaluate_tsai_wu`. When provided, must lie in
-        ``[-1, 0]`` so the quadratic failure envelope stays closed; for
-        critical applications, calibrate against biaxial coupon data.
+        Normalized Tsai-Wu in-plane interaction coefficient
+        ``F*_12 = F_12 / sqrt(F_11 * F_22)`` (dimensionless). The FE
+        failure check uses ``F_12 = F*_12 * sqrt(F_11 * F_22)`` with each
+        element's degraded strengths. ``None`` (default) is Tsai's
+        recommendation ``F*_12 = -0.5`` (Tsai & Wu 1971). When provided,
+        must lie in ``[-1, 0]`` so the quadratic failure envelope stays
+        closed; for critical applications, calibrate against biaxial
+        coupon data.
     fiber_poisson : float, optional
         Fiber Poisson's ratio ``nu_f`` used by the micromechanics (default
         0.2, typical of carbon fiber), in ``(-1, 0.5)``.
@@ -171,9 +173,9 @@ class MaterialProperties:
     M_ref: float = 0.0                  # Reference moisture (wt %)
     T_g_dry: float | None = None     # Dry glass-transition temperature (deg C)
 
-    # Tsai-Wu interaction coefficient. None (default) -> use Tsai's
-    # recommendation F_12 = -0.5 * sqrt(F_11 * F_22). For critical
-    # applications, calibrate against biaxial coupon data.
+    # Normalized Tsai-Wu interaction coefficient F*_12 = F_12 /
+    # sqrt(F_11 * F_22). None (default) -> Tsai's recommendation -0.5.
+    # For critical applications, calibrate against biaxial coupon data.
     tsai_wu_F12: float | None = None
 
     # Fiber constituent elasticity for the Halpin-Tsai degradation ratios.
@@ -275,10 +277,9 @@ class MaterialProperties:
                 f"got {self.M_ref!r}."
             )
 
-        # Tsai-Wu interaction coefficient (issue #145). ``None`` defers to
-        # Tsai's recommendation F_12 = -0.5 * sqrt(F_11 * F_22) inside
-        # :meth:`FESolver._evaluate_tsai_wu`. When the user supplies a
-        # value, require a finite number in [-1, 0] so the quadratic
+        # Normalized Tsai-Wu interaction coefficient F*_12 (issue #145).
+        # ``None`` defers to Tsai's recommendation F*_12 = -0.5. When the
+        # user supplies a value, require a finite number in [-1, 0] so the quadratic
         # failure envelope stays closed (physically meaningful). The exact
         # value within that range is left to user judgement / biaxial
         # calibration data.

@@ -96,6 +96,15 @@ All notable changes to PorosityFE will be documented in this file.
   rebuild on the main process is needed).
 
 ### Fixed
+- **`MaterialProperties(tsai_wu_F12=...)` is now the normalized
+  coefficient it was documented as.** The docstring called it a
+  dimensionless value in `[-1, 0]`, but the FE Tsai-Wu check used it as
+  the raw `F_12` (units MPa^-2), so any value a user would choose (e.g.
+  `-0.3`) swamped `F_11` and `F_22` (about 1e-7 MPa^-2) and opened the
+  failure envelope. It is now `F*_12 = F_12 / sqrt(F_11 * F_22)`: the
+  solver uses `F_12 = F*_12 * sqrt(F_11 * F_22)` with each element's
+  degraded strengths, and `-0.5` reproduces the default. Results with
+  `tsai_wu_F12=None` (every built-in material) are unchanged.
 - **Total mesh size is capped.** `CompositeMesh` rejected more than
   10 000 elements per axis but still admitted 10 000^3 in total, so an
   oversized mesh failed with an out-of-memory error partway through FE

@@ -496,8 +496,9 @@ convention matches. PorosityFE uses Tsai's recommendation
 empirical choice, not a first-principles derivation. The exact value
 varies with the material system; if you have biaxial coupon
 calibration data, override it per-material via
-`MaterialProperties(tsai_wu_F12=...)` (must lie in `[-1, 0]` for a
-closed envelope).
+`MaterialProperties(tsai_wu_F12=...)`. The value is the **normalized**
+coefficient `F*_12 = F_12 / sqrt(F_11 * F_22)` (dimensionless, so `-0.5`
+is the default) and must lie in `[-1, 0]` for a closed envelope.
 
 ## Validation
 
