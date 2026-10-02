@@ -295,13 +295,12 @@ def _tsai_wu_coefficients(
         # products in case future refactors break the F11/F22/F33 sign.
         F11_F22 = max(F11 * F22, 0.0)
         F22_F33 = max(F22 * F33, 0.0)
-        # Issue #145: honour a user-supplied F_12 when provided.
-        # Validation (None or finite in [-1, 0]) is enforced by
-        # MaterialProperties.__post_init__, so trust the value here.
-        if tsai_wu_F12 is None:
-            F12 = -0.5 * np.sqrt(F11_F22)
-        else:
-            F12 = float(tsai_wu_F12)
+        # Issue #145: honour a user-supplied interaction coefficient. It is
+        # the normalized F*_12 = F_12 / sqrt(F_11 * F_22) (dimensionless,
+        # validated to [-1, 0] by MaterialProperties.__post_init__), so it
+        # scales with this element's degraded strengths like the default.
+        F12_star = -0.5 if tsai_wu_F12 is None else float(tsai_wu_F12)
+        F12 = F12_star * np.sqrt(F11_F22)
         F13 = F12
         F23 = -0.5 * np.sqrt(F22_F33)
     return F1, F2, F3, F11, F22, F33, F44, F55, F66, F12, F13, F23
@@ -325,8 +324,10 @@ def evaluate_tsai_wu(s_all: np.ndarray,
     isotropic limit, but the "true" value varies with the material
     system and ideally comes from biaxial coupon calibration. The
     default may be overridden per-material by setting
-    :attr:`MaterialProperties.tsai_wu_F12` to a value in ``[-1, 0]``;
-    when set, that user value is used in place of the recommendation.
+    :attr:`MaterialProperties.tsai_wu_F12` to the normalized coefficient
+    ``F*_12`` in ``[-1, 0]``; the solver then uses
+    ``F_12 = F*_12 * sqrt(F_11 * F_22)``, so ``-0.5`` reproduces the
+    default.
     ``F_13`` continues to mirror ``F_12``, and ``F_23`` retains the
     analogous Tsai recommendation ``-0.5 * sqrt(F_22 * F_33)``.
 

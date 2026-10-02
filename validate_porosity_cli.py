@@ -109,7 +109,8 @@ def _ensure_validation_imports():
             sys.path.append(here)
 
 
-def main(argv=None) -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Construct the argparse driver (also rendered by the docs CLI page)."""
     parser = argparse.ArgumentParser(
         prog='validate_porosity',
         description='Run porosity validation suite against experimental datasets.',
@@ -120,7 +121,7 @@ def main(argv=None) -> int:
              '(default: bundled datasets)',
     )
     parser.add_argument(
-        '--output-dir', type=str, default=os.getcwd(),
+        '--output-dir', type=str, default=None,
         help='Directory to write report files (default: current directory)',
     )
     parser.add_argument(
@@ -143,7 +144,15 @@ def main(argv=None) -> int:
         '--version', action='version',
         version=f'validate_porosity {_resolve_version()}',
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = _build_arg_parser().parse_args(argv)
+    # Resolved here, not as the argparse default, so the help text (and the
+    # docs built from it) does not embed whatever directory built them.
+    if args.output_dir is None:
+        args.output_dir = os.getcwd()
 
     debug_log_path = None
     if args.debug:

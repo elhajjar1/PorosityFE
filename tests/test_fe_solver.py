@@ -1545,12 +1545,26 @@ class TestFailureCriteria:
         fi_custom = solver_custom._evaluate_tsai_wu(
             s, strengths, e=0, elem_Vp=0.0)[0]
         F12_recovered = (fi_custom - diagonal) / (2.0 * s1 * s2)
-        assert F12_recovered == pytest.approx(custom_F12, rel=1e-12, abs=1e-18)
+        # tsai_wu_F12 is the normalized F*_12, scaled by sqrt(F_11 * F_22).
+        assert F12_recovered == pytest.approx(
+            custom_F12 * np.sqrt(F11 * F22), rel=1e-9, abs=1e-18)
 
         # Cross-check: default solver gives a different FI on the same state.
         fi_default = self.solver._evaluate_tsai_wu(
             s, strengths, e=0, elem_Vp=0.0)[0]
         assert fi_custom != pytest.approx(fi_default, rel=1e-12, abs=1e-18)
+
+    def test_tsai_wu_F12_minus_half_matches_default(self):
+        """tsai_wu_F12=-0.5 is Tsai's default, so the index is unchanged."""
+        mat_half = dataclasses.replace(self.material, tsai_wu_F12=-0.5)
+        solver_half = FESolver(self.mesh, mat_half, self.pf,
+                               failure_criterion='tsai_wu')
+        strengths = self.solver._degraded_strengths(0.02)
+        s = np.array([[-800.0, 40.0, 5.0, 3.0, 2.0, 30.0]])
+        np.testing.assert_allclose(
+            solver_half._evaluate_tsai_wu(s, strengths, e=0, elem_Vp=0.02),
+            self.solver._evaluate_tsai_wu(s, strengths, e=0, elem_Vp=0.02),
+            rtol=1e-14)
 
     def test_tsai_wu_F12_out_of_range_raises(self):
         """Positive tsai_wu_F12 opens the failure envelope -> ValueError."""

@@ -176,6 +176,17 @@ Notes:
   a non-standard material system, see
   [Calibrating `alpha` / `n` for a custom material](#calibrating-alpha--n-for-a-custom-material).
 
+### Documentation
+
+The Sphinx site under `docs/` holds the theory pages (micromechanics,
+knockdown laws, CLT, failure criteria, fatigue), a CLI reference and the
+full API reference. Build it locally with:
+
+```bash
+pip install -e ".[docs]"
+python -m sphinx -b html docs docs/_build/html   # open docs/_build/html/index.html
+```
+
 ## Examples
 
 Runnable scripts under [`examples/`](examples/) cover the most common
@@ -432,6 +443,7 @@ KD = max(1 - beta * Vp, 0)
 | Tension           | 3.9  | 1.8 | 3.5 |
 | Shear (in-plane)  | 8.0  | 3.5 | 7.0 |
 | ILSS              | 10.0 | 4.5 | 9.0 |
+| Transverse tension | 10.0 | 4.5 | 9.0 |
 
 These values sit inside published CFRP ranges: `alpha ≈ 1–3` for fiber-dominated tension and `5–10` for matrix-dominated ILSS / flexure; `n ≈ 1–2` for stiffness-like properties and `3–5` for compression / ILSS.
 
@@ -480,7 +492,7 @@ solver = EmpiricalSolver(
 )
 ```
 
-At the QI reference layup (`f_md = 0.5`, `scale = 1.0`) the override is used directly; for a different layup it scales the same way as the QI baseline (e.g. with a UD layup, `judd_wright_alpha={'ilss': 12.0}` becomes an effective `12.0 × 0.80 = 9.6` because ILSS uses a 0.80 floor — see [Layup scaling](#layup-scaling)). Override values must be positive finite numbers; mode keys must be a subset of `{'compression', 'tension', 'shear', 'ilss'}`.
+At the QI reference layup (`f_md = 0.5`, `scale = 1.0`) the override is used directly; for a different layup it scales the same way as the QI baseline (e.g. with a UD layup, `judd_wright_alpha={'ilss': 12.0}` becomes an effective `12.0 × 0.80 = 9.6` because ILSS uses a 0.80 floor — see [Layup scaling](#layup-scaling)). Override values must be positive finite numbers; mode keys must be a subset of `{'compression', 'tension', 'shear', 'ilss', 'transverse_tension'}`.
 
 ### Finite Element Solver
 
@@ -488,7 +500,10 @@ The FE solver builds a 3D hexahedral mesh and degrades element stiffness based o
 
 1. **Eshelby inclusion theory** computes degraded matrix properties (voids as zero-stiffness ellipsoids)
 2. **Micromechanics rules** map matrix degradation to composite degradation ratios for E11, E22, G12
-3. **Tsai-Wu criterion** evaluates multiaxial failure at each integration point
+3. **A failure criterion** (Tsai-Wu by default; Hashin with a delamination mode, or maximum stress) evaluates multiaxial failure at each integration point
+
+The equations, and the modelling choices behind each step, are on the
+Theory pages of the documentation site (`docs/theory/`).
 
 ### Failure Criterion
 
@@ -505,8 +520,9 @@ convention matches. PorosityFE uses Tsai's recommendation
 empirical choice, not a first-principles derivation. The exact value
 varies with the material system; if you have biaxial coupon
 calibration data, override it per-material via
-`MaterialProperties(tsai_wu_F12=...)` (must lie in `[-1, 0]` for a
-closed envelope).
+`MaterialProperties(tsai_wu_F12=...)`. The value is the **normalized**
+coefficient `F*_12 = F_12 / sqrt(F_11 * F_22)` (dimensionless, so `-0.5`
+is the default) and must lie in `[-1, 0]` for a closed envelope.
 
 ## Validation
 
@@ -520,8 +536,8 @@ or in-process via `validation/validate_all.py`.
 
 | Property | # papers | Overall MAE |
 |---|---|---|
-| ILSS (short-beam shear) | 9 | 4.3% |
-| Tensile strength | 7 | 6.9% |
+| ILSS (short-beam shear) | 9 | 4.9% |
+| Tensile strength | 7 | 8.2% |
 | Tensile modulus | 3 | 1.3% |
 | Transverse tensile modulus | 3 | 3.3% |
 | Transverse tensile strength | 3 | 7.4% |
@@ -540,10 +556,10 @@ The two aggregations differ because datasets carry very different numbers of poi
 
 ## Limitations
 
-- Empirical models are calibrated for porosity levels up to ~10%
-- FE solver uses analytical stiffness degradation (not full nonlinear FE)
+- Empirical models are calibrated for porosity levels up to ~5% (`Vp ≲ 0.05`); higher values are extrapolated and flagged with a warning
+- FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
 - Thermal residual stresses are not included
-- Fatigue and environmental effects are not modeled
+- Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
 - Delamination initiation/propagation is not explicitly simulated
 - **Flexural strength** was removed from the validation database in v1.1.1
   because 3-point bend failure involves mixed compression + interlaminar

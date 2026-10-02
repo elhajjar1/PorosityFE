@@ -5,6 +5,19 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Documentation: theory pages, CLI reference, full API reference
+  (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
+  field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
+  laws and their calibration, the FE model and knockdown definition, the
+  failure criteria, the fatigue and hygrothermal factors, and uncertainty
+  propagation, as implemented. `docs/cli.rst` renders both commands'
+  options from their argument parsers (new `sphinx-argparse` docs
+  dependency). `docs/api.rst` now covers every name in
+  `porosity_fe.__all__` (61, up from 10), and `tests/test_docs.py` fails if
+  the two drift apart. The CHANGELOG is part of the site. The README
+  per-property MAE table is brought back in line with the current
+  validation run (ILSS 4.9 %, tensile strength 8.2 %; it showed 4.3 % and
+  6.9 %).
 - **Fiber constituent inputs.** `MaterialProperties` gains
   `fiber_poisson` (default 0.2) and `fiber_shear_modulus` (default `None`,
   meaning the isotropic `E_f / (2 (1 + nu_f))`). They replace a hard-coded
@@ -95,7 +108,25 @@ All notable changes to PorosityFE will be documented in this file.
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
 
+### Removed
+- **The PyQt6 desktop GUI is no longer shipped** (it was removed before
+  this changelog's tracked history begins). Older entries that mention the
+  `porosity-fe` console script, the `[gui]` extra, PyQt6 or
+  `PorosityFE.spec` describe that GUI. The supported interfaces are the
+  Streamlit app (`streamlit run app.py`), the `porosity-analyze` and
+  `validate_porosity` commands, and the `porosity_fe` library; the
+  executable build is `ValidatePorosity.spec`.
+
 ### Fixed
+- **`MaterialProperties(tsai_wu_F12=...)` is now the normalized
+  coefficient it was documented as.** The docstring called it a
+  dimensionless value in `[-1, 0]`, but the FE Tsai-Wu check used it as
+  the raw `F_12` (units MPa^-2), so any value a user would choose (e.g.
+  `-0.3`) swamped `F_11` and `F_22` (about 1e-7 MPa^-2) and opened the
+  failure envelope. It is now `F*_12 = F_12 / sqrt(F_11 * F_22)`: the
+  solver uses `F_12 = F*_12 * sqrt(F_11 * F_22)` with each element's
+  degraded strengths, and `-0.5` reproduces the default. Results with
+  `tsai_wu_F12=None` (every built-in material) are unchanged.
 - **FE caches key on every material field.** The shared pristine-reference
   cache (`FESolver` knockdown) and the assembler's `K` cache keyed the
   material by its `repr`, which omits `E33`, `G13`, `G23`, `nu13`, `nu23`

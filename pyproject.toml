@@ -48,6 +48,7 @@ docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
     "myst-parser>=2.0",
+    "sphinx-argparse>=0.4",
 ]
 # Self-referential so the extras above stay the single source (pip >= 21.2).
 all = ["porosity-fe[web,dev,docs]"]
