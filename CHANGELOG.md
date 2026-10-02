@@ -14,7 +14,10 @@ All notable changes to PorosityFE will be documented in this file.
   options from their argument parsers (new `sphinx-argparse` docs
   dependency). `docs/api.rst` now covers every name in
   `porosity_fe.__all__` (61, up from 10), and `tests/test_docs.py` fails if
-  the two drift apart. The CHANGELOG is part of the site.
+  the two drift apart. The CHANGELOG is part of the site. The README
+  per-property MAE table is brought back in line with the current
+  validation run (ILSS 4.9 %, tensile strength 8.2 %; it showed 4.3 % and
+  6.9 %).
 - **Fiber constituent inputs.** `MaterialProperties` gains
   `fiber_poisson` (default 0.2) and `fiber_shear_modulus` (default `None`,
   meaning the isotropic `E_f / (2 (1 + nu_f))`). They replace a hard-coded

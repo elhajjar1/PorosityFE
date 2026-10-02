@@ -527,8 +527,8 @@ or in-process via `validation/validate_all.py`.
 
 | Property | # papers | Overall MAE |
 |---|---|---|
-| ILSS (short-beam shear) | 9 | 4.3% |
-| Tensile strength | 7 | 6.9% |
+| ILSS (short-beam shear) | 9 | 4.9% |
+| Tensile strength | 7 | 8.2% |
 | Tensile modulus | 3 | 1.3% |
 | Transverse tensile modulus | 3 | 3.3% |
 | Transverse tensile strength | 3 | 7.4% |
