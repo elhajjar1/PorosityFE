@@ -9,9 +9,23 @@ element by element from the local porosity.
 {class}`~porosity_fe.CompositeMesh` divides the specimen into
 $n_x \times n_y \times n_z$ eight-node hexahedra (default production
 resolution $30 \times 10 \times 12$). Each element gets the ply angle of
-the ply containing its centroid. The porosity field is sampled at every
-node. Elements whose centroid lies inside a discrete void are flagged as
-void elements. The total element count is capped at $10^6$.
+the ply containing its centroid; a centroid on a ply interface takes the
+ply above. The porosity field is sampled at every node. Elements whose
+centroid lies inside a discrete void are flagged as void elements. The
+total element count is capped at $10^6$.
+
+```{warning}
+An element layer that spans several plies takes only one of their angles,
+so unless $n_z$ is a multiple of the ply count the FE laminate is not the
+requested one. The default $n_z = 12$ does not resolve the 24-ply presets:
+for the T800/epoxy QI laminate it models $[90/{-45}/45/0]_3$, which keeps
+the angle fractions but not the stacking sequence or symmetry (pristine
+$E_x$ 1.6 % below CLT; $n_z = 24$ is within 0.5 %). Bending, interlaminar
+stresses and failure indices are more sensitive to the sequence than the
+membrane stiffness is.
+{meth}`~porosity_fe.CompositeMesh.layup_discrepancies` lists the
+differences, and {class}`~porosity_fe.FESolver` logs them as a warning.
+```
 
 Elements use trilinear shape functions with $2 \times 2 \times 2$ Gauss
 quadrature ({class}`~porosity_fe.Hex8Element` is the reference
