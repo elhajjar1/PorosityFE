@@ -5,6 +5,28 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
+  E1).** Results and existing exports do not change.
+  - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and
+    `FieldResults.nodal_strain`) extrapolates the 2 x 2 x 2 Gauss-point
+    values of each element to its corners, then averages them only
+    within the same ply, so ply-interface jumps are not smeared. Void
+    elements are grouped separately. In UD pure bending with two
+    elements through the thickness, the surface `sigma_xx` goes from
+    0.50 of beam theory (element mean, what `to_vtk` writes) to 1.02.
+    `average='all'` and `average='none'` (raw per-element corners) are
+    also available.
+  - `FieldResults.to_vtu` writes binary VTK XML (`.vtu`) without new
+    dependencies. It carries the `to_vtk` point and cell fields plus the
+    recovered nodal stress and strain. Options: `Float64` (default) or
+    `Float32`; appended raw (default) or inline base64; `exploded=True`
+    for per-element corner values. On the production mesh (3,600
+    elements) it writes 1.6 MB in 14 ms with the nodal fields, or the
+    `to_vtk` fields alone in 1.1 MB and 3 ms. The legacy ASCII file is
+    2.0 MB and takes 57 ms.
+    `FESolver.export_results(fmt='vtu')` delegates to it. `write_pvd`
+    (new) groups VTU files into a ParaView series. `to_vtk` and its
+    output are unchanged and remain the default for `fmt='vtk'`.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown

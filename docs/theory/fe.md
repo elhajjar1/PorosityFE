@@ -110,3 +110,66 @@ displacement-controlled modes.
 
 $KD_\text{FE}$ is a *stiffness* knockdown. Strength enters through the
 failure criteria on {doc}`failure`.
+
+## Stress recovery and export
+
+{class}`~porosity_fe.FieldResults` stores stress and strain at the eight
+Gauss points of every element. The Gauss points lie at
+$\pm 1/\sqrt{3}$ of the element half-width, so they under-read a field
+that peaks on a surface, and the element mean under-reads it further. In
+pure bending of a UD beam with one element through each half of the
+thickness, the element mean of the surface $\sigma_{xx}$ is 0.50 of
+$E_{11}\kappa h/2$ and the largest Gauss-point value is 0.80.
+
+{func}`~porosity_fe.extrapolate_to_nodes` (also
+{meth}`FieldResults.nodal_stress <porosity_fe.FieldResults.nodal_stress>`
+and {meth}`~porosity_fe.FieldResults.nodal_strain`) recovers nodal values
+in two steps:
+
+1. **Extrapolation.** The eight Gauss-point values $\mathbf v_g$ of an
+   element are treated as samples of a trilinear field. The corner values
+   follow from $\mathbf v_n = \mathbf N_g^{-1}\mathbf v_g$, where
+   $(\mathbf N_g)_{ij} = N_j(\boldsymbol\xi_i)$ holds the shape functions
+   at the Gauss points. The matrix acts in natural coordinates, so it is
+   the same for every element, and it recovers any field linear in $x$,
+   $y$ and $z$ exactly.
+2. **Averaging.** Laminate stresses jump at ply interfaces, so the corner
+   values of neighbouring elements are averaged only within the same ply
+   (`average='ply'`, the default); void elements form their own groups.
+   The per-element corner values keep the jump. A field stored once per
+   node takes, at an interface, the average over the ply above, which is
+   the convention `CompositeMesh.ply_ids` uses. `average='all'` averages
+   over every element at the node and smears the jump. It is only right
+   for a field that is continuous across elements.
+
+| UD pure bending, 16 x 4 x $n_z$ | element mean | Gauss-point max | recovered nodal |
+|---|---|---|---|
+| $n_z = 2$ | 0.504 | 0.80 | 1.023 |
+| $n_z = 4$ | 0.756 | 0.91 | 1.018 |
+| $n_z = 8$ | 0.883 | 0.96 | 1.016 |
+
+The values are the largest surface $\sigma_{xx}$ over the mid-span
+region, as a ratio to the beam-theory value, for a 50 x 20 x 2 mm beam.
+The excess over 1 is not discretization error but the beam's width: the
+beam is ten times wider than thick, so it bends partly as a plate and its
+free edges read highest. Across the width the recovered value ranges
+from 1.001 to 1.016 at $n_z = 8$, and a beam as wide as it is thick gives
+1.002–1.003. Peaks at
+supports, load points and constrained corners are singular. Recovered
+values there grow with refinement just as the Gauss-point values do.
+
+To evaluate a failure criterion at the nodes, apply it to the unaveraged
+corner stresses (`average='none'`) in the ply frame (`frame='local'`).
+Do not extrapolate the failure index itself: the criteria are nonlinear
+in stress.
+
+{meth}`FieldResults.to_vtu <porosity_fe.FieldResults.to_vtu>` writes the
+mesh, the {meth}`~porosity_fe.FieldResults.to_vtk` cell fields and the
+recovered nodal stress and strain (point arrays `sigma_xx_nodal` …
+`gamma_xy_nodal`, `von_mises_nodal`) as binary VTK XML. The data are
+stored as `Float64` by default (`Float32` optional), as an appended raw
+block or as inline base64. With `exploded=True` each cell gets its own
+eight points, so ParaView shows the interface jumps without
+interpolating across them. {func}`~porosity_fe.write_pvd` groups several
+files into a series. The legacy ASCII {meth}`~porosity_fe.FieldResults.to_vtk`
+is unchanged.
