@@ -9,8 +9,9 @@ PorosityFE answers one question two ways:
 
 - The **empirical path** ({class}`~porosity_fe.EmpiricalSolver`) applies a
   calibrated closed-form knockdown to the pristine strength, once, at the
-  specimen-average porosity. The layup enters through a matrix-dominated
-  fraction. The porosity distribution shape does not change the result.
+  specimen-average porosity. The layup enters only the fiber-direction
+  modes, through a CLT strain-energy blend of the calibrated coefficients.
+  The porosity distribution shape does not change the result.
 - The **finite-element path** ({class}`~porosity_fe.FESolver`) degrades the
   stiffness of every element from its local porosity with Mori-Tanaka
   micromechanics, solves a linear static problem, and evaluates a failure
