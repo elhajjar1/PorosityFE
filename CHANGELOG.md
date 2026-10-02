@@ -5,6 +5,16 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Documentation: theory pages, CLI reference, full API reference
+  (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
+  field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
+  laws and their calibration, the FE model and knockdown definition, the
+  failure criteria, the fatigue and hygrothermal factors, and uncertainty
+  propagation, as implemented. `docs/cli.rst` renders both commands'
+  options from their argument parsers (new `sphinx-argparse` docs
+  dependency). `docs/api.rst` now covers every name in
+  `porosity_fe.__all__` (61, up from 10), and `tests/test_docs.py` fails if
+  the two drift apart. The CHANGELOG is part of the site.
 - **Fiber constituent inputs.** `MaterialProperties` gains
   `fiber_poisson` (default 0.2) and `fiber_shear_modulus` (default `None`,
   meaning the isotropic `E_f / (2 (1 + nu_f))`). They replace a hard-coded
@@ -94,6 +104,15 @@ All notable changes to PorosityFE will be documented in this file.
   `(Vp, name, result_dict)` tuple includes the mesh / porosity_field /
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
+
+### Removed
+- **The PyQt6 desktop GUI is no longer shipped** (it was removed before
+  this changelog's tracked history begins). Older entries that mention the
+  `porosity-fe` console script, the `[gui]` extra, PyQt6 or
+  `PorosityFE.spec` describe that GUI. The supported interfaces are the
+  Streamlit app (`streamlit run app.py`), the `porosity-analyze` and
+  `validate_porosity` commands, and the `porosity_fe` library; the
+  executable build is `ValidatePorosity.spec`.
 
 ### Fixed
 - **`MaterialProperties(tsai_wu_F12=...)` is now the normalized

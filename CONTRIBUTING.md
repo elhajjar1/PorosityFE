@@ -59,7 +59,24 @@ pre-commit install
 - Follow existing patterns in the codebase
 - Add docstrings to public functions
 - Include units in variable names and docstrings (MPa, mm, rad)
-- Use SI units throughout
+- Use the package's consistent N–mm–MPa unit system throughout (stiffness
+  and strength in MPa, lengths in mm, `Vp` as a fraction)
+
+## Documentation
+
+The Sphinx site lives in `docs/` and CI builds it with warnings as errors:
+
+```bash
+pip install -e ".[docs]"
+python -m sphinx -W -b html docs docs/_build/html
+```
+
+- A new public symbol goes in `porosity_fe/__init__.py` (`__all__`) **and**
+  in `docs/api.rst`; `tests/test_docs.py` fails if they disagree.
+- A change to a model's equations should update the matching page under
+  `docs/theory/` (Markdown with `$...$` math) in the same pull request.
+- CLI options are rendered from the argument parsers, so a new flag only
+  needs a good `help=` string.
 
 ## Adding New Materials
 
@@ -78,4 +95,4 @@ When introducing or recalibrating coefficients (e.g. a custom `alpha` for Judd-W
 - Document the calibration coupon set (Vp range, layup, fiber/matrix system) and the test standard used (ASTM D2344 for ILSS, D7264 for flexure, D3039 for tension, D6641 for compression).
 - Fit on log-transformed data: regress `ln(KD)` vs `Vp` for the slope `−alpha`, or `ln(KD)` vs `ln(1 − Vp)` for `n`.
 - Note the validity bounds — both forms are commonly bounded to `Vp ≲ 0.05`.
-- Cross-reference the README "Empirical Strength Knockdown" section so user-facing docs stay in sync.
+- Update the README "Empirical Strength Knockdown" section and `docs/theory/empirical.md` so user-facing docs stay in sync.

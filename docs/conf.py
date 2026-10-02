@@ -39,7 +39,19 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
+    "sphinx.ext.mathjax",
+    "myst_parser",
+    "sphinxarg.ext",
 ]
+
+# Theory pages and the CHANGELOG are Markdown (MyST). ``dollarmath`` gives
+# $...$ / $$...$$ math, ``amsmath`` the aligned environments.
+source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
+myst_enable_extensions = ["dollarmath", "amsmath"]
+myst_heading_anchors = 3
+
+# Keep "--flag" as two hyphens in rendered CLI help (no en-dash conversion).
+smartquotes_action = "qe"
 
 # Generate stub .rst files for entries listed in autosummary directives.
 autosummary_generate = True
