@@ -25,6 +25,7 @@ from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
+from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .export import write_vtk, write_vtu
@@ -96,6 +97,38 @@ class FieldResults:
         Element formulation of the solve, ``'hex8i'`` (default, also for
         callers that construct ``FieldResults`` directly) or ``'hex8'``;
         see :class:`FESolver`.
+    delta_T : float or None
+        Temperature change from the stress-free state (K) of a thermal
+        (``loading='thermal'``) or combined (mechanical with ``delta_T=``)
+        solve; ``None`` for a purely mechanical solve.
+    residual_stress_local : np.ndarray or None
+        Shape (n_elem, n_gp, 6) ply-local thermal residual stress of the
+        free-standing laminate at ``delta_T``, the part of
+        :attr:`stress_local` that does not scale with the mechanical load.
+        ``None`` without ``delta_T``.
+    residual_max_failure_index : float or None
+        Maximum failure index of the residual stress alone (``None``
+        without ``delta_T``). At or above 1 the laminate fails on cool-down
+        and :attr:`first_ply_failure_load_factor` is 0.
+    interior_max_failure_index : float or None
+        Maximum failure index over the interior elements, whose centroids
+        lie at least ``interior_margin`` from every lateral face
+        (``x``/``y``; by default ``max(h, 2 element widths)`` with ``h``
+        the laminate thickness). It leaves out the free-edge singularity
+        that makes the domain maximum mesh-dependent under thermal load.
+        ``None`` when no element is that far from the edges.
+    interior_first_ply_failure_load_factor : float or None
+        :attr:`first_ply_failure_load_factor` over the interior elements
+        only; ``None`` when there are none.
+    load_factor_basis : str
+        What :attr:`first_ply_failure_load_factor` multiplies:
+        ``'mechanical'`` (default; the applied load), ``'delta_T'``
+        (``loading='thermal'``: the temperature change, so the critical
+        change is ``factor * delta_T``) or ``'mechanical_with_residual'``
+        (the applied load, with the residual stress held fixed).
+    cte_local : tuple of float or None
+        Lamina CTEs ``(alpha_1, alpha_2, alpha_3)`` (1/K) used with
+        ``delta_T``; ``None`` without it.
 
     Notes
     -----
@@ -109,6 +142,14 @@ class FieldResults:
     :meth:`EmpiricalSolver.apply_loading`, which is a positive magnitude).
     Use :func:`strain_transformation_3d` / :func:`stress_transformation_3d`
     to rotate these arrays between frames.
+
+    With a thermal load (``delta_T`` set) the stress and displacement
+    arrays hold totals, residual plus mechanical (superposed solves, see
+    :meth:`FESolver.solve`), and the strains are total strains, what a
+    gauge bonded in the stress-free state would read: mechanical strain
+    plus the free thermal strain ``alpha delta_T``. ``knockdown`` is
+    ``nan`` for ``loading='thermal'``, which has no structural stiffness
+    measure.
     """
     displacement: np.ndarray
     stress_global: np.ndarray
@@ -124,6 +165,13 @@ class FieldResults:
     effective_modulus: float | None = None
     first_ply_failure_load_factor: float | None = None
     formulation: str = _DEFAULT_FORMULATION
+    delta_T: float | None = None
+    residual_stress_local: np.ndarray | None = None
+    residual_max_failure_index: float | None = None
+    interior_max_failure_index: float | None = None
+    interior_first_ply_failure_load_factor: float | None = None
+    load_factor_basis: str = 'mechanical'
+    cte_local: tuple[float, float, float] | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -157,7 +205,8 @@ class FieldResults:
         Returns
         -------
         FailureResult
-            Unified summary with the FE ``knockdown``, derived
+            Unified summary with the FE ``knockdown`` (``nan`` for
+            ``loading='thermal'``, passed through), derived
             ``failure_stress``, FE-criterion-tagged ``model`` and a
             ``details`` dict carrying ``max_failure_index``,
             ``failure_criterion`` and ``failure_mode_indices`` for
@@ -180,6 +229,12 @@ class FieldResults:
                 'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
                 'effective_modulus': self.effective_modulus,
                 'formulation': self.formulation,
+                'load_factor_basis': self.load_factor_basis,
+                'interior_max_failure_index': self.interior_max_failure_index,
+                'interior_first_ply_failure_load_factor':
+                    self.interior_first_ply_failure_load_factor,
+                'delta_T': self.delta_T,
+                'residual_max_failure_index': self.residual_max_failure_index,
             },
         )
 
@@ -207,7 +262,11 @@ class FieldResults:
         - ``tsai_wu_index`` (max-over-GP per element, if available),
         - ``Vp_elem`` (mean nodal porosity over the 8 corners),
         - ``ply_id``, ``ply_angle_deg``, ``is_void`` and ``knockdown`` where
-          available.
+          available (``knockdown`` only when finite: it is ``nan`` for
+          ``loading='thermal'``),
+        - with a thermal load, the element-mean ply-local residual stress
+          ``residual_sigma_11_local``, ``residual_sigma_22_local`` and
+          ``residual_tau_12_local``.
 
         Parameters
         ----------
@@ -256,7 +315,8 @@ class FieldResults:
         The :meth:`to_vtk` cell fields: element-mean ``von_mises``,
         ``sigma_xx`` .. ``tau_xy``, ``eps_xx`` .. ``gamma_xy``,
         ``tsai_wu_index``, ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
-        ``is_void`` and ``knockdown`` where available.
+        ``is_void`` and ``knockdown`` where available, and the
+        ``residual_*_local`` fields of a thermal load.
 
         Parameters
         ----------
@@ -387,6 +447,82 @@ def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float
     return float(applied_strain)
 
 
+def _check_delta_T(loading: str, delta_T: float | None,
+                   material: MaterialProperties) -> float | None:
+    """Validate ``delta_T`` for ``loading``; ``None`` for a mechanical-only solve.
+
+    The library never infers the temperature change (not even from
+    ``material.T_stress_free``): ``loading='thermal'`` without an explicit
+    ``delta_T`` raises, and any ``delta_T`` needs the lamina CTEs.
+    """
+    if delta_T is None:
+        if loading == 'thermal':
+            raise ValueError(
+                "loading='thermal' needs an explicit delta_T: the temperature "
+                "change from the stress-free state in K (or deg C, the same "
+                "for a difference), negative for a cool-down, e.g. "
+                "delta_T = T_service - T_stress_free = 20 - 177 = -157. It "
+                "is not inferred from MaterialProperties.T_stress_free.")
+        return None
+    if isinstance(delta_T, bool) or not isinstance(delta_T, (int, float, np.number)) \
+            or not np.isfinite(float(delta_T)):
+        raise ValueError(
+            f"delta_T must be a finite number of kelvin (a temperature "
+            f"difference), got {delta_T!r}.")
+    if not material.has_cte:
+        from ..materials import MATERIALS
+        with_cte = sorted(k for k, m in MATERIALS.items() if m.has_cte)
+        raise ValueError(
+            "delta_T needs the lamina thermal expansion coefficients, but "
+            "this MaterialProperties has none: set alpha_1 and alpha_2 in "
+            "1/K (e.g. dataclasses.replace(material, alpha_1=-1.0e-6, "
+            f"alpha_2=26e-6)). Presets with CTEs: {with_cte}.")
+    return float(delta_T)
+
+
+def _interior_element_mask(mesh: CompositeMesh,
+                           margin: float | None = None) -> np.ndarray:
+    """Elements whose centroid lies at least ``margin`` from every lateral face.
+
+    The lateral faces are ``x_min``, ``x_max``, ``y_min`` and ``y_max``.
+    The default margin is ``max(h, 2 element widths)`` in each in-plane
+    direction, with ``h`` the laminate thickness: wide enough to leave out
+    the free-edge interlaminar singularity of a thermal solve.
+    """
+    if margin is not None and (
+            isinstance(margin, bool)
+            or not isinstance(margin, (int, float, np.number))
+            or not np.isfinite(float(margin)) or float(margin) < 0.0):
+        raise ValueError(
+            f"interior_margin must be a finite length >= 0 in mm, got {margin!r}.")
+    nodes = np.asarray(mesh.nodes, dtype=float)
+    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
+    if margin is None:
+        h = hi[2] - lo[2]
+        mx = max(h, 2.0 * (hi[0] - lo[0]) / max(mesh.nx, 1))
+        my = max(h, 2.0 * (hi[1] - lo[1]) / max(mesh.ny, 1))
+    else:
+        mx = my = float(margin)
+    cent = nodes[mesh.elements].mean(axis=1)
+    return ((cent[:, 0] >= lo[0] + mx) & (cent[:, 0] <= hi[0] - mx)
+            & (cent[:, 1] >= lo[1] + my) & (cent[:, 1] <= hi[1] - my))
+
+
+@dataclass(frozen=True)
+class _ThermalUnitSolution:
+    """Free-standing thermal solve for ``delta_T = 1`` K (scale by ``delta_T``).
+
+    ``strain_global`` is the total strain ``B u`` (plus the hex8i
+    internal-mode part) and ``stress_global = C strain - beta``.
+    """
+
+    u: np.ndarray
+    strain_global: np.ndarray
+    stress_global: np.ndarray
+    reactions: np.ndarray
+    alpha_local: np.ndarray
+
+
 #: Pristine stiffness measures (see :func:`_stiffness_measure`) keyed by
 #: loading, mesh geometry and material. Shared across solvers so a porosity
 #: sweep on one mesh solves each pristine reference once.
@@ -501,6 +637,12 @@ class FESolver:
     6. Evaluate failure criterion at each GP (Tsai-Wu, Hashin, or max-stress)
     7. Compute knockdown factor
 
+    With ``delta_T`` (``loading='thermal'``, or a mechanical mode plus
+    ``delta_T=``) a free-standing thermal solve with 3-2-1 supports gives
+    the cure residual stress, which is reported alone or superposed on the
+    mechanical solve; see :meth:`solve` and the theory page on thermal and
+    cure residual stress.
+
     Parameters
     ----------
     mesh : CompositeMesh
@@ -611,6 +753,10 @@ class FESolver:
         # factorization (built lazily by direct solves), reused while K and
         # the constrained-DOF set are unchanged: (K, key, K_ff, SuperLU|None).
         self._lu_cache: tuple | None = None
+        # Free-standing thermal solution per unit delta_T, reused while K,
+        # the CTEs and the linear solver are unchanged:
+        # (K, key, _ThermalUnitSolution).
+        self._thermal_cache: tuple | None = None
 
     @property
     def formulation(self) -> FEFormulation:
@@ -628,13 +774,22 @@ class FESolver:
               solver: Literal['direct', 'cg', 'minres'] = 'direct',
               rtol: float = 1e-9,
               diag_scale: bool | None = None,
-              penalty_factor: float | None = None) -> FieldResults:
+              penalty_factor: float | None = None,
+              *,
+              delta_T: float | None = None,
+              allow_unresolved_layup: bool = False,
+              interior_margin: float | None = None) -> FieldResults:
         """Solve the static FE problem.
 
         Parameters
         ----------
         loading : str
-            'compression', 'tension', 'shear', or 'ilss'.
+            'compression', 'tension', 'shear', 'ilss' or 'thermal'.
+            ``'thermal'`` solves the free-standing laminate under the
+            uniform temperature change ``delta_T`` (required) with
+            statically determinate 3-2-1 supports
+            (:meth:`BoundaryHandler.free_bcs`): the cure residual stress.
+            ``applied_strain`` and ``applied_load`` are ignored for it.
         applied_strain : float, optional
             Applied nominal strain (negative for compression). Used by the
             displacement-controlled modes ('compression', 'tension',
@@ -693,6 +848,38 @@ class FESolver:
             a penalty stiffness. Passing any value emits a
             :class:`DeprecationWarning`; the argument will be removed in
             2.0.
+        delta_T : float, optional
+            Keyword-only uniform temperature change from the stress-free
+            state, in K (the same number in deg C, since it is a
+            difference), negative for a cool-down from cure, e.g.
+            ``T_service - T_stress_free``. Required for
+            ``loading='thermal'``; never inferred from
+            :attr:`MaterialProperties.T_stress_free`. With a mechanical
+            ``loading`` it adds the cure residual stress: the free-standing
+            thermal solve and the mechanical solve are superposed
+            (``sigma = sigma_th + sigma_mech``), because the residual stress
+            forms in the free laminate before it is gripped; one solve with
+            both loads would model a laminate heated while clamped. The
+            first-ply-failure factor then scales only the mechanical part
+            (:func:`~porosity_fe.fe.failure.first_ply_failure_load_factor`
+            with ``prestress_local``); knockdown, effective modulus and
+            reactions are those of the mechanical solve. Needs lamina CTEs
+            (``material.has_cte``). ``None`` (default) runs the mechanical
+            solve exactly as before.
+        allow_unresolved_layup : bool
+            Keyword-only. Thermal results depend on the stacking sequence,
+            so with ``delta_T`` the solve raises when the element layers do
+            not resolve the requested layup
+            (:meth:`CompositeMesh.layup_discrepancies`; use
+            ``nz = k * n_plies``). ``True`` analyzes the element layup
+            anyway, with a warning. No effect without ``delta_T``
+            (mechanical solves only warn, once per mesh).
+        interior_margin : float, optional
+            Keyword-only distance in mm from the lateral faces (``x``/``y``)
+            that :attr:`FieldResults.interior_max_failure_index` and
+            :attr:`FieldResults.interior_first_ply_failure_load_factor`
+            leave out. Defaults to ``max(h, 2 element widths)`` per
+            direction, with ``h`` the laminate thickness.
 
         Returns
         -------
@@ -705,7 +892,11 @@ class FESolver:
             If ``failure_criterion`` is not one of ``'tsai_wu'``,
             ``'hashin'``, ``'max_stress'`` (validated against
             :attr:`SUPPORTED_FAILURE_CRITERIA`), or if ``solver`` is not
-            one of ``'direct'``, ``'cg'``, ``'minres'``.
+            one of ``'direct'``, ``'cg'``, ``'minres'``. With thermal load:
+            if ``loading='thermal'`` has no ``delta_T``, ``delta_T`` is not
+            a finite number, the material has no CTEs, or the mesh does not
+            resolve the layup (unless ``allow_unresolved_layup``). If
+            ``interior_margin`` is negative or not finite.
         RuntimeError
             If the iterative solver fails to converge to ``rtol``, if the
             direct solve produces non-finite values / a residual above
@@ -732,7 +923,18 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
 
-        applied_strain = _resolve_applied_strain(loading, applied_strain)
+        if loading not in ('compression', 'tension', 'shear', 'ilss', 'thermal'):
+            raise ValueError(
+                f"Unknown loading '{loading}'. "
+                "Use compression/tension/shear/ilss/thermal."
+            )
+        thermal_only = loading == 'thermal'
+        dT = _check_delta_T(loading, delta_T, self.material)
+        if dT is not None:
+            self._check_layup_for_thermal(allow_unresolved_layup)
+        interior = _interior_element_mask(self.mesh, interior_margin)
+        if not thermal_only:
+            applied_strain = _resolve_applied_strain(loading, applied_strain)
 
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
@@ -747,25 +949,71 @@ class FESolver:
             t1 = time.perf_counter()
             logger.info("  Assembly time: %.2f s", t1 - t0)
 
-        # 2. Build BCs and the force vector for the requested loading mode.
-        constrained, F = self._apply_boundary_conditions(
-            loading, applied_strain, applied_load, verbose=verbose)
+        # Free-standing thermal (residual) state, scaled from the cached
+        # unit-delta_T solution.
+        thermal: _ThermalUnitSolution | None = None
+        residual_global: np.ndarray | None = None
+        residual_local: np.ndarray | None = None
+        if dT is not None:
+            thermal = self._thermal_unit_solution(
+                K, solver=solver, rtol=rtol, verbose=verbose)
+            residual_global = dT * thermal.stress_global
+            residual_local = self._rotate_to_local(residual_global)
 
-        # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
-        u, _rel_res = self._solve_constrained(
-            K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
+        if thermal_only:
+            assert thermal is not None and dT is not None
+            assert residual_global is not None and residual_local is not None
+            u = dT * thermal.u
+            stress_global, stress_local = residual_global, residual_local
+            strain_global = dT * thermal.strain_global
+            strain_local = self._rotate_to_local(strain_global, strain=True)
+            fpf_stress = stress_local
+            prestress_local = None
+            reactions: np.ndarray = dT * thermal.reactions
+            knockdown = float('nan')
+            effective_modulus: float | None = None
+            basis = 'delta_T'
+        else:
+            # 2. Build BCs and the force vector for the requested loading mode.
+            constrained, F = self._apply_boundary_conditions(
+                loading, applied_strain, applied_load, verbose=verbose)
 
-        if verbose:
-            t2 = time.perf_counter()
-            logger.info(
-                "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
-            t1 = t2
+            # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
+            u, _rel_res = self._solve_constrained(
+                K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
 
-        # 5. Recover stresses and strains (global + local frames).
-        if verbose:
-            logger.info("Recovering element stresses and strains...")
-        (stress_global, stress_local,
-         strain_global, strain_local) = self._recover_stresses(u, verbose=verbose)
+            if verbose:
+                t2 = time.perf_counter()
+                logger.info(
+                    "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
+                t1 = t2
+
+            # 5. Recover stresses and strains (global + local frames).
+            if verbose:
+                logger.info("Recovering element stresses and strains...")
+            (stress_global, stress_local,
+             strain_global, strain_local) = self._recover_stresses(u, verbose=verbose)
+
+            # 7. Knockdown: porous / pristine structural stiffness, and the
+            #    reactions and modulus, all from the mechanical solve.
+            knockdown = self._compute_knockdown(
+                loading, K, u, applied_strain, applied_load)
+            reactions, effective_modulus = self._reactions_and_modulus(
+                loading, K, u, F, applied_strain, constrained)
+            fpf_stress = stress_local
+            prestress_local = residual_local
+            basis = 'mechanical'
+            if thermal is not None:
+                # Superpose the residual state (linear, both from the
+                # stress-free free-standing configuration). The load factor
+                # below scales only the mechanical stress.
+                assert dT is not None and residual_global is not None
+                u = u + dT * thermal.u
+                stress_global = stress_global + residual_global
+                strain_global = strain_global + dT * thermal.strain_global
+                stress_local = self._rotate_to_local(stress_global)
+                strain_local = self._rotate_to_local(strain_global, strain=True)
+                basis = 'mechanical_with_residual'
 
         # 6. Evaluate the selected failure criterion at each GP.
         #    per_elem_fi[e] is the max-over-GP failure index for element e
@@ -774,18 +1022,32 @@ class FESolver:
         #    (NaN entries for Tsai-Wu, which does not separate modes).
         max_fi, per_elem_fi, mode_indices = self._evaluate_failure(
             stress_local, criterion=criterion)
-        fpf_load_factor = failure.first_ply_failure_load_factor(
-            stress_local, self.mesh.porosity, self.mesh.elements,
+        lam_elem = failure._element_load_factors(
+            fpf_stress, self.mesh.porosity, self.mesh.elements,
             self.material, self.porosity_field.void_shape_radii, criterion,
-            void_elements=self.mesh.void_elements)
+            void_elements=self.mesh.void_elements,
+            prestress_local=prestress_local)
+        fpf_load_factor = float(lam_elem.min()) if lam_elem.size else float('inf')
 
-        # 7. Knockdown: porous / pristine structural stiffness.
-        knockdown = self._compute_knockdown(
-            loading, K, u, applied_strain, applied_load)
+        residual_max_fi: float | None = None
+        if thermal_only:
+            residual_max_fi = max_fi
+        elif residual_local is not None:
+            residual_max_fi = self._evaluate_failure(
+                residual_local, criterion=criterion)[0]
+        if residual_max_fi is not None and residual_max_fi >= 1.0:
+            logger.warning(
+                "The thermal residual stress alone reaches the %s criterion "
+                "(max failure index %.3f at delta_T=%g K): the laminate "
+                "fails on cool-down before any load, so the first-ply-"
+                "failure load factor is %s.", criterion, residual_max_fi, dT,
+                '<= 1' if thermal_only else '0')
+
+        has_interior = bool(interior.any())
+        interior_fi = float(per_elem_fi[interior].max()) if has_interior else None
+        interior_lam = float(lam_elem[interior].min()) if has_interior else None
 
         displacement = u.reshape(-1, 3)
-        reactions, effective_modulus = self._reactions_and_modulus(
-            loading, K, u, F, applied_strain, constrained)
 
         if verbose:
             t3 = time.perf_counter()
@@ -809,6 +1071,15 @@ class FESolver:
             effective_modulus=effective_modulus,
             first_ply_failure_load_factor=fpf_load_factor,
             formulation=self.formulation,
+            delta_T=dT,
+            residual_stress_local=residual_local,
+            residual_max_failure_index=residual_max_fi,
+            interior_max_failure_index=interior_fi,
+            interior_first_ply_failure_load_factor=interior_lam,
+            load_factor_basis=basis,
+            cte_local=(None if thermal is None else
+                       (float(thermal.alpha_local[0]), float(thermal.alpha_local[1]),
+                        float(thermal.alpha_local[2]))),
         )
 
     def _apply_boundary_conditions(
@@ -818,14 +1089,17 @@ class FESolver:
         """Build the Dirichlet BCs and force vector for a loading mode.
 
         Dispatches to the matching :class:`BoundaryHandler` builder for the
-        requested ``loading`` ('compression', 'tension', 'shear', 'ilss').
-        The displacement-controlled modes use ``applied_strain``; the
-        force-controlled ILSS short-beam-shear mode uses ``applied_load``.
+        requested ``loading`` ('compression', 'tension', 'shear', 'ilss',
+        'thermal'). The displacement-controlled modes use
+        ``applied_strain``; the force-controlled ILSS short-beam-shear mode
+        uses ``applied_load``; ``'thermal'`` returns the 3-2-1 supports of
+        :meth:`BoundaryHandler.free_bcs` with a zero force vector (the
+        thermal load is built by :meth:`_thermal_unit_solution`).
 
         Parameters
         ----------
         loading : str
-            'compression', 'tension', 'shear', or 'ilss'.
+            'compression', 'tension', 'shear', 'ilss' or 'thermal'.
         applied_strain : float
             Applied nominal strain (used by the displacement-controlled
             modes).
@@ -845,9 +1119,11 @@ class FESolver:
         Raises
         ------
         ValueError
-            If ``loading`` is not one of the four supported modes.
+            If ``loading`` is not one of the five supported modes.
         """
-        if loading == 'compression':
+        if loading == 'thermal':
+            constrained, F = self.bc_handler.free_bcs()
+        elif loading == 'compression':
             constrained, F = self.bc_handler.compression_bcs(applied_strain)
         elif loading == 'tension':
             constrained, F = self.bc_handler.tension_bcs(applied_strain)
@@ -858,7 +1134,7 @@ class FESolver:
         else:
             raise ValueError(
                 f"Unknown loading '{loading}'. "
-                "Use compression/tension/shear/ilss."
+                "Use compression/tension/shear/ilss/thermal."
             )
 
         if verbose:
@@ -1061,20 +1337,123 @@ class FESolver:
         if verbose:
             logger.info("  Post-processed %d elements", self.mesh.n_elements)
 
-        # Transform to local coordinates, one pair of matrices per distinct
-        # ply angle. Stress uses T_sigma; engineering strain (with
-        # gamma_ij = 2*eps_ij in slots 3-5) uses T_epsilon — T_sigma applied
-        # to engineering strain leaves the shear components off by 2x.
+        stress_local = self._rotate_to_local(stress_global)
+        strain_local = self._rotate_to_local(strain_global, strain=True)
+        return stress_global, stress_local, strain_global, strain_local
+
+    def _rotate_to_local(self, field_global: np.ndarray, *,
+                         strain: bool = False) -> np.ndarray:
+        """Rotate a ``(n_elem, n_gp, 6)`` global field into the ply axes.
+
+        One matrix per distinct ply angle. Stress uses ``T_sigma``;
+        engineering strain (``strain=True``, with ``gamma_ij = 2 eps_ij``
+        in slots 3-5) uses ``T_epsilon``: ``T_sigma`` applied to
+        engineering strain leaves the shear components off by 2x.
+        """
+        transform = strain_transformation_3d if strain else stress_transformation_3d
         angles, angle_idx = np.unique(
             np.asarray(self.mesh.ply_angles, dtype=float), return_inverse=True)
-        T_sigma = np.stack([stress_transformation_3d(np.radians(a), axis='z')
-                            for a in angles])[angle_idx]
-        T_eps = np.stack([strain_transformation_3d(np.radians(a), axis='z')
-                          for a in angles])[angle_idx]
-        stress_local = np.einsum('eij,egj->egi', T_sigma, stress_global)
-        strain_local = np.einsum('eij,egj->egi', T_eps, strain_global)
+        T = np.stack([transform(np.radians(a), axis='z')
+                      for a in angles])[angle_idx]
+        return np.einsum('eij,egj->egi', T, field_global)
 
-        return stress_global, stress_local, strain_global, strain_local
+    def _check_layup_for_thermal(self, allow_unresolved_layup: bool) -> None:
+        """Refuse (or warn about) a thermal solve on an unresolved layup.
+
+        Residual stresses come from the ply-to-ply mismatch, so an element
+        layup that merges plies (``nz`` not a multiple of ``n_plies``)
+        gives wrong stresses and spurious warping, not just a less
+        accurate answer. Also warns when the resolved element layup is
+        unsymmetric: the free laminate then warps, which linear theory
+        captures only while the deflection is small next to the thickness.
+        """
+        mesh = self.mesh
+        issues = mesh.layup_discrepancies()
+        layup = ", ".join(f"{a:g}" for a in mesh.element_layup)
+        n_plies = self.material.n_plies
+        if issues:
+            msg = (f"Thermal residual stresses depend on the stacking "
+                   f"sequence, and the FE mesh does not resolve the requested "
+                   f"{n_plies}-ply layup: {'. '.join(issues)}. The element "
+                   f"layup is [{layup}] (bottom to top).")
+            if not allow_unresolved_layup:
+                raise ValueError(
+                    f"{msg} Use nz = k * n_plies (e.g. nz={n_plies}) so every "
+                    f"ply has its own element layer, or pass "
+                    f"allow_unresolved_layup=True to analyze the element "
+                    f"layup anyway.")
+            logger.warning("%s Analyzing it anyway "
+                           "(allow_unresolved_layup=True).", msg)
+        angles = np.asarray(mesh.element_layup, dtype=float)
+        angles = (angles + 90.0) % 180.0 - 90.0   # fold to [-90, 90)
+        if not np.allclose(angles, angles[::-1], atol=1e-6):
+            logger.warning(
+                "The element layup [%s] is unsymmetric, so the free laminate "
+                "warps under delta_T. The solve is linear: it is valid only "
+                "while the warping deflection stays small next to the "
+                "laminate thickness (larger shapes, e.g. bistable ones, need "
+                "geometric nonlinearity)%s.", layup,
+                "" if self.formulation == 'hex8i' else
+                ", and the 'hex8' element locks in bending and underpredicts "
+                "the curvature (formulation='hex8i' does not)")
+
+    def _thermal_unit_solution(
+        self, K: scipy.sparse.spmatrix, *,
+        solver: Literal['direct', 'cg', 'minres'] = 'direct',
+        rtol: float = 1e-9, verbose: bool = False,
+    ) -> _ThermalUnitSolution:
+        """Free-standing thermal solve for ``delta_T = 1`` K, cached.
+
+        Builds the thermal load ``F = sum B^T C alpha det(J) w`` from the
+        element batch (:func:`~porosity_fe.fe.batch.thermal_stress_moduli`),
+        solves with the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs`
+        and recovers ``sigma = C (B u - alpha)``, with the hex8i
+        internal-mode strain included. The analysis is linear, so every
+        field at ``delta_T`` is ``delta_T`` times this one. The cache key is
+        ``K`` (which changes with the mesh, porosity, material and
+        formulation), the CTEs and the linear solver.
+
+        The supports are statically determinate, so the reactions must
+        vanish; a reaction above ``1e-6`` of the largest nodal thermal
+        force is logged as a warning (it would point to a support bug).
+        """
+        alpha_local = self.material.cte_vector()
+        key = (tuple(alpha_local.tolist()), solver, float(rtol))
+        cached = self._thermal_cache
+        if cached is not None and cached[0] is K and cached[1] == key:
+            return cached[2]
+
+        batch = self.assembler.element_batch()
+        beta = thermal_stress_moduli(batch, self.mesh, alpha_local)
+        F_th = assemble_load_vector(batch, batch.thermal_loads(beta),
+                                    self.mesh.n_dof)
+        constrained, F0 = self.bc_handler.free_bcs()
+        F = F0 + F_th
+        if verbose:
+            logger.info("Solving the free-standing thermal problem "
+                        "(3-2-1 supports, unit delta_T)...")
+        u, _ = self._solve_constrained(K, F, constrained, solver=solver,
+                                       rtol=rtol, verbose=verbose)
+        strain = batch.strains(u) + batch.incompatible_mode_strains(beta)
+        stress = batch.stresses(strain) - beta
+
+        residual = K @ u - F
+        fixed = np.fromiter(constrained.keys(), dtype=np.intp,
+                            count=len(constrained))
+        reactions = np.zeros_like(residual)
+        reactions[fixed] = residual[fixed]
+        f_max = float(np.abs(F_th).max()) if F_th.size else 0.0
+        r_max = float(np.abs(reactions).max())
+        if r_max > 1e-6 * f_max + 1e-12:
+            logger.warning(
+                "Thermal solve: support reactions %.3e N against nodal thermal "
+                "forces up to %.3e N (per K). The 3-2-1 supports should carry "
+                "no load; check the boundary conditions.", r_max, f_max)
+        sol = _ThermalUnitSolution(
+            u=u, strain_global=strain, stress_global=stress,
+            reactions=reactions.reshape(-1, 3), alpha_local=alpha_local)
+        self._thermal_cache = (K, key, sol)
+        return sol
 
     def _compute_knockdown(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,

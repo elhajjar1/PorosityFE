@@ -135,8 +135,19 @@ def _cell_fields(results: FieldResults,
         if void_idx.size:
             is_void[void_idx] = 1.0
         candidates.append(("is_void", is_void))
-    candidates.append(
-        ("knockdown", np.full(n_elem, float(results.knockdown), dtype=float)))
+    # Thermal residual stress (the part that does not scale with the
+    # mechanical load), Gauss-point mean, ply axes.
+    residual = getattr(results, 'residual_stress_local', None)
+    if residual is not None:
+        res = np.mean(np.asarray(residual, dtype=float), axis=1)
+        candidates += [("residual_sigma_11_local", res[:, 0]),
+                       ("residual_sigma_22_local", res[:, 1]),
+                       ("residual_tau_12_local", res[:, 5])]
+    # Knockdown is NaN for loading='thermal' (no stiffness measure); legacy
+    # ASCII VTK readers do not reliably parse 'nan', so it is left out.
+    if np.isfinite(results.knockdown):
+        candidates.append(
+            ("knockdown", np.full(n_elem, float(results.knockdown), dtype=float)))
 
     fields = []
     for name, values in candidates:
@@ -475,11 +486,39 @@ def export_results(field_results: FieldResults,
                 if field_results.failure_mode_indices is not None
                 else None
             ),
-            'knockdown_factor': float(field_results.knockdown),
+            # null for loading='thermal' (NaN knockdown: no stiffness
+            # measure); json.dump would otherwise write the invalid NaN.
+            'knockdown_factor': _finite_or_none(field_results.knockdown),
             'first_ply_failure_load_factor': _finite_or_none(
                 field_results.first_ply_failure_load_factor),
+            'load_factor_basis': str(getattr(field_results, 'load_factor_basis',
+                                             'mechanical')),
+            'interior_max_failure_index': _finite_or_none(
+                getattr(field_results, 'interior_max_failure_index', None)),
+            'interior_first_ply_failure_load_factor': _finite_or_none(
+                getattr(field_results,
+                        'interior_first_ply_failure_load_factor', None)),
         },
     }
+    delta_T = getattr(field_results, 'delta_T', None)
+    if delta_T is not None:
+        residual = field_results.residual_stress_local
+        cte = field_results.cte_local
+        results_data['thermal'] = {
+            'delta_T_K': float(delta_T),
+            'alpha_local_per_K': (None if cte is None
+                                  else [float(a) for a in cte]),
+            'load_factor_basis': field_results.load_factor_basis,
+            'residual_max_failure_index': _finite_or_none(
+                field_results.residual_max_failure_index),
+            'interior_max_failure_index': _finite_or_none(
+                field_results.interior_max_failure_index),
+            'residual_stress_local': (None if residual is None else {
+                'sigma_11': _array_stats(residual[:, :, 0]),
+                'sigma_22': _array_stats(residual[:, :, 1]),
+                'tau_12': _array_stats(residual[:, :, 5]),
+            }),
+        }
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),
@@ -494,6 +533,10 @@ def export_results(field_results: FieldResults,
         }
 
     output = _wrap_envelope(FORMAT_FE_FIELDS, None, results_data)
+    if delta_T is not None:
+        # The load-case input that, with the software versions, reproduces
+        # a thermal or combined solve.
+        output['provenance']['delta_T_K'] = float(delta_T)
     if include_raw:
         # Sidecar file path lives next to the JSON so users see them
         # together; ``np.savez`` will append ``.npz`` if missing.
@@ -508,6 +551,9 @@ def export_results(field_results: FieldResults,
         if field_results.per_element_failure_index is not None:
             arrays['per_element_failure_index'] = np.asarray(
                 field_results.per_element_failure_index)
+        if getattr(field_results, 'residual_stress_local', None) is not None:
+            arrays['residual_stress_local'] = np.asarray(
+                field_results.residual_stress_local)
         np.savez(npz_path, **arrays)
         output['raw_sidecar'] = npz_path.name
     with open(filename, 'w', encoding='utf-8') as f:

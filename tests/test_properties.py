@@ -16,7 +16,14 @@ from hypothesis import strategies as st
 from porosity_fe import MATERIALS, build_empirical_pipeline
 from porosity_fe._layup import _membrane_energy_partition
 from porosity_fe.empirical import _KNOCKDOWN_LAWS, Calibration, _layup_scales
-from porosity_fe.fe.failure import degraded_strengths, evaluate_tsai_wu
+from porosity_fe.fe.failure import (
+    SUPPORTED_FAILURE_CRITERIA,
+    _point_load_factors_prestressed,
+    degraded_strengths,
+    evaluate_hashin,
+    evaluate_max_stress,
+    evaluate_tsai_wu,
+)
 from porosity_fe.transforms import (
     rotate_stiffness_3d,
     strain_transformation_3d,
@@ -78,6 +85,45 @@ class TestTsaiWuFrameInvariance:
         fi = evaluate_tsai_wu(local[None], strengths, 0, 0.02)
         fi_rotated = evaluate_tsai_wu(local_rotated[None], strengths, 0, 0.02)
         np.testing.assert_allclose(fi_rotated, fi, rtol=1e-9, atol=1e-9)
+
+
+class TestPrestressedFirstPlyFailure:
+    """The load factor with a fixed pre-stress (IMPROVEMENT_PLAN 3.5) is the
+    first crossing: below it every criterion stays under 1, just above it
+    the criterion has reached 1, including Hashin modes that switch on at a
+    stress sign change."""
+
+    strengths = degraded_strengths(MAT, (1.0, 1.0, 1.0), 0.02)
+
+    @staticmethod
+    def _fi(criterion, s, strengths):
+        if criterion == 'tsai_wu':
+            return evaluate_tsai_wu(s, strengths, 0, 0.02)
+        if criterion == 'hashin':
+            return evaluate_hashin(s, strengths)['max_fi']
+        return evaluate_max_stress(s, strengths)['max_fi']
+
+    @settings(max_examples=60, deadline=None)
+    @pytest.mark.parametrize("criterion", SUPPORTED_FAILURE_CRITERIA)
+    @given(s_th=voigt, s_m=voigt)
+    def test_closed_form_is_the_first_crossing(self, criterion, s_th, s_m):
+        s_th = 0.2 * s_th
+        lam = float(_point_load_factors_prestressed(
+            s_th[None], s_m[None], self.strengths, criterion, None)[0])
+        fi_th = self._fi(criterion, s_th[None], self.strengths)[0]
+        if lam == 0.0:
+            assert fi_th >= 1.0
+            return
+        assert fi_th < 1.0
+        top = lam if np.isfinite(lam) else 1e3
+        below = np.linspace(0.0, top * (1.0 - 1e-7), 400)
+        fi = self._fi(criterion, s_th[None] + below[:, None] * s_m[None],
+                      self.strengths)
+        assert fi.max() < 1.0 + 1e-9
+        if np.isfinite(lam):
+            above = lam * (1.0 + 1e-9) + 1e-12
+            assert self._fi(criterion, (s_th + above * s_m)[None],
+                            self.strengths)[0] >= 1.0 - 1e-6
 
 
 class TestKnockdownLaws:

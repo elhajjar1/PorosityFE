@@ -491,6 +491,53 @@ class BoundaryHandler:
         F[3 * midspan_top + 2] = applied_load / float(midspan_top.size)
         return constrained, F
 
+    def free_bcs(self) -> tuple[dict[int, float], np.ndarray]:
+        """Statically determinate 3-2-1 supports for a free-standing laminate.
+
+        Removes only the six rigid-body modes, on the ``z_min`` face:
+
+        - corner A ``(x_min, y_min)``: ``ux = uy = uz = 0``;
+        - corner B ``(x_max, y_min)``: ``uy = uz = 0``;
+        - corner C ``(x_min, y_max)``: ``uz = 0``.
+
+        Because the set is statically determinate, a self-equilibrated
+        load (such as a thermal load) leaves zero reactions, and the
+        laminate expands, contracts and warps freely. Used by the
+        ``'thermal'`` loading mode.
+
+        Returns
+        -------
+        constrained_dofs : dict
+            Six ``{global_dof: 0.0}`` entries.
+        F : np.ndarray
+            Shape ``(n_dof,)`` zero force vector (the solver adds the
+            thermal load).
+
+        Raises
+        ------
+        RuntimeError
+            If a support corner cannot be located on the mesh.
+        """
+        faces = {f: self.mesh.nodes_on_face(f)
+                 for f in ('x_min', 'x_max', 'y_min', 'y_max', 'z_min')}
+
+        def corner(fx: str, fy: str) -> int:
+            nodes = np.intersect1d(np.intersect1d(faces[fx], faces[fy]),
+                                   faces['z_min'])
+            if nodes.size == 0:
+                raise RuntimeError(
+                    f"free_bcs: no node on the ({fx}, {fy}, z_min) corner. "
+                    "Check mesh generation.")
+            return int(nodes[0])
+
+        a = corner('x_min', 'y_min')
+        b = corner('x_max', 'y_min')
+        c = corner('x_min', 'y_max')
+        constrained = {3 * a: 0.0, 3 * a + 1: 0.0, 3 * a + 2: 0.0,
+                       3 * b + 1: 0.0, 3 * b + 2: 0.0,
+                       3 * c + 2: 0.0}
+        return constrained, np.zeros(self.mesh.n_dof, dtype=np.float64)
+
     @staticmethod
     def apply_elimination(K: scipy.sparse.spmatrix, F: np.ndarray,
                           constrained_dofs: dict[int, float]

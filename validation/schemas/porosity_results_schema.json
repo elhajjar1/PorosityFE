@@ -50,13 +50,21 @@
         "scipy": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of scipy_version; no longer required, to be removed in schema 2.0."},
         "generated_utc": {"type": "string", "deprecated": true, "description": "Deprecated alias of timestamp_utc; no longer required, to be removed in schema 2.0."},
         "git_sha": {"type": ["string", "null"], "deprecated": true, "description": "Deprecated alias of git_commit; no longer required, to be removed in schema 2.0."},
-        "hostname": {"type": ["string", "null"]}
+        "hostname": {"type": ["string", "null"]},
+        "delta_T_K": {
+          "type": ["number", "null"],
+          "description": "Temperature change from the stress-free state (K) of a thermal or combined FE solve (FESolver.solve(delta_T=...)); written only for those solves. Added in schema_version 1.2."
+        }
       }
     },
     "units": {
       "type": "object",
       "description": "Optional self-documenting map from payload field name to its physical unit string (#131). Added in schema_version 1.1; consumers on older schemas can safely ignore it. Keys correspond to numeric leaves present in the payload (e.g. 'failure_stress', 'knockdown', 'Vp', 'porosity_percent'); values are human-readable unit strings (e.g. 'MPa', 'dimensionless fraction in (0, 1]', '%').",
       "additionalProperties": {"type": "string"}
+    },
+    "thermal": {
+      "type": "object",
+      "description": "FE-field export of a thermal or combined solve (FESolver.solve(delta_T=...)), added in schema_version 1.2: delta_T_K (K), alpha_local_per_K (lamina CTEs, 1/K), load_factor_basis, residual_max_failure_index and interior_max_failure_index (dimensionless), and min/max/mean/std of the ply-local residual stress (MPa)."
     },
     "raw_sidecar": {
       "type": "string",
