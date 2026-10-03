@@ -533,9 +533,11 @@ class TestLayupScaleRegressionPin:
 class TestQIBitIdentical:
     """IMPROVEMENT_PLAN 2.7 acceptance criterion 1: the default QI layup (and
     any in-plane-isotropic layup) gives bit-identical knockdowns for every
-    mode and all three laws. ``_QI_SNAPSHOT`` was frozen from the pre-R1
+    mode and all three laws. Bit-identity is checked against the QI law
+    evaluated on the same platform (libm ``exp``/``pow`` may differ in the
+    last bit between platforms). ``_QI_SNAPSHOT``, frozen from the pre-R1
     code (T800_epoxy, Vp = 0.03, ``build_empirical_pipeline`` default QI)
-    as ``(knockdown, failure_stress)``."""
+    as ``(knockdown, failure_stress)``, guards the values to 1e-12."""
 
     _QI_SNAPSHOT = {
         'compression': {'judd_wright': (0.813019649987571, 1219.5294749813565),
@@ -569,14 +571,20 @@ class TestQIBitIdentical:
         with warnings.catch_warnings():
             warnings.simplefilter('error')  # no layup-amplification warning
             results = emp.get_all_failure_loads()
+        vp = emp.mesh.porosity_field.Vp
         for mode, per_model in self._QI_SNAPSHOT.items():
+            sigma_0 = emp._get_pristine_strength(mode)
             for model, (kd, fs) in per_model.items():
                 res = results[mode][model]
-                assert res.knockdown == kd, (layup, mode, model)
-                assert res.failure_stress == fs, (layup, mode, model)
-                assert 'layup_scale' not in res.details
                 law, table = _KNOCKDOWN_LAWS[model]
                 coef_qi = getattr(Calibration, table + '_QI')[mode]
+                kd_qi = float(law(vp, coef_qi))
+                assert res.knockdown == kd_qi, (layup, mode, model)
+                assert res.failure_stress == float(sigma_0 * kd_qi), \
+                    (layup, mode, model)
+                assert res.knockdown == pytest.approx(kd, rel=1e-12, abs=0)
+                assert res.failure_stress == pytest.approx(fs, rel=1e-12, abs=0)
+                assert 'layup_scale' not in res.details
                 assert emp._builtin_law(model, mode)[1] == coef_qi
                 sens = emp.local_sensitivities(mode, model)
                 assert sens['KD'] == float(law(0.03, coef_qi))
