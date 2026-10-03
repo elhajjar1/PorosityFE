@@ -36,6 +36,7 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import rotate_stiffness_3d
 from .element import (
+    _DEFAULT_FORMULATION,
     VP_STIFFNESS_CLAMP,
     Hex8Element,
     _check_formulation,
@@ -64,15 +65,15 @@ class ElementBatch:
         ``(E, G, 6, 6)`` degraded, ply-rotated stiffness (MPa).
     detJ_w : np.ndarray
         ``(E, G)`` Jacobian determinant times quadrature weight.
-    formulation : {'hex8', 'hex8i'}
-        Element formulation ``B`` was built for.
+    formulation : {'hex8i', 'hex8'}
+        Element formulation ``B`` was built for (default ``'hex8i'``).
     """
 
     dofs: np.ndarray
     B: np.ndarray
     C: np.ndarray
     detJ_w: np.ndarray
-    formulation: FEFormulation = 'hex8'
+    formulation: FEFormulation = _DEFAULT_FORMULATION
 
     def stiffness_matrices(self) -> np.ndarray:
         """Symmetrized element stiffness matrices ``(E, 24, 24)``.
@@ -190,16 +191,18 @@ def _condense_incompatible_modes(B: np.ndarray, C: np.ndarray,
 
 def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
                         void_shape_radii: tuple, *,
-                        formulation: FEFormulation = 'hex8') -> ElementBatch:
+                        formulation: FEFormulation = _DEFAULT_FORMULATION,
+                        ) -> ElementBatch:
     """Compute :class:`ElementBatch` for every element of ``mesh``.
 
     Parameters
     ----------
     mesh, material, void_shape_radii
         Mesh, composite and void shape the stiffness is built from.
-    formulation : {'hex8', 'hex8i'}, optional
-        Element formulation (see :class:`Hex8Element`). For ``'hex8i'`` the
-        incompatible modes are condensed into ``ElementBatch.B``.
+    formulation : {'hex8i', 'hex8'}, optional
+        Element formulation (see :class:`Hex8Element`), default
+        ``'hex8i'``. For ``'hex8i'`` the incompatible modes are condensed
+        into ``ElementBatch.B``.
 
     Raises
     ------

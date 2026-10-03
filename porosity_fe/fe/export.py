@@ -25,6 +25,7 @@ import numpy as np
 
 from ..io import FORMAT_FE_FIELDS, _json_default, _wrap_envelope
 from ..mesh import CompositeMesh
+from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 if TYPE_CHECKING:
@@ -480,7 +481,8 @@ def export_results(field_results: FieldResults,
         },
     }
     results_data['solver'] = {
-        'formulation': str(getattr(field_results, 'formulation', 'hex8')),
+        'formulation': str(getattr(field_results, 'formulation',
+                                  _DEFAULT_FORMULATION)),
     }
     if field_results.reaction_forces is not None:
         results_data['stiffness'] = {

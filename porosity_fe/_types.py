@@ -32,10 +32,11 @@ LoadingMode = Literal[
 FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss']
 
 #: Hexahedral element formulations accepted by
-#: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8'``,
-#: the standard fully integrated trilinear brick, and ``'hex8i'``, the same
-#: brick enriched with nine Wilson-Taylor incompatible modes. Source of
-#: truth: ``porosity_fe.fe.element.ELEMENT_FORMULATIONS``.
+#: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8i'``
+#: (the default), the trilinear brick enriched with nine Wilson-Taylor
+#: incompatible modes, and ``'hex8'``, the standard fully integrated
+#: trilinear brick. Source of truth:
+#: ``porosity_fe.fe.element.ELEMENT_FORMULATIONS``.
 FEFormulation = Literal['hex8', 'hex8i']
 
 #: Built-in empirical knockdown model names. Source of truth:

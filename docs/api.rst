@@ -198,8 +198,9 @@ type checkers use them; at run time each function validates its own input.
 .. py:data:: FEFormulation
 
    ``'hex8' | 'hex8i'``, the element formulations :class:`FESolver` accepts
-   (``formulation=``): the standard trilinear brick, or the brick with
-   condensed incompatible modes that does not lock in bending.
+   (``formulation=``): the standard trilinear brick, or the default
+   ``'hex8i'``, the brick with condensed incompatible modes that does not
+   lock in bending.
 
 .. py:data:: KnockdownModel
 

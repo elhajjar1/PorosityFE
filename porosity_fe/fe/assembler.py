@@ -15,7 +15,7 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..porosity_field import PorosityField
 from .batch import ElementBatch, build_element_batch, element_dofs
-from .element import Hex8Element, _check_formulation
+from .element import _DEFAULT_FORMULATION, Hex8Element, _check_formulation
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -36,14 +36,15 @@ class GlobalAssembler:
         Material properties.
     porosity_field : PorosityField
         Porosity field for degradation.
-    formulation : {'hex8', 'hex8i'}, optional
-        Element formulation (see :class:`Hex8Element`). Part of the
-        assembly cache key, so changing ``self.formulation`` re-assembles.
+    formulation : {'hex8i', 'hex8'}, optional
+        Element formulation (see :class:`Hex8Element`), default
+        ``'hex8i'``. Part of the assembly cache key, so changing
+        ``self.formulation`` re-assembles.
     """
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  porosity_field: PorosityField, *,
-                 formulation: FEFormulation = 'hex8') -> None:
+                 formulation: FEFormulation = _DEFAULT_FORMULATION) -> None:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field

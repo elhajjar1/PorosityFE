@@ -31,6 +31,11 @@ VOID_VP_THRESHOLD = 0.95
 #: incompatible modes, condensed out per element.
 ELEMENT_FORMULATIONS: tuple[str, ...] = ('hex8', 'hex8i')
 
+#: Formulation used when ``formulation=`` is not given, by
+#: :class:`~porosity_fe.fe.solver.FESolver`, :class:`GlobalAssembler`,
+#: :func:`build_element_batch` and :class:`Hex8Element` alike.
+_DEFAULT_FORMULATION: FEFormulation = 'hex8i'
+
 
 def _check_formulation(formulation: str) -> str:
     """Return ``formulation`` if it is supported, else raise ``ValueError``."""
@@ -146,16 +151,17 @@ class Hex8Element:
         Explicit void element: near-zero isotropic stiffness.
     material : MaterialProperties, optional
         Composite whose constants are degraded component-wise.
-    formulation : {'hex8', 'hex8i'}, optional
-        ``'hex8'`` (default): standard trilinear brick, full 2x2x2 Gauss
-        integration. ``'hex8i'``: the same brick enriched with the nine
-        Wilson-Taylor incompatible modes ``(1 - xi^2)``, ``(1 - eta^2)``,
-        ``(1 - zeta^2)`` per displacement component, with Taylor's
-        centroid-Jacobian correction (so the patch test passes on distorted
-        elements), statically condensed out of the element. It removes the
-        shear locking that makes ``'hex8'`` too stiff in bending when the
-        element length is not small against the laminate thickness. See
-        :meth:`G_matrix` and :meth:`strain_operator`.
+    formulation : {'hex8i', 'hex8'}, optional
+        ``'hex8i'`` (default, the same as :class:`FESolver`): the trilinear
+        brick enriched with the nine Wilson-Taylor incompatible modes
+        ``(1 - xi^2)``, ``(1 - eta^2)``, ``(1 - zeta^2)`` per displacement
+        component, with Taylor's centroid-Jacobian correction (so the patch
+        test passes on distorted elements), statically condensed out of the
+        element. It removes the shear locking that makes ``'hex8'`` too
+        stiff in bending when the element length is not small against the
+        laminate thickness. ``'hex8'``: the standard trilinear brick, full
+        2x2x2 Gauss integration. See :meth:`G_matrix` and
+        :meth:`strain_operator`.
 
     Notes
     -----
@@ -175,7 +181,7 @@ class Hex8Element:
                  void_shape_radii: tuple, nu_m: float,
                  C_m: np.ndarray, is_void: bool = False,
                  material: MaterialProperties = None, *,
-                 formulation: FEFormulation = 'hex8') -> None:
+                 formulation: FEFormulation = _DEFAULT_FORMULATION) -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")

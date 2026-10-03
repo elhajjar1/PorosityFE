@@ -25,6 +25,7 @@ from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
+from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .export import write_vtk, write_vtu
 from .recovery import NodalAverage, extrapolate_to_nodes
@@ -92,8 +93,8 @@ class FieldResults:
         scaling); the margin of safety is this value minus 1. ``inf`` if no
         point is stressed.
     formulation : str
-        Element formulation of the solve, ``'hex8'`` (default, for
-        callers that construct ``FieldResults`` directly) or ``'hex8i'``;
+        Element formulation of the solve, ``'hex8i'`` (default, also for
+        callers that construct ``FieldResults`` directly) or ``'hex8'``;
         see :class:`FESolver`.
 
     Notes
@@ -122,7 +123,7 @@ class FieldResults:
     reaction_forces: np.ndarray | None = None
     effective_modulus: float | None = None
     first_ply_failure_load_factor: float | None = None
-    formulation: str = 'hex8'
+    formulation: str = _DEFAULT_FORMULATION
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -535,18 +536,20 @@ class FESolver:
         against each lamina strength. Validated against
         :attr:`SUPPORTED_FAILURE_CRITERIA`; an unknown value raises
         :class:`ValueError`.
-    formulation : {'hex8', 'hex8i'}, optional
+    formulation : {'hex8i', 'hex8'}, optional
         Keyword-only element formulation (see :data:`FEFormulation`).
-        ``'hex8'`` (default) is the standard fully integrated trilinear
-        brick and reproduces earlier results bit for bit. ``'hex8i'`` adds
-        nine Wilson-Taylor incompatible modes per element, condensed out
-        during assembly, which removes the shear locking that makes
-        ``'hex8'`` too stiff in bending: the error grows roughly as
+        ``'hex8i'`` (default) adds nine Wilson-Taylor incompatible modes per
+        element, condensed out during assembly, which removes the shear
+        locking of the standard brick. ``'hex8'`` is the standard fully
+        integrated trilinear brick, the default before the switch, and
+        reproduces those earlier results bit for bit. ``'hex8'`` is too
+        stiff in bending: the error grows roughly as
         ``(G13 / E11) (dx / h)^2`` with element length ``dx`` and laminate
         thickness ``h`` (about 0.5 % at the production mesh, 8 % at
         ``dx / h = 1.56``, 127 % at ``dx / h = 6.25`` for UD T800). Membrane
-        modes are essentially unchanged; bending (``'ilss'``) stiffness,
-        transverse shear stress and the load factors move. Recorded on
+        modes are essentially the same with either element; bending
+        (``'ilss'``) stiffness, transverse shear stress and the load
+        factors differ. Recorded on
         :attr:`FieldResults.formulation` and in the JSON export; the
         stiffness and pristine-reference caches are keyed on it. Unknown
         values raise :class:`ValueError`.
@@ -579,7 +582,8 @@ class FESolver:
                  ply_angles: list[float] | str | None = 'QI',
                  failure_criterion: Literal[
                      'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu',
-                 *, formulation: FEFormulation = 'hex8') -> None:
+                 *, formulation: FEFormulation = _DEFAULT_FORMULATION,
+                 ) -> None:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field

@@ -41,8 +41,7 @@ All notable changes to PorosityFE will be documented in this file.
   Hinton & Kaddour 1998); the other presets leave them `None` until
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
-- **Incompatible-mode hex8 element, opt-in (IMPROVEMENT_PLAN 3.6, step
-  A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
+- **Incompatible-mode hex8 element (IMPROVEMENT_PLAN 3.6, step A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
   nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
   correction), condensed out per element and folded into an effective
   `B = B + G H` in the batched path, so stiffness, stress recovery,
@@ -62,9 +61,9 @@ All notable changes to PorosityFE will be documented in this file.
   formulations never share a cached result. `GlobalAssembler`,
   `build_element_batch` and `Hex8Element` take the same keyword
   (`Hex8Element.G_matrix` / `strain_operator` expose the enrichment); the
-  new `FEFormulation` type alias names the accepted values. `'hex8'`
-  remains the default and its results are unchanged bit for bit. See
-  "Element formulations" in `docs/theory/fe.md`.
+  new `FEFormulation` type alias names the accepted values. It is now the
+  default (see "Changed"); `formulation='hex8'` reproduces the earlier
+  results bit for bit. See "Element formulations" in `docs/theory/fe.md`.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
@@ -420,6 +419,42 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The incompatible-mode element `'hex8i'` is the default FE formulation
+  (IMPROVEMENT_PLAN 3.6, step A2).** `FESolver`, `GlobalAssembler`,
+  `build_element_batch` and `Hex8Element` now default to
+  `formulation='hex8i'`, so the pipeline, the Streamlit app (which shows the
+  formulation under the stress plot) and the examples pick it up; the plain
+  brick stays available as `formulation='hex8'`, which reproduces the
+  previous results bit for bit. `FieldResults` built directly, and the JSON
+  export of a result without the field, record `'hex8i'`. **Result change**
+  for every FE solve that did not pass `formulation=`. Measured on T800 QI
+  (uniform `Vp` 3 % and 6 %, midplane-clustered and interface-penny 3 %),
+  `'hex8'` to `'hex8i'`:
+
+  | quantity | 30x10x12 (production) | 30x10x24 |
+  |---|---|---|
+  | compression / tension / shear knockdown | -2e-5 to 0 | -5e-5 to 0 |
+  | ILSS knockdown | +0.0006 to +0.0034 | +0.0007 to +0.0019 |
+  | ILSS peak `abs(tau_13)` | -45 to -47 % | -34 to -36 % |
+  | ILSS first-ply-failure load factor | +17 to +25 % | +13 to +15 % |
+  | compression max failure index | -13.3 to -13.7 % | -7.7 to -11.5 % |
+
+  The tension maximum failure index drops by 1.4-2.8 % (30x10x12) and
+  3.1-3.5 % (30x10x24); `effective_modulus` in compression and tension by
+  about 0.1 %; shear is unchanged. Cost: the per-element condensation adds
+  about 0.06 s per assembly at 3,600 elements and 0.18 s at 7,200; a first
+  solve on a new mesh assembles twice (porous and pristine reference), so
+  it takes 0-7 % longer depending on the machine (4.1 s for both elements
+  here at 30x10x12, best of five); repeat solves and memory are unchanged.
+  The README FE distribution table (12x4x12) is regenerated: uniform
+  0.9922 -> 0.9921, interface 0.9821 -> 0.9820. The empirical path,
+  including the validation MAE, is unchanged. Tests: the Hashin ILSS
+  delamination check and the distribution-contract FE checks now use
+  ply-resolving meshes (`nz = 24`), because on the earlier ply-merging
+  meshes the lock-free element changes which failure mode governs (matrix
+  tension in the outer 90 deg element layer) and shrinks the
+  uniform-to-clustered contrast in the corner failure index below the
+  test's 0.1 % threshold.
 - **Dirichlet boundary conditions are eliminated exactly instead of by a
   penalty (IMPROVEMENT_PLAN 1.6).** `FESolver` solves
   `K_ff u_f = F_f - K_fc u_c` with the prescribed values set exactly, in

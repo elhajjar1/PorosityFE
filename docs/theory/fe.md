@@ -27,7 +27,8 @@ membrane stiffness is.
 differences, and {class}`~porosity_fe.FESolver` logs them as a warning.
 ```
 
-Elements use trilinear shape functions with $2 \times 2 \times 2$ Gauss
+Elements use trilinear shape functions, enriched by default with
+condensed incompatible modes (see below), and $2 \times 2 \times 2$ Gauss
 quadrature ({class}`~porosity_fe.Hex8Element` is the reference
 implementation; assembly runs on batched arrays). At each Gauss point:
 
@@ -45,8 +46,8 @@ Void elements get a near-zero isotropic stiffness.
 
 | `formulation` | Element | Use |
 |---|---|---|
-| `'hex8'` (default) | trilinear brick, full $2 \times 2 \times 2$ Gauss | default; reproduces earlier results bit for bit |
-| `'hex8i'` | the same brick plus nine incompatible modes, condensed per element | bending (`ilss`), coarse in-plane meshes, transverse shear stresses |
+| `'hex8i'` (default) | trilinear brick plus nine incompatible modes, condensed per element | every mode; required for bending (`ilss`), coarse in-plane meshes and transverse shear stresses |
+| `'hex8'` | the plain trilinear brick, full $2 \times 2 \times 2$ Gauss | reproduces results from before `'hex8i'` became the default, bit for bit |
 
 **Shear locking.** A fully integrated trilinear brick cannot bend without
 also shearing: in a bent element, the transverse shear strain at the Gauss
@@ -117,24 +118,32 @@ and stress recovery, failure evaluation and export are unchanged, and the
 global $\mathbf K$ has the same size and sparsity. The element has exactly
 the six rigid-body zero-energy modes.
 
-**When to use `'hex8i'`.** For `ilss` and any bending-dominated case, for
-meshes with $\Delta x / h$ not small, and whenever the transverse shear
-stresses ($\tau_{13}$, $\tau_{23}$) or the ILSS failure index and
-first-ply-failure load factor matter. On the production geometry
-(T800 QI, $30 \times 10 \times 12$) it leaves the compression, tension and
-shear knockdowns within $10^{-4}$ and moves the ILSS knockdown by
-$+0.0006$ to $+0.0034$; the peak ILSS $|\tau_{13}|$ drops by about 45 % and
-the ILSS first-ply-failure load factor rises by 17 to 25 %. The compression
-maximum failure index, which sits at the constrained corners, drops by
-about 13 %. Assembly costs more, because the condensation runs once per
-assembly (cached with $\mathbf K$): about $+0.1$ s at 3,600 elements and
-$+0.2$ to $0.3$ s at 7,200, so a first production solve, which also builds
-the pristine reference, takes about 7 % longer. Repeat solves and memory
-are unchanged. The stiffness and
-pristine-reference caches are keyed on the formulation (each LU
-factorization belongs to one assembled $\mathbf K$), and
-`FieldResults.formulation` and the JSON export (`solver.formulation`)
-record it. `'hex8'` stays the default for now.
+**Why `'hex8i'` is the default.** It is what `ilss` and any
+bending-dominated case need, as do meshes with $\Delta x / h$ not small and
+any result that depends on the transverse shear stresses ($\tau_{13}$,
+$\tau_{23}$), such as the ILSS failure index and first-ply-failure load
+factor; in membrane loading it agrees with `'hex8'`. Changing the
+production geometry (T800 QI, uniform $V_p$ of 3 % and 6 %, midplane
+clustered and interface penny voids at 3 %) from `'hex8'` to `'hex8i'`:
+
+| Quantity | $30 \times 10 \times 12$ | $30 \times 10 \times 24$ |
+|---|---|---|
+| compression, tension, shear knockdown | within $10^{-4}$ | within $10^{-4}$ |
+| ILSS knockdown | $+0.0006$ to $+0.0034$ | $+0.0007$ to $+0.0019$ |
+| ILSS peak $\lvert\tau_{13}\rvert$ | $-45$ to $-47$ % | $-34$ to $-36$ % |
+| ILSS first-ply-failure load factor | $+17$ to $+25$ % | $+13$ to $+15$ % |
+| compression maximum failure index | $-13$ to $-14$ % | $-8$ to $-12$ % |
+
+The compression maximum failure index sits at the constrained corners.
+Assembly costs more, because the condensation runs once per assembly (cached with
+$\mathbf K$): about $+0.1$ s at 3,600 elements and $+0.2$ s at 7,200. A
+first solve on a new mesh assembles twice (the porous model and the
+pristine reference), so it takes a few percent longer (0 to 7 % measured
+on the production meshes); repeat solves and memory are unchanged. The stiffness and pristine-reference caches are
+keyed on the formulation (each LU factorization belongs to one assembled
+$\mathbf K$), and `FieldResults.formulation` and the JSON export
+(`solver.formulation`) record it. Pass `formulation='hex8'` to reproduce
+results from before the change bit for bit.
 
 ## Boundary conditions
 
