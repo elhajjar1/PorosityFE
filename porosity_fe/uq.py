@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
+    _LAYUP_WARNING_MARKER,
     Calibration,
     EmpiricalSolver,
 )
@@ -181,8 +182,8 @@ def propagate_uncertainty(void_volume_fraction: float,
     coef_cov : float
         CoV of the knockdown law's calibration coefficient for ``mode``
         (Judd-Wright ``alpha``, power-law ``n`` or linear ``beta``),
-        median-preserving lognormal on the QI value; the layup scaling is
-        applied on top as usual. This is usually the dominant uncertainty:
+        median-preserving lognormal on the QI value; the layup scaling
+        (``EmpiricalSolver.layup_scale``) is applied on top as usual. This is usually the dominant uncertainty:
         with material scatter alone the knockdown does not vary at all.
         0.0 (default) keeps the calibrated value.
     n_samples : int
@@ -332,6 +333,10 @@ def propagate_uncertainty(void_volume_fraction: float,
         for w in caught:
             if "calibration bound" in str(w.message):
                 n_extrapolated += 1
+            elif _LAYUP_WARNING_MARKER in str(w.message):
+                # The nominal solve above already flagged the layup
+                # amplification once; the draws share the layup.
+                continue
             else:
                 warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
         fs_samples[s] = res['failure_stress']

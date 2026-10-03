@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from ._layup import _membrane_energy_partition
 from ._ply_angles import _PLY_ANGLES_QI, _PLY_ANGLES_UD, _resolve_ply_angles
 from ._types import KnockdownModel, LoadingMode
 from .fatigue import FatigueModel
@@ -30,6 +31,44 @@ logger = logging.getLogger("porosity_fe_analysis")
 #: calibration contract and are exempt from the warning.
 _VP_CALIBRATION_MAX = 0.05
 
+#: Substring that identifies the layup-amplification ``UserWarning`` (see
+#: :meth:`EmpiricalSolver.get_failure_load`), so batch callers can collapse it.
+_LAYUP_WARNING_MARKER = "unvalidated layup amplification"
+
+#: Layup scales within this tolerance of 1 are snapped to exactly 1.0, so
+#: every quasi-isotropic permutation and in-plane-isotropic layup (whose
+#: energy blend equals the QI value to round-off) is bit-identical to QI.
+_LAYUP_SCALE_TOL = 1e-9
+
+_F_MD_RETIRED = (
+    "The f_md / 0.5 layup scaling and its floors were replaced by the CLT "
+    "energy-blend scaling (IMPROVEMENT_PLAN 2.7), so this constant no longer "
+    "has any effect; see EmpiricalSolver.layup_scale. It will be removed in "
+    "2.0."
+)
+
+
+class _DeprecatedConstant:
+    """Read-only class constant that warns on every access.
+
+    Works for class and instance access (``Calibration.F_MD_REF``,
+    ``solver._F_MD_REF``) and keeps the value readable during the
+    deprecation window.
+    """
+
+    def __init__(self, value: float, note: str) -> None:
+        self._value = value
+        self._note = note
+        self._name = "constant"
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = f"{owner.__name__}.{name}"
+
+    def __get__(self, obj: object | None, objtype: type | None = None) -> float:
+        warnings.warn(f"{self._name} is deprecated. {self._note}",
+                      DeprecationWarning, stacklevel=2)
+        return self._value
+
 
 class Calibration:
     """All empirical knockdown & fatigue calibration constants in one place.
@@ -43,18 +82,25 @@ class Calibration:
     (``_JUDD_WRIGHT_ALPHA_QI``, ``_FATIGUE_B_QI``, ``_PLY_ANGLES_QI``,
     ``_UQ_DEFAULT_PERCENTILES``, etc.) remain available as deprecated
     aliases pointing back at the attributes defined here.
+
+    ``F_MD_REF``, ``F_MD_FLOOR`` and ``F_MD_FLOOR_ILSS`` belong to the
+    retired ``f_md / 0.5`` layup rule (IMPROVEMENT_PLAN 2.7). They keep
+    their values but have no effect; reading one emits a
+    :class:`DeprecationWarning`, and they will be removed in 2.0.
     """
 
     # ------------------------------------------------------------------
     # Empirical Vp -> strength knockdown coefficients (QI-calibrated)
     # ------------------------------------------------------------------
-    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977).
-    # ``F_MD_REF = 0.5`` below is the LAYUP-SCALING reference (scale = 1.0 at
-    # f_md = 0.5), NOT a property of the Elhajjar coupon layup itself
-    # (``[0/45/90/-45/0]_s``, which the binning rule below puts at f_md = 0.4).
-    # The coefficients were tuned with the layup-scaling already applied,
-    # so they represent the model's effective f_md = 0.5 baseline rather
-    # than the raw fit on a single layup.
+    # QI-calibrated coefficients (Elhajjar 2025, Sci. Rep. 15:25977). The
+    # calibration coupon is ``[0/45/90/-45/0]_s``; a least-squares fit of
+    # ``ln(KD)`` vs ``Vp`` on that dataset alone gives alpha = 6.95
+    # (compression) and 4.21 (tension), close to the shipped 6.9 / 3.9, so
+    # the tables are effectively raw coupon fits (the old comment that they
+    # were "tuned with the layup scaling already applied" is not supported
+    # by the data; IMPROVEMENT_PLAN 2.7). The layup scaling below leaves
+    # every quasi-isotropic and in-plane-isotropic layup at scale 1, so the
+    # tables are used unscaled there.
     # See README "Empirical Strength Knockdown" for definitions, units (alpha, n
     # are dimensionless when Vp is a fraction in [0, 1]), validity bounds, and
     # the calibration recipe for custom materials.
@@ -89,43 +135,42 @@ class Calibration:
     FATIGUE_KD_FLOOR: float
 
     # ------------------------------------------------------------------
-    # Layup scaling (matrix-dominated fraction)
+    # Layup scaling (IMPROVEMENT_PLAN 2.7; replaces the f_md / 0.5 rule)
     # ------------------------------------------------------------------
-    # Modes whose porosity sensitivity is matrix-/interface-dominated even in
-    # UD layups (where the longitudinal-fiber metric would otherwise drive
-    # f_md to ~0). These modes use the elevated ``F_MD_FLOOR_ILSS`` floor.
+    #: Laminate modes loaded along the laminate ``x`` (fiber) direction.
+    #: Only these are layup-scaled: their coefficient is multiplied by
+    #: ``scale = max(1, alpha_blend(layup) / alpha_QI[mode])``, where
+    #: ``alpha_blend = e1*a_fib + e2*a_2 + e6*a_6`` weights per-mode alphas
+    #: by the fiber / transverse / shear split ``(e1, e2, e6)`` of the
+    #: pristine CLT membrane strain energy under a unit ``N_x`` load, and
+    #: ``a_fib`` is solved so that ``alpha_blend(QI) == alpha_QI[mode]``
+    #: (no fitted constant). The other modes (``shear``, ``ilss``,
+    #: ``transverse_tension``) are ply / interlaminar matrix properties and
+    #: are layup-independent (scale 1).
+    FIBER_DIRECTION_MODES = frozenset({'tension', 'compression'})
+    #: Matrix anchors ``(a_2 mode, a_6 mode)`` of the energy blend, looked up
+    #: in :attr:`JUDD_WRIGHT_ALPHA_QI`. Compression uses the shear alpha for
+    #: the transverse energy because no transverse-compression mode is
+    #: calibrated (IMPROVEMENT_PLAN 3.1).
+    LAYUP_MATRIX_ANCHORS: dict[str, tuple[str, str]] = {
+        'tension': ('transverse_tension', 'shear'),
+        'compression': ('shear', 'shear'),
+    }
+    #: Modes that used the elevated ``F_MD_FLOOR_ILSS`` floor under the
+    #: retired f_md rule. Retained for back-compat; no longer used.
     MATRIX_DOMINATED_MODES = frozenset({'ilss', 'transverse_tension'})
-    # QI reference fraction and minimum floor
-    F_MD_REF: float = 0.5    # f_md for the QI layup used in calibration
-    # ``F_MD_FLOOR`` / ``F_MD_FLOOR_ILSS`` are hard floors on the layup-scale
-    # multiplier ``scale = f_md / F_MD_REF`` returned by ``_layup_scale``.
-    # Without them ``scale -> 0`` for pure UD ([0]_n, f_md = 0.0), which would
-    # imply zero porosity sensitivity for fiber-dominated layups — physically
-    # wrong, since even UD coupons show measurable porosity knockdown at high
-    # Vp (Judd & Wright 1978 and successors all report a non-zero UD response).
-    # The floor preserves the *shape* of that physically-required behaviour
-    # while keeping the scaling rule simple and monotonic.
-    #
-    # The specific values (0.15 / 0.80) are EMPIRICAL TUNING CONSTANTS with
-    # no published derivation or cross-validation note. They were introduced
-    # together with the layup-scaling rule in commit 55affc0 (#10, a Vp-
-    # validation fix) and carried forward unchanged through the package
-    # refactor (#136). No coupon-dataset regression, optimization, or
-    # physical-argument origin has been located for either value — see
-    # issue #139 for the calibration gap. A future calibration campaign
-    # should validate ``F_MD_FLOOR`` against UD coupon data across
-    # Vp in [0, 5%] (per-mode, since compression vs tension UD sensitivities
-    # differ) and ``F_MD_FLOOR_ILSS`` against matrix-dominated coupons in
-    # the same range. Issue #140 (which already pinned a ~33% linearity gap
-    # in ``_layup_scale`` itself) and #139 should be addressed together so
-    # the replacement rule and its floors are calibrated against the same
-    # reference dataset.
-    F_MD_FLOOR: float = 0.15  # even UD retains some matrix sensitivity; empirical, see #139
-    # ILSS and transverse-tension are matrix-/interface-dominated regardless
-    # of fiber-direction layup (the void-dominated stress component is in the
-    # matrix), so the floor preserves most of the QI calibration. 0.80 is an
-    # empirical tuning constant — not derived from published validation data.
-    F_MD_FLOOR_ILSS: float = 0.80  # ILSS / transverse-tension floor; empirical, see #139
+    # The f_md rule's reference fraction and its two floors (0.15 / 0.80,
+    # untraced; issue #139) no longer have any effect. Reading them emits a
+    # DeprecationWarning; they will be removed in 2.0.
+    #: Deprecated and without effect (removal in 2.0). Reference ``f_md`` of the
+    #: retired ``f_md / 0.5`` layup rule.
+    F_MD_REF = _DeprecatedConstant(0.5, _F_MD_RETIRED)
+    #: Deprecated and without effect (removal in 2.0). Fiber-mode floor (0.15) of
+    #: the retired rule.
+    F_MD_FLOOR = _DeprecatedConstant(0.15, _F_MD_RETIRED)
+    #: Deprecated and without effect (removal in 2.0). ILSS / transverse-tension
+    #: floor (0.80) of the retired rule.
+    F_MD_FLOOR_ILSS = _DeprecatedConstant(0.80, _F_MD_RETIRED)
 
     # ------------------------------------------------------------------
     # Canonical ply-angle baselines (sentinel expansion for 'QI' / 'UD')
@@ -177,12 +222,59 @@ _KNOCKDOWN_LAWS: dict[str, tuple[Callable[[Any, float], Any], str]] = {
 }
 
 
+def _layup_scales(material: MaterialProperties,
+                  ply_angles: list[float] | tuple[float, ...]) -> dict[str, float]:
+    """Per-mode layup multiplier for the empirical coefficients (design R1).
+
+    ``shear``, ``ilss`` and ``transverse_tension`` get 1.0. For each mode in
+    :attr:`Calibration.FIBER_DIRECTION_MODES` the pristine CLT membrane
+    strain energy under a unit ``N_x`` is split into fiber / transverse /
+    shear fractions ``(e1, e2, e6)`` (:func:`_membrane_energy_partition`)
+    and the calibrated alphas are blended::
+
+        alpha_blend(layup) = e1*a_fib + e2*a_2 + e6*a_6
+        scale = max(1, alpha_blend(layup) / alpha_QI[mode])
+
+    with ``(a_2, a_6)`` from :attr:`Calibration.LAYUP_MATRIX_ANCHORS` and
+    ``a_fib`` solved so that ``alpha_blend(QI) == alpha_QI[mode]``. Only the
+    Judd-Wright QI table enters, so the scale is the same for all three laws
+    and for user overrides. It is clamped to ``max(a_2, a_6) / alpha_QI``
+    (the convex-combination bound: 2.56 for tension, 1.16 for compression),
+    continuous in ply angle, invariant to stacking order, and snapped to
+    exactly 1.0 within ``_LAYUP_SCALE_TOL`` so QI permutations and
+    in-plane-isotropic layups are bit-identical to QI.
+    """
+    scales = {mode: 1.0 for mode in EmpiricalSolver.PRISTINE_STRENGTH_KEY}
+    alpha = Calibration.JUDD_WRIGHT_ALPHA_QI
+    e1, e2, e6 = _membrane_energy_partition(material, ply_angles, 'x')
+    q1, q2, q6 = _membrane_energy_partition(
+        material, Calibration.PLY_ANGLES_QI, 'x')
+    if q1 <= 0.0:  # degenerate stiffness: no fiber energy to anchor on
+        return scales
+    for mode in sorted(Calibration.FIBER_DIRECTION_MODES):
+        anchor_2, anchor_6 = Calibration.LAYUP_MATRIX_ANCHORS[mode]
+        a_mode, a_2, a_6 = alpha[mode], alpha[anchor_2], alpha[anchor_6]
+        a_fib = (a_mode - q2 * a_2 - q6 * a_6) / q1
+        ratio = (e1 * a_fib + e2 * a_2 + e6 * a_6) / a_mode
+        # Poisson coupling can leave a component of a few tenths of a
+        # percent negative for a lone off-axis ply, nudging the blend just
+        # past its convex bound; clamp to the bound so the matrix alphas
+        # stay the ceiling.
+        ratio = min(ratio, max(a_2, a_6) / a_mode)
+        scales[mode] = ratio if ratio > 1.0 + _LAYUP_SCALE_TOL else 1.0
+    return scales
+
+
 class EmpiricalSolver:
     """Fast analytical solver using empirical porosity-strength models.
 
-    Coefficients are calibrated against quasi-isotropic data and scaled by
-    a layup-dependent matrix-dominated fraction so that fiber-dominated
-    layups (e.g. UD [0]_n) see a smaller porosity penalty than QI layups.
+    Coefficients are calibrated against quasi-isotropic data. Only the
+    fiber-direction laminate modes (``tension``, ``compression``) are
+    layup-scaled: layups more matrix-dominated than QI under an ``x`` load
+    (``[±45]``, ``[90]``, ...) are amplified by a CLT strain-energy blend of
+    the calibrated per-mode coefficients, which is never below 1 (see
+    :attr:`layup_scale`). ``shear``, ``ilss`` and ``transverse_tension`` are
+    ply / interlaminar matrix properties and are layup-independent.
 
     Knockdowns are evaluated at the specimen-average porosity (Vp_mean),
     matching how the original correlations were calibrated — not at the
@@ -195,8 +287,7 @@ class EmpiricalSolver:
     # ``EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI`` continue to work. New code
     # should reference ``Calibration.JUDD_WRIGHT_ALPHA_QI`` etc. directly.
     # See the ``Calibration`` docstring for the full list and the inline
-    # commentary on each constant (Judd-Wright derivation, F_MD floor
-    # provenance, etc.).
+    # commentary on each constant.
     _JUDD_WRIGHT_ALPHA_QI = Calibration.JUDD_WRIGHT_ALPHA_QI
     _POWER_LAW_N_QI = Calibration.POWER_LAW_N_QI
     _LINEAR_BETA_QI = Calibration.LINEAR_BETA_QI
@@ -208,9 +299,10 @@ class EmpiricalSolver:
         'transverse_tension': 'sigma_2t',
     }
     _MATRIX_DOMINATED_MODES = Calibration.MATRIX_DOMINATED_MODES
-    _F_MD_REF = Calibration.F_MD_REF
-    _F_MD_FLOOR = Calibration.F_MD_FLOOR
-    _F_MD_FLOOR_ILSS = Calibration.F_MD_FLOOR_ILSS
+    # Deprecated, no effect (removal in 2.0); see Calibration.F_MD_REF.
+    _F_MD_REF = _DeprecatedConstant(0.5, _F_MD_RETIRED)
+    _F_MD_FLOOR = _DeprecatedConstant(0.15, _F_MD_RETIRED)
+    _F_MD_FLOOR_ILSS = _DeprecatedConstant(0.80, _F_MD_RETIRED)
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  ply_angles: list[float] | str | None = 'QI',
@@ -230,7 +322,8 @@ class EmpiricalSolver:
             Per-ply orientation in degrees, OR a string sentinel:
 
             - ``'QI'`` (default) -> ``[0, 90, 45, -45]_s`` quasi-isotropic
-              baseline (``f_md = 0.5``, matches the calibration basis).
+              baseline (layup scale 1 for every mode: the calibration
+              basis).
             - ``'UD'`` -> ``[0, 0, 0, 0]`` unidirectional baseline.
             - explicit list of floats -> used verbatim.
 
@@ -243,9 +336,35 @@ class EmpiricalSolver:
             Knockdown"). Each accepts a dict keyed by mode
             (``'compression'`` / ``'tension'`` / ``'shear'`` / ``'ilss'``);
             modes that are absent fall back to the QI defaults. Override
-            values are layup-scaled exactly like the defaults: at
-            ``f_md = 0.5`` the scale is 1.0, so a passed-in ``alpha`` is
-            the value used directly.
+            values are layup-scaled exactly like the defaults (the scale
+            itself is computed from the QI tables, never from the
+            overrides): for a QI or in-plane-isotropic layup, and for every
+            ``shear`` / ``ilss`` / ``transverse_tension`` override, the
+            scale is 1.0 and a passed-in ``alpha`` is the value used
+            directly.
+
+        Attributes
+        ----------
+        layup_scale : dict of str to float
+            Per-mode multiplier applied to ``alpha``, ``n`` and ``beta``.
+            ``1.0`` for ``shear``, ``ilss`` and ``transverse_tension``. For
+            ``tension`` and ``compression`` it is
+            ``max(1, alpha_blend(layup) / alpha_QI[mode])`` with the CLT
+            energy blend described on :class:`Calibration`; it equals 1.0
+            for UD, cross-ply, QI and every in-plane isotropic layup, and
+            rises to ``alpha_QI['transverse_tension'] / alpha_QI['tension']``
+            (2.56) and ``alpha_QI['shear'] / alpha_QI['compression']``
+            (1.16) for ``[90]_n``. Values above 1 are outside the validated
+            range: they are recorded in ``FailureResult.details`` and flagged
+            with a :class:`UserWarning`.
+        matrix_energy_fraction : float
+            Share of the pristine CLT membrane strain energy under a unit
+            ``N_x`` load stored in the ply transverse and shear components
+            (``e2 + e6``, 0 for UD, 1 for ``[90]_n``). Informational.
+        f_md : float
+            Legacy binned matrix-dominated fraction (0 / 0.5 / 1 per ply).
+            Kept for display and back-compat; it no longer drives the
+            scaling.
 
         Notes
         -----
@@ -288,8 +407,17 @@ class EmpiricalSolver:
         beta_qi = self._merge_coefficient_override(
             Calibration.LINEAR_BETA_QI, linear_beta, 'linear_beta')
 
-        # Compute layup-dependent scaling
+        # Legacy descriptor (no longer drives the scaling).
         self.f_md = self._matrix_dominated_fraction(ply_angles_resolved)
+        # Layup scaling (IMPROVEMENT_PLAN 2.7): CLT energy blend for the
+        # fiber-direction modes, 1.0 for the matrix modes.
+        layup = (list(ply_angles_resolved) if ply_angles_resolved
+                 else list(Calibration.PLY_ANGLES_QI))
+        self.layup_scale: dict[str, float] = _layup_scales(material, layup)
+        _e1, e2, e6 = _membrane_energy_partition(material, layup, 'x')
+        self.matrix_energy_fraction: float = min(max(e2 + e6, 0.0), 1.0)
+        # Set while get_all_failure_loads() runs so it warns once, not per mode.
+        self._defer_layup_warning = False
 
         # Build scaled coefficient dicts. Explicit annotations let static
         # checkers narrow `self.JUDD_WRIGHT_ALPHA[mode]` etc. to `float`
@@ -358,33 +486,14 @@ class EmpiricalSolver:
                 total += 0.5
         return total / len(ply_angles)
 
-    # TODO(#140): The linear f_md / Calibration.F_MD_REF scaling is preserved
-    # here for historical compatibility. Investigation in #140 measured a
-    # relative error of up to 33.5% against a CLT-derived stiffness-retention
-    # proxy (sqrt(Ex_layup(Vp)/Ex_layup(0)) / sqrt(Ex_QI(Vp)/Ex_QI(0)) over
-    # Vp in [0.005, 0.05]) for a UD [0,0,0]_s layup; >5% error also seen
-    # on UD-heavy [0_2,90]_s and off-axis [0,15,-15]_s layups. A
-    # polynomial or interpolated lookup should be evaluated against an
-    # independent reference dataset (FE simulation or experimental
-    # coupons spanning the intermediate f_md range) before the scaling
-    # is replaced. See TestLayupScaleRegressionPin in
-    # tests/test_porosity_fe.py.
     def _layup_scale(self, mode: str) -> float:
-        """Scaling factor for empirical coefficients based on layup.
+        """Layup multiplier for ``mode``'s empirical coefficients.
 
-        Maps f_md to a coefficient multiplier:
-        - f_md = f_md_ref (0.5, QI) -> scale = 1.0 (unchanged)
-        - f_md = 0 (UD) -> scale = floor (0.15 for most modes, 0.80 for ILSS)
-        - f_md > f_md_ref -> scale > 1.0 (more matrix-dominated than QI)
+        Thin accessor for :attr:`layup_scale`, computed once in ``__init__``
+        by :func:`_layup_scales`. See the TestEmpiricalLayupScaling and
+        TestLayupScaleRegressionPin classes in ``tests/test_empirical.py``.
         """
-        floor = (Calibration.F_MD_FLOOR_ILSS
-                 if mode in Calibration.MATRIX_DOMINATED_MODES
-                 else Calibration.F_MD_FLOOR)
-        ref = Calibration.F_MD_REF
-        if ref < 1e-12:
-            return 1.0
-        raw = self.f_md / ref
-        return max(raw, floor)
+        return self.layup_scale[mode]
 
     def _local_vp_peak(self) -> float:
         """Peak of the distributed porosity field over the mesh nodes.
@@ -449,6 +558,40 @@ class EmpiricalSolver:
         else:
             return
         warnings.warn(message, UserWarning, stacklevel=3)
+
+    def _amplified_modes(self, model: object, modes: tuple[str, ...]
+                         ) -> dict[str, float]:
+        """Modes among ``modes`` whose built-in coefficient is amplified (> 1).
+
+        User callables bypass the layup scaling, so they are never amplified.
+        """
+        if not isinstance(model, str):
+            return {}
+        return {m: self.layup_scale[m] for m in modes
+                if self.layup_scale[m] > 1.0}
+
+    def _warn_if_layup_amplified(self, model: object,
+                                 modes: tuple[str, ...]) -> None:
+        """Emit a single ``UserWarning`` when a layup scale above 1 is used.
+
+        Scales above 1 (``tension`` / ``compression`` on layups more
+        matrix-dominated than QI under an ``x`` load) come from the CLT
+        energy blend alone; no bundled coupon dataset covers them. Mirrors
+        :meth:`_warn_if_extrapolated`: once per public call, never per node,
+        and user callables are exempt.
+        """
+        amplified = self._amplified_modes(model, modes)
+        if not amplified or self._defer_layup_warning:
+            return
+        parts = ", ".join(f"{m} x{s:.3g}" for m, s in amplified.items())
+        warnings.warn(
+            f"Empirical knockdown evaluated beyond the validated layup range: "
+            f"{_LAYUP_WARNING_MARKER} of the QI coefficients ({parts}). The "
+            f"layup is more matrix-dominated under the fiber-direction load "
+            f"than the QI calibration basis and the CLT-derived amplification "
+            f"is not validated against coupon data. Results are extrapolated "
+            f"and may be inaccurate.",
+            UserWarning, stacklevel=3)
 
     @staticmethod
     def _check_internal_Vp(Vp: float) -> float:
@@ -742,6 +885,7 @@ class EmpiricalSolver:
         # Flag extrapolation past the empirical calibration bound (#184).
         # The per-node field is this method's product, so local peaks count.
         self._warn_if_extrapolated(model, nodal=True)
+        self._warn_if_layup_amplified(model, (mode,))
 
     def _prepare_loading(
             self, mode: str,
@@ -846,7 +990,12 @@ class EmpiricalSolver:
             ``knockdown``, ``model`` attributes plus a ``details`` dict
             carrying the legacy ``'critical_location'`` extra and the new
             ``'environment_knockdown'`` / ``'fatigue_knockdown'`` entries
-            (when active). Back-compat dict-style access
+            (when active). When a built-in model uses a layup scale above 1
+            (``tension`` / ``compression`` on a layup more matrix-dominated
+            than QI, see :attr:`layup_scale`), ``details`` also carries
+            ``'layup_scale'`` (the multiplier) and ``'layup_extrapolated'``
+            (``True``), and a :class:`UserWarning` is emitted once per call
+            (once per :meth:`get_all_failure_loads` call). Back-compat dict-style access
             (``result['failure_stress']``, ``result['critical_location']``,
             etc.) is preserved via the :class:`FailureResult`
             ``__getitem__`` shim and will be removed in a future major
@@ -858,6 +1007,7 @@ class EmpiricalSolver:
         # The returned failure load uses the specimen-average Vp, so only
         # the average is checked against the calibration bound here.
         self._warn_if_extrapolated(model, nodal=False)
+        self._warn_if_layup_amplified(model, (mode,))
         sigma_0 = self._get_pristine_strength(mode)
 
         # Use specimen-average Vp for knockdown (matches calibration basis)
@@ -885,6 +1035,11 @@ class EmpiricalSolver:
             details['environment_knockdown'] = float(env_kd)
         if cycles is not None:
             details['fatigue_knockdown'] = float(fat_kd)
+        # Record an unvalidated layup amplification (IMPROVEMENT_PLAN 2.7).
+        amplified = self._amplified_modes(model, (mode,))
+        if amplified:
+            details['layup_scale'] = float(amplified[mode])
+            details['layup_extrapolated'] = True
 
         return FailureResult(
             failure_stress=float(sigma_0 * mean_kd),
@@ -931,14 +1086,22 @@ class EmpiricalSolver:
         if extra_models:
             for label, fn in extra_models.items():
                 all_models.append((str(label), fn))
-        for mode in ['compression', 'tension', 'shear', 'ilss',
-                     'transverse_tension']:
-            results[mode] = {}
-            for label, model in all_models:
-                results[mode][label] = self.get_failure_load(
-                    mode, model,
-                    cycles=cycles, environment=environment, R=R,
-                )
+        # Warn about a layup amplification once for the whole table rather
+        # than once per (mode, model) pair.
+        self._defer_layup_warning = True
+        try:
+            for mode in ['compression', 'tension', 'shear', 'ilss',
+                         'transverse_tension']:
+                results[mode] = {}
+                for label, model in all_models:
+                    results[mode][label] = self.get_failure_load(
+                        mode, model,
+                        cycles=cycles, environment=environment, R=R,
+                    )
+        finally:
+            self._defer_layup_warning = False
+        self._warn_if_layup_amplified(
+            'judd_wright', tuple(sorted(Calibration.FIBER_DIRECTION_MODES)))
         return results
 
     def local_sensitivities(self, mode: str = 'compression',
@@ -983,7 +1146,9 @@ class EmpiricalSolver:
             ``dKD_dcoef`` is the partial with respect to the layup-scaled
             coefficient (alpha/n/beta) that the solver actually applied;
             it already reflects the layup scaling from
-            :meth:`_layup_scale`.
+            :attr:`layup_scale` (also for user overrides). Unlike
+            :meth:`get_failure_load` this method does not warn about a
+            layup scale above 1.
         """
         self._check_mode(mode)
         if Vp is None:

@@ -78,11 +78,12 @@ class TestRunAnalysis:
     def test_compression_returns_full_result(self, comp_result):
         for k in ("config", "material", "porosity_field", "mesh",
                   "empirical", "fe_field", "fe_loading",
-                  "fe_skipped_reason", "f_md"):
+                  "fe_skipped_reason", "layup_scale"):
             assert k in comp_result
         assert comp_result["fe_field"] is not None
         assert comp_result["fe_loading"] == "compression"
-        assert isinstance(comp_result["f_md"], float)
+        assert set(comp_result["layup_scale"]) == {
+            "compression", "tension", "shear", "ilss", "transverse_tension"}
         # Empirical table carries the four loading modes.
         for mode in ("compression", "tension", "shear", "ilss"):
             assert mode in comp_result["empirical"]
@@ -193,14 +194,22 @@ class TestPlots:
                           f"FE Stiffness ({fe_loading})"]
         plt.close(fig)
 
-    def test_plot_results_fiber_dominated_footnote(self, comp_result):
-        """A low matrix-dominated fraction (f_md < 0.49) adds the
-        layup-scaling footnote to the knockdown chart."""
+    def test_plot_results_layup_amplification_footnote(self, comp_result):
+        """A layup scale above 1 (unvalidated amplification) adds a footnote
+        naming the amplified modes; scale 1 adds none."""
+        def footnote(result):
+            fig = app.plot_results(result, "45/-45/-45/45")
+            texts = [t.get_text() for t in fig.axes[0].texts]
+            plt.close(fig)
+            return "\n".join(texts)
+
         skewed = dict(comp_result)
-        skewed["f_md"] = 0.3
-        fig = app.plot_results(skewed, "0/0/0/0")
-        assert fig is not None
-        plt.close(fig)
+        skewed["layup_scale"] = {**comp_result["layup_scale"],
+                                 "tension": 1.94, "compression": 1.14}
+        note = footnote(skewed)
+        assert "Layup amplification (compression x1.14, tension x1.94)" in note
+        assert "not validated" in note
+        assert "Layup amplification" not in footnote(comp_result)
 
     def test_plot_stress_component(self, comp_result):
         fig = app.plot_stress(comp_result, "σ₁₁ (fiber)")

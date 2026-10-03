@@ -49,10 +49,11 @@ Linear
 
 ## Calibrated coefficients
 
-The coefficients below ({class}`~porosity_fe.Calibration`) come from
-Elhajjar (2025). They were tuned with the layup scaling of the next section
-already applied, so they are the values at the reference
-$f_\text{md} = 0.5$, not raw fits to one coupon layup.
+The coefficients below ({class}`~porosity_fe.Calibration`) come from the
+Elhajjar (2025) $[0/45/90/-45/0]_s$ coupons. A least-squares fit of
+$\ln KD$ against $V_p$ on that dataset alone gives $\alpha = 6.95$
+(compression) and $4.21$ (tension), close to the tabulated values. Every
+quasi-isotropic and in-plane isotropic layup uses them unscaled.
 
 | Mode | $\alpha$ (Judd-Wright) | $n$ (power law) | $\beta$ (linear) |
 |---|---|---|---|
@@ -73,45 +74,83 @@ per-node field evaluates the law at the local $V_p$.
 
 ## Layup scaling
 
-Porosity hurts matrix-dominated layups more than fiber-dominated ones. The
-solver scales each coefficient with a matrix-dominated fraction
-$f_\text{md}$ computed from the ply angles. Each ply contributes:
+Only the fiber-direction laminate modes, `tension` and `compression`, are
+layup-scaled. `shear`, `ilss` and `transverse_tension` are ply or
+interlaminar matrix properties ($\tau_{12}$, $\tau_\text{ilss}$,
+$\sigma_{2t}$), so their scale is $s = 1$ for every layup.
 
-| Ply angle $\lvert\theta\rvert \bmod 180°$ | Contribution |
-|---|---|
-| $\le 10°$ | 0 |
-| $\ge 80°$ | 1 |
-| otherwise | 0.5 |
-
-$f_\text{md}$ is the mean contribution over the plies. The scale factor is
+For the fiber-direction modes, `porosity_fe._layup._membrane_energy_partition`
+loads the pristine laminate with a unit membrane resultant $N_x$. CLT,
+membrane only, gives the mid-plane strain $\varepsilon^0 = A^{-1} N$. In
+each ply's material axes, the strain energy then splits into fiber,
+transverse and shear parts:
 
 $$
-s = \max\!\left(\frac{f_\text{md}}{0.5},\ s_\text{floor}\right),
+(e_1, e_2, e_6) \propto \sum_k \left(\sigma_{11}\varepsilon_{11},\
+\sigma_{22}\varepsilon_{22},\ \tau_{12}\gamma_{12}\right)_k,
+\qquad e_1 + e_2 + e_6 = 1 .
 $$
 
-with $s_\text{floor} = 0.15$ for most modes. ILSS and transverse tension
-use $s_\text{floor} = 0.80$, because they stay matrix-dominated whatever
-the fiber layup. The scaled coefficients are $\alpha s$, $\max(n s, 0.1)$
-and $\beta s$.
+The fractions weight the calibrated per-mode coefficients:
 
-| Layup | $f_\text{md}$ | $s$ (compression) | $\alpha_\text{eff}$ (compression) |
-|---|---|---|---|
-| $[0]_{16}$ | 0.00 | 0.15 (floor) | 1.035 |
-| $[0/90/\pm45]_s$ (QI) | 0.50 | 1.00 | 6.90 |
-| $[\pm45]_{4s}$ | 0.50 | 1.00 | 6.90 |
-| $[90]_8$ | 1.00 | 2.00 | 13.80 |
+$$
+\alpha_\text{blend} = e_1\,a_\text{fib} + e_2\,a_2 + e_6\,a_6,
+\qquad
+s = \max\!\left(1,\ \frac{\alpha_\text{blend}}{\alpha_\text{QI}}\right).
+$$
+
+- Tension uses $a_2 = \alpha_\text{QI}(\texttt{transverse\_tension})$ and
+  $a_6 = \alpha_\text{QI}(\texttt{shear})$.
+- Compression uses $a_2 = a_6 = \alpha_\text{QI}(\texttt{shear})$, because
+  no transverse-compression mode is calibrated.
+- $a_\text{fib}$ is solved so that $\alpha_\text{blend}(\text{QI}) =
+  \alpha_\text{QI}$. The rule adds no fitted constant.
+
+The scaled coefficients are $\alpha s$, $\max(n s, 0.1)$ and $\beta s$.
+The same $s$, computed from the Judd-Wright QI table, applies to all three
+laws.
+
+Properties of the scale:
+
+- It is 1 for UD, cross-ply, QI and every in-plane isotropic layup (for
+  example $[0/\pm60]_s$, which has the same $A$ matrix as QI).
+- It is never below 1 and never above the matrix anchors,
+  $10/3.9 = 2.56$ for tension and $8/6.9 = 1.16$ for compression.
+- It is continuous in ply angle and independent of stacking order.
+
+| Layup (T800/epoxy) | $s$ tension | $s$ compression |
+|---|---|---|
+| $[0]_n$, $[0/90]_s$, $[0_2/90]_s$, $[0/\pm15]_s$, QI, $[0/\pm60]_s$ | 1.00 | 1.00 |
+| $[\pm30]_{2s}$ | 1.55 | 1.08 |
+| $[\pm45]_{2s}$ | 1.94 | 1.14 |
+| $[90]_8$ | 2.56 | 1.16 |
+
+The per-mode values are on the solver's `layup_scale` attribute
+({class}`~porosity_fe.EmpiricalSolver`).
 
 ```{note}
-The floors 0.15 and 0.80 are empirical tuning constants with no published
-derivation (issue #139). The linear $f_\text{md}/0.5$ rule differs by up to
-about 33 % from a CLT stiffness-retention proxy for UD-heavy layups
-(issue #140). Recalibrating the layup scaling against layup-varying data is
-planned work.
+**Scales above 1 are unvalidated.** None of the 13 bundled validation
+datasets uses an angle-ply, off-axis or 90°-rich layup. Ten are UD, two are
+cross-ply and one is QI, and all of them get $s = 1$. The amplification
+therefore rests only on CLT and the calibrated mode alphas.
+{meth}`~porosity_fe.EmpiricalSolver.get_failure_load` records any scale
+above 1 in `details['layup_scale']` and emits one `UserWarning` per call.
+
+This rule replaced a binned matrix-dominated fraction, $s = \max(f_\text{md}/0.5,
+s_\text{floor})$, with floors of 0.15 and 0.80 that had no traceable source
+(issues #139 / #140). That rule made UD tension, compression and shear 85 %
+less porosity-sensitive than QI. The validation data do not support that:
+the best-fit scale for UD coupons averages 0.9 to 1.4 depending on the mode,
+so the floor was the largest error source in the database. Replacing it
+lowers the
+property-weighted validation MAE from 7.05 % to 4.49 %. The study behind the
+change is IMPROVEMENT_PLAN item 2.7. `Calibration.F_MD_REF`, `F_MD_FLOOR` and
+`F_MD_FLOOR_ILSS` are deprecated, have no effect, and will be removed in 2.0.
 ```
 
 User overrides `judd_wright_alpha=`, `power_law_n=` and `linear_beta=` are
 per-mode dicts. They replace the QI values for the modes given and are
-then scaled the same way. A user callable `model(Vp, mode) -> KD` bypasses
+then scaled the same way (the scale itself always comes from the QI table). A user callable `model(Vp, mode) -> KD` bypasses
 the table and the scaling entirely; it is checked on a grid for finite
 values in $[0, 1]$.
 
@@ -136,5 +175,8 @@ sits, not as a second failure prediction.
 5. Regress $\ln KD$ against $V_p$ (slope $-\alpha$) for Judd-Wright, or
    $\ln KD$ against $\ln(1 - V_p)$ (slope $n$) for the power law.
 
-If the coupon layup is not quasi-isotropic, divide the fitted coefficient
-by that layup's scale $s$ before passing it as an override.
+For `shear`, `ilss` and `transverse_tension`, and for `tension` /
+`compression` coupons that are UD, cross-ply or quasi-isotropic, the fitted
+coefficient is the override as is. For a coupon whose layup scale $s$ is
+above 1, divide the fitted coefficient by $s$ before passing it as an
+override.

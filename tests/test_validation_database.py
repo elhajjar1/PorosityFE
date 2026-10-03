@@ -265,8 +265,11 @@ def test_elhajjar_validation_matches_existing():
     results = run_all_datasets()
     elh = results.get('elhajjar_2025', {})
     assert 'compression_strength' in elh
-    # Historical Elhajjar compression MAE was ~6.9% (pre-migration)
-    assert abs(elh['compression_strength']['mae'] - 6.9) < 1.5
+    # Historical Elhajjar compression MAE was ~6.9% (pre-migration) and
+    # 5.64% under the f_md / 0.5 layup rule, which scaled the calibration
+    # coupon itself by 0.8. With the IMPROVEMENT_PLAN 2.7 layup scaling the
+    # coupon gets the QI coefficients unscaled: 1.53%.
+    assert abs(elh['compression_strength']['mae'] - 1.53) < 0.5
 
 
 def test_liu_2006_validation_matches_existing():
@@ -483,44 +486,49 @@ def test_predict_strength_runs_for_transverse_tensile():
 # Regenerate with: python -c "from validation.validate_all import
 # run_all_datasets as r; ..." (see PR for the one-liner) only on an
 # intentional model change, and call it out in the PR.
+#
+# Last re-pinned for IMPROVEMENT_PLAN 2.7 (layup scaling R1, #139 / #140):
+# 20 strength entries moved (17 better; olivier_1995:ilss,
+# stamopoulos_2016:ilss and stamopoulos_2016:transverse_tensile_strength
+# worse), the 15 modulus / cross-ply entries are bit-identical.
 # ---------------------------------------------------------------------------
 
 _MAE_BASELINES = {
-    ('almeida_1994', 'ilss'): 6.897,
-    ('bowles_1992', 'ilss'): 3.019,
-    ('elhajjar_2025', 'compression_strength'): 5.643,
-    ('elhajjar_2025', 'tensile_strength'): 4.331,
+    ('almeida_1994', 'ilss'): 3.908,
+    ('bowles_1992', 'ilss'): 1.648,
+    ('elhajjar_2025', 'compression_strength'): 1.53,
+    ('elhajjar_2025', 'tensile_strength'): 1.364,
     ('ghiorse_1993', 'flexural_modulus'): 16.219,
     ('ghiorse_1993', 'ilss'): 10.155,
-    ('jeong_1997', 'ilss'): 4.156,
+    ('jeong_1997', 'ilss'): 1.049,
     ('liu_2006', 'flexural_modulus'): 7.68,
     ('liu_2006', 'ilss'): 1.987,
     ('liu_2006', 'tensile_modulus'): 1.771,
     ('liu_2006', 'tensile_strength'): 1.581,
     ('liu_2018', 'tensile_modulus'): 0.858,
-    ('liu_2018', 'tensile_strength'): 5.26,
+    ('liu_2018', 'tensile_strength'): 1.472,
     ('liu_2018', 'transverse_tensile_modulus'): 2.756,
-    ('liu_2018', 'transverse_tensile_strength'): 5.696,
+    ('liu_2018', 'transverse_tensile_strength'): 3.354,
     ('olivier_1995', 'flexural_modulus'): 10.528,
-    ('olivier_1995', 'ilss'): 1.554,
-    ('olivier_1995', 'tensile_strength'): 15.667,
+    ('olivier_1995', 'ilss'): 9.213,
+    ('olivier_1995', 'tensile_strength'): 1.186,
     ('stamopoulos_2016', 'flexural_modulus'): 2.309,
-    ('stamopoulos_2016', 'ilss'): 2.523,
+    ('stamopoulos_2016', 'ilss'): 3.672,
     ('stamopoulos_2016', 'shear_modulus'): 14.734,
-    ('stamopoulos_2016', 'shear_strength'): 4.353,
+    ('stamopoulos_2016', 'shear_strength'): 2.807,
     ('stamopoulos_2016', 'transverse_tensile_modulus'): 1.489,
-    ('stamopoulos_2016', 'transverse_tensile_strength'): 2.493,
+    ('stamopoulos_2016', 'transverse_tensile_strength'): 4.437,
     ('tang_1987', 'flexural_modulus'): 7.922,
-    ('tang_1987', 'ilss'): 8.374,
-    ('tang_1987', 'tensile_strength'): 10.923,
+    ('tang_1987', 'ilss'): 3.824,
+    ('tang_1987', 'tensile_strength'): 3.309,
     ('wang_2022', 'tensile_modulus'): 1.325,
-    ('wang_2022', 'tensile_strength'): 12.801,
-    ('wen_2023', 'compression_strength'): 17.236,
-    ('wen_2023', 'ilss'): 5.704,
-    ('wen_2023', 'shear_strength'): 22.644,
-    ('wen_2023', 'tensile_strength'): 6.583,
+    ('wang_2022', 'tensile_strength'): 4.016,
+    ('wen_2023', 'compression_strength'): 3.63,
+    ('wen_2023', 'ilss'): 1.479,
+    ('wen_2023', 'shear_strength'): 6.097,
+    ('wen_2023', 'tensile_strength'): 0.637,
     ('zhang_peek_2025', 'transverse_tensile_modulus'): 5.512,
-    ('zhang_peek_2025', 'transverse_tensile_strength'): 14.077,
+    ('zhang_peek_2025', 'transverse_tensile_strength'): 11.866,
 }
 
 
@@ -616,5 +624,6 @@ def test_headline_mae_pinned(_all_results):
     s = summarize_mae(_all_results)
     assert s['n_entries'] == 35
     assert s['n_points'] == 239
-    assert s['property_weighted_mae'] == pytest.approx(7.050, abs=0.05)
-    assert s['point_weighted_mae'] == pytest.approx(6.531, abs=0.05)
+    # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling.
+    assert s['property_weighted_mae'] == pytest.approx(4.495, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(3.891, abs=0.05)

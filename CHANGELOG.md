@@ -106,8 +106,9 @@ All notable changes to PorosityFE will be documented in this file.
   - every knockdown law stays a monotone fraction on `Vp in [0, 0.05]`,
     at QI and after layup scaling.
 
-  The headline validation MAE (7.05% property-weighted, 6.53%
-  point-weighted, 35 entries, 239 points) is now pinned.
+  The headline validation MAE (35 entries, 239 points) is now pinned. It
+  was 7.05% property-weighted and 6.53% point-weighted, and is 4.49% /
+  3.89% after the layup-scaling change under "Changed".
 - **Uncertainty propagation in the CLI and app (IMPROVEMENT_PLAN 3.4).**
   - `porosity-analyze --uq` writes `porosity_uq_<Vp>.json` (new
     `porosity-fe.uq` format, `FORMAT_UQ`) for every loading mode. The
@@ -460,6 +461,65 @@ All notable changes to PorosityFE will be documented in this file.
   returns the penalty-modified system but warns. Use the new
   `BoundaryHandler.apply_elimination(K, F, constrained)`, which returns
   `(K_ff, rhs, free_dofs)`. All three will be removed in 2.0.
+- **Empirical layup scaling replaced (results change; IMPROVEMENT_PLAN 2.7,
+  substance of #139 / #140).** The binned matrix-dominated fraction rule
+  (`alpha_QI × f_md / 0.5`, floored at 0.15, or 0.80 for ILSS and
+  transverse tension) is gone.
+  - `shear`, `ilss` and `transverse_tension` are now layup-independent
+    (scale 1). They are ply or interlaminar matrix properties.
+  - `tension` and `compression` use `scale = max(1, alpha_blend /
+    alpha_QI)`. `alpha_blend` weights the calibrated per-mode alphas by the
+    fiber / transverse / shear split of the pristine CLT membrane strain
+    energy under a unit `N_x` load (new private `porosity_fe._layup`).
+    The rule adds no fitted constant.
+  - The scale applies to all three laws, to user overrides and to
+    `local_sensitivities`.
+  - The default QI layup gives bit-identical results for every mode and
+    law, and so does every in-plane isotropic layup.
+  - UD, cross-ply, the Elhajjar `[0/45/90/-45/0]_s` coupon, `[0_2/90]_s`
+    and `[0/±15]_s` now use the QI coefficients unscaled. This is the
+    conservative direction: UD tension KD at `Vp = 0.05` drops from 0.971
+    to 0.823, and UD compression from 0.950 to 0.708.
+  - Layups more matrix-dominated than QI under an x load are amplified.
+    `[±45]_2s` tension is ×1.94 and compression ×1.14; `[90]_8` tension is
+    ×2.56 and compression ×1.16. Their matrix modes are no longer
+    amplified (they were ×2.0 for `[90]_8`).
+
+  The amplification has no coupon data behind it. It is recorded in
+  `FailureResult.details` (`'layup_scale'`, `'layup_extrapolated'`) and
+  flagged with one `UserWarning` per `get_failure_load` /
+  `apply_loading` / `get_all_failure_loads` call.
+  `propagate_uncertainty` reports it once, from the nominal solve, rather
+  than once per draw. New `EmpiricalSolver.layup_scale` and
+  `EmpiricalSolver.matrix_energy_fraction` attributes expose the values.
+  The app's knockdown chart footnote shows the amplification in place of
+  `f_md`; the result dict carries `layup_scale` instead of `f_md`.
+
+  Validation MAE:
+  - Property-weighted: 7.05% → 4.49%.
+  - Point-weighted: 6.53% → 3.89%.
+  - Worst entry: 22.64% → 16.22%.
+  - By property: ILSS 4.9% → 4.1%, tensile strength 8.2% → 1.9%,
+    compression 11.4% → 2.6%, shear strength 13.5% → 4.5%, transverse
+    tensile strength 7.4% → 6.6%. Moduli are unchanged.
+
+  20 of 35 entries move. 17 improve, for example
+  `wen_2023:shear_strength` 22.64% → 6.10% and
+  `olivier_1995:tensile_strength` 15.67% → 1.19%. Three get worse:
+  - `olivier_1995:ilss`: 1.55% → 9.21%;
+  - `stamopoulos_2016:transverse_tensile_strength`: 2.49% → 4.44%;
+  - `stamopoulos_2016:ilss`: 2.52% → 3.67%.
+
+  These two papers imply a scale of 0.56 to 0.76, below every other UD
+  paper. The MAE pins in `tests/test_validation_database.py` are updated.
+- **Deprecated: `Calibration.F_MD_REF`, `F_MD_FLOOR`, `F_MD_FLOOR_ILSS`**
+  and the `EmpiricalSolver._F_MD_*` aliases. They keep their old values
+  but no longer have any effect. Reading one emits a `DeprecationWarning`,
+  and they will be removed in 2.0. `EmpiricalSolver.f_md` stays as a
+  legacy descriptor and no longer drives the scaling.
+  `Calibration.MATRIX_DOMINATED_MODES` is unused but kept.
+  `Calibration.FIBER_DIRECTION_MODES` and
+  `Calibration.LAYUP_MATRIX_ANCHORS` describe the new rule.
 - **Provenance short aliases are deprecated (IMPROVEMENT_PLAN 4.7).** The
   canonical keys are `porosity_fe_version`, `python_version`,
   `numpy_version`, `scipy_version`, `timestamp_utc` and `git_commit`. The

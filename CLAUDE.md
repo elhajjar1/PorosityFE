@@ -64,9 +64,12 @@ different numerical answers for the same inputs**, not the same answer:
   knockdown applied **once at the laminate level** using the
   specimen-average `Vp`. The distribution shape (`uniform` vs `clustered`
   vs `interface`) has **no effect** here because all are renormalized to
-  the same mean. Layup enters via a matrix-dominated fraction `f_md`
-  computed from ply angles (`alpha_eff = alpha_QI · (f_md / 0.5)`, with
-  floors `_F_MD_FLOOR` / `_F_MD_FLOOR_ILSS`).
+  the same mean. Layup enters through `EmpiricalSolver._layup_scales()`
+  (`porosity_fe/_layup.py`, IMPROVEMENT_PLAN 2.7): `shear` / `ilss` /
+  `transverse_tension` are layup-independent, and `tension` /
+  `compression` scale by `max(1, CLT-energy blend / alpha_QI)`, so QI
+  layups are unchanged and a scale above 1 is flagged as unvalidated. The
+  old `f_md` / `F_MD_*` constants are deprecated and drive nothing.
 - `FESolver` (`porosity_fe/fe/solver.py`) — builds a hex8 mesh and
   applies stiffness degradation **per element** via Eshelby/Mori-Tanaka
   micromechanics on the local `Vp(x, y, z)`. Assembly and stress recovery
@@ -180,4 +183,4 @@ version-sensitive code.
   `ln(KD)` vs `ln(1-Vp)` for power law), and the validity bound. Custom
   per-mode overrides go through the keyword-only `judd_wright_alpha=` /
   `power_law_n=` / `linear_beta=` constructor args, which layer on top of
-  the QI defaults with the same `f_md` scaling.
+  the QI defaults with the same layup scaling.
