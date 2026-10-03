@@ -192,8 +192,11 @@ type checkers use them; at run time each function validates its own input.
 
 .. py:data:: FELoadingMode
 
-   ``'compression' | 'tension' | 'shear' | 'ilss'``, the loading modes
-   :meth:`FESolver.solve` has boundary conditions for.
+   ``'compression' | 'tension' | 'shear' | 'ilss' | 'thermal'``, the
+   loading modes :meth:`FESolver.solve` has boundary conditions for.
+   ``'thermal'`` is the free-standing cure residual-stress solve; it needs
+   ``delta_T=`` and lamina CTEs (see the theory page on thermal and cure
+   residual stress).
 
 .. py:data:: FEFormulation
 

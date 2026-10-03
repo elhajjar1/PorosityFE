@@ -34,13 +34,67 @@ All notable changes to PorosityFE will be documented in this file.
   more is rejected as a probable ppm/K value ("pass 26e-6, not 26"),
   `alpha_1` and `alpha_2` must be given together, and only `alpha_1` may be
   negative. `has_cte` and `cte_vector()` (Voigt `[a1, a2, a3, 0, 0, 0]`)
-  are there for the solver. **The thermal / cure-residual-stress solve
-  itself is not implemented yet**: no solver reads these fields, and every
-  existing result is unchanged. Only `AS4_3501_6_epoxy` carries CTEs
+  are there for the solver. The thermal load case below is the only
+  reader; without `delta_T` every existing result is unchanged. Only
+  `AS4_3501_6_epoxy` carries CTEs
   (`alpha_1 = -1.0e-6`, `alpha_2 = 26e-6` /K, WWFE-I lamina data, Soden,
   Hinton & Kaddour 1998); the other presets leave them `None` until
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
+- **Thermal / cure residual-stress load case (IMPROVEMENT_PLAN 3.5, PRs 2
+  and 3).** Library only; the app does not expose it yet. Mechanical
+  solves without `delta_T` are bit-identical to before (checked on the
+  production mesh, both element formulations, all four modes and three
+  criteria).
+  - `FESolver.solve(loading='thermal', delta_T=...)` solves the
+    free-standing laminate under a uniform temperature change (K, negative
+    for a cool-down) with statically determinate 3-2-1 supports
+    (`BoundaryHandler.free_bcs`, new), whose reactions come out at about
+    1e-9 N. The load `sum B^T C alpha dT det(J) w` uses the porosity-
+    degraded, ply-rotated stiffness and the pristine lamina CTE (an empty
+    void does not change the free thermal expansion); for
+    `formulation='hex8i'` the incompatible modes are loaded and condensed
+    consistently (`f_u + H^T f_a`, strain `B_eff u + G Kaa^-1 f_a`), and
+    match a solve with the internal modes kept as unknowns to 1e-13. Stress
+    is `C (B u - alpha dT)`; strains are totals. On a [0/90]_2s T800 plate
+    the interior stresses match CLT (47.573 MPa) to 0.07 % with `'hex8'`
+    and 0.3 % with `'hex8i'`; a distorted homogeneous block expands freely
+    with zero stress to round-off. `knockdown` is `nan` (`null` in JSON),
+    `effective_modulus` is `None`, and `first_ply_failure_load_factor`
+    multiplies `delta_T` (the critical temperature change).
+  - `delta_T=` on `'compression'`, `'tension'`, `'shear'` or `'ilss'`
+    superposes that residual state on the mechanical solve (two solves:
+    the residual stress forms before the laminate is gripped). Knockdown,
+    effective modulus and reactions stay those of the mechanical solve.
+    The first-ply-failure factor scales only the mechanical stress:
+    `first_ply_failure_load_factor(..., prestress_local=...)` (new
+    keyword) solves Tsai-Wu in closed form with the residual terms,
+    max-stress as linear with an offset, and Hashin branch by branch
+    because a residual stress lets a stress change sign as the load grows
+    (checked against bisection to 1e-6). For the cross-ply in tension the
+    factor drops from 7.0 to 2.7; scaling the total stress would have
+    given 1.3.
+  - `delta_T` is never inferred (not from `T_stress_free`); a material
+    without CTEs, a non-finite `delta_T`, or a mesh whose element layers
+    do not resolve the requested layup (`nz` not a multiple of `n_plies`)
+    raises `ValueError`, the last unless `allow_unresolved_layup=True`.
+    An unsymmetric element layup logs a warning (linear theory; `'hex8'`
+    underpredicts its curvature, 0.84 of CLT where `'hex8i'` gives 1.00).
+  - `FieldResults` gains `delta_T`, `residual_stress_local`,
+    `residual_max_failure_index`, `load_factor_basis`, `cte_local`, and,
+    for every solve, `interior_max_failure_index` and
+    `interior_first_ply_failure_load_factor` over the elements at least
+    `interior_margin` from the lateral faces, away from the free-edge
+    singularity. The JSON export adds a `thermal` block, these keys in
+    `failure` and `delta_T_K` in the provenance (`JSON_SCHEMA_VERSION`
+    1.2, additive); VTK/VTU files add `residual_sigma_11_local`,
+    `residual_sigma_22_local` and `residual_tau_12_local` cell fields and
+    leave out the `knockdown` field when it is `nan`. `FELoadingMode`
+    gains `'thermal'`. Theory: `docs/theory/thermal.md`.
+  - Caveats documented there: CTE data (one preset), effective `delta_T`
+    (no chemical shrinkage, relaxation or moisture), geometric linearity,
+    and that under the square-root strength rule porosity can lower the
+    residual failure index.
 - **Incompatible-mode hex8 element (IMPROVEMENT_PLAN 3.6, step A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
   nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
   correction), condensed out per element and folded into an effective

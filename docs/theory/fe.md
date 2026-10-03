@@ -152,6 +152,7 @@ results from before the change bit for bit.
 | `compression`, `tension` | displacement | $u_x = 0$ on $x_\text{min}$, $u_x = \varepsilon L_x$ on $x_\text{max}$, $u_y = 0$ on $y_\text{min}$, one corner fixed in $z$ |
 | `shear` | displacement | $u_x = \tfrac{\gamma}{2} y$, $u_y = \tfrac{\gamma}{2} x$ on the four $x$ and $y$ faces; one corner fixed in $z$ |
 | `ilss` | force | bottom-face nodes along both end edges pinned in $x, y, z$; total `applied_load` along $-z$ shared equally by the top-face nodes at mid-span |
+| `thermal` | temperature change `delta_T` | statically determinate 3-2-1 supports on $z_\text{min}$ only, so the laminate is free; see {doc}`thermal` |
 
 Prescribed displacements are imposed exactly by eliminating the
 constrained degrees of freedom. With $f$ the free and $c$ the constrained
