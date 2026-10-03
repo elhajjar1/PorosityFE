@@ -5,6 +5,66 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
+  E1).** Results and existing exports do not change.
+  - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and
+    `FieldResults.nodal_strain`) extrapolates the 2 x 2 x 2 Gauss-point
+    values of each element to its corners, then averages them only
+    within the same ply, so ply-interface jumps are not smeared. Void
+    elements are grouped separately. In UD pure bending with two
+    elements through the thickness, the surface `sigma_xx` goes from
+    0.50 of beam theory (element mean, what `to_vtk` writes) to 1.02.
+    `average='all'` and `average='none'` (raw per-element corners) are
+    also available.
+  - `FieldResults.to_vtu` writes binary VTK XML (`.vtu`) without new
+    dependencies. It carries the `to_vtk` point and cell fields plus the
+    recovered nodal stress and strain. Options: `Float64` (default) or
+    `Float32`; appended raw (default) or inline base64; `exploded=True`
+    for per-element corner values. On the production mesh (3,600
+    elements) it writes 1.6 MB in 14 ms with the nodal fields, or the
+    `to_vtk` fields alone in 1.1 MB and 3 ms. The legacy ASCII file is
+    2.0 MB and takes 57 ms.
+    `FESolver.export_results(fmt='vtu')` delegates to it. `write_pvd`
+    (new) groups VTU files into a ParaView series. `to_vtk` and its
+    output are unchanged and remain the default for `fmt='vtk'`.
+- **Thermal expansion inputs (IMPROVEMENT_PLAN 3.5, first part).**
+  `MaterialProperties` gains optional `alpha_1`, `alpha_2`, `alpha_3`
+  (lamina CTEs in 1/K) and `T_stress_free` (deg C), all defaulting to
+  `None`; `alpha_3=None` means `alpha_3 = alpha_2`. A CTE of `1e-3` /K or
+  more is rejected as a probable ppm/K value ("pass 26e-6, not 26"),
+  `alpha_1` and `alpha_2` must be given together, and only `alpha_1` may be
+  negative. `has_cte` and `cte_vector()` (Voigt `[a1, a2, a3, 0, 0, 0]`)
+  are there for the solver. **The thermal / cure-residual-stress solve
+  itself is not implemented yet**: no solver reads these fields, and every
+  existing result is unchanged. Only `AS4_3501_6_epoxy` carries CTEs
+  (`alpha_1 = -1.0e-6`, `alpha_2 = 26e-6` /K, WWFE-I lamina data, Soden,
+  Hinton & Kaddour 1998); the other presets leave them `None` until
+  sourced values are confirmed. No preset sets `T_stress_free`. The CTE
+  fields are not UQ-perturbable.
+- **Incompatible-mode hex8 element, opt-in (IMPROVEMENT_PLAN 3.6, step
+  A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
+  nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
+  correction), condensed out per element and folded into an effective
+  `B = B + G H` in the batched path, so stiffness, stress recovery,
+  failure and export run unchanged. The standard hex8 locks in bending
+  with an error of about `(G13 / E11) (dx / h)^2` (element length over
+  laminate thickness): on a UD T800 beam `E_bend / E11` is 2.265 at 4x2x2
+  and 1.084 at 16x4x8 with `'hex8'`, 1.002 and 1.001 with `'hex8i'`. The
+  new element passes the patch test on distorted meshes and has exactly
+  six zero-energy modes. On the production mesh (T800 QI, 30x10x12) it
+  leaves the compression, tension and shear knockdowns within 1e-4, moves
+  the ILSS knockdown by +0.0006 to +0.0034, lowers the peak ILSS
+  `|tau_13|` by about 45 % and raises the ILSS first-ply-failure load
+  factor by 17-25 %. The option is validated, recorded as
+  `FieldResults.formulation`, in `summary().details` and as
+  `solver.formulation` in the JSON export, and is part of the assembler's
+  `K` cache key and the shared pristine-reference cache key, so the two
+  formulations never share a cached result. `GlobalAssembler`,
+  `build_element_batch` and `Hex8Element` take the same keyword
+  (`Hex8Element.G_matrix` / `strain_operator` expose the enrichment); the
+  new `FEFormulation` type alias names the accepted values. `'hex8'`
+  remains the default and its results are unchanged bit for bit. See
+  "Element formulations" in `docs/theory/fe.md`.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
@@ -118,6 +178,37 @@ All notable changes to PorosityFE will be documented in this file.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **`FESolver.solve(solver='cg')` and `solver='minres'` returned wrong
+  answers at the default `rtol` (result change for iterative-solver
+  users).** The penalty rows put `alpha * v ~ 1e11 * v` into the
+  right-hand side of the displacement-controlled modes, so `||F||` was
+  huge and the relative-residual test passed as soon as the constrained
+  DOFs were right, with the interior unconverged. On a 20x8x12 clustered
+  `Vp = 0.02` mesh, compression CG was 24 % off in displacement and 16 % in
+  stress, shear CG 17 % in the failure index, and compression MINRES 8 % in
+  displacement, all reported as converged. ILSS MINRES always failed its
+  residual check, because SciPy's MINRES stops on a preconditioned estimate
+  about 1,000x below the true residual. With the boundary conditions
+  eliminated (see Changed), CG agrees with the direct solve to within
+  4e-8 in displacement, stress and failure index on the production mesh.
+  MINRES is warm-restarted, at most 3 times, until its true residual
+  meets `rtol` (one restart on every shipped load case, ILSS included).
+  It agrees to within 2e-6, since a residual minimizer is less accurate
+  than CG at the same tolerance. Iterative solves are slower because they
+  now actually converge: CG takes about 1,000 iterations (about 1.3 s) on
+  the production mesh instead of stopping after about 85.
+- **ILSS beam-theory test reference.** `TestILSSBeamTheoryValidation`
+  compared the peak FE `|tau_xz|` with `1.5 |F| / (b h)`, but in a
+  three-point bend each half-span carries `V = F / 2`, so the beam-theory
+  peak is `0.75 |F| / (b h)` (the ASTM D2344 short-beam-strength formula).
+  The test passed only because hex8 shear locking roughly doubles the
+  Gauss-point `tau_xz` near mid-span. The test now uses the correct
+  reference, requires `'hex8i'` to match it (within 10 % at mid-width in
+  the shear spans; measured -7 %), checks the section-mean shear against
+  the parabolic profile for both elements, pins the known hex8 overshoot
+  (about 2.1x in the old band), and adds simply supported (Timoshenko,
+  within 2 %) and pinned-support (tied-arch) deflection checks. Library
+  results are unchanged.
 - **`MaterialProperties(tsai_wu_F12=...)` is now the normalized
   coefficient it was documented as.** The docstring called it a
   dimensionless value in `[-1, 0]`, but the FE Tsai-Wu check used it as
@@ -328,6 +419,47 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Dirichlet boundary conditions are eliminated exactly instead of by a
+  penalty (IMPROVEMENT_PLAN 1.6).** `FESolver` solves
+  `K_ff u_f = F_f - K_fc u_c` with the prescribed values set exactly, in
+  place of adding `1e6 * max(diag K)` to each constrained DOF.
+  - Boundary values hold bit for bit (the penalty left a slack of about
+    1e-8 of the displacement), and the free-DOF stiffness keeps its
+    physical conditioning: the diagonal ratio on the production mesh drops
+    from 2.4e7 to 24.
+  - Direct-solver results move very little. On the 30x10x12 production
+    mesh (clustered, uniform and interface porosity, QI and UD, all four
+    loadings) the changes are:
+    - displacements: at most 4e-8 of `max|u|`;
+    - stresses: at most 3e-7 of `max|sigma|`;
+    - `effective_modulus`: +7e-9 to +8e-8, always up, because the penalty
+      springs absorbed part of the prescribed displacement;
+    - `knockdown`: at most 6e-9;
+    - `first_ply_failure_load_factor`: at most 1.3e-7;
+    - `max_failure_index`: at most 2e-7 (1.1e-6 for the near-zero UD
+      tension index).
+
+    The README tables, the JSON schema and the validation MAE (7.05 % /
+    6.53 %) are unchanged.
+  - `reaction_forces` are `K u - F` at the constrained DOFs and exactly
+    zero at the free DOFs, where they used to carry about 1e-10 N of solver
+    residual.
+  - A load at a constrained DOF now enters that support's reaction.
+    `apply_penalty` overwrote `F` there, silently dropping the load; none
+    of the shipped load cases does this.
+  - The LU factorization is cached per constrained-DOF set. CG and MINRES
+    reuse the cached free-DOF matrix and never factorize.
+  - A singular free-DOF stiffness (boundary conditions that leave a
+    rigid-body mode free) raises an error that says so.
+  - The `cond_diag_ratio` INFO line and the "conditioning near float64
+    limit" warning are replaced by one INFO line on the free-DOF diagonal
+    ratio.
+- **`FESolver.solve(penalty_factor=..., diag_scale=...)` are deprecated
+  and have no effect.** Both now default to `None`, and passing any value
+  emits a `DeprecationWarning`. `BoundaryHandler.apply_penalty` still
+  returns the penalty-modified system but warns. Use the new
+  `BoundaryHandler.apply_elimination(K, F, constrained)`, which returns
+  `(K_ff, rhs, free_dofs)`. All three will be removed in 2.0.
 - **Provenance short aliases are deprecated (IMPROVEMENT_PLAN 4.7).** The
   canonical keys are `porosity_fe_version`, `python_version`,
   `numpy_version`, `scipy_version`, `timestamp_utc` and `git_commit`. The

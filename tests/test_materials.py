@@ -412,3 +412,167 @@ class TestFiberConstituentFields:
         import dataclasses
         with pytest.raises(ValueError, match="fiber_"):
             dataclasses.replace(MATERIALS['T800_epoxy'], **kwargs)
+
+
+class TestThermalExpansionFields:
+    """Optional CTE / stress-free-temperature inputs (IMPROVEMENT_PLAN 3.5, PR 1)."""
+
+    AS4 = 'AS4_3501_6_epoxy'
+
+    @staticmethod
+    def _with(**kwargs):
+        return dataclasses.replace(MATERIALS['T800_epoxy'], **kwargs)
+
+    def test_defaults_are_unset(self):
+        mat = MaterialProperties(**TestMaterialProperties._kwargs())
+        assert mat.alpha_1 is None and mat.alpha_2 is None
+        assert mat.alpha_3 is None and mat.T_stress_free is None
+        assert mat.alpha_3_eff is None
+        assert not mat.has_cte
+        with pytest.raises(ValueError, match=r"alpha_1 and alpha_2"):
+            mat.cte_vector()
+
+    def test_only_cited_presets_carry_ctes(self):
+        with_cte = {name for name, m in MATERIALS.items() if m.has_cte}
+        assert with_cte == {self.AS4}
+        for mat in MATERIALS.values():
+            assert mat.T_stress_free is None
+
+    def test_as4_3501_6_wwfe_values(self):
+        mat = MATERIALS[self.AS4]
+        assert mat.alpha_1 == -1.0e-6
+        assert mat.alpha_2 == 26.0e-6
+        assert mat.alpha_3 is None
+        np.testing.assert_array_equal(
+            mat.cte_vector(), [-1.0e-6, 26.0e-6, 26.0e-6, 0.0, 0.0, 0.0])
+
+    def test_cte_vector_shape_and_explicit_alpha_3(self):
+        mat = self._with(alpha_1=-0.4e-6, alpha_2=30e-6, alpha_3=32e-6)
+        vec = mat.cte_vector()
+        assert vec.shape == (6,) and vec.dtype == np.float64
+        np.testing.assert_array_equal(vec, [-0.4e-6, 30e-6, 32e-6, 0, 0, 0])
+        assert mat.alpha_3_eff == 32e-6
+
+    def test_alpha_3_follows_alpha_2_through_replace(self):
+        # alpha_3 = None is resolved lazily, so replacing alpha_2 on a preset
+        # moves the through-thickness value with it.
+        mat = dataclasses.replace(MATERIALS[self.AS4], alpha_2=30e-6)
+        assert mat.alpha_3 is None
+        assert mat.alpha_3_eff == 30e-6
+        assert mat.cte_vector()[2] == 30e-6
+
+    def test_negative_alpha_1_accepted(self):
+        mat = self._with(alpha_1=-1.5e-6, alpha_2=28e-6)
+        assert mat.has_cte and mat.alpha_1 == -1.5e-6
+
+    @pytest.mark.parametrize("kwargs", [
+        {'alpha_1': -1.0, 'alpha_2': 26e-6},
+        {'alpha_1': -1e-6, 'alpha_2': 26.0},
+        {'alpha_1': -1e-6, 'alpha_2': 26e-6, 'alpha_3': 26.0},
+        {'alpha_1': 0.5, 'alpha_2': 26e-6},
+        {'alpha_1': -1e-6, 'alpha_2': 1e-3},
+    ])
+    def test_ppm_valued_cte_rejected_with_hint(self, kwargs):
+        with pytest.raises(ValueError, match=r"ppm/K.*26e-6, not 26"):
+            self._with(**kwargs)
+
+    @pytest.mark.parametrize("bad", [float('nan'), float('inf'), True, '26e-6'])
+    def test_non_finite_or_non_numeric_cte_rejected(self, bad):
+        with pytest.raises(ValueError, match=r"alpha_2 must be None or a finite"):
+            self._with(alpha_1=-1e-6, alpha_2=bad)
+
+    @pytest.mark.parametrize("kwargs, field", [
+        ({'alpha_1': -1e-6, 'alpha_2': -26e-6}, 'alpha_2'),
+        ({'alpha_1': -1e-6, 'alpha_2': 0.0}, 'alpha_2'),
+        ({'alpha_1': -1e-6, 'alpha_2': 26e-6, 'alpha_3': -1e-6}, 'alpha_3'),
+    ])
+    def test_non_positive_transverse_cte_rejected(self, kwargs, field):
+        with pytest.raises(ValueError, match=rf"{field} must be positive"):
+            self._with(**kwargs)
+
+    @pytest.mark.parametrize("kwargs", [{'alpha_1': -1e-6}, {'alpha_2': 26e-6}])
+    def test_alpha_1_and_alpha_2_must_be_paired(self, kwargs):
+        with pytest.raises(ValueError, match=r"given together"):
+            self._with(**kwargs)
+
+    def test_alpha_3_alone_rejected(self):
+        with pytest.raises(ValueError, match=r"alpha_3 needs alpha_1 and alpha_2"):
+            self._with(alpha_3=26e-6)
+
+    def test_stress_free_temperature(self):
+        assert self._with(T_stress_free=177.0).T_stress_free == 177.0
+        # Independent of the CTEs (the thermal solve will check both).
+        assert not self._with(T_stress_free=177.0).has_cte
+        for bad in (float('nan'), float('inf'), -273.15, -300.0, 'hot'):
+            with pytest.raises(ValueError, match=r"T_stress_free"):
+                self._with(T_stress_free=bad)
+
+    def test_positional_construction_unchanged(self):
+        # The new fields sit at the end with defaults, so the required
+        # fields still construct positionally.
+        kw = TestMaterialProperties._kwargs()
+        positional = MaterialProperties(*kw.values())
+        assert positional == MaterialProperties(**kw)
+        assert not positional.has_cte
+
+    def test_cache_keys_include_thermal_fields(self):
+        from porosity_fe import GlobalAssembler
+        base = MATERIALS['T800_epoxy']
+        pf = PorosityField(base, 0.02, distribution='uniform')
+        mesh = CompositeMesh(pf, base, nx=2, ny=2, nz=2)
+        base_key = GlobalAssembler(mesh, base, pf)._state_key()
+        variants = [
+            self._with(alpha_1=-0.1e-6, alpha_2=31e-6),
+            self._with(alpha_1=-0.1e-6, alpha_2=31e-6, alpha_3=33e-6),
+            self._with(T_stress_free=177.0),
+        ]
+        for mat in variants:
+            # The abbreviated repr hides the thermal fields, which is why
+            # the FE caches key on every field instead of repr().
+            assert repr(mat) == repr(base)
+            assert mat != base
+            assert dataclasses.astuple(mat) != dataclasses.astuple(base)
+            assert GlobalAssembler(mesh, mat, pf)._state_key() != base_key
+
+    def test_not_perturbable_by_uq(self):
+        from porosity_fe.uq import _normalize_uq_spec
+        for name in ('alpha_1', 'alpha_2', 'alpha_3', 'T_stress_free'):
+            assert name not in MaterialProperties.PERTURBABLE_FIELDS
+            with pytest.raises(ValueError, match=r"non-perturbable"):
+                _normalize_uq_spec(MATERIALS[self.AS4], {name: 0.1}, None)
+
+    @pytest.mark.parametrize("name", ['T800_epoxy', AS4])
+    def test_json_round_trip(self, name):
+        import json
+        from porosity_fe.io import _json_default
+        mat = MATERIALS[name]
+        payload = json.loads(json.dumps({'material': mat}, default=_json_default))
+        block = payload['material']
+        for field in ('alpha_1', 'alpha_2', 'alpha_3', 'T_stress_free'):
+            assert block[field] == getattr(mat, field)
+        assert MaterialProperties(**block) == mat
+
+    def test_thermal_fields_do_not_change_results(self):
+        """Setting the CTEs leaves every empirical and FE number unchanged."""
+        from porosity_fe import FESolver
+        base = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=4)
+        thermal = dataclasses.replace(base, alpha_1=-0.1e-6, alpha_2=31e-6,
+                                      alpha_3=32e-6, T_stress_free=177.0)
+        layup = [0, 90, 90, 0]
+
+        def run(mat):
+            pf = PorosityField(mat, 0.03, distribution='clustered', seed=0)
+            mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=4, ply_angles=layup)
+            emp = EmpiricalSolver(mesh, mat, ply_angles=layup)
+            loads = [emp.get_failure_load(mode=m, model='judd_wright')
+                     for m in ('compression', 'tension', 'ilss')]
+            res = FESolver(mesh, mat, pf, ply_angles=layup).solve(
+                loading='compression')
+            return loads, res
+
+        loads_a, res_a = run(base)
+        loads_b, res_b = run(thermal)
+        assert loads_a == loads_b
+        assert res_a.knockdown == res_b.knockdown
+        np.testing.assert_array_equal(res_a.stress_local, res_b.stress_local)
+        np.testing.assert_array_equal(res_a.displacement, res_b.displacement)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .._types import FEFormulation
 from ..gauss import gauss_points_hex
 from ..homogenization import _degraded_composite_stiffness, _mt_effective_stiffness
 from ..materials import MaterialProperties
@@ -23,6 +24,87 @@ VP_STIFFNESS_CLAMP = 0.99
 #: and are left out of failure evaluation, as are geometric void elements
 #: (``CompositeMesh.void_elements``).
 VOID_VP_THRESHOLD = 0.95
+
+#: Element formulations accepted by ``formulation=`` (see
+#: :data:`porosity_fe.FEFormulation`). ``'hex8'`` is the standard fully
+#: integrated trilinear brick; ``'hex8i'`` adds nine Wilson-Taylor
+#: incompatible modes, condensed out per element.
+ELEMENT_FORMULATIONS: tuple[str, ...] = ('hex8', 'hex8i')
+
+
+def _check_formulation(formulation: str) -> str:
+    """Return ``formulation`` if it is supported, else raise ``ValueError``."""
+    if formulation not in ELEMENT_FORMULATIONS:
+        raise ValueError(
+            f"Unknown element formulation {formulation!r}. "
+            f"Use one of {list(ELEMENT_FORMULATIONS)}."
+        )
+    return formulation
+
+
+def _strain_operator(d_dx: np.ndarray) -> np.ndarray:
+    """Voigt strain operator from physical derivatives of nodal functions.
+
+    ``d_dx`` has shape ``(..., 3, n)``: ``d_dx[..., i, a]`` is the derivative
+    of function ``a`` with respect to ``x_i``. Returns ``(..., 6, 3 n)`` with
+    engineering shear, columns ``[a_x, a_y, a_z]`` per function, rows in the
+    Voigt order ``[11, 22, 33, 23, 13, 12]`` (the layout of
+    :meth:`Hex8Element.B_matrix`).
+    """
+    dx, dy, dz = d_dx[..., 0, :], d_dx[..., 1, :], d_dx[..., 2, :]
+    op = np.zeros(d_dx.shape[:-2] + (6, 3 * d_dx.shape[-1]))
+    op[..., 0, 0::3] = dx
+    op[..., 1, 1::3] = dy
+    op[..., 2, 2::3] = dz
+    op[..., 3, 1::3] = dz
+    op[..., 3, 2::3] = dy
+    op[..., 4, 0::3] = dz
+    op[..., 4, 2::3] = dx
+    op[..., 5, 0::3] = dy
+    op[..., 5, 1::3] = dx
+    return op
+
+
+def _incompatible_mode_derivatives(points: np.ndarray) -> np.ndarray:
+    """Natural derivatives of the bubble modes ``1 - xi_m^2`` at ``points``.
+
+    Returns ``(G, 3, 3)``: entry ``[g, i, m]`` is ``d(1 - xi_m^2)/d xi_i`` at
+    point ``g``, which is ``-2 xi_m`` on the diagonal and zero elsewhere.
+    """
+    points = np.asarray(points, dtype=float)
+    return -2.0 * points[:, :, None] * np.eye(3)
+
+
+def _condensation_operator(Kaa: np.ndarray, Kau: np.ndarray) -> np.ndarray:
+    """``H = -Kaa^-1 Kau``: internal-mode amplitudes per unit nodal motion.
+
+    Works on one element (``(9, 9)``, ``(9, 24)``) or a batch
+    (``(E, 9, 9)``, ``(E, 9, 24)``). An element whose ``Kaa`` is non-finite
+    or singular gets ``H = 0``, i.e. falls back to the standard hex8.
+    """
+    with np.errstate(over='ignore', invalid='ignore'):
+        ok = (np.isfinite(Kaa).all(axis=(-2, -1))
+              & np.isfinite(Kau).all(axis=(-2, -1)))
+    eye = np.broadcast_to(np.eye(Kaa.shape[-1]), Kaa.shape)
+    Kaa = np.where(ok[..., None, None], Kaa, eye)
+    Kau = np.where(ok[..., None, None], Kau, 0.0)
+    try:
+        H = -np.linalg.solve(Kaa, Kau)
+    except np.linalg.LinAlgError:
+        if Kaa.ndim == 2:
+            return np.zeros_like(Kau)
+        H = np.zeros_like(Kau)
+        for e in range(Kaa.shape[0]):
+            try:
+                H[e] = -np.linalg.solve(Kaa[e], Kau[e])
+            except np.linalg.LinAlgError:
+                pass
+    with np.errstate(invalid='ignore'):
+        bad = ~np.isfinite(H).all(axis=(-2, -1))
+    if np.any(bad):
+        H = np.where(bad[..., None, None], 0.0, H)
+    return H
+
 
 # Natural coordinates of 8 hex nodes
 _NODE_COORDS_REF = np.array([
@@ -60,6 +142,29 @@ class Hex8Element:
         Matrix Poisson's ratio.
     C_m : np.ndarray
         Shape (6, 6) isotropic matrix stiffness for Mori-Tanaka.
+    is_void : bool, optional
+        Explicit void element: near-zero isotropic stiffness.
+    material : MaterialProperties, optional
+        Composite whose constants are degraded component-wise.
+    formulation : {'hex8', 'hex8i'}, optional
+        ``'hex8'`` (default): standard trilinear brick, full 2x2x2 Gauss
+        integration. ``'hex8i'``: the same brick enriched with the nine
+        Wilson-Taylor incompatible modes ``(1 - xi^2)``, ``(1 - eta^2)``,
+        ``(1 - zeta^2)`` per displacement component, with Taylor's
+        centroid-Jacobian correction (so the patch test passes on distorted
+        elements), statically condensed out of the element. It removes the
+        shear locking that makes ``'hex8'`` too stiff in bending when the
+        element length is not small against the laminate thickness. See
+        :meth:`G_matrix` and :meth:`strain_operator`.
+
+    Notes
+    -----
+    For ``'hex8i'`` the condensation is exact: with ``H = -Kaa^-1 Kau`` the
+    internal-mode amplitudes are ``alpha = H u_e`` and the element behaves
+    as one whose strain operator is ``B_eff = B + G H``
+    (:meth:`strain_operator`), so ``Ke = sum B_eff^T C B_eff det(J) w``
+    equals ``Kuu - Kua Kaa^-1 Kau``. :meth:`B_matrix` always returns the
+    compatible (standard) ``B``.
     """
 
     # Near-zero stiffness for void elements (Pa, not MPa — ~6 orders softer)
@@ -69,7 +174,8 @@ class Hex8Element:
                  ply_angle_deg: float, node_porosities: np.ndarray,
                  void_shape_radii: tuple, nu_m: float,
                  C_m: np.ndarray, is_void: bool = False,
-                 material: MaterialProperties = None) -> None:
+                 material: MaterialProperties = None, *,
+                 formulation: FEFormulation = 'hex8') -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")
@@ -104,6 +210,10 @@ class Hex8Element:
         self.C_m = np.asarray(C_m, dtype=float)
         self.material = material
         self.is_void = is_void
+        _check_formulation(formulation)
+        self.formulation: FEFormulation = formulation
+        # Incompatible-mode condensation H = -Kaa^-1 Kau, built on first use.
+        self._H: np.ndarray | None = None
 
         self._gauss_points, self._gauss_weights = gauss_points_hex(order=2)
 
@@ -202,6 +312,58 @@ class Hex8Element:
             B[5, col + 1] = dNi_dx
         return B
 
+    def G_matrix(self, xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Strain operator (6x9) of the nine incompatible modes at a point.
+
+        The modes are ``P_m = 1 - xi_m^2`` (``m`` over ``xi, eta, zeta``) for
+        each displacement component; columns are ordered mode-major,
+        ``[P_1 x, P_1 y, P_1 z, P_2 x, ...]``, rows in the Voigt order of
+        :meth:`B_matrix`. Taylor's correction maps the natural derivatives
+        with the centroid Jacobian ``J0`` and scales them by
+        ``det(J0) / det(J)``, so that every mode integrates to zero strain
+        over the element and the patch test passes on distorted elements.
+
+        Defined for either formulation; only ``'hex8i'`` uses it.
+        """
+        J0 = self.jacobian(0.0, 0.0, 0.0)
+        detJ0 = np.linalg.det(J0)
+        detJ = np.linalg.det(self.jacobian(xi, eta, zeta))
+        dP = _incompatible_mode_derivatives(np.array([[xi, eta, zeta]]))[0]
+        dP_dx = np.linalg.solve(J0, dP) * (detJ0 / detJ)
+        return _strain_operator(dP_dx)
+
+    def _incompatible_mode_condensation(self) -> np.ndarray:
+        """``H = -Kaa^-1 Kau`` (9x24) for ``'hex8i'``, computed once."""
+        if self._H is None:
+            Kaa = np.zeros((9, 9))
+            Kau = np.zeros((9, 24))
+            for gp_idx in range(len(self._gauss_weights)):
+                xi, eta, zeta = self._gauss_points[gp_idx]
+                w = self._gauss_weights[gp_idx]
+                B = self.B_matrix(xi, eta, zeta)
+                G = self.G_matrix(xi, eta, zeta)
+                C_bar = self._degraded_stiffness(xi, eta, zeta)
+                detJ = np.linalg.det(self.jacobian(xi, eta, zeta))
+                with np.errstate(over='ignore', invalid='ignore'):
+                    CG = C_bar @ G * (detJ * w)
+                    Kaa += G.T @ CG
+                    Kau += CG.T @ B
+            self._H = _condensation_operator(Kaa, Kau)
+        return self._H
+
+    def strain_operator(self, xi: float, eta: float, zeta: float) -> np.ndarray:
+        """Strain-displacement operator (6x24) the formulation uses.
+
+        :meth:`B_matrix` for ``'hex8'``. For ``'hex8i'`` the effective
+        operator ``B + G H`` with the incompatible modes condensed out
+        (``H`` from ``-Kaa^-1 Kau``), so strain at a point is
+        ``strain_operator(...) @ u_e`` for both formulations.
+        """
+        B = self.B_matrix(xi, eta, zeta)
+        if self.formulation == 'hex8i':
+            B = B + self.G_matrix(xi, eta, zeta) @ self._incompatible_mode_condensation()
+        return B
+
     def _degraded_stiffness(self, xi: float, eta: float, zeta: float) -> np.ndarray:
         """Compute porosity-degraded and ply-rotated stiffness at a point.
 
@@ -260,7 +422,9 @@ class Hex8Element:
     def stiffness_matrix(self) -> np.ndarray:
         """Element stiffness matrix (24x24) via 2x2x2 Gauss quadrature.
 
-        ``Ke = sum over GPs of: B^T @ C_bar @ B * det(J) * w``
+        ``Ke = sum over GPs of: B^T @ C_bar @ B * det(J) * w``, with ``B``
+        from :meth:`strain_operator` (the condensed operator for
+        ``'hex8i'``).
 
         Raises
         ------
@@ -274,7 +438,7 @@ class Hex8Element:
         for gp_idx in range(len(self._gauss_weights)):
             xi, eta, zeta = self._gauss_points[gp_idx]
             w = self._gauss_weights[gp_idx]
-            B = self.B_matrix(xi, eta, zeta)
+            B = self.strain_operator(xi, eta, zeta)
             C_bar = self._degraded_stiffness(xi, eta, zeta)
             J = self.jacobian(xi, eta, zeta)
             detJ = np.linalg.det(J)
@@ -313,7 +477,7 @@ class Hex8Element:
         stresses = np.empty((n_gp, 6))
         for gp_idx in range(n_gp):
             xi, eta, zeta = self._gauss_points[gp_idx]
-            B = self.B_matrix(xi, eta, zeta)
+            B = self.strain_operator(xi, eta, zeta)
             C_bar = self._degraded_stiffness(xi, eta, zeta)
             stresses[gp_idx] = C_bar @ (B @ u_elem)
         return stresses
@@ -336,7 +500,7 @@ class Hex8Element:
         strains = np.empty((n_gp, 6))
         for gp_idx in range(n_gp):
             xi, eta, zeta = self._gauss_points[gp_idx]
-            B = self.B_matrix(xi, eta, zeta)
+            B = self.strain_operator(xi, eta, zeta)
             strains[gp_idx] = B @ u_elem
         return strains
 

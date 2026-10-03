@@ -27,6 +27,12 @@ for the engineering constants, so a missing field is a hard error:
   paths read from the same dataclass): `matrix_modulus, matrix_poisson,
   fiber_modulus, fiber_volume_fraction`.
 
+Optional: lamina CTEs `alpha_1`, `alpha_2` (and `alpha_3`, default
+`alpha_2`) in **1/K** (`26e-6`, not `26`), and `T_stress_free` (deg C).
+Set them only with a cited lamina value for that exact system, with the
+citation in a comment; otherwise leave them `None` (no proxy or
+micromechanics estimates).
+
 If the user only has a partial spec, ask for the missing fields before
 editing — don't invent values.
 

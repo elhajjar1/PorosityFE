@@ -64,6 +64,7 @@ from ._ply_angles import _PLY_ANGLES_UD as _PLY_ANGLES_UD  # noqa: F401, E402
 from ._ply_angles import _resolve_ply_angles as _resolve_ply_angles  # noqa: F401, E402
 from ._types import ClusterLocation as ClusterLocation  # noqa: F401, E402
 from ._types import Distribution as Distribution  # noqa: F401, E402
+from ._types import FEFormulation as FEFormulation  # noqa: F401, E402
 from ._types import FELoadingMode as FELoadingMode  # noqa: F401, E402
 from ._types import KnockdownModel as KnockdownModel  # noqa: F401, E402
 from ._types import LoadingMode as LoadingMode  # noqa: F401, E402
@@ -84,6 +85,8 @@ from .fe import FESolver as FESolver  # noqa: F401, E402
 from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
 from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
+from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
+from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
 from .gauss import gauss_points_hex as gauss_points_hex  # noqa: F401, E402
@@ -190,6 +193,8 @@ __all__ = [
     "FieldResults",
     "GlobalAssembler",
     "Hex8Element",
+    "extrapolate_to_nodes",
+    "write_pvd",
     # Visualization
     "FEVisualizer",
     # IO
@@ -209,6 +214,7 @@ __all__ = [
     "ClusterLocation",
     "Distribution",
     "FELoadingMode",
+    "FEFormulation",
     "KnockdownModel",
     "LoadingMode",
     "MeshFace",

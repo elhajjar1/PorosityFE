@@ -13,6 +13,14 @@ once with the same formulas:
 
 The batch is built during assembly and reused by stress recovery, which
 previously re-created every element and recomputed all of this.
+
+For the incompatible-mode formulation (``formulation='hex8i'``) the nine
+internal modes of each element are condensed out here, once, and folded
+into an *effective* strain-displacement operator
+``B_eff = B + G H`` with ``H = -Kaa^-1 Kau``. Stiffness
+(``sum B_eff^T C B_eff det(J) w = Kuu - Kua Kaa^-1 Kau``, exactly), strain
+and stress recovery, failure evaluation and export then run unchanged on
+``ElementBatch.B``.
 """
 
 from __future__ import annotations
@@ -21,12 +29,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .._types import FEFormulation
 from ..gauss import gauss_points_hex
 from ..homogenization import _degraded_composite_stiffness
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import rotate_stiffness_3d
-from .element import VP_STIFFNESS_CLAMP, Hex8Element
+from .element import (
+    VP_STIFFNESS_CLAMP,
+    Hex8Element,
+    _check_formulation,
+    _condensation_operator,
+    _incompatible_mode_derivatives,
+    _strain_operator,
+)
 
 
 @dataclass(frozen=True)
@@ -41,16 +57,22 @@ class ElementBatch:
         ``(E, 24)`` global DOF indices, node-major ``[u1x, u1y, u1z, ...]``.
     B : np.ndarray
         ``(E, G, 6, 24)`` strain-displacement matrices (engineering shear).
+        For ``formulation='hex8i'`` this is the effective operator
+        ``B + G H`` with the statically condensed incompatible modes folded
+        in (see :meth:`Hex8Element.strain_operator`).
     C : np.ndarray
         ``(E, G, 6, 6)`` degraded, ply-rotated stiffness (MPa).
     detJ_w : np.ndarray
         ``(E, G)`` Jacobian determinant times quadrature weight.
+    formulation : {'hex8', 'hex8i'}
+        Element formulation ``B`` was built for.
     """
 
     dofs: np.ndarray
     B: np.ndarray
     C: np.ndarray
     detJ_w: np.ndarray
+    formulation: FEFormulation = 'hex8'
 
     def stiffness_matrices(self) -> np.ndarray:
         """Symmetrized element stiffness matrices ``(E, 24, 24)``.
@@ -123,17 +145,70 @@ def _void_stiffness() -> np.ndarray:
     return C
 
 
+def _incompatible_mode_G(coords: np.ndarray, detJ: np.ndarray,
+                         points: np.ndarray) -> np.ndarray:
+    """Incompatible-mode strain operators ``(E, G, 6, 9)``.
+
+    Batched :meth:`Hex8Element.G_matrix`: natural bubble-mode derivatives
+    mapped with the centroid Jacobian ``J0`` and scaled by
+    ``det(J0) / det(J)`` (Taylor's correction).
+    """
+    dN0 = Hex8Element.shape_derivatives(0.0, 0.0, 0.0)          # (3, 8)
+    J0 = np.einsum('ij,ejk->eik', dN0, coords)                  # (E, 3, 3)
+    detJ0 = np.linalg.det(J0)
+    bad = ~np.isfinite(detJ0) | (detJ0 <= 0.0)
+    if np.any(bad):
+        raise ValueError(
+            f"Element has non-positive Jacobian determinant "
+            f"(detJ={detJ0[np.argmax(bad)]!r}) at its centroid; the "
+            f"incompatible-mode formulation cannot be built for it."
+        )
+    dP = _incompatible_mode_derivatives(points)                 # (G, 3, 3)
+    dP_dx = np.matmul(np.linalg.inv(J0)[:, None], dP[None])     # (E, G, 3, 3)
+    dP_dx = dP_dx * (detJ0[:, None] / detJ)[:, :, None, None]
+    return _strain_operator(dP_dx)
+
+
+def _condense_incompatible_modes(B: np.ndarray, C: np.ndarray,
+                                 detJ_w: np.ndarray, G: np.ndarray) -> np.ndarray:
+    """Effective operator ``B + G H``, ``H = -Kaa^-1 Kau``, per element.
+
+    ``Kaa = sum G^T C G det(J) w`` and ``Kau = sum G^T C B det(J) w`` over the
+    Gauss points. Returns an array of ``B``'s shape ``(E, G, 6, 24)``.
+    """
+    n_elem, n_gp = detJ_w.shape
+    with np.errstate(over='ignore', invalid='ignore'):
+        # Sum over Gauss points and strain components in one matmul:
+        # (E, 9, G*6) @ (E, G*6, n) per element.
+        CGw = np.matmul(C, G) * detJ_w[:, :, None, None]       # (E, G, 6, 9)
+        GtCw = CGw.transpose(0, 3, 1, 2).reshape(n_elem, 9, n_gp * 6)
+        Kaa = np.matmul(GtCw, G.reshape(n_elem, n_gp * 6, 9))  # (E, 9, 9)
+        Kau = np.matmul(GtCw, B.reshape(n_elem, n_gp * 6, 24))  # (E, 9, 24)
+    H = _condensation_operator(Kaa, Kau)
+    return B + np.matmul(G, H[:, None])
+
+
 def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
-                        void_shape_radii: tuple) -> ElementBatch:
+                        void_shape_radii: tuple, *,
+                        formulation: FEFormulation = 'hex8') -> ElementBatch:
     """Compute :class:`ElementBatch` for every element of ``mesh``.
+
+    Parameters
+    ----------
+    mesh, material, void_shape_radii
+        Mesh, composite and void shape the stiffness is built from.
+    formulation : {'hex8', 'hex8i'}, optional
+        Element formulation (see :class:`Hex8Element`). For ``'hex8i'`` the
+        incompatible modes are condensed into ``ElementBatch.B``.
 
     Raises
     ------
     ValueError
-        On non-finite or out-of-range nodal porosity, or a non-positive
-        Jacobian determinant at any Gauss point (same messages as
-        :class:`Hex8Element`).
+        On an unknown ``formulation``, non-finite or out-of-range nodal
+        porosity, or a non-positive Jacobian determinant at any Gauss point
+        (same messages as :class:`Hex8Element`).
     """
+    _check_formulation(formulation)
     elements = np.asarray(mesh.elements, dtype=np.intp)
     n_elem = len(elements)
     N, dN, points, weights = _gauss_point_tables()
@@ -154,17 +229,7 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
             f"stiffness."
         )
     dN_dx = np.matmul(np.linalg.inv(J), dN[None])              # (E, G, 3, 8)
-    dx, dy, dz = dN_dx[:, :, 0], dN_dx[:, :, 1], dN_dx[:, :, 2]
-    B = np.zeros((n_elem, len(weights), 6, 24))
-    B[:, :, 0, 0::3] = dx
-    B[:, :, 1, 1::3] = dy
-    B[:, :, 2, 2::3] = dz
-    B[:, :, 3, 1::3] = dz
-    B[:, :, 3, 2::3] = dy
-    B[:, :, 4, 0::3] = dz
-    B[:, :, 4, 2::3] = dx
-    B[:, :, 5, 0::3] = dy
-    B[:, :, 5, 1::3] = dx
+    B = _strain_operator(dN_dx)                                # (E, G, 6, 24)
 
     # Gauss-point porosity: interpolated from the nodes, except that an
     # element whose nodes all (nearly) agree uses its first node's value,
@@ -194,9 +259,15 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
     if void_idx.size:
         C[void_idx] = _void_stiffness()
 
+    detJ_w = detJ * weights
+    if formulation == 'hex8i':
+        G = _incompatible_mode_G(coords, detJ, points)
+        B = _condense_incompatible_modes(B, C, detJ_w, G)
+
     return ElementBatch(
         dofs=element_dofs(elements),
         B=B,
         C=C,
-        detJ_w=detJ * weights,
+        detJ_w=detJ_w,
+        formulation=formulation,
     )

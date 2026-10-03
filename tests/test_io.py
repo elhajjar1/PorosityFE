@@ -17,7 +17,8 @@ import json
 from porosity_fe_analysis import (MATERIALS, PorosityField, POROSITY_CONFIGS, CompositeMesh,
                                    compare_configurations, save_results_to_json,
                                    FESolver, _build_provenance, load_results_from_json,
-                                   JSON_SCHEMA_VERSION, FORMAT_EMPIRICAL_SWEEP)
+                                   JSON_SCHEMA_VERSION, FORMAT_EMPIRICAL_SWEEP,
+                                   VoidGeometry)
 
 
 class TestFEExportResults:
@@ -231,6 +232,268 @@ class TestFEExportVTK:
         assert m.points.shape == (mesh.n_nodes, 3)
         total_cells = sum(len(cb.data) for cb in m.cells)
         assert total_cells == mesh.n_elements
+
+
+_VTU_DTYPES = {'Float64': '<f8', 'Float32': '<f4', 'Int64': '<i8',
+               'UInt8': 'u1'}
+
+
+def _read_vtu(path):
+    """Minimal reader for the VTU files ``FieldResults.to_vtu`` writes.
+
+    Handles the two encodings the writer emits: appended raw data and
+    inline base64 (``format="binary"``), each with UInt64 byte-count
+    headers and no compression. Returns a dict with the piece sizes, the
+    ``Points`` / ``Cells`` arrays by name, ``point_data`` / ``cell_data``
+    dicts and the VTK type name of every array.
+    """
+    import base64
+    import xml.etree.ElementTree as ET
+
+    raw = open(path, 'rb').read()
+    marker = b'<AppendedData encoding="raw">'
+    appended = b''
+    if marker in raw:
+        head, tail = raw.split(marker, 1)
+        appended = tail[tail.index(b'_') + 1:]
+        root = ET.fromstring(head + marker + b'</AppendedData></VTKFile>')
+    else:
+        root = ET.fromstring(raw)
+    assert root.get('type') == 'UnstructuredGrid'
+    assert root.get('byte_order') == 'LittleEndian'
+    assert root.get('header_type') == 'UInt64'
+    piece = root.find('UnstructuredGrid/Piece')
+    out = {'n_points': int(piece.get('NumberOfPoints')),
+           'n_cells': int(piece.get('NumberOfCells')),
+           'arrays': {}, 'point_data': {}, 'cell_data': {}, 'types': {}}
+
+    def _decode(da):
+        dtype = np.dtype(_VTU_DTYPES[da.get('type')])
+        if da.get('format') == 'appended':
+            off = int(da.get('offset'))
+            nbytes = int(np.frombuffer(appended[off:off + 8], '<u8')[0])
+            data = appended[off + 8:off + 8 + nbytes]
+        else:
+            assert da.get('format') == 'binary'
+            blob = base64.b64decode(da.text.strip())
+            nbytes = int(np.frombuffer(blob[:8], '<u8')[0])
+            data = blob[8:]
+            assert len(data) == nbytes
+        arr = np.frombuffer(data, dtype)
+        ncomp = int(da.get('NumberOfComponents', 1))
+        return arr.reshape(-1, ncomp) if ncomp > 1 else arr
+
+    for section, key in (('Points', 'arrays'), ('Cells', 'arrays'),
+                         ('PointData', 'point_data'),
+                         ('CellData', 'cell_data')):
+        for da in piece.find(section).findall('DataArray'):
+            out[key][da.get('Name')] = _decode(da)
+            out['types'][da.get('Name')] = da.get('type')
+    return out
+
+
+@pytest.fixture(scope='module')
+def solved():
+    """A small QI solve with clustered porosity and explicit void elements."""
+    material = MATERIALS['T800_epoxy']
+    pf = PorosityField(material, 0.03, distribution='clustered',
+                       discrete_voids=[VoidGeometry(
+                           center=(25.0, 10.0, 2.2), radii=(6.0, 4.0, 1.0))])
+    mesh = CompositeMesh(pf, material, nx=10, ny=4, nz=6, ply_angles='QI')
+    assert len(mesh.void_elements) > 0
+    results = FESolver(mesh, material, pf).solve(
+        loading='compression', applied_strain=-0.001)
+    return mesh, results
+
+
+class TestFEExportVTU:
+    """Binary VTK XML export with recovered nodal fields (3.6 E1)."""
+
+    @pytest.mark.parametrize('encoding', ['raw', 'base64'])
+    def test_round_trip_is_bit_exact(self, solved, tmp_path, encoding):
+        mesh, r = solved
+        path = tmp_path / f'fe_{encoding}.vtu'
+        r.to_vtu(mesh, path, encoding=encoding)
+        d = _read_vtu(path)
+        assert d['n_points'] == mesh.n_nodes
+        assert d['n_cells'] == mesh.n_elements
+        np.testing.assert_array_equal(d['arrays']['Points'], mesh.nodes)
+        np.testing.assert_array_equal(
+            d['arrays']['connectivity'], mesh.elements.ravel())
+        np.testing.assert_array_equal(
+            d['arrays']['offsets'], 8 * np.arange(1, mesh.n_elements + 1))
+        np.testing.assert_array_equal(d['arrays']['types'], 12)
+        assert d['types']['Points'] == 'Float64'
+
+        pd, cd = d['point_data'], d['cell_data']
+        np.testing.assert_array_equal(pd['displacement'], r.displacement)
+        np.testing.assert_array_equal(pd['porosity'], mesh.porosity)
+        np.testing.assert_array_equal(pd['ply_id'], mesh.ply_ids)
+        s_nodal, _ = r.nodal_stress(mesh)
+        e_nodal, _ = r.nodal_strain(mesh)
+        for i, name in enumerate(('sigma_xx', 'sigma_yy', 'sigma_zz',
+                                  'tau_yz', 'tau_xz', 'tau_xy')):
+            np.testing.assert_array_equal(pd[f'{name}_nodal'], s_nodal[:, i])
+            np.testing.assert_array_equal(
+                cd[name], np.mean(r.stress_global, axis=1)[:, i])
+        for i, name in enumerate(('eps_xx', 'eps_yy', 'eps_zz',
+                                  'gamma_yz', 'gamma_xz', 'gamma_xy')):
+            np.testing.assert_array_equal(pd[f'{name}_nodal'], e_nodal[:, i])
+            np.testing.assert_array_equal(
+                cd[name], np.mean(r.strain_global, axis=1)[:, i])
+        assert np.all(np.isfinite(pd['von_mises_nodal']))
+        assert np.all(pd['von_mises_nodal'] >= 0)
+        np.testing.assert_array_equal(cd['tsai_wu_index'],
+                                      r.per_element_failure_index)
+        np.testing.assert_array_equal(cd['ply_id'], mesh.elem_ply_ids)
+        np.testing.assert_array_equal(cd['ply_angle_deg'], mesh.ply_angles)
+        is_void = np.zeros(mesh.n_elements)
+        is_void[mesh.void_elements] = 1.0
+        np.testing.assert_array_equal(cd['is_void'], is_void)
+        np.testing.assert_array_equal(cd['knockdown'], r.knockdown)
+
+    def test_has_every_legacy_vtk_field(self, solved, tmp_path):
+        mesh, r = solved
+        r.to_vtk(mesh, tmp_path / 'legacy.vtk')
+        r.to_vtu(mesh, tmp_path / 'new.vtu')
+        legacy = _parse_legacy_vtk(str(tmp_path / 'legacy.vtk'))
+        d = _read_vtu(tmp_path / 'new.vtu')
+        assert legacy['point_data_arrays'] == list(d['point_data'])[:len(
+            legacy['point_data_arrays'])]
+        assert legacy['cell_data_arrays'] == list(d['cell_data'])
+
+    def test_float32_option(self, solved, tmp_path):
+        mesh, r = solved
+        r.to_vtu(mesh, tmp_path / 'f64.vtu')
+        r.to_vtu(mesh, tmp_path / 'f32.vtu', precision='float32')
+        d = _read_vtu(tmp_path / 'f32.vtu')
+        assert d['types']['Points'] == 'Float32'
+        assert d['types']['sigma_xx_nodal'] == 'Float32'
+        assert d['types']['connectivity'] == 'Int64'
+        np.testing.assert_array_equal(
+            d['point_data']['displacement'],
+            r.displacement.astype(np.float32))
+        assert (tmp_path / 'f32.vtu').stat().st_size < \
+            0.6 * (tmp_path / 'f64.vtu').stat().st_size
+
+    def test_exploded_output_carries_per_element_corners(self, solved, tmp_path):
+        mesh, r = solved
+        path = tmp_path / 'exploded.vtu'
+        r.to_vtu(mesh, path, exploded=True)
+        d = _read_vtu(path)
+        corners = mesh.elements.ravel()
+        assert d['n_points'] == 8 * mesh.n_elements
+        np.testing.assert_array_equal(d['arrays']['Points'], mesh.nodes[corners])
+        np.testing.assert_array_equal(
+            d['arrays']['connectivity'], np.arange(8 * mesh.n_elements))
+        np.testing.assert_array_equal(d['point_data']['node_id'], corners)
+        np.testing.assert_array_equal(
+            d['point_data']['displacement'], r.displacement[corners])
+        _, corner = r.nodal_stress(mesh)
+        np.testing.assert_array_equal(
+            d['point_data']['sigma_xx_nodal'], corner[:, :, 0].ravel())
+        _, raw = r.nodal_stress(mesh, average='none')
+        r.to_vtu(mesh, path, exploded=True, average='none')
+        np.testing.assert_array_equal(
+            _read_vtu(path)['point_data']['tau_xz_nodal'], raw[:, :, 4].ravel())
+
+    def test_nodal_false_omits_recovered_fields(self, solved, tmp_path):
+        mesh, r = solved
+        r.to_vtu(mesh, tmp_path / 'plain.vtu', nodal=False)
+        d = _read_vtu(tmp_path / 'plain.vtu')
+        assert not [k for k in d['point_data'] if k.endswith('_nodal')]
+        assert 'displacement' in d['point_data']
+
+    def test_base64_file_is_well_formed_xml(self, solved, tmp_path):
+        import xml.etree.ElementTree as ET
+        mesh, r = solved
+        r.to_vtu(mesh, tmp_path / 'b64.vtu', encoding='base64')
+        root = ET.parse(tmp_path / 'b64.vtu').getroot()
+        assert root.tag == 'VTKFile'
+
+    @pytest.mark.parametrize('kwargs', [
+        {'precision': 'float16'}, {'encoding': 'zlib'}, {'average': 'mean'}])
+    def test_rejects_unknown_options(self, solved, tmp_path, kwargs):
+        mesh, r = solved
+        with pytest.raises(ValueError):
+            r.to_vtu(mesh, tmp_path / 'bad.vtu', **kwargs)
+
+    def test_rejects_mismatched_mesh(self, solved, tmp_path):
+        _, r = solved
+        material = MATERIALS['T800_epoxy']
+        pf = PorosityField(material, 0.03)
+        other = CompositeMesh(pf, material, nx=3, ny=2, nz=2)
+        with pytest.raises(ValueError, match='do not match'):
+            r.to_vtu(other, tmp_path / 'bad.vtu')
+
+    def test_export_results_fmt_vtu(self, solved, tmp_path):
+        mesh, r = solved
+        path = tmp_path / 'via_export.vtu'
+        FESolver.export_results(r, path, fmt='vtu', mesh=mesh)
+        assert _read_vtu(path)['n_cells'] == mesh.n_elements
+        with pytest.raises(ValueError, match='mesh'):
+            FESolver.export_results(r, tmp_path / 'x.vtu', fmt='vtu')
+
+    @pytest.mark.parametrize('encoding', ['raw', 'base64'])
+    def test_meshio_reads_it_if_available(self, solved, tmp_path, encoding):
+        """meshio is not a dependency; the test self-skips without it."""
+        meshio = pytest.importorskip("meshio")
+        mesh, r = solved
+        path = tmp_path / 'fe.vtu'
+        r.to_vtu(mesh, path, encoding=encoding)
+        m = meshio.read(path)
+        np.testing.assert_array_equal(m.points, mesh.nodes)
+        np.testing.assert_array_equal(m.cells_dict['hexahedron'], mesh.elements)
+        np.testing.assert_array_equal(m.point_data['displacement'],
+                                      r.displacement)
+
+    def test_vtk_reads_it_if_available(self, solved, tmp_path):
+        """VTK is not a dependency; the test self-skips without it."""
+        vtk = pytest.importorskip("vtk")
+        from vtk.util.numpy_support import vtk_to_numpy
+        mesh, r = solved
+        path = tmp_path / 'fe.vtu'
+        r.to_vtu(mesh, path)
+        reader = vtk.vtkXMLUnstructuredGridReader()
+        reader.SetFileName(str(path))
+        reader.Update()
+        assert reader.GetErrorCode() == 0
+        grid = reader.GetOutput()
+        assert grid.GetNumberOfCells() == mesh.n_elements
+        quality = vtk.vtkMeshQuality()
+        quality.SetInputData(grid)
+        quality.SetHexQualityMeasureToVolume()
+        quality.Update()
+        volume = vtk_to_numpy(
+            quality.GetOutput().GetCellData().GetArray('Quality')).sum()
+        # Positive cell volumes summing to the coupon: hex ordering is right.
+        assert volume == pytest.approx(mesh.L_x * mesh.L_y * mesh.L_z, rel=1e-9)
+
+
+class TestWritePVD:
+    def test_writes_relative_series(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        from porosity_fe import write_pvd
+        (tmp_path / 'data').mkdir()
+        files = [tmp_path / 'data' / f'vp_{i}.vtu' for i in range(3)]
+        write_pvd(tmp_path / 'series.pvd', files, timesteps=[0.0, 0.02, 0.04])
+        root = ET.parse(tmp_path / 'series.pvd').getroot()
+        assert root.get('type') == 'Collection'
+        rows = root.findall('Collection/DataSet')
+        assert [r.get('file') for r in rows] == [
+            f'data/vp_{i}.vtu' for i in range(3)]
+        assert [float(r.get('timestep')) for r in rows] == [0.0, 0.02, 0.04]
+
+    def test_default_timesteps_and_validation(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        from porosity_fe import write_pvd
+        write_pvd(tmp_path / 's.pvd', ['a.vtu', 'b.vtu'])
+        rows = ET.parse(tmp_path / 's.pvd').getroot().findall('Collection/DataSet')
+        assert [float(r.get('timestep')) for r in rows] == [0.0, 1.0]
+        with pytest.raises(ValueError, match='one finite value per file'):
+            write_pvd(tmp_path / 's.pvd', ['a.vtu', 'b.vtu'], timesteps=[0.0])
+        with pytest.raises(ValueError, match='one finite value per file'):
+            write_pvd(tmp_path / 's.pvd', ['a.vtu'], timesteps=[float('nan')])
 
 
 class TestResultsSchemaAndReproducibility:
