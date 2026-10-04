@@ -3,8 +3,9 @@
 
 Invariants that must hold for every input, checked with ``hypothesis``
 rather than a handful of hand-picked cases: frame transformations form a
-group and preserve work, the Tsai-Wu index is frame invariant, and every
-built-in knockdown law is a monotone fraction on the calibrated range.
+group and preserve work, the Tsai-Wu index is frame invariant, every
+built-in knockdown law is a monotone fraction on the calibrated range, and
+the empirical layup scale stays inside its convex bounds.
 """
 
 import numpy as np
@@ -13,7 +14,8 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from porosity_fe import MATERIALS, build_empirical_pipeline
-from porosity_fe.empirical import _KNOCKDOWN_LAWS, Calibration
+from porosity_fe._layup import _membrane_energy_partition
+from porosity_fe.empirical import _KNOCKDOWN_LAWS, Calibration, _layup_scales
 from porosity_fe.fe.failure import degraded_strengths, evaluate_tsai_wu
 from porosity_fe.transforms import (
     rotate_stiffness_3d,
@@ -99,8 +101,9 @@ class TestKnockdownLaws:
                     min_size=4, max_size=12),
            st.sampled_from(sorted(_KNOCKDOWN_LAWS)))
     def test_layup_scaled_law_is_monotone_fraction(self, layup, model):
-        """After the f_md layup scaling, every mode's knockdown is still a
-        non-increasing fraction on [0, 0.05]."""
+        """After the layup scaling (amplification up to 2.56x for tension),
+        every mode's knockdown is still a non-increasing fraction on
+        [0, 0.05]."""
         _pf, _mesh, emp = build_empirical_pipeline(
             MAT, 0.02, ply_angles=layup, mesh_res=(4, 3, 3))
         vp = np.linspace(0.0, 0.05, 11)
@@ -109,3 +112,33 @@ class TestKnockdownLaws:
             kd = law(vp, coef)
             assert np.all((kd > 0.0) & (kd <= 1.0)), (layup, model, mode)
             assert np.all(np.diff(kd) <= 1e-15), (layup, model, mode)
+
+
+class TestLayupScale:
+    layups = st.lists(st.floats(min_value=-90.0, max_value=90.0,
+                                allow_nan=False, allow_infinity=False),
+                      min_size=1, max_size=12)
+
+    @settings(max_examples=60, deadline=None)
+    @given(layups, st.sampled_from(sorted(MATERIALS)))
+    def test_scale_within_convex_bounds(self, layup, material_name):
+        """Fiber-direction modes: 1 <= scale <= max(matrix anchors) / alpha;
+        matrix modes: scale == 1, for any layup and material preset."""
+        scales = _layup_scales(MATERIALS[material_name], layup)
+        alpha = Calibration.JUDD_WRIGHT_ALPHA_QI
+        for mode, scale in scales.items():
+            if mode in Calibration.FIBER_DIRECTION_MODES:
+                anchors = Calibration.LAYUP_MATRIX_ANCHORS[mode]
+                upper = max(alpha[a] for a in anchors) / alpha[mode]
+                assert 1.0 <= scale <= upper * (1 + 1e-12), (layup, mode, scale)
+            else:
+                assert scale == 1.0, (layup, mode)
+
+    @settings(max_examples=40, deadline=None)
+    @given(layups, st.sampled_from(['x', 'y', 'xy']))
+    def test_energy_partition_sums_to_one_and_ignores_order(self, layup, direction):
+        e = _membrane_energy_partition(MAT, layup, direction)
+        assert sum(e) == pytest.approx(1.0, abs=1e-12)
+        assert min(e) > -0.01  # Poisson-coupling terms stay small
+        e_rev = _membrane_energy_partition(MAT, layup[::-1], direction)
+        np.testing.assert_allclose(e_rev, e, rtol=0, atol=1e-12)

@@ -10,8 +10,8 @@ the ``build_empirical_pipeline`` factory (including ``solver_kwargs=``),
 closed-form headline numbers they carry.
 
 Headline knockdowns are checked against the Judd-Wright closed form
-``KD = exp(-alpha * Vp)`` with the QI coefficients (the default layup has
-``f_md = 0.5`` so the layup scale is exactly 1).
+``KD = exp(-alpha * Vp)`` with the QI coefficients (the default QI layup
+has a layup scale of exactly 1 for every mode).
 """
 
 import logging
@@ -81,9 +81,10 @@ class TestBuildEmpiricalPipeline:
         assert (mesh.nx, mesh.ny, mesh.nz) == _DEFAULT_MESH_RES == (30, 10, 12)
 
     def test_default_layup_is_qi(self):
-        """Default layup is QI: f_md = 0.5 and the QI coefficients are used unscaled."""
+        """Default layup is QI: the QI coefficients are used unscaled."""
         _, _, emp = build_empirical_pipeline(T800, 0.03, mesh_res=TINY)
         assert emp.f_md == pytest.approx(0.5)
+        assert set(emp.layup_scale.values()) == {1.0}
         r = emp.get_failure_load('compression', 'judd_wright')
         assert r.knockdown == pytest.approx(_jw('compression', 0.03), rel=1e-12)
 
@@ -92,19 +93,23 @@ class TestBuildEmpiricalPipeline:
         _, mesh, emp = build_empirical_pipeline(T800, 0.03, ply_angles='UD', mesh_res=TINY)
         assert np.all(mesh.ply_angles == 0.0)
         assert emp.f_md == 0.0
-        # f_md = 0 -> layup scale clamps to the fibre-dominated floor.
-        alpha = Calibration.JUDD_WRIGHT_ALPHA_QI['compression'] * Calibration.F_MD_FLOOR
+        assert emp.matrix_energy_fraction == pytest.approx(0.0, abs=1e-12)
+        # UD is not less sensitive than QI (IMPROVEMENT_PLAN 2.7): scale 1.
+        alpha = Calibration.JUDD_WRIGHT_ALPHA_QI['compression']
         r = emp.get_failure_load('compression', 'judd_wright')
         assert r.knockdown == pytest.approx(math.exp(-alpha * 0.03), rel=1e-12)
 
     def test_explicit_ply_list(self):
-        """An explicit all-90 layup gives f_md = 1 (scale 2) in the solver."""
+        """An explicit all-90 layup reaches the solver: tension is amplified to
+        the transverse-tension alpha (scale 10 / 3.9)."""
         _, mesh, emp = build_empirical_pipeline(T800, 0.02, ply_angles=[90, 90], mesh_res=TINY)
         assert emp.f_md == 1.0
         assert set(np.unique(mesh.ply_angles)) == {90.0}
-        r = emp.get_failure_load('tension', 'judd_wright')
-        alpha = Calibration.JUDD_WRIGHT_ALPHA_QI['tension'] * 2.0
+        with pytest.warns(UserWarning, match="unvalidated layup amplification"):
+            r = emp.get_failure_load('tension', 'judd_wright')
+        alpha = Calibration.JUDD_WRIGHT_ALPHA_QI['tension'] * (10.0 / 3.9)
         assert r.knockdown == pytest.approx(math.exp(-alpha * 0.02), rel=1e-12)
+        assert r.details['layup_scale'] == pytest.approx(10.0 / 3.9, rel=1e-12)
 
     def test_porosity_config_forwarded(self):
         """``porosity_config`` keys reach the ``PorosityField`` constructor."""
@@ -159,11 +164,12 @@ class TestSolverKwargs:
             1 - 2.5 * 0.04, rel=1e-12)
 
     def test_override_is_layup_scaled(self):
-        """Overrides are scaled by the layup like the defaults (all-90 -> x2)."""
+        """Overrides are scaled by the layup like the defaults (all-90
+        compression -> x alpha_shear / alpha_compression = 8 / 6.9)."""
         _, _, emp = build_empirical_pipeline(
             T800, 0.02, ply_angles=[90], mesh_res=TINY,
             solver_kwargs={'judd_wright_alpha': {'compression': 2.0}})
-        assert emp.JUDD_WRIGHT_ALPHA['compression'] == pytest.approx(4.0)
+        assert emp.JUDD_WRIGHT_ALPHA['compression'] == pytest.approx(2.0 * 8.0 / 6.9)
 
     def test_none_and_empty_are_equivalent_to_defaults(self):
         """``None`` and ``{}`` both leave the default coefficients in place."""

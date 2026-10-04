@@ -406,10 +406,11 @@ In all three cases the input `Vp` is the **target specimen average**; the
 profile is normalized so that averaging it over the full thickness recovers
 `Vp` (subject to discrete-void contributions, which are added afterwards).
 
-Layup orientation enters the empirical path through the matrix-dominated
-fraction `f_md` (see [Layup scaling](#layup-scaling) below) — the model
-penalizes matrix-dominated layups more than fiber-dominated ones for the
-same `Vp`.
+Layup orientation enters the empirical path only for the fiber-direction
+modes (tension, compression); see [Layup scaling](#layup-scaling) below.
+Layups more matrix-dominated than QI under an `x` load (`[±45]`, `[90]`)
+get a larger, unvalidated knockdown; UD, cross-ply and QI layups use the
+QI coefficients unscaled.
 
 ## Physics Models
 
@@ -439,7 +440,7 @@ KD = max(1 - beta * Vp, 0)
 
 #### QI-calibrated coefficients (Elhajjar 2025)
 
-`f_md_ref = 0.5` is the layup-scaling reference (`scale = 1.0` at `f_md = 0.5`); the QI coefficients below were tuned with this scaling already applied, so they are NOT raw fits to a single layup but represent the model's effective-baseline values:
+The coefficients come from the Elhajjar (2025) `[0/45/90/-45/0]_s` coupons. A least-squares fit of `ln(KD)` vs `Vp` on that dataset alone gives `alpha` = 6.95 (compression) and 4.21 (tension), close to the shipped values. Every quasi-isotropic and in-plane isotropic layup uses them unscaled:
 
 | Loading mode | `alpha` (Judd-Wright) | `n` (Power-Law) | `beta` (Linear) |
 |---|---|---|---|
@@ -453,22 +454,60 @@ These values sit inside published CFRP ranges: `alpha ≈ 1–3` for fiber-domin
 
 #### Layup scaling
 
-PorosityFE adapts the QI coefficients to the user's layup via a matrix-dominated fraction `f_md` computed from the ply angles (0° → 0.0, ±45° → 0.5, 90° → 1.0):
+Only the fiber-direction laminate modes, `tension` and `compression`, depend
+on the layup. `shear`, `ilss` and `transverse_tension` are ply or
+interlaminar matrix properties (`tau_12`, `tau_ilss`, `sigma_2t`), so their
+coefficients are layup-independent (scale 1).
+
+For `tension` and `compression`, the pristine CLT membrane strain energy
+under a unit `N_x` load is split into the parts stored in the ply fiber,
+transverse and shear components, `(e1, e2, e6)`. These weight the calibrated
+per-mode alphas:
 
 ```
-alpha_eff(mode) = alpha_QI(mode) * (f_md / 0.5)
-n_eff(mode)     = max(n_QI(mode) * (f_md / 0.5), 0.1)
+alpha_blend(layup) = e1 * a_fib + e2 * a_2 + e6 * a_6
+scale              = max(1, alpha_blend(layup) / alpha_QI(mode))
+alpha_eff(mode)    = alpha_QI(mode) * scale
+n_eff(mode)        = max(n_QI(mode) * scale, 0.1)
+beta_eff(mode)     = beta_QI(mode) * scale
 ```
 
-A floor of `0.15` is applied to the scale (`0.80` for ILSS, which is always matrix-dominated). The `_F_MD_FLOOR` / `_F_MD_FLOOR_ILSS` constants in `EmpiricalSolver` are empirical floors documented inline in the source (see issue #139 for the calibration gap):
+- Tension blends toward `a_2 = alpha_QI(transverse_tension)` and
+  `a_6 = alpha_QI(shear)`.
+- Compression uses `a_2 = a_6 = alpha_QI(shear)`, because there is no
+  transverse-compression mode.
+- `a_fib` is solved so that `alpha_blend(QI) = alpha_QI(mode)`. The rule
+  adds no fitted constant.
 
-| Layup | `f_md` | scale | `alpha_eff` (compression) |
+The scale is continuous in ply angle and independent of stacking order. It
+is 1 for UD, cross-ply, QI and every in-plane isotropic layup, and it is
+never below 1. It can rise only up to the matrix anchors: 10 / 3.9 = 2.56
+for tension and 8 / 6.9 = 1.16 for compression. The solver exposes the
+values as `EmpiricalSolver.layup_scale`.
+
+| Layup (T800/epoxy) | tension scale | compression scale | `alpha_eff` (tension / compression) |
 |---|---|---|---|
-| `[0]_16` (UD)              | 0.00 | 0.15 (floor) | 1.035 |
-| `[±45]_4s` (off-axis)      | 0.50 | 1.00          | 6.90  |
-| `[90]_8` (transverse)      | 1.00 | 2.00          | 13.80 |
+| UD, `[0/90]`, `[0_2/90]_s`, `[0/±15]_s`, QI, `[0/±60]_s` | 1.00 | 1.00 | 3.90 / 6.90 |
+| `[±30]_2s` | 1.55 | 1.08 | 6.05 / 7.43 |
+| `[±45]_2s` | 1.94 | 1.14 | 7.56 / 7.88 |
+| `[90]_8`   | 2.56 | 1.16 | 10.0 / 8.0 |
 
-Matrix-dominated layups are penalized more by porosity than fiber-dominated layups, as expected physically.
+> **Scales above 1 are not validated.** None of the 13 bundled datasets
+> uses an angle-ply, off-axis or 90°-rich layup, so the amplification rests
+> only on CLT and the calibrated mode alphas. When a scale above 1 is used,
+> `get_failure_load` records it in `details['layup_scale']` (with
+> `details['layup_extrapolated'] = True`) and emits a `UserWarning`. The
+> warning is emitted once per call, and once per `get_all_failure_loads`
+> call.
+
+The bundled data show no sign that UD coupons are less porosity-sensitive
+than QI coupons. This rule replaced a binned matrix-dominated fraction `f_md` (`alpha_QI ×
+f_md / 0.5`, floored at 0.15, or 0.80 for ILSS / transverse tension; issues
+#139 / #140). That rule cut UD tension, compression and shear sensitivity by
+85% and was the largest error source in the validation set.
+`Calibration.F_MD_REF`, `F_MD_FLOOR` and `F_MD_FLOOR_ILSS` are deprecated
+and have no effect. They will be removed in 2.0. `EmpiricalSolver.f_md`
+remains available as a legacy descriptor.
 
 #### Validity bounds
 
@@ -496,7 +535,7 @@ solver = EmpiricalSolver(
 )
 ```
 
-At the QI reference layup (`f_md = 0.5`, `scale = 1.0`) the override is used directly; for a different layup it scales the same way as the QI baseline (e.g. with a UD layup, `judd_wright_alpha={'ilss': 12.0}` becomes an effective `12.0 × 0.80 = 9.6` because ILSS uses a 0.80 floor — see [Layup scaling](#layup-scaling)). Override values must be positive finite numbers; mode keys must be a subset of `{'compression', 'tension', 'shear', 'ilss', 'transverse_tension'}`.
+For `shear`, `ilss` and `transverse_tension`, the override is used directly on every layup. The same holds for `tension` and `compression` on any layup with scale 1 (UD, cross-ply, QI). On an amplified layup, the override is multiplied by the same scale as the default. For example, on `[90]_8`, `judd_wright_alpha={'tension': 5.0}` becomes an effective `5.0 × 2.56 = 12.8`. The scale is always computed from the QI tables, never from the override; see [Layup scaling](#layup-scaling). Override values must be positive finite numbers; mode keys must be a subset of `{'compression', 'tension', 'shear', 'ilss', 'transverse_tension'}`.
 
 ### Finite Element Solver
 
@@ -540,21 +579,21 @@ or in-process via `validation/validate_all.py`.
 
 | Property | # papers | Overall MAE |
 |---|---|---|
-| ILSS (short-beam shear) | 9 | 4.9% |
-| Tensile strength | 7 | 8.2% |
+| ILSS (short-beam shear) | 9 | 4.1% |
+| Tensile strength | 7 | 1.9% |
 | Tensile modulus | 3 | 1.3% |
 | Transverse tensile modulus | 3 | 3.3% |
-| Transverse tensile strength | 3 | 7.4% |
+| Transverse tensile strength | 3 | 6.6% |
 | Flexural modulus (D-matrix CLT) | 5 | 8.9% |
-| Compression strength | 2 | 11.4% |
-| Shear strength | 2 | 13.5% |
+| Compression strength | 2 | 2.6% |
+| Shear strength | 2 | 4.5% |
 | Shear modulus (A-matrix CLT) | 1 | 14.7% |
 
 Transverse compression strength (`sigma_2c`) has no empirical loading mode because no dataset measures it against porosity. The FE failure criteria still use it.
 
 Overall MAE:
-- Property-weighted: **7.05%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
-- Point-weighted: **6.53%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
+- Property-weighted: **4.49%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
+- Point-weighted: **3.89%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 

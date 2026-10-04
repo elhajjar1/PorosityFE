@@ -22,8 +22,8 @@ Porosity
 
 Knockdown coefficient
 : `coef_cov` makes the calibrated coefficient for the mode ($\alpha$, $n$
-  or $\beta$) a median-preserving lognormal. The layup scaling is applied
-  on top.
+  or $\beta$) a median-preserving lognormal. The layup scaling
+  (`EmpiricalSolver.layup_scale`) is applied on top.
 
 The knockdown is a function of $V_p$ and the coefficient only. Scatter in
 the material strengths therefore widens the failure-stress band but leaves
