@@ -51,7 +51,11 @@ def _json_default(o):
 # 1.1 (#131): added optional top-level ``units`` block documenting the
 # physical units of numeric leaves. Purely additive; consumers on 1.0
 # loaders can safely ignore the new key.
-JSON_SCHEMA_VERSION = "1.1"
+# 1.2 (IMPROVEMENT_PLAN 3.5): FE-field exports gain an optional ``thermal``
+# block, interior and load-factor-basis keys in ``failure``, a nullable
+# ``knockdown_factor`` (null for loading='thermal') and ``delta_T_K`` in
+# the provenance of thermal solves. Additive.
+JSON_SCHEMA_VERSION = "1.2"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"

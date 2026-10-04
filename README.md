@@ -165,8 +165,10 @@ Notes:
   `E11 > E22`, etc.) before running.
 - Optional thermal inputs `alpha_1`, `alpha_2`, `alpha_3` (CTEs in **1/K**,
   e.g. `alpha_2=26e-6`, not `26`) and `T_stress_free` (°C) default to
-  `None`; they are stored for a planned thermal load case and no solver
-  uses them yet.
+  `None`. The FE thermal / cure residual-stress load case
+  (`FESolver.solve('thermal', delta_T=...)`, or `delta_T=` on a mechanical
+  mode) needs the CTEs; `delta_T` is always passed explicitly and is not
+  derived from `T_stress_free`.
 - The FE micromechanics path uses `matrix_modulus`, `matrix_poisson`,
   `fiber_modulus`, and `fiber_volume_fraction` to compute the Eshelby
   stiffness degradation. Supply realistic constituent values even if you
@@ -285,10 +287,10 @@ gives distinct compression knockdowns even at matched mean:
 
 ```
 mode = compression, FE Tsai-Wu, Vp_mean = 3 %
-  uniform               0.9922
+  uniform               0.9921
   clustered (midplane)  0.9923
   clustered (surface)   0.9914
-  interface             0.9821   (penny voids, sharpest local field)
+  interface             0.9820   (penny voids, sharpest local field)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`;
@@ -383,6 +385,19 @@ Three places take a **percent** instead, and say so in their names or labels:
 
 Coefficients of variation (`--uq-vp-cov`, the app's "Porosity CoV") are
 fractions of the value: `0.10` means 10 % of `Vp`, not 10 percentage points.
+
+### Thermal inputs
+
+| Input | Unit | Example |
+|---|---|---|
+| `MaterialProperties(alpha_1=..., alpha_2=..., alpha_3=...)` | 1/K (not ppm/K) | `alpha_2=26e-6`, not `26` |
+| `MaterialProperties(T_stress_free=...)` | °C (recorded only) | `177.0` |
+| `FESolver.solve(..., delta_T=...)` | K, a temperature **difference** (`T_service - T_stress_free`; negative for a cool-down) | `delta_T=-150.0` |
+
+`delta_T` has no default: `loading='thermal'` without it raises, and the
+library never infers it from `T_stress_free`. Thermal solves also need a
+mesh that resolves every ply (`nz` a multiple of `n_plies`); see
+[docs/theory/thermal.md](docs/theory/thermal.md).
 
 ### Per-ply vs. specimen-average porosity
 

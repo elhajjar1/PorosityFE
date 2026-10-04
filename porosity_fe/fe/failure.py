@@ -561,11 +561,231 @@ def _point_load_factors(s_all: np.ndarray,
         return np.where(fi > 0.0, 1.0 / fi, np.inf)
 
 
+def _positive_root_offset(A: np.ndarray, B: np.ndarray,
+                          c: np.ndarray | float) -> np.ndarray:
+    """Smallest positive ``lam`` with ``A lam**2 + B lam = c`` (``c > 0``), else ``inf``.
+
+    The rationalized root ``2 c / (B + sqrt(B**2 + 4 A c))``, stable for
+    tiny ``A``; :func:`_positive_root` is the case ``c = 1``. With
+    ``c > 0`` it is the smallest positive root for either sign of ``A``,
+    and ``inf`` when there is none (negative discriminant, or ``A <= 0``
+    with ``B <= 0``).
+    """
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        disc = B * B + 4.0 * A * c
+        denom = B + np.sqrt(np.maximum(disc, 0.0))
+        return np.where((disc >= 0.0) & (denom > 0.0), 2.0 * c / denom, np.inf)
+
+
+def _tsai_wu_forms(sa: np.ndarray, sb: np.ndarray, co: tuple
+                   ) -> tuple[np.ndarray, np.ndarray]:
+    """Linear form ``F . sa`` and bilinear form ``sa^T F sb`` of Tsai-Wu.
+
+    ``sa``, ``sb`` are ``(..., 6)``; the coefficients in ``co`` (the
+    :func:`_tsai_wu_coefficients` tuple) are scalars or arrays that
+    broadcast against ``sa[..., 0]``.
+    """
+    F1, F2, F3, F11, F22, F33, F44, F55, F66, F12, F13, F23 = co
+    a = [sa[..., k] for k in range(6)]
+    b = [sb[..., k] for k in range(6)]
+    lin = F1 * a[0] + F2 * a[1] + F3 * a[2]
+    bil = (F11 * a[0] * b[0] + F22 * a[1] * b[1] + F33 * a[2] * b[2]
+           + F44 * a[3] * b[3] + F55 * a[4] * b[4] + F66 * a[5] * b[5]
+           + F12 * (a[0] * b[1] + a[1] * b[0])
+           + F13 * (a[0] * b[2] + a[2] * b[0])
+           + F23 * (a[1] * b[2] + a[2] * b[1]))
+    return lin, bil
+
+
+def _piece_load_factor(s_th: np.ndarray, s_m: np.ndarray,
+                       cond: tuple[int, bool] | None,
+                       quad: dict, lin: dict) -> np.ndarray:
+    """First ``lam >= 0`` at which one branch of a failure mode reaches 1.
+
+    The branch value is ``sum_k quad[k] s_k**2 + sum_k lin[k] s_k`` at
+    ``s = s_th + lam s_m``, convex in ``lam`` (every ``quad[k] >= 0``), and
+    the branch is active only while its sign condition ``cond = (k,
+    tensile)`` holds (``s_k >= 0`` when ``tensile``, ``s_k < 0``
+    otherwise; ``None`` means always), i.e. on an interval
+    ``[lo, hi]`` of ``lam``. If the branch is already at 1 at ``lo`` (the
+    pre-stress alone, or a mode that switches on with a jump at a sign
+    change) the answer is ``lo``; otherwise it is the root of the
+    quadratic beyond ``lo`` if that lies in the interval, else ``inf``.
+    """
+    shape = s_th.shape[:-1]
+    lo = np.zeros(shape)
+    hi = np.full(shape, np.inf)
+    empty = np.zeros(shape, dtype=bool)
+    if cond is not None:
+        k, tensile = cond
+        a, b = s_th[..., k], s_m[..., k]
+        with np.errstate(divide='ignore', invalid='ignore'):
+            cross = -a / b                       # lam where s_k changes sign
+        if tensile:   # a + b lam >= 0
+            lo = np.where(b > 0.0, np.maximum(cross, 0.0), lo)
+            hi = np.where(b < 0.0, cross, hi)
+            empty = ((b < 0.0) & (cross < 0.0)) | ((b == 0.0) & (a < 0.0))
+        else:         # a + b lam < 0
+            lo = np.where(b < 0.0, np.maximum(cross, 0.0), lo)
+            hi = np.where(b > 0.0, cross, hi)
+            empty = ((b > 0.0) & (cross <= 0.0)) | ((b == 0.0) & (a >= 0.0))
+        lo = np.where(empty, 0.0, lo)
+    s0 = s_th + lo[..., None] * s_m
+    q0 = np.zeros(shape)
+    A = np.zeros(shape)
+    Bp = np.zeros(shape)
+    for k, w in quad.items():
+        q0 = q0 + w * s0[..., k] ** 2
+        A = A + w * s_m[..., k] ** 2
+        Bp = Bp + 2.0 * w * s0[..., k] * s_m[..., k]
+    for k, w in lin.items():
+        q0 = q0 + w * s0[..., k]
+        Bp = Bp + w * s_m[..., k]
+    lam = lo + _positive_root_offset(A, Bp, 1.0 - q0)
+    lam = np.where(lam <= hi, lam, np.inf)
+    lam = np.where(q0 >= 1.0, lo, lam)
+    return np.where(empty, np.inf, lam)
+
+
+def _point_load_factors_prestressed(
+        s_th: np.ndarray, s_m: np.ndarray, strengths: tuple,
+        criterion: str, tsai_wu_F12: float | None,
+        tsai_wu_coefficients: tuple | None = None) -> np.ndarray:
+    """Load factor on ``s_m`` with a fixed pre-stress ``s_th``.
+
+    Smallest ``lam >= 0`` at which ``criterion`` evaluated on
+    ``s_th + lam * s_m`` reaches 1: ``0`` where ``s_th`` alone has reached
+    it, ``inf`` where it is never reached. ``s_th`` and ``s_m`` are
+    ``(..., 6)`` ply-local stresses; ``strengths`` is the
+    :func:`degraded_strengths` tuple (scalars, or arrays broadcasting
+    against ``s_th[..., 0]``). ``tsai_wu_coefficients`` may pass the
+    matching :func:`_tsai_wu_coefficients` tuple precomputed.
+
+    - Tsai-Wu: ``FI = F.s + s^T F s`` gives
+      ``A lam^2 + B lam = 1 - FI_th`` with ``A = s_m^T F s_m`` and
+      ``B = F.s_m + 2 s_th^T F s_m``.
+    - Max-stress: each component ``s_th,i + lam s_m,i`` meets the
+      allowable on the side it moves towards (linear, with offset).
+    - Hashin: a pre-stress can change a stress sign as ``lam`` grows, so
+      each mode branch (fiber and matrix, tension and compression, and the
+      two branches of ``<sigma_33>`` in delamination) is solved on the
+      interval of ``lam`` where its sign condition holds, including onset
+      at a sign switch with the branch already at 1.
+    """
+    if criterion == 'tsai_wu':
+        co = tsai_wu_coefficients if tsai_wu_coefficients is not None \
+            else _tsai_wu_coefficients(strengths, tsai_wu_F12)
+        lin_th, quad_th = _tsai_wu_forms(s_th, s_th, co)
+        lin_m, A = _tsai_wu_forms(s_m, s_m, co)
+        _, cross = _tsai_wu_forms(s_th, s_m, co)
+        c = 1.0 - (lin_th + quad_th)
+        lam = _positive_root_offset(A, lin_m + 2.0 * cross, c)
+        return np.where(c <= 0.0, 0.0, lam)
+
+    Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    if criterion == 'max_stress':
+        # (component, tensile allowable, compressive allowable)
+        bounds = ((0, Xt_s, Xc_s), (1, Yt_s, Yc_s), (2, Yt_s, Yc_s),
+                  (3, S23_s, S23_s), (4, S12_s, S12_s), (5, S12_s, S12_s))
+        lam = np.full(s_th.shape[:-1], np.inf)
+        for k, upper, lower in bounds:
+            a, b = s_th[..., k], s_m[..., k]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                lam_k = np.where(b > 0.0, (upper - a) / b,
+                                 np.where(b < 0.0, (-lower - a) / b, np.inf))
+            lam_k = np.where((a >= upper) | (a <= -lower), 0.0, lam_k)
+            lam = np.minimum(lam, lam_k)
+        return lam
+
+    if criterion != 'hashin':
+        raise ValueError(
+            f"Unknown failure criterion {criterion!r}. "
+            f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}.")
+    shear12 = 1.0 / S12_s ** 2
+    inter = 1.0 / S23_s ** 2
+    pieces: list[tuple[tuple[int, bool], dict, dict]] = [
+        ((0, True), {0: 1.0 / Xt_s ** 2, 5: shear12}, {}),            # fiber_t
+        ((0, False), {0: 1.0 / Xc_s ** 2}, {}),                       # fiber_c
+        ((1, True), {1: 1.0 / Yt_s ** 2, 5: shear12}, {}),            # matrix_t
+        ((1, False), {1: 1.0 / (2.0 * S23_s) ** 2, 5: shear12},       # matrix_c
+         {1: ((Yc_s / (2.0 * S23_s)) ** 2 - 1.0) / Yc_s}),
+        ((2, True), {2: 1.0 / Yt_s ** 2, 3: inter, 4: inter}, {}),    # delam, s33 >= 0
+        ((2, False), {3: inter, 4: inter}, {}),                       # delam, s33 < 0
+    ]
+    return np.minimum.reduce([
+        _piece_load_factor(s_th, s_m, cond, quad, lin)
+        for cond, quad, lin in pieces])
+
+
+def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
+                          elements: np.ndarray, material: MaterialProperties,
+                          void_shape_radii: tuple,
+                          criterion: str = 'tsai_wu',
+                          void_elements=None, *,
+                          prestress_local: np.ndarray | None = None
+                          ) -> np.ndarray:
+    """Per-element first-failure load factor ``(n_elem,)``, ``inf`` where skipped.
+
+    See :func:`first_ply_failure_load_factor`, which returns the minimum.
+    """
+    if criterion not in SUPPORTED_FAILURE_CRITERIA:
+        raise ValueError(
+            f"Unknown failure criterion {criterion!r}. "
+            f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
+        )
+    elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
+    lam_e = np.full(stress_local.shape[0], np.inf)
+    active = np.flatnonzero(~skip)
+    strengths_by_vp: dict[float, tuple[float, float, float, float, float, float]] = {}
+
+    def strengths_of(vp: float) -> tuple[float, float, float, float, float, float]:
+        st = strengths_by_vp.get(vp)
+        if st is None:
+            st = degraded_strengths(material, void_shape_radii, vp)
+            strengths_by_vp[vp] = st
+        return st
+
+    if prestress_local is None:
+        for e in active:
+            lam = _point_load_factors(stress_local[e],
+                                      strengths_of(float(elem_Vp_all[e])),
+                                      criterion, material.tsai_wu_F12)
+            lam_e[e] = float(lam.min())
+        return lam_e
+
+    prestress_local = np.asarray(prestress_local, dtype=float)
+    if prestress_local.shape != stress_local.shape:
+        raise ValueError(
+            f"prestress_local has shape {prestress_local.shape}, expected "
+            f"{stress_local.shape} (the shape of stress_local).")
+    if active.size == 0:
+        return lam_e
+    # Vectorized over the active elements: per-element strengths (and
+    # Tsai-Wu coefficients) gathered from the distinct porosity levels.
+    vps, inverse = np.unique(elem_Vp_all[active], return_inverse=True)
+    inverse = inverse.reshape(-1)
+    table = np.array([strengths_of(float(v)) for v in vps])          # (n_vp, 6)
+    strengths = tuple(table[inverse, j][:, None] for j in range(6))
+    co = None
+    if criterion == 'tsai_wu':
+        co_table = np.array([
+            _tsai_wu_coefficients(tuple(row), material.tsai_wu_F12)
+            for row in table])                                       # (n_vp, 12)
+        co = tuple(co_table[inverse, j][:, None] for j in range(co_table.shape[1]))
+    lam = _point_load_factors_prestressed(
+        prestress_local[active], stress_local[active], strengths, criterion,
+        material.tsai_wu_F12, tsai_wu_coefficients=co)
+    lam_e[active] = lam.min(axis=1)
+    return lam_e
+
+
 def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray,
                                   elements: np.ndarray, material: MaterialProperties,
                                   void_shape_radii: tuple,
                                   criterion: str = 'tsai_wu',
-                                  void_elements=None) -> float:
+                                  void_elements=None, *,
+                                  prestress_local: np.ndarray | None = None
+                                  ) -> float:
     """Load multiplier at which ``criterion`` first reaches 1 anywhere.
 
     The analysis is linear, so every stress scales with the applied load
@@ -575,22 +795,25 @@ def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray
     at which any point of any non-void element reaches an index of 1 (the
     same elements :func:`evaluate_failure` checks). The margin of safety
     is ``lam - 1``. Returns ``inf`` if no point is stressed.
+
+    Parameters
+    ----------
+    stress_local : np.ndarray
+        ``(n_elem, n_gp, 6)`` ply-local stress that ``lam`` scales.
+    porosity, elements, material, void_shape_radii, criterion, void_elements
+        As for :func:`evaluate_failure`.
+    prestress_local : np.ndarray, optional
+        Keyword-only ``(n_elem, n_gp, 6)`` ply-local stress held fixed
+        while ``lam`` scales ``stress_local``, e.g. a thermal residual
+        stress: the criterion is evaluated on
+        ``prestress_local + lam * stress_local``, and the result is ``0``
+        where the pre-stress alone has reached it. Tsai-Wu gains the
+        pre-stress terms in closed form, max-stress becomes linear with an
+        offset, and Hashin is solved branch by branch, because a
+        pre-stress lets a stress change sign (and a mode switch on) as
+        ``lam`` grows. ``None`` (default) is the unchanged path.
     """
-    if criterion not in SUPPORTED_FAILURE_CRITERIA:
-        raise ValueError(
-            f"Unknown failure criterion {criterion!r}. "
-            f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
-        )
-    elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
-    strengths_by_vp: dict[float, tuple[float, float, float, float, float, float]] = {}
-    lam_min = np.inf
-    for e in np.flatnonzero(~skip):
-        vp = float(elem_Vp_all[e])
-        strengths = strengths_by_vp.get(vp)
-        if strengths is None:
-            strengths = degraded_strengths(material, void_shape_radii, vp)
-            strengths_by_vp[vp] = strengths
-        lam = _point_load_factors(stress_local[e], strengths, criterion,
-                                  material.tsai_wu_F12)
-        lam_min = min(lam_min, float(lam.min()))
-    return float(lam_min)
+    lam_e = _element_load_factors(
+        stress_local, porosity, elements, material, void_shape_radii,
+        criterion, void_elements, prestress_local=prestress_local)
+    return float(lam_e.min()) if lam_e.size else float('inf')

@@ -192,14 +192,18 @@ type checkers use them; at run time each function validates its own input.
 
 .. py:data:: FELoadingMode
 
-   ``'compression' | 'tension' | 'shear' | 'ilss'``, the loading modes
-   :meth:`FESolver.solve` has boundary conditions for.
+   ``'compression' | 'tension' | 'shear' | 'ilss' | 'thermal'``, the
+   loading modes :meth:`FESolver.solve` has boundary conditions for.
+   ``'thermal'`` is the free-standing cure residual-stress solve; it needs
+   ``delta_T=`` and lamina CTEs (see the theory page on thermal and cure
+   residual stress).
 
 .. py:data:: FEFormulation
 
    ``'hex8' | 'hex8i'``, the element formulations :class:`FESolver` accepts
-   (``formulation=``): the standard trilinear brick, or the brick with
-   condensed incompatible modes that does not lock in bending.
+   (``formulation=``): the standard trilinear brick, or the default
+   ``'hex8i'``, the brick with condensed incompatible modes that does not
+   lock in bending.
 
 .. py:data:: KnockdownModel
 

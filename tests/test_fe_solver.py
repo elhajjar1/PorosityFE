@@ -2317,9 +2317,14 @@ class TestHashinDelaminationMode:
         assert modes['delamination'][1] == 0.0
 
     def test_ilss_hashin_is_governed_by_delamination(self):
+        # Ply-resolving mesh (nz = n_plies = 24). On the earlier 10x3x8 mesh
+        # the element layers merge plies, the outer element layer is a 90
+        # deg ply, and with the lock-free default element its transverse
+        # tension (matrix_t 2.3e-5) overtakes delamination (6.2e-6); the
+        # locking hex8 element hid that by over-predicting tau_13.
         mat = MATERIALS['T800_epoxy']
         pf = PorosityField(mat, 0.03)
-        mesh = CompositeMesh(pf, mat, nx=10, ny=3, nz=8)
+        mesh = CompositeMesh(pf, mat, nx=20, ny=4, nz=24)
         r = FESolver(mesh, mat, pf).solve('ilss', failure_criterion='hashin')
         modes = r.failure_mode_indices
         assert r.max_failure_index == pytest.approx(modes['delamination'], rel=1e-12)
@@ -2579,24 +2584,72 @@ class TestIncompatibleModes:
         assert self._bending_modulus_ratio(*res, 'hex8') == \
             pytest.approx(hex8_ratio, rel=0.01)
 
-    def test_default_is_hex8_and_unchanged(self):
-        # Not passing the option must give exactly the 'hex8' results.
+    def test_default_is_hex8i(self):
+        # Every entry point of the FE path defaults to the same element.
+        from porosity_fe.fe.batch import ElementBatch, build_element_batch
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
         pf = PorosityField(mat, 0.03, distribution='clustered')
         mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=8)
         default = FESolver(mesh, mat, pf)
-        explicit = FESolver(mesh, mat, pf, formulation='hex8')
-        assert default.formulation == 'hex8'
-        assert default.assembler.element_batch().formulation == 'hex8'
+        explicit = FESolver(mesh, mat, pf, formulation='hex8i')
+        assert default.formulation == 'hex8i'
+        assert default.assembler.element_batch().formulation == 'hex8i'
+        assert GlobalAssembler(mesh, mat, pf).formulation == 'hex8i'
+        assert default.assembler.create_element(0).formulation == 'hex8i'
+        assert build_element_batch(
+            mesh, mat, pf.void_shape_radii).formulation == 'hex8i'
+        batch = default.assembler.element_batch()
+        assert ElementBatch(batch.dofs, batch.B, batch.C,
+                            batch.detJ_w).formulation == 'hex8i'
+        element = Hex8Element(
+            node_coords=mesh.nodes[mesh.elements[0]],
+            C_base=mat.get_stiffness_matrix(), ply_angle_deg=0.0,
+            node_porosities=np.zeros(8), void_shape_radii=(1, 1, 1),
+            nu_m=mat.matrix_poisson,
+            C_m=mat.get_isotropic_matrix_stiffness(), material=mat)
+        assert element.formulation == 'hex8i'
         for mode in ('compression', 'ilss'):
             a, b = default.solve(mode), explicit.solve(mode)
-            assert a.formulation == b.formulation == 'hex8'
+            assert a.formulation == b.formulation == 'hex8i'
             np.testing.assert_array_equal(a.displacement, b.displacement)
             np.testing.assert_array_equal(a.stress_global, b.stress_global)
             assert a.knockdown == b.knockdown
             assert a.max_failure_index == b.max_failure_index
             assert a.first_ply_failure_load_factor == \
                 b.first_ply_failure_load_factor
+
+    def test_hex8_reproduces_the_previous_default(self):
+        # formulation='hex8' must give the results the solver produced
+        # before 'hex8i' became the default. Reference values were recorded
+        # from the old default on this case; bit-for-bit agreement was
+        # checked by hashing the full result arrays on the production mesh
+        # when the default changed. rel=1e-9 leaves room only for
+        # platform BLAS / SuperLU round-off.
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=8)
+        solver = FESolver(mesh, mat, pf, formulation='hex8')
+        compression = solver.solve('compression')
+        assert compression.formulation == 'hex8'
+        assert compression.knockdown == pytest.approx(
+            0.9904492536981753, rel=1e-9)
+        assert compression.max_failure_index == pytest.approx(
+            1.134991940118447, rel=1e-9)
+        assert compression.first_ply_failure_load_factor == pytest.approx(
+            0.921116511303338, rel=1e-9)
+        assert compression.effective_modulus == pytest.approx(
+            60929.32751734179, rel=1e-9)
+        ilss = solver.solve('ilss')
+        assert ilss.knockdown == pytest.approx(0.9728817280551666, rel=1e-9)
+        assert ilss.max_failure_index == pytest.approx(
+            0.0028887241598076143, rel=1e-9)
+        assert ilss.first_ply_failure_load_factor == pytest.approx(
+            79.72537609003167, rel=1e-9)
+        assert np.abs(ilss.displacement).max() == pytest.approx(
+            0.014769825523884748, rel=1e-9)
+        # ... and the new default really is a different element.
+        default_ilss = FESolver(mesh, mat, pf).solve('ilss')
+        assert abs(default_ilss.knockdown - ilss.knockdown) > 5e-3
 
     def test_membrane_response_nearly_unchanged(self):
         # hex8i passes the patch test, so a homogeneous in-plane state is
@@ -2630,7 +2683,7 @@ class TestIncompatibleModes:
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
         pf = PorosityField(mat, 0.02)
         mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=8)
-        solver = FESolver(mesh, mat, pf, formulation='hex8i')
+        solver = FESolver(mesh, mat, pf)
         assert solver.formulation == 'hex8i'
         r = solver.solve('compression')
         assert r.formulation == 'hex8i'
@@ -2639,16 +2692,23 @@ class TestIncompatibleModes:
         FESolver.export_results(r, path)
         with open(path, encoding='utf-8') as f:
             assert json.load(f)['solver'] == {'formulation': 'hex8i'}
-        # FieldResults built directly keeps the historical default.
+        # FieldResults built directly takes the solver default; an explicit
+        # 'hex8' solve is recorded as such.
         bare = FieldResults(r.displacement, r.stress_global, r.stress_local,
                             r.strain_global, r.strain_local, 1.0, 1.0)
-        assert bare.formulation == 'hex8'
+        assert bare.formulation == 'hex8i'
+        r8 = FESolver(mesh, mat, pf, formulation='hex8').solve('compression')
+        assert r8.formulation == 'hex8'
+        assert r8.summary().details['formulation'] == 'hex8'
+        FESolver.export_results(r8, path)
+        with open(path, encoding='utf-8') as f:
+            assert json.load(f)['solver'] == {'formulation': 'hex8'}
 
     def test_assembly_cache_is_keyed_on_formulation(self):
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
         pf = PorosityField(mat, 0.03, distribution='clustered')
         mesh = CompositeMesh(pf, mat, nx=4, ny=2, nz=8)
-        assembler = GlobalAssembler(mesh, mat, pf)
+        assembler = GlobalAssembler(mesh, mat, pf, formulation='hex8')
         K_hex8 = assembler.stiffness()
         assert assembler.stiffness() is K_hex8
         assembler.formulation = 'hex8i'
