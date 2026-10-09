@@ -43,6 +43,50 @@ All notable changes to PorosityFE will be documented in this file.
     functions along `x`, optional uniform-pressure band),
     `BoundaryHandler.flexure_bcs`, `BoundaryHandler.flexure_geometry` and
     `BoundaryHandler.face_line_nodes` (new).
+- **Mesh-convergence study `refinement_study` (IMPROVEMENT_PLAN 3.6, B1).**
+  Library only; no existing result changes. `refinement_study(material,
+  Vp_or_field, loading, ...)` solves one FE load case (any mode, with or
+  without `delta_T`) on a sequence of refined meshes, coarse to fine, and
+  returns a `RefinementStudy`: per level the resolution, element and DOF
+  counts, wall time, estimated peak memory, knockdown, effective modulus,
+  domain and interior maximum failure index and first-ply-failure load
+  factor (`RefinementLevel`); per quantity the relative changes, the
+  convergence behavior of the three finest levels (`'monotone'`,
+  `'non-monotone'`, `'diverging'`, `'mesh-independent'`), the observed
+  order, a Richardson extrapolate (monotone only, observed order at least
+  0.5), Roache's GCI and a converged flag against `tol` (default 1 %;
+  knockdown judged on `1 - KD`) (`QuantityConvergence`). `summary()`
+  prints the level table, the convergence table and notes;
+  `to_dict()` is strict JSON (non-finite values become `null`).
+  - Levels default to `(30, 10, n_plies)` refined in plane by factors
+    1, 1.5 and 2 with `nz` fixed; `refine='all'` also scales `nz` in whole
+    multiples of the ply count, and `resolutions=` takes explicit levels.
+    A level whose `nz` does not resolve the layup is refused (ply aliasing
+    would swamp the discretization error). For `'ilss'` the generated
+    levels use an even `nx`, so the load line stays on one node column.
+  - Interior quantities use one `interior_margin` for every level (by
+    default the coarsest level's `max(h, 2 dx, 2 dy)`), so they describe
+    one region.
+  - Before solving, a level above `max_elements` (default the mesh cap)
+    or above the memory budget (`max_memory_gb`, default 80 % of physical
+    memory where the platform reports it) raises `ValueError` listing the
+    estimate of every level. Each level is released before the next is
+    built, and its pristine reference is solved first, so the peak memory
+    is that of one model rather than two (1.5 GB instead of 2.9 GB at
+    45 x 15 x 24).
+  - On T800/epoxy QI (24 plies, midplane-clustered `Vp = 0.03`, `'hex8i'`)
+    from 30 x 10 x 24 to 60 x 20 x 24 (15 s, 63 s and 252 s; peak 3.4 GB),
+    compression: the knockdown moves by 4e-5 in all, the interior maximum
+    failure index converges (1.195, 1.145, 1.133; extrapolate 1.126, GCI
+    0.8 %), and the domain maximum grows at the gripped corners (1.23,
+    1.39, 1.74) and is flagged mesh-dependent. In `'ilss'` the mid-span
+    line load is singular, so its failure indices and load factors are
+    mesh-dependent at any resolution. The production default 30 x 10 x 12,
+    which does not resolve the 24-ply layup, converges in plane to a
+    different laminate (interior index 1.48). Method, tables and a
+    production-resolution recommendation are in the theory page
+    (finite-element model, "Mesh convergence"); `_DEFAULT_MESH_RES` is
+    unchanged.
 - **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
   E1).** Results and existing exports do not change.
   - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and

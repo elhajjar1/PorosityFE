@@ -432,3 +432,177 @@ eight points, so ParaView shows the interface jumps without
 interpolating across them. {func}`~porosity_fe.write_pvd` groups several
 files into a series. The legacy ASCII {meth}`~porosity_fe.FieldResults.to_vtk`
 is unchanged.
+
+## Mesh convergence
+
+{func}`~porosity_fe.refinement_study` solves one load case on a sequence of
+refined meshes and reports which results have converged:
+
+```python
+from porosity_fe import MATERIALS, refinement_study
+
+study = refinement_study(MATERIALS["T800_epoxy"], 0.03, "compression",
+                         porosity_config={"distribution": "clustered"})
+print(study.summary())          # tables and notes; study.to_dict() for JSON
+```
+
+**What is refined.** By default the levels are $30 \times 10 \times
+n_\text{plies}$ refined in plane by the factors 1, 1.5 and 2, with $n_z$
+held at one element layer per ply. Three reasons:
+
+- An $n_z$ that does not resolve the plies analyzes a different laminate
+  (see the warning under "Mesh and elements"), so a study that crosses
+  such values measures ply aliasing, not discretization error. The study
+  refuses those levels unless `allow_unresolved_layup=True`.
+- The element's bending error is set by $\Delta x / h$, not by $n_z$
+  ("Element formulations"), and one `'hex8i'` element per ply is already
+  fine through the thickness: on the production geometry below, doubling
+  $n_z$ to 48 at $30 \times 10$ moves the compression knockdown by
+  $4 \times 10^{-5}$ and the interior failure index by 0.3 %.
+- Cost. The sparse LU fill grows as about $8\, n_\text{dof}^{1.5}$, so
+  every refined axis is expensive.
+
+`refine='all'` also scales $n_z$, rounded to whole multiples of the ply
+count, and `resolutions=` takes explicit levels. For `ilss` the generated
+levels use an even $n_x$, so the load line falls on one node column.
+The interior quantities use one `interior_margin` for every level (by
+default the coarsest level's $\max(h, 2\Delta x, 2\Delta y)$); the
+solver's own default shrinks with the elements, which would let the
+interior region creep into the edge singularity.
+
+**Metrics.** Each quantity gets the relative change from level to level,
+measured against the finer value; for the knockdown it is measured
+against the stiffness loss $1 - KD$, since $KD$ close to 1 would make any
+mesh look converged. The three finest levels, with values $f_3, f_2, f_1$
+(coarse to fine) at element sizes $h_3 > h_2 > h_1$ (the geometric mean
+element length over the refined axes), are classified:
+
+| Behavior | Condition | Error estimate of $f_1$ |
+|---|---|---|
+| mesh-independent | both changes below `tol / 10` | 0 |
+| monotone | changes of one sign, $p > 0$ below | Roache's GCI |
+| non-monotone | the changes alternate in sign | larger of the last two changes |
+| diverging | changes of one sign that do not shrink ($p \le 0$) | none (unbounded) |
+
+The observed order $p$ solves
+
+$$
+\frac{f_3 - f_2}{f_2 - f_1} = \frac{r_{32}^{\,p} - 1}{1 - r_{21}^{-p}},
+\qquad r_{32} = \frac{h_3}{h_2},\; r_{21} = \frac{h_2}{h_1},
+$$
+
+which reduces to $p = \ln\!\big[(f_3 - f_2)/(f_2 - f_1)\big] / \ln r$ for
+equal ratios. The right side grows with $p$ from $\ln r_{32} / \ln r_{21}$,
+so a smaller ratio of changes means the changes do not shrink faster than
+$\ln h$: diverging. For a monotone sequence the Richardson extrapolate and
+the grid convergence index of the finest level are
+
+$$
+f_\text{ext} = f_1 + \frac{f_1 - f_2}{r_{21}^{\,p} - 1},
+\qquad
+\mathrm{GCI} = \frac{1.25\, \lvert (f_1 - f_2)/f_1 \rvert}{r_{21}^{\,p} - 1}.
+$$
+
+The extrapolate is reported only for $p \ge 0.5$; below that the
+correction is too large to trust. A quantity is converged when its error
+estimate is at most `tol` (default 1 %). It is `'mesh-dependent'` when it
+is not converged, its last change exceeds `tol`, and it diverges or
+converges with $p < 0.5$: it keeps moving at a rate no practical
+refinement settles, which is what a stress singularity looks like.
+Three levels cannot always tell a singularity from meshes still too
+coarse for the asymptotic trend; when the interior counterpart converges,
+the singular reading is the right one.
+
+**What converges and what does not.** T800/epoxy QI (24 plies,
+$h = 4.39$ mm), midplane-clustered $V_p = 0.03$, `'hex8i'`, Tsai-Wu,
+default study ($n_z = 24$, interior margin 4.39 mm; wall times on a 4-core
+Linux machine). Compression at
+$\varepsilon = -1$ %:
+
+| Quantity | $30 \times 10$ | $45 \times 15$ | $60 \times 20$ | Study |
+|---|---|---|---|---|
+| knockdown | 0.992437 | 0.992410 | 0.992393 | changes 0.36 %, 0.22 % of $1 - KD$, $p = 0.38$: not converged at 1 % ($KD \pm 1.8 \times 10^{-4}$) |
+| effective modulus (MPa) | 60,803 | 60,765 | 60,738 | changes below 0.1 %: converged |
+| maximum failure index | 1.229 | 1.388 | 1.739 | +11 %, +20 %: diverging, mesh-dependent |
+| interior maximum failure index | 1.195 | 1.145 | 1.133 | $p = 3.2$, extrapolate 1.126, GCI 0.8 %: converged |
+| first-ply-failure load factor | 0.873 | 0.836 | 0.731 | diverging, mesh-dependent |
+| interior first-ply-failure load factor | 0.890 | 0.916 | 0.922 | $p = 3.1$, extrapolate 0.926, GCI 0.6 %: converged |
+| wall time (s) | 15 | 63 | 252 | |
+| peak memory, estimated / measured (GB) | 0.76 / 0.76 | 1.9 / 1.5 | 3.9 / 3.4 | |
+
+The domain maximum sits at the gripped corners, where the stress is
+singular; it grows faster with each refinement and has no mesh-converged
+value. The interior values converge from above, so a coarse mesh is
+conservative for them here. The knockdown and modulus barely move: they are
+integrals of the field.
+
+ILSS at $P = -10$ N (the middle level is $46 \times 15$ for an even
+$n_x$):
+
+| Quantity | $30 \times 10$ | $46 \times 15$ | $60 \times 20$ | Study |
+|---|---|---|---|---|
+| knockdown | 0.98286 | 0.98299 | 0.98308 | changes −0.75 %, −0.55 % of $1 - KD$: diverging slowly, not converged |
+| maximum failure index ($10^{-3}$) | 1.450 | 1.458 | 1.646 | diverging, mesh-dependent |
+| interior maximum failure index ($10^{-3}$) | 1.438 | 1.406 | 1.417 | non-monotone, 2.3 %: not converged |
+| first-ply-failure load factor | 178.5 | 143.5 | 126.8 | $p = 0.95$, GCI 55 %: not converged |
+| interior first-ply-failure load factor | 385.5 | 362.2 | 323.2 | diverging, mesh-dependent |
+
+Here the interior region contains the mid-span load line. A line load is
+singular: the stress under it grows without bound, and the compliance
+has a logarithmically divergent indentation term, so even the knockdown
+drifts (by $10^{-4}$ per level). ILSS failure indices and load factors
+are mesh-dependent at any resolution; a distributed load would be needed
+to change that.
+
+Thermal residual stress (AS4/3501-6 QI, $h = 3$ mm,
+$\Delta T = -157$ K, same meshes): the domain maximum failure index grows
+at the free edges (0.735, 0.776, 0.801: mesh-dependent), and the interior
+one is non-monotone (0.685, 0.706, 0.669: not converged). These meshes
+have elements 13 to 7 ply thicknesses long, where `'hex8i'` carries an
+oscillation in from the free edges ({doc}`thermal`, "Caveats").
+
+**Reading the report.** `summary()` prints the levels, then one row per
+quantity with the last change, behavior, observed order, extrapolate, GCI
+and verdict, then notes: which domain extremes to replace by their
+interior counterparts, the knockdown error in $KD$ itself, and that with
+`refine='in_plane'` the extrapolate is the limit at the fixed $n_z$.
+Every field is also on {class}`~porosity_fe.RefinementStudy`,
+{class}`~porosity_fe.RefinementLevel` and
+{class}`~porosity_fe.QuantityConvergence`.
+
+**Production resolution.** The production default $30 \times 10 \times 12$
+does not resolve the 24-ply presets. In-plane refinement at $n_z = 12$
+converges the compression interior failure index (1.477, 1.472, 1.472),
+but to the value of a different laminate:
+
+| T800 QI, $V_p = 0.03$ clustered | $30 \times 10 \times 12$ | $30 \times 10 \times 24$ | $60 \times 20 \times 24$ (extrapolate) |
+|---|---|---|---|
+| compression knockdown | 0.99218 | 0.99244 | 0.99239 |
+| compression interior maximum failure index | 1.477 | 1.195 | 1.133 (1.126) |
+| compression maximum failure index | 2.13 | 1.23 | 1.74 (mesh-dependent) |
+| ILSS knockdown | 0.98397 | 0.98286 | 0.98308 |
+| first compression solve, incl. pristine reference | 4.7 s | 14.5 s | 252 s |
+
+For the FE path, one element layer per ply at the production in-plane
+size, $30 \times 10 \times n_\text{plies}$, puts the knockdowns within
+$2 \times 10^{-4}$ of the finest mesh and the interior failure index 6 %
+above its extrapolate, at three times the cost of $n_z = 12$;
+$45 \times 15 \times n_\text{plies}$ brings the interior index within
+2 % (one minute, 1.5 GB). Read failure from the interior quantities: the
+domain maximum is mesh-dependent at every resolution.
+
+**Cost and guards.** Levels are solved coarse to fine and each is released
+before the next is built. Each level's pristine reference is solved before
+its porous model is assembled, so only one factorization is alive at a
+time (at $45 \times 15 \times 24$ the peak is 1.5 GB instead of 2.9 GB).
+Before solving, the study refuses a level above `max_elements` (default
+the $10^6$ mesh cap) or one whose estimated peak memory exceeds
+`max_memory_gb` (default 80 % of physical memory where the platform
+reports it), and the error lists the estimate of every level. The
+estimate is $0.15\ \text{GB} + 30\ \text{kB}$ per element plus 12 bytes
+per LU nonzero; it was 1.0 to 1.3 times the measured peak on meshes from
+$20 \times 8 \times 24$ to $60 \times 20 \times 24$. With `solver='cg'`
+the compression study above gives the same values to the printed digits
+in 193 s instead of 329 s, at the same 3.4 GB peak: the knockdown's
+pristine reference is always factorized directly, so CG saves memory only
+in thermal or pore-free studies.

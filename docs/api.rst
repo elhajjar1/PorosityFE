@@ -76,6 +76,10 @@ Finite-element solver
    BoundaryHandler
    extrapolate_to_nodes
    write_pvd
+   refinement_study
+   RefinementStudy
+   RefinementLevel
+   QuantityConvergence
 
 Laminate theory and transforms
 ------------------------------
