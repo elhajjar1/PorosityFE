@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Porosity Analysis Results",
-  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit empirical exporter / the NCR exporter. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change. The known top-level format identifiers are listed in the `format` enum (#20). An optional `units` block (#131) documents the physical units of the numeric leaves in the payload so downstream consumers reading only the JSON can interpret values without consulting external docs.",
+  "description": "Output contract for save_results_to_json / FESolver.export_results / the Streamlit empirical exporter / the NCR exporter. The envelope (schema_version, format, provenance) is validated strictly so consumers can detect version/contract drift; the science payload is intentionally permissive so adding result fields is not a breaking schema change. The known top-level format identifiers are listed in the `format` enum (#20). An optional `units` block (#131) documents the physical units of the numeric leaves in the payload so downstream consumers reading only the JSON can interpret values without consulting external docs. Every writer emits standard JSON (RFC 8259): never the tokens NaN or Infinity. A value that is not defined is null, only in the fields whose description says when; any other non-finite value makes the writer raise instead.",
   "type": "object",
   "required": ["schema_version", "format", "provenance"],
   "properties": {
@@ -62,9 +62,63 @@
       "description": "Optional self-documenting map from payload field name to its physical unit string (#131). Added in schema_version 1.1; consumers on older schemas can safely ignore it. Keys correspond to numeric leaves present in the payload (e.g. 'failure_stress', 'knockdown', 'Vp', 'porosity_percent'); values are human-readable unit strings (e.g. 'MPa', 'dimensionless fraction in (0, 1]', '%').",
       "additionalProperties": {"type": "string"}
     },
+    "failure": {
+      "type": "object",
+      "description": "FE-field export (FESolver.export_results): failure summary. Failure indices and load factors are dimensionless.",
+      "properties": {
+        "max_tsai_wu_index": {"type": "number", "description": "Legacy alias of max_failure_index (whatever the criterion)."},
+        "max_failure_index": {"type": "number"},
+        "criterion": {"type": "string"},
+        "mode_indices": {
+          "type": ["object", "null"],
+          "description": "Per-mode failure indices at the point of max_fi; null when the result carries no breakdown. An entry is null when the criterion does not separate that mode: Tsai-Wu leaves every entry except max_fi null (schema_version 1.1 wrote the invalid token NaN there). max_fi is always a number.",
+          "properties": {"max_fi": {"type": "number"}},
+          "additionalProperties": {"type": ["number", "null"]}
+        },
+        "knockdown_factor": {
+          "type": ["number", "null"],
+          "description": "FE stiffness knockdown, porous over pristine. null when the solve has no stiffness measure (loading='thermal')."
+        },
+        "first_ply_failure_load_factor": {
+          "type": ["number", "null"],
+          "description": "Multiplier on the load named by load_factor_basis at which the criterion first reaches 1. null when no point is stressed (the factor is infinite)."
+        },
+        "load_factor_basis": {"type": "string", "enum": ["mechanical", "delta_T", "mechanical_with_residual"]},
+        "interior_max_failure_index": {
+          "type": ["number", "null"],
+          "description": "max_failure_index over the elements away from the lateral faces; null when there are none."
+        },
+        "interior_first_ply_failure_load_factor": {
+          "type": ["number", "null"],
+          "description": "first_ply_failure_load_factor over the interior elements; null when there are none or no interior point is stressed."
+        }
+      }
+    },
+    "stiffness": {
+      "type": "object",
+      "description": "FE-field export: effective modulus and summed reactions.",
+      "properties": {
+        "effective_modulus_MPa": {
+          "type": ["number", "null"],
+          "description": "Strain-energy modulus in MPa (E_x or G_xy). null when there is no single modulus (ILSS bend, loading='thermal')."
+        },
+        "reaction_force_sum_N": {"type": "array", "items": {"type": "number"}, "description": "Summed nodal reactions (N), x/y/z."}
+      }
+    },
     "thermal": {
       "type": "object",
-      "description": "FE-field export of a thermal or combined solve (FESolver.solve(delta_T=...)), added in schema_version 1.2: delta_T_K (K), alpha_local_per_K (lamina CTEs, 1/K), load_factor_basis, residual_max_failure_index and interior_max_failure_index (dimensionless), and min/max/mean/std of the ply-local residual stress (MPa)."
+      "description": "FE-field export of a thermal or combined solve (FESolver.solve(delta_T=...)), added in schema_version 1.2: delta_T_K (K), alpha_local_per_K (lamina CTEs, 1/K), load_factor_basis, residual_max_failure_index and interior_max_failure_index (dimensionless), and min/max/mean/std of the ply-local residual stress (MPa).",
+      "properties": {
+        "delta_T_K": {"type": "number"},
+        "alpha_local_per_K": {"type": ["array", "null"], "items": {"type": "number"}},
+        "load_factor_basis": {"type": "string", "enum": ["mechanical", "delta_T", "mechanical_with_residual"]},
+        "residual_max_failure_index": {"type": ["number", "null"]},
+        "interior_max_failure_index": {
+          "type": ["number", "null"],
+          "description": "null when no element lies away from the lateral faces."
+        },
+        "residual_stress_local": {"type": ["object", "null"]}
+      }
     },
     "raw_sidecar": {
       "type": "string",

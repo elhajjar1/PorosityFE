@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json
 import os
 import warnings
 from collections import OrderedDict
@@ -17,7 +16,7 @@ from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _
     Calibration,
     EmpiricalSolver,
 )
-from .io import _UNITS_UQ, FORMAT_UQ, _json_default, _wrap_envelope
+from .io import _UNITS_UQ, FORMAT_UQ, _wrap_envelope, _write_json
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
 
@@ -398,6 +397,13 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
     include_samples : bool, optional
         Keep the raw per-draw ``samples`` arrays (dropped by default; they
         are ``n_samples`` floats per quantity).
+
+    Notes
+    -----
+    The file is standard JSON (no ``NaN`` / ``Infinity``). Every value of
+    a :func:`propagate_uncertainty` result is finite, so a non-finite one
+    raises :class:`ValueError` (naming its location) before the file is
+    written.
     """
     payload = {}
     for label, res in results.items():
@@ -406,5 +412,6 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
             entry.pop('samples', None)
         payload[label] = entry
     envelope = _wrap_envelope(FORMAT_UQ, _UNITS_UQ, {'uq': payload})
-    with open(Path(filename), 'w', encoding='utf-8') as f:
-        json.dump(envelope, f, indent=2, default=_json_default)
+    # Standard JSON: every value is finite, so a non-finite one raises
+    # instead of writing NaN.
+    _write_json(envelope, Path(filename))

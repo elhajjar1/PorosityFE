@@ -7,6 +7,7 @@ import datetime
 import functools
 import json
 import logging
+import math
 import os
 import platform
 import subprocess
@@ -46,6 +47,104 @@ def _json_default(o):
     )
 
 
+# ----------------------------------------------------------------------
+# Strict (standard) JSON
+# ----------------------------------------------------------------------
+# JSON (RFC 8259) has no NaN or Infinity. Python's json module writes them
+# as the bare tokens NaN / Infinity by default, which JavaScript, jq and
+# other strict parsers reject. Every writer in the package therefore
+# serializes through _dumps_json (allow_nan=False). A field whose
+# non-finite value means something (e.g. a Tsai-Wu per-mode index, or the
+# knockdown of a thermal-only solve) is mapped to null by its writer with
+# _finite_or_none, and the writer documents what null means; any other
+# non-finite float is a bug and raises instead of reaching the file.
+
+def _finite_or_none(value: float | None) -> float | None:
+    """JSON-safe float: ``None`` (written as ``null``) for missing or non-finite values.
+
+    Only for fields whose writer documents what ``null`` means; every
+    other float goes through :func:`_dumps_json` as is and raises if it is
+    not finite.
+    """
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _non_finite_path(obj, path: str = "$") -> str | None:
+    """Location (``$.key[index]``) of the first non-finite float in ``obj``, or ``None``.
+
+    Walks what :func:`_json_default` would serialize, so the error from
+    :func:`_dumps_json` can name the offending field.
+    """
+    if obj is None or isinstance(obj, (str, bool, int, np.integer, np.bool_)):
+        return None
+    if isinstance(obj, (float, np.floating)):
+        return None if math.isfinite(float(obj)) else path
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            found = _non_finite_path(value, f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(obj, (list, tuple)):
+        for i, value in enumerate(obj):
+            found = _non_finite_path(value, f"{path}[{i}]")
+            if found is not None:
+                return found
+        return None
+    if isinstance(obj, np.ndarray) and obj.dtype.kind in "fc":
+        bad = np.argwhere(~np.isfinite(obj))
+        if bad.size:
+            return path + "".join(f"[{int(i)}]" for i in bad[0])
+        return None
+    try:
+        converted = _json_default(obj)
+    except TypeError:
+        return None
+    return _non_finite_path(converted, path)
+
+
+def _dumps_json(obj) -> str:
+    """Serialize a writer payload as standard JSON (no ``NaN`` / ``Infinity``).
+
+    The one serializer behind every JSON writer in the package
+    (``indent=2``, numpy and dataclass values via :func:`_json_default`).
+    It passes ``allow_nan=False``, so a non-finite float that a writer did
+    not map to ``null`` raises instead of producing a file that strict
+    parsers reject.
+
+    Raises
+    ------
+    ValueError
+        If ``obj`` holds a non-finite float; the message names its location.
+    """
+    try:
+        return json.dumps(obj, indent=2, default=_json_default, allow_nan=False)
+    except ValueError as exc:
+        where = _non_finite_path(obj)
+        if where is None:
+            raise
+        raise ValueError(
+            f"Refusing to write non-standard JSON: non-finite value at {where}. "
+            f"JSON has no NaN or Infinity; a writer maps a non-finite value "
+            f"that has a meaning to null explicitly, and any other one is a "
+            f"bug in the result it came from."
+        ) from exc
+
+
+def _write_json(obj, filename: str | os.PathLike) -> None:
+    """Write ``obj`` to ``filename`` with :func:`_dumps_json`.
+
+    The text is built before the file is opened, so a refused payload
+    leaves no partial file behind.
+    """
+    text = _dumps_json(obj)
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
 # JSON output schema (#20). Bump the major when an incompatible change
 # to the payload structure ships; bump the minor for additive changes.
 # 1.1 (#131): added optional top-level ``units`` block documenting the
@@ -54,7 +153,9 @@ def _json_default(o):
 # 1.2 (IMPROVEMENT_PLAN 3.5): FE-field exports gain an optional ``thermal``
 # block, interior and load-factor-basis keys in ``failure``, a nullable
 # ``knockdown_factor`` (null for loading='thermal') and ``delta_T_K`` in
-# the provenance of thermal solves. Additive.
+# the provenance of thermal solves. Additive. Every writer now emits
+# standard JSON: the per-mode ``failure.mode_indices`` a criterion does
+# not separate (Tsai-Wu) are null, where 1.1 wrote the invalid token NaN.
 JSON_SCHEMA_VERSION = "1.2"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
@@ -249,6 +350,15 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
         ``results`` is the lightweight ``ConfigResult`` shape (no live
         ``porosity_field`` carried). Optional; the JSON is still written
         if absent, just with ``seed=None`` in provenance.
+
+    Raises
+    ------
+    ValueError
+        If a configuration name collides with an envelope key, or a value
+        is a non-finite float. The file is standard JSON (no ``NaN`` /
+        ``Infinity``) and no value in a sweep is expected to be undefined,
+        so one that is raises (naming its location) before the file is
+        written.
     """
     # All configs in a sweep share one seed; record it iff unambiguous.
     # Source the seed from (in priority order):
@@ -314,8 +424,9 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
                 }
         output[name] = entry
 
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, default=_json_default)
+    # Standard JSON only: every value here is finite for a valid sweep, so
+    # a non-finite one raises (naming its location) rather than writing NaN.
+    _write_json(output, filename)
     logger.info("Saved: %s", filename)
 
 
@@ -327,10 +438,31 @@ def load_results_from_json(filename: str | os.PathLike) -> dict:
     consume the wrong shape.
 
     Accepts either a ``str`` path or any ``os.PathLike`` (e.g. ``pathlib.Path``).
+
+    Values that are not defined are ``null`` in the file and ``None`` in
+    the returned dict, e.g. the Tsai-Wu per-mode failure indices and the
+    knockdown of a thermal-only FE solve (see
+    :meth:`FESolver.export_results
+    <porosity_fe.fe.solver.FESolver.export_results>` for what each
+    ``null`` means). Files written by earlier builds may hold the
+    non-standard tokens ``NaN`` / ``Infinity`` instead; they are read as
+    ``None`` too, with a logged warning, so old and new files load the
+    same way.
     """
     filename = Path(filename)
+    legacy_tokens: set[str] = set()
+
+    def _legacy_constant(token: str) -> None:
+        legacy_tokens.add(token)
+        return None
+
     with open(filename, encoding='utf-8') as f:
-        data = json.load(f)
+        data = json.load(f, parse_constant=_legacy_constant)
+    if legacy_tokens:
+        logger.warning(
+            "%s: holds the non-standard JSON token(s) %s, written by an "
+            "earlier porosity-fe build; read as null (None), which is what "
+            "current builds write.", filename, ", ".join(sorted(legacy_tokens)))
     if not isinstance(data, dict):
         raise ValueError(f"{filename}: expected a JSON object at the top level.")
     sv = data.get('schema_version')

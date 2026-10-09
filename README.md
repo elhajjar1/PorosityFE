@@ -358,6 +358,8 @@ not symmetric. `FESolver` logs a warning with the element layup, and
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table.
 
+Every JSON file is standard JSON: it never holds `NaN` or `Infinity`. A value that is not defined is `null`, for example the Tsai-Wu per-mode failure indices or the knockdown of a thermal-only FE solve. The `FESolver.export_results` docstring and `validation/schemas/porosity_results_schema.json` list what `null` means for each field.
+
 ## Inputs and Conventions
 
 ### Void volume fraction `Vp`

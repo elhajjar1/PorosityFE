@@ -73,9 +73,10 @@ class FieldResults:
         Per-mode breakdown of the maximum failure index across the model with
         keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
         ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
-        ``NaN`` (the polynomial does not separate modes); for ``max_stress``
-        the unused entries are zero. Lets the GUI and JSON exporter report
-        the dominant failure mode, not just severity.
+        ``NaN`` (the polynomial does not separate modes; ``null`` in the
+        JSON export); for ``max_stress`` the unused entries are zero. Lets
+        the GUI and JSON exporter report the dominant failure mode, not
+        just severity.
     reaction_forces : np.ndarray or None
         Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
         constrained DOFs and exactly zero at the free DOFs. A load applied
@@ -1599,6 +1600,32 @@ class FESolver:
             arrays so a full audit can re-derive the per-key summary
             statistics. Default ``False`` so existing outputs are not
             bloated (#55).
+
+        Notes
+        -----
+        The JSON is standard JSON: it never holds ``NaN`` or ``Infinity``,
+        which strict parsers reject. A value that is not defined is
+        ``null``:
+
+        * ``failure.mode_indices.<mode>``: the criterion does not separate
+          that mode (Tsai-Wu: every entry except ``max_fi``; ``NaN`` in
+          :attr:`FieldResults.failure_mode_indices`). Max-stress writes 0
+          for the modes it does not use.
+        * ``failure.knockdown_factor``: no stiffness measure
+          (``loading='thermal'``; ``NaN`` in :attr:`FieldResults.knockdown`).
+        * ``failure.first_ply_failure_load_factor`` and
+          ``failure.interior_first_ply_failure_load_factor``: no point is
+          stressed, so the factor is infinite; the interior one is also
+          ``null`` when no element is far enough from the lateral faces.
+        * ``failure.interior_max_failure_index`` (and the same key in
+          ``thermal``): no element is far enough from the lateral faces.
+        * ``stiffness.effective_modulus_MPa``: no single modulus (ILSS
+          bend, ``loading='thermal'``).
+
+        Any other non-finite value raises :class:`ValueError` naming its
+        location, before a file is written.
+        :func:`~porosity_fe.load_results_from_json` reads ``null`` as
+        ``None``.
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw)

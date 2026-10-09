@@ -68,7 +68,8 @@ $-0.5$, Tsai's recommendation (Tsai & Wu 1971). It must lie in $[-1, 0]$
 for the envelope to stay closed. The default is an empirical choice; when
 comparing with another code, check its $F_{12}$ convention, and calibrate
 $F^*_{12}$ from biaxial tests when they exist. Tsai-Wu does not separate
-failure modes, so the per-mode indices are reported as `NaN`.
+failure modes, so the per-mode indices are reported as `NaN` (`null` in
+the JSON export).
 
 ## Hashin
 

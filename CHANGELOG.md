@@ -232,6 +232,37 @@ All notable changes to PorosityFE will be documented in this file.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **The FE JSON export wrote invalid JSON.** Tsai-Wu does not separate
+  failure modes, so `FieldResults.failure_mode_indices` holds `NaN` for
+  every mode except `max_fi`, and `FESolver.export_results` wrote them
+  as the bare token `NaN`. Python reads that, but strict parsers
+  (JavaScript `JSON.parse`, jq, `json.loads(..., parse_constant=...)`)
+  reject the whole file. Every JSON writer (`export_results`,
+  `save_results_to_json`, the app's export and NCR JSON,
+  `save_uq_results_to_json`) now goes through one serializer with
+  `allow_nan=False`:
+  - A value that is not defined is written as `null`, and the schema and
+    the `export_results` docstring say what `null` means for each field.
+    The Tsai-Wu per-mode indices are `null` where they were `NaN`. The
+    nullable fields that were already `null` keep their meaning:
+    `knockdown_factor` (thermal-only), the first-ply-failure factors (no
+    stressed point), the interior values (no interior element) and
+    `effective_modulus_MPa` (ILSS, thermal).
+  - Any other non-finite value raises `ValueError` naming its location
+    (e.g. `$.failure.max_tsai_wu_index`) before any file is written.
+    Before, it was written silently. The JSON text is built before the
+    file is opened, so a refused export leaves no partial file and no
+    `.npz` sidecar.
+  - `load_results_from_json` reads `null` as `None`. It reads the `NaN` /
+    `Infinity` tokens of files written by earlier builds as `None` too,
+    with a logged warning, so old and new files load the same way.
+  - `validation/schemas/porosity_results_schema.json` declares the FE
+    `failure`, `stiffness` and `thermal` fields, with `null` allowed only
+    where it has a meaning.
+  - Tests parse every writer's output with a parser that rejects the
+    `NaN` / `Infinity` tokens, including the thermal and Tsai-Wu cases. A
+    static check fails if any `json.dump` call in the package omits
+    `allow_nan=False`.
 - **`FESolver.solve(solver='cg')` and `solver='minres'` returned wrong
   answers at the default `rtol` (result change for iterative-solver
   users).** The penalty rows put `alpha * v ~ 1e11 * v` into the

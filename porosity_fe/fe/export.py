@@ -13,7 +13,6 @@ dependency-free: the files are formatted by hand.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 from collections.abc import Iterable, Sequence
@@ -23,7 +22,7 @@ from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
-from ..io import FORMAT_FE_FIELDS, _json_default, _wrap_envelope
+from ..io import FORMAT_FE_FIELDS, _dumps_json, _finite_or_none, _wrap_envelope
 from ..mesh import CompositeMesh
 from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
@@ -42,13 +41,6 @@ _STRAIN_NAMES = ("eps_xx", "eps_yy", "eps_zz",
 
 #: ``VTK_HEXAHEDRON`` cell type.
 _VTK_HEXAHEDRON = 12
-
-
-def _finite_or_none(value: float | None) -> float | None:
-    """JSON-safe float: ``None`` for missing or non-finite values."""
-    if value is None or not np.isfinite(value):
-        return None
-    return float(value)
 
 
 def _von_mises(sig: np.ndarray) -> np.ndarray:
@@ -481,13 +473,17 @@ def export_results(field_results: FieldResults,
             'max_failure_index': float(field_results.max_failure_index),
             'criterion': str(getattr(field_results,
                                       'failure_criterion', 'tsai_wu')),
+            # A per-mode entry is null when the criterion does not
+            # separate that mode (Tsai-Wu: all but 'max_fi', NaN in
+            # FieldResults); 'max_fi' is always a number.
             'mode_indices': (
-                {k: float(v) for k, v in field_results.failure_mode_indices.items()}
+                {k: (float(v) if k == 'max_fi' else _finite_or_none(v))
+                 for k, v in field_results.failure_mode_indices.items()}
                 if field_results.failure_mode_indices is not None
                 else None
             ),
-            # null for loading='thermal' (NaN knockdown: no stiffness
-            # measure); json.dump would otherwise write the invalid NaN.
+            # null when the solve has no stiffness measure
+            # (loading='thermal'; NaN in FieldResults).
             'knockdown_factor': _finite_or_none(field_results.knockdown),
             'first_ply_failure_load_factor': _finite_or_none(
                 field_results.first_ply_failure_load_factor),
@@ -537,6 +533,7 @@ def export_results(field_results: FieldResults,
         # The load-case input that, with the software versions, reproduces
         # a thermal or combined solve.
         output['provenance']['delta_T_K'] = float(delta_T)
+    arrays: dict[str, np.ndarray] = {}
     if include_raw:
         # Sidecar file path lives next to the JSON so users see them
         # together; ``np.savez`` will append ``.npz`` if missing.
@@ -554,8 +551,13 @@ def export_results(field_results: FieldResults,
         if getattr(field_results, 'residual_stress_local', None) is not None:
             arrays['residual_stress_local'] = np.asarray(
                 field_results.residual_stress_local)
-        np.savez(npz_path, **arrays)
         output['raw_sidecar'] = npz_path.name
+    # Standard JSON only (null, never NaN): a non-finite value that is not
+    # mapped to null above raises here, naming its location, before either
+    # file is written.
+    text = _dumps_json(output)
+    if include_raw:
+        np.savez(npz_path, **arrays)
     with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, default=_json_default)
+        f.write(text)
     logger.info("Saved FE results: %s", filename)
