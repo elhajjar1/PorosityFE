@@ -14,7 +14,9 @@ import dataclasses
 import datetime
 import io
 import logging
+import math
 import sys
+import tempfile
 import warnings
 from pathlib import Path
 
@@ -48,6 +50,7 @@ from porosity_fe import (
     build_empirical_pipeline,
     propagate_uncertainty,
 )
+from porosity_fe.fe.failure import first_ply_failure_load_factor
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
 # rcParams nudges, so the Streamlit plots match the static PNGs (#53).
@@ -96,13 +99,72 @@ from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Str
 _CFG_KEYS = (
     "material_name", "angles", "n_plies", "t_ply", "Vp",
     "distribution", "cluster_location", "void_shape", "loading_mode",
-    "nx", "ny", "nz",
+    "nx", "ny", "nz", "thermal_mode", "delta_T",
 )
+
+#: Config fields that an older config dict may lack, and the value that
+#: absence means (no thermal load).
+_CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None}
 
 
 def _config_to_key(cfg: dict) -> tuple:
-    return tuple((k, tuple(cfg[k]) if isinstance(cfg[k], list) else cfg[k])
-                 for k in _CFG_KEYS)
+    key = []
+    for k in _CFG_KEYS:
+        v = cfg.get(k, _CFG_DEFAULTS[k]) if k in _CFG_DEFAULTS else cfg[k]
+        key.append((k, tuple(v) if isinstance(v, list) else v))
+    return tuple(key)
+
+
+# ----------------------------------------------------------------------
+# FE load case
+# ----------------------------------------------------------------------
+
+#: Applied load of the app's FE solves: nominal strain magnitude of the
+#: displacement-controlled modes (negative for compression) and the ILSS
+#: midspan force (N). Knockdown and field shapes are scale-invariant; the
+#: first-ply-failure factor multiplies these loads.
+_FE_APPLIED_STRAIN = 0.01
+_FE_ILSS_LOAD_N = -10.0
+
+#: Sidebar label -> ``cfg["thermal_mode"]``. ``"combined"`` superposes the
+#: free-standing residual stress on the mechanical solve of the selected
+#: loading mode; ``"thermal_only"`` solves the residual stress alone.
+_THERMAL_OPTIONS = {
+    "Off (mechanical only)": "off",
+    "Add cure residual stress to the mechanical case": "combined",
+    "Thermal only (residual stress, no mechanical load)": "thermal_only",
+}
+
+#: Suggested starting value for delta_T (K) when the preset records no
+#: stress-free temperature: a 177 deg C-cure epoxy cooled to room
+#: temperature, with the stress-free temperature taken up to about 30 K
+#: below the cure temperature (docs/theory/thermal.md). Offered as a
+#: labelled suggestion the user must apply; never a hidden default.
+_SUGGESTED_DELTA_T_177C_EPOXY = -150.0
+
+#: Largest value of the Expert-mode ``nz`` slider.
+_NZ_SLIDER_MAX = 100
+
+
+def _delta_T_suggestion(material) -> tuple[float, str]:
+    """Suggested ``delta_T`` (K) for ``material`` and where it comes from."""
+    if material.T_stress_free is not None:
+        t_use = material.T_service if material.T_service is not None else material.T_ref
+        return (float(t_use) - float(material.T_stress_free),
+                f"{t_use:g} °C − the preset's stress-free temperature "
+                f"{material.T_stress_free:g} °C")
+    return (_SUGGESTED_DELTA_T_177C_EPOXY,
+            "typical for a 177 °C-cure epoxy cooled to room temperature; "
+            "check it against your cure cycle")
+
+
+def _resolving_nz(nz: int, n_plies: int) -> int:
+    """Smallest multiple of ``n_plies`` that is at least ``nz``.
+
+    With ``nz`` a multiple of the ply count every ply has its own element
+    layers, which the thermal solve needs (``CompositeMesh.layup_discrepancies``).
+    """
+    return int(n_plies) * max(1, math.ceil(int(nz) / int(n_plies)))
 
 
 # Each entry pickles a mesh and its fields (a few MB), so bound the cache
@@ -140,20 +202,63 @@ def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
     return res, sorted({str(w.message) for w in caught})
 
 
+# A VTU file of the default mesh is a few MB, so keep only a few.
+@st.cache_data(show_spinner=False, max_entries=4)
+def fe_vtu_bytes_cached(cfg_key: tuple, _result: dict) -> bytes:
+    """Cached :func:`fe_vtu_bytes`, keyed on the analysis config ``cfg_key``.
+
+    ``_result`` must be the analysis of ``cfg_key``; Streamlit does not
+    hash arguments whose names start with an underscore.
+    """
+    return fe_vtu_bytes(_result)
+
+
 def run_analysis(cfg: dict) -> dict:
     """Run the porosity analysis for one configuration.
 
     Returns a dict with keys: config, material, porosity_field, mesh,
-    empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale.
+    empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale,
+    fe_thermal, fe_mechanical_fpf, fe_nz_suggestion.
 
     The empirical results are always returned. If the FE solve fails,
     ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
     UI can still show the headline knockdown numbers.
+
+    ``cfg["thermal_mode"]`` (``"off"`` when absent) selects the FE thermal
+    load: ``"combined"`` adds the cure residual stress at
+    ``cfg["delta_T"]`` (K, negative for a cool-down) to the mechanical
+    solve of ``cfg["loading_mode"]``, ``"thermal_only"`` solves the
+    residual stress alone (``fe_loading`` is then ``"thermal"``). Thermal
+    results go in ``fe_thermal`` (``{"mode", "delta_T"}``, ``None`` when
+    off), ``fe_mechanical_fpf`` (combined: the first-ply-failure factor
+    without the residual stress, for comparison) and ``fe_nz_suggestion``
+    (the ``nz`` that resolves the layup, when the thermal solve was refused
+    because the mesh does not).
+
+    Raises
+    ------
+    ValueError
+        For an unknown material or ``thermal_mode``, or a thermal mode
+        without a finite ``delta_T``.
     """
     if cfg["material_name"] not in MATERIALS:
         raise ValueError(
             f"Unknown material {cfg['material_name']!r}. "
             f"Available presets: {sorted(MATERIALS)}."
+        )
+    thermal_mode = cfg.get("thermal_mode", "off")
+    delta_T = cfg.get("delta_T")
+    if thermal_mode not in _THERMAL_OPTIONS.values():
+        raise ValueError(
+            f"Unknown thermal_mode {thermal_mode!r}; expected one of "
+            f"{sorted(_THERMAL_OPTIONS.values())}."
+        )
+    if thermal_mode != "off" and (
+            not isinstance(delta_T, (int, float)) or isinstance(delta_T, bool)
+            or not math.isfinite(delta_T)):
+        raise ValueError(
+            f"thermal_mode={thermal_mode!r} needs a finite delta_T in K "
+            f"(negative for a cool-down); got {delta_T!r}. There is no default."
         )
     material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
@@ -175,10 +280,29 @@ def run_analysis(cfg: dict) -> dict:
     )
     emp_results = empirical.get_all_failure_loads()
 
-    fe_loading = cfg["loading_mode"]
+    fe_loading = "thermal" if thermal_mode == "thermal_only" else cfg["loading_mode"]
     fe_field, fe_skipped_reason = _run_fe_solve(
-        mesh, material, porosity_field, cfg["angles"], fe_loading,
+        mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
+        thermal_mode=thermal_mode, delta_T=delta_T,
     )
+
+    fe_thermal = None
+    fe_mechanical_fpf = None
+    fe_nz_suggestion = None
+    if thermal_mode != "off":
+        fe_thermal = {"mode": thermal_mode, "delta_T": float(delta_T)}
+        if fe_field is None:
+            if material.has_cte and mesh.layup_discrepancies():
+                fe_nz_suggestion = _resolving_nz(cfg["nz"], cfg["n_plies"])
+        elif thermal_mode == "combined" and fe_field.residual_stress_local is not None:
+            # The same mechanical load without the residual stress. The
+            # analysis is linear, so the mechanical part of the stress is
+            # the total minus the residual.
+            fe_mechanical_fpf = first_ply_failure_load_factor(
+                fe_field.stress_local - fe_field.residual_stress_local,
+                mesh.porosity, mesh.elements, material,
+                porosity_field.void_shape_radii, fe_field.failure_criterion,
+                void_elements=mesh.void_elements)
 
     return {
         "config": cfg,
@@ -190,36 +314,189 @@ def run_analysis(cfg: dict) -> dict:
         "fe_loading": fe_loading,
         "fe_skipped_reason": fe_skipped_reason,
         "layup_scale": dict(empirical.layup_scale),
+        "fe_thermal": fe_thermal,
+        "fe_mechanical_fpf": fe_mechanical_fpf,
+        "fe_nz_suggestion": fe_nz_suggestion,
     }
 
 
-def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str):
+def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
+                  *, thermal_mode: str = "off", delta_T: float | None = None):
     """Run the FE solve for ``loading_mode``; return ``(field, skipped_reason)``.
 
     Exactly one of the pair is ``None``. Any exception from the FE path is
     logged and turned into a reason string rather than propagated, because
-    the empirical results do not depend on it.
+    the empirical results do not depend on it. That includes the thermal
+    solve's refusal of a mesh that does not resolve the layup.
+
+    ``thermal_mode="combined"`` passes ``delta_T`` to the mechanical solve
+    (residual stress superposed); ``"thermal_only"`` solves
+    ``loading='thermal'`` at ``delta_T`` instead of ``loading_mode``.
     """
+    thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
-        # All four loading modes have FE BC support, including ILSS
-        # short-beam shear (ASTM D2344, 3-point bend, force-controlled).
-        if loading_mode == "ilss":
-            # Force-controlled short-beam shear. Default 10 N midspan load is
-            # arbitrary — knockdown and field shapes are scale-invariant.
+        if thermal_mode == "thermal_only":
+            # Free-standing laminate under delta_T (3-2-1 supports): the
+            # cure residual stress, with no mechanical load.
+            field = fe_solver.solve(loading="thermal", verbose=False, **thermal)
+        elif loading_mode == "ilss":
+            # All four loading modes have FE BC support, including ILSS
+            # short-beam shear (ASTM D2344, 3-point bend, force-controlled).
+            # The 10 N midspan load is arbitrary: knockdown and field shapes
+            # are scale-invariant.
             field = fe_solver.solve(
-                loading="ilss", applied_load=-10.0, verbose=False,
+                loading="ilss", applied_load=_FE_ILSS_LOAD_N, verbose=False,
+                **thermal,
             )
         else:
-            applied_strain = -0.01 if loading_mode == "compression" else 0.01
+            applied_strain = (-_FE_APPLIED_STRAIN if loading_mode == "compression"
+                              else _FE_APPLIED_STRAIN)
             field = fe_solver.solve(
                 loading=loading_mode, applied_strain=applied_strain,
-                verbose=False,
+                verbose=False, **thermal,
             )
     except Exception as exc:
-        logger.exception("FE solve failed for loading=%s", loading_mode)
+        logger.exception("FE solve failed for loading=%s, thermal_mode=%s",
+                         loading_mode, thermal_mode)
         return None, f"the FE solver raised {type(exc).__name__}: {exc}"
     return field, None
+
+
+# ======================================================================
+# FE result helpers (headless: no Streamlit calls)
+# ======================================================================
+
+def fe_vtu_bytes(result: dict) -> bytes:
+    """The FE field of ``result`` as binary VTK XML (``.vtu``) bytes.
+
+    Written by :meth:`FieldResults.to_vtu` with its defaults (the legacy
+    VTK point and cell fields plus the recovered nodal stress and strain,
+    ``Float64``) to a temporary file, since the writer takes a path.
+
+    Raises
+    ------
+    ValueError
+        If ``result`` has no FE field (the FE solve was skipped).
+    """
+    fe_field = result.get("fe_field")
+    if fe_field is None:
+        raise ValueError("The analysis has no FE field to export: the FE "
+                         "solve was skipped.")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "fe_results.vtu"
+        fe_field.to_vtu(result["mesh"], path)
+        return path.read_bytes()
+
+
+def _fmt_value(value, fmt: str = "{:.3f}") -> str:
+    """``fmt`` for a finite number; ``n/a`` for ``None`` / ``nan``, ``∞`` for ``inf``."""
+    if value is None or math.isnan(float(value)):
+        return "n/a"
+    if math.isinf(float(value)):
+        return "∞"
+    return fmt.format(float(value))
+
+
+def _applied_load_text(loading_mode: str, factor: float) -> str:
+    """``factor`` times the app's FE load for ``loading_mode``, in words."""
+    if loading_mode == "ilss":
+        return f"{factor * abs(_FE_ILSS_LOAD_N):.3g} N midspan load"
+    sign = "-" if loading_mode == "compression" else ""
+    name = "shear strain" if loading_mode == "shear" else "strain"
+    return f"{sign}{factor * _FE_APPLIED_STRAIN * 100:.3g} % {name}"
+
+
+def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows ``(label, value, help)`` and a caption for a thermal FE result.
+
+    ``None`` when the analysis had no thermal load or its FE solve was
+    skipped. The first-ply-failure factor is read with its
+    ``load_factor_basis``: for ``'delta_T'`` (thermal only) it multiplies
+    the temperature change, so it is shown as the critical ``delta_T``,
+    and the knockdown is ``n/a`` (no load, so no stiffness measure). For
+    ``'mechanical_with_residual'`` (combined) it multiplies the applied
+    mechanical load with the residual stress held fixed, and the caption
+    gives the factor without the residual stress next to it.
+    """
+    thermal = result.get("fe_thermal")
+    fe = result.get("fe_field")
+    if not thermal or fe is None:
+        return None
+    dT = float(thermal["delta_T"])
+    crit = fe.failure_criterion
+    lam = fe.first_ply_failure_load_factor
+    ilam = fe.interior_first_ply_failure_load_factor
+    residual_row = (
+        "Residual max FI", _fmt_value(fe.residual_max_failure_index),
+        f"{crit} failure index of the residual stress alone, maximum over the "
+        f"whole model (free-edge peak included). At or above 1 the laminate "
+        f"fails on cool-down, before any load.")
+    interior_help = (
+        "Maximum failure index of the elements away from the free edges "
+        "(at least max(h, 2 element widths) in, h the laminate thickness), "
+        "where the free-edge stress peak does not reach; n/a when no element "
+        "is that far in.")
+
+    if fe.load_factor_basis == "delta_T":
+        finite = lam is not None and math.isfinite(lam)
+        rows = [
+            ("FE knockdown", "n/a",
+             "A thermal-only solve applies no mechanical load, so it has no "
+             "stiffness measure and no knockdown."),
+            residual_row,
+            ("Interior max FI", _fmt_value(fe.interior_max_failure_index),
+             interior_help),
+            ("Critical ΔT (first-ply failure)",
+             f"{lam * dT:.0f} K" if finite else "none",
+             f"Load-factor basis 'delta_T': the first-ply-failure factor "
+             f"({_fmt_value(lam, '{:.3g}')}) multiplies ΔT = {dT:g} K."),
+        ]
+        if finite:
+            caption = (
+                f"Load-factor basis 'delta_T': the first-ply-failure factor "
+                f"{lam:.3g} multiplies ΔT = {dT:g} K, so the first ply fails "
+                f"at ΔT ≈ {lam * dT:.0f} K over the whole model")
+            if ilam is not None and math.isfinite(ilam):
+                caption += f" and ≈ {ilam * dT:.0f} K away from the free edges"
+            caption += (". The whole-model values include the free-edge stress "
+                        "peak, which depends on the mesh.")
+            if lam < 1.0:
+                caption += (" The factor is below 1: the laminate fails before "
+                            "reaching the entered ΔT.")
+        else:
+            caption = (f"No point is stressed at ΔT = {dT:g} K, so the first-"
+                       f"ply-failure factor is infinite.")
+        return rows, caption
+
+    loading = result["config"]["loading_mode"]
+    mech = result.get("fe_mechanical_fpf")
+    rows = [
+        ("FE knockdown", _fmt_value(fe.knockdown),
+         "Stiffness knockdown of the mechanical solve. In a linear analysis "
+         "the residual stress does not change the stiffness."),
+        residual_row,
+        ("Interior max FI", _fmt_value(fe.interior_max_failure_index),
+         interior_help + " Total stress: residual plus the applied load."),
+        ("FPF load factor", _fmt_value(lam, "{:.2f}"),
+         "Multiplier on the applied mechanical load at first-ply failure, "
+         "with the residual stress held fixed (load-factor basis "
+         "'mechanical_with_residual'); 0 when the residual stress alone "
+         "fails the laminate."),
+    ]
+    parts = [f"Load-factor basis '{fe.load_factor_basis}': "]
+    if lam is not None and math.isfinite(lam):
+        parts.append(f"the first ply fails at {lam:.2f} × the applied load "
+                     f"({_applied_load_text(loading, lam)})")
+        if ilam is not None and math.isfinite(ilam):
+            parts.append(f", {ilam:.2f} × away from the free edges")
+    else:
+        parts.append("no point is stressed by the applied load")
+    if mech is not None and math.isfinite(mech):
+        parts.append(f". Without the residual stress the factor is {mech:.2f} "
+                     f"({_applied_load_text(loading, mech)})")
+    parts.append(".")
+    return rows, "".join(parts)
 
 
 # ======================================================================
@@ -317,7 +594,8 @@ def plot_results(result: dict, layup_str: str):
     colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
     hatches = [None, None, None]
 
-    has_fe = fe_field is not None
+    # A thermal-only solve has no stiffness measure (knockdown NaN): no bar.
+    has_fe = fe_field is not None and bool(np.isfinite(fe_field.knockdown))
     if has_fe:
         models.append("fe")
         model_labels.append(f"FE Stiffness ({fe_loading})")
@@ -360,6 +638,9 @@ def plot_results(result: dict, layup_str: str):
 
     note = ("Solid bars = strength knockdown (at mean Vp); "
             "hatched bar = stiffness knockdown (FE)")
+    if fe_field is not None and not has_fe:
+        note = ("Solid bars = strength knockdown (at mean Vp); the FE "
+                "thermal-only solve has no stiffness knockdown (n/a)")
     amplified = {m: s for m, s in layup_scale.items() if s > 1.0}
     if amplified:
         factors = ", ".join(f"{m} x{s:.2f}" for m, s in sorted(amplified.items()))
@@ -501,6 +782,87 @@ def _validate_layup_inline():
         st.session_state["_layup_status"] = ("err", str(exc))
 
 
+def _apply_nz_fix(nz: int) -> None:
+    """On-click callback: switch on Expert mode with the ``nz`` slider at ``nz``."""
+    st.session_state["expert_mode"] = True
+    st.session_state["mesh_nz"] = int(nz)
+
+
+def _set_delta_T(value: float) -> None:
+    """On-click callback: put ``value`` (K) into the ΔT input."""
+    st.session_state["thermal_delta_T"] = float(value)
+
+
+def _offer_nz_fix(nz_fix: int | None, key: str) -> None:
+    """Button that applies ``nz = nz_fix`` (Expert mode), when it fits the slider."""
+    if nz_fix is None:
+        return
+    if nz_fix > _NZ_SLIDER_MAX:
+        st.caption(
+            f"Resolving this layup needs nz = {nz_fix}, above the nz slider's "
+            f"maximum ({_NZ_SLIDER_MAX}); use a layup with fewer plies for "
+            f"the thermal solve.")
+        return
+    st.button(
+        f"Use nz = {nz_fix}", key=key, on_click=_apply_nz_fix, args=(nz_fix,),
+        help="Switches on Expert mode and sets the nz slider; then run the "
+             "analysis again.",
+    )
+
+
+def _build_thermal_inputs(material_name: str) -> tuple[str, float | None]:
+    """Sidebar thermal controls; return ``(thermal_mode, delta_T)``.
+
+    Shown only for a material with lamina CTEs (``material.has_cte``);
+    otherwise a caption says why the option is unavailable. ``delta_T``
+    has no default: the input starts empty and the Run button stays
+    disabled until it is filled, by hand or with the labelled suggestion.
+    """
+    st.subheader("Thermal residual stress (FE)")
+    material = MATERIALS[material_name]
+    if not material.has_cte:
+        with_cte = ", ".join(n for n, m in MATERIALS.items() if m.has_cte) or "none"
+        st.caption(
+            f"Unavailable for {material_name}: the preset has no lamina "
+            f"thermal expansion coefficients (alpha_1, alpha_2), and the "
+            f"solver does not guess them. Presets with CTEs: {with_cte}.")
+        return "off", None
+    choice = st.radio(
+        "FE thermal load",
+        options=list(_THERMAL_OPTIONS),
+        index=0,
+        key="thermal_choice",
+        help=(
+            "Cure residual stress of the free-standing laminate under a "
+            "uniform temperature change ΔT. 'Add ... to the mechanical case' "
+            "superposes it on the FE solve of the loading mode above (the "
+            "residual stress forms before the laminate is gripped); 'Thermal "
+            "only' solves it alone. The empirical knockdowns do not change."
+        ),
+    )
+    thermal_mode = _THERMAL_OPTIONS[choice]
+    if thermal_mode == "off":
+        return "off", None
+    delta_T = st.number_input(
+        "ΔT (K), negative = cool-down",
+        min_value=-1000.0, max_value=1000.0, value=None, step=5.0,
+        format="%.1f", key="thermal_delta_T", placeholder="required",
+        help=(
+            "Temperature change from the stress-free state, "
+            "T_service − T_stress_free, in K (the same number as the "
+            "difference in °C). Negative for the cool-down after cure. "
+            "There is no default."
+        ),
+    )
+    suggestion, basis = _delta_T_suggestion(material)
+    st.caption(f"Suggestion, not applied: ΔT ≈ {suggestion:g} K ({basis}).")
+    st.button(f"Use suggestion ({suggestion:g} K)", key="thermal_use_suggestion",
+              on_click=_set_delta_T, args=(suggestion,))
+    if delta_T is None:
+        st.info("Enter ΔT to run the analysis with the thermal load.")
+    return thermal_mode, (None if delta_T is None else float(delta_T))
+
+
 def _build_sidebar_inputs() -> dict | None:
     """Render the sidebar input controls and return the analysis config.
 
@@ -514,9 +876,11 @@ def _build_sidebar_inputs() -> dict | None:
     """
     with st.sidebar:
         st.header("Inputs")
+        # Keyed, with no value= (defaults to off), so the "Use nz = ..."
+        # button can switch it on through st.session_state.
         expert = st.toggle(
             "Expert mode",
-            value=False,
+            key="expert_mode",
             help="Show mesh resolution sliders and other advanced options.",
         )
 
@@ -606,11 +970,17 @@ def _build_sidebar_inputs() -> dict | None:
             ),
         )
 
+        thermal_mode, delta_T = _build_thermal_inputs(material_name)
+
         st.subheader("Mesh")
         if expert:
             nx = st.slider("nx", min_value=2, max_value=200, value=30, step=1)
             ny = st.slider("ny", min_value=2, max_value=100, value=10, step=1)
-            nz = st.slider("nz", min_value=2, max_value=100, value=12, step=1)
+            # Keyed and initialised through st.session_state (not value=) so
+            # the "Use nz = ..." button can set it.
+            st.session_state.setdefault("mesh_nz", 12)
+            nz = st.slider("nz", min_value=2, max_value=_NZ_SLIDER_MAX, step=1,
+                           key="mesh_nz")
             total_elems = nx * ny * nz
             if total_elems < 100:
                 st.warning(
@@ -636,9 +1006,29 @@ def _build_sidebar_inputs() -> dict | None:
             nx, ny, nz = 30, 10, 12
             st.caption(f"Default mesh: {nx} × {ny} × {nz} (enable Expert mode to change).")
 
+        if thermal_mode != "off":
+            # The thermal solve refuses a mesh whose element layers merge
+            # plies; say so before the run, with the nz that resolves them.
+            try:
+                n_plies = len(parse_layup(layup_str))
+            except ValueError:
+                n_plies = 0
+            if n_plies and nz % n_plies:
+                nz_fix = _resolving_nz(nz, n_plies)
+                st.warning(
+                    f"Thermal residual stress needs every ply in its own "
+                    f"element layer: nz = {nz} layers do not resolve the "
+                    f"{n_plies}-ply layup, so the FE solve will refuse it if "
+                    f"the merged plies differ in angle. Use nz = {nz_fix} "
+                    f"(a multiple of {n_plies}).")
+                _offer_nz_fix(nz_fix, key="nz_fix_sidebar")
+
+        _layup_bad = st.session_state.get("_layup_status", ("ok", None))[0] == "err"
+        _missing_dT = thermal_mode != "off" and delta_T is None
         _run_disabled = (
-            st.session_state.get("_layup_status", ("ok", None))[0] == "err"
+            _layup_bad
             or nx * ny * nz > CompositeMesh._MAX_TOTAL_ELEMENTS
+            or _missing_dT
         )
         run = st.button(
             "Run analysis",
@@ -646,8 +1036,10 @@ def _build_sidebar_inputs() -> dict | None:
             use_container_width=True,
             disabled=_run_disabled,
             help=(
-                "Fix the layup string above before running."
-                if _run_disabled
+                "Fix the layup string above before running." if _layup_bad
+                else "Enter ΔT (K) for the thermal load, or switch it off."
+                if _missing_dT
+                else "Reduce the mesh size to run." if _run_disabled
                 else None
             ),
         )
@@ -673,6 +1065,8 @@ def _build_sidebar_inputs() -> dict | None:
         "nx": int(nx),
         "ny": int(ny),
         "nz": int(nz),
+        "thermal_mode": thermal_mode,
+        "delta_T": delta_T,
     }
     return {"cfg": cfg, "layup_str": layup_str, "run": run}
 
@@ -704,21 +1098,32 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
 
         - **Profile** — through-thickness porosity distribution
         - **Mesh** — mid-y cross-section of the FE mesh, coloured by stiffness retention
-        - **Results** — empirical knockdown bar chart with the FE stiffness knockdown overlaid
+        - **Results** — empirical knockdown bar chart with the FE stiffness
+          knockdown overlaid, and the thermal residual-stress results when
+          the FE thermal load is on
         - **Stress** — FE stress contour for a chosen component
         - **Export** — download the empirical knockdown sweep as JSON or
-          CSV, or generate an NCR validation summary (PDF / Markdown /
-          JSON) with a recommended MRB disposition path
+          CSV, the FE field as a VTU file for ParaView, or generate an NCR
+          validation summary (PDF / Markdown / JSON) with a recommended MRB
+          disposition path
         """
     )
     if result is None:
         st.info("No results yet. Adjust the sidebar and press **Run analysis**.")
         return
     cfg_r = result["config"]
+    thermal = result.get("fe_thermal")
+    thermal_note = ""
+    if thermal:
+        thermal_note = (
+            f" FE thermal load: ΔT = {thermal['delta_T']:g} K, "
+            + ("thermal only." if thermal["mode"] == "thermal_only"
+               else f"residual stress added to {cfg_r['loading_mode']}."))
     st.success(
         f"Last run: {cfg_r['material_name']}, layup {layup_for_title}, "
         f"Vp = {cfg_r['Vp']:.1f}%, {cfg_r['void_shape']}, "
         f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
+        + thermal_note
     )
     if result.get("fe_skipped_reason"):
         reason = result["fe_skipped_reason"]
@@ -730,6 +1135,7 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
             f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
             f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
         )
+        _offer_nz_fix(result.get("fe_nz_suggestion"), key="nz_fix_overview")
 
 
 def _build_profile_tab(result: dict | None):
@@ -752,7 +1158,29 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
         return
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
+    _build_thermal_results(result)
     _build_uq_expander(result)
+
+
+def _build_thermal_results(result: dict) -> None:
+    """Metrics of the FE thermal load (nothing when it was off)."""
+    thermal = result.get("fe_thermal")
+    if not thermal:
+        return
+    what = ("thermal only" if thermal["mode"] == "thermal_only"
+            else f"residual stress + {result['config']['loading_mode']}")
+    st.subheader(f"FE thermal residual stress ({what}, ΔT = {thermal['delta_T']:g} K)")
+    summary = fe_thermal_summary(result)
+    if summary is None:
+        st.warning(
+            f"The thermal FE solve was skipped: {result.get('fe_skipped_reason')}")
+        _offer_nz_fix(result.get("fe_nz_suggestion"), key="nz_fix_results")
+        return
+    rows, caption = summary
+    for col, (label, value, help_text) in zip(st.columns(len(rows)), rows,
+                                              strict=True):
+        col.metric(label, value, help=help_text)
+    st.caption(caption)
 
 
 def _build_uq_expander(result: dict):
@@ -833,6 +1261,14 @@ def _build_stress_tab(result: dict | None):
     formulation = getattr(result["fe_field"], "formulation", None)
     if formulation:
         st.caption(f"FE element formulation: {formulation}.")
+    thermal = result.get("fe_thermal")
+    if thermal:
+        st.caption(
+            f"Thermal residual stress of the free-standing laminate at "
+            f"ΔT = {thermal['delta_T']:g} K"
+            + (" (no mechanical load)." if thermal["mode"] == "thermal_only"
+               else f", plus the {result['config']['loading_mode']} load: the "
+                    f"plot shows total stress."))
 
 
 def _build_export_tab(result: dict | None, layup_for_title: str):
@@ -858,6 +1294,26 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         use_container_width=True,
         key="dl_export_csv",
     )
+    if result.get("fe_field") is not None:
+        fe_slug = result["fe_loading"]
+        if (result.get("fe_thermal") or {}).get("mode") == "combined":
+            fe_slug += "_residual"
+        st.download_button(
+            "Download FE results (VTU)",
+            data=fe_vtu_bytes_cached(_config_to_key(result["config"]), result),
+            file_name=f"{export_stem}_fe_{fe_slug}.vtu",
+            mime="application/octet-stream",
+            use_container_width=True,
+            key="dl_export_vtu",
+            help=(
+                "Binary VTK XML (.vtu) of the FE mesh for ParaView: "
+                "displacement, porosity, element stress and strain, failure "
+                "index and ply data, nodal stress and strain recovered "
+                "within each ply, and the residual stress of a thermal run."
+            ),
+        )
+    else:
+        st.caption("No FE results to download as VTU: the FE solve was skipped.")
     with st.expander("Preview JSON"):
         st.code(payload_json, language="json")
 

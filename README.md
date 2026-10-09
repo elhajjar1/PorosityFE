@@ -73,8 +73,14 @@ pytest tests/ -v
 streamlit run app.py
 ```
 Opens a browser UI at http://localhost:8501 with sidebar inputs (material, layup,
-porosity, loading mode, mesh) and tabs for the porosity profile, mesh,
-knockdown bar chart, FE stress contours, and result downloads. See
+porosity, loading mode, FE thermal load, mesh) and tabs for the porosity profile, mesh,
+knockdown bar chart, FE stress contours, and result downloads (including the FE
+field as a `.vtu` file for ParaView). The thermal option appears for materials
+with lamina CTEs (today `AS4_3501_6_epoxy`). It solves the cure residual
+stress alone, or adds it to the mechanical FE case. ΔT is entered in K,
+negative for a cool-down, and has no default. The mesh must give every ply
+its own element layer, so `nz` must be a multiple of the ply count; the app
+offers that `nz` when it is not. See [Thermal inputs](#thermal-inputs). See
 [`DEPLOYMENT_STREAMLIT.md`](DEPLOYMENT_STREAMLIT.md) for hosting on Streamlit
 Community Cloud.
 
@@ -356,7 +362,7 @@ not symmetric. `FESolver` logs a warning with the element layup, and
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
 | `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
 
-The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table.
+The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView.
 
 Every JSON file is standard JSON: it never holds `NaN` or `Infinity`. A value that is not defined is `null`, for example the Tsai-Wu per-mode failure indices or the knockdown of a thermal-only FE solve. The `FESolver.export_results` docstring and `validation/schemas/porosity_results_schema.json` list what `null` means for each field.
 

@@ -25,6 +25,10 @@ residual = solver.solve('thermal', delta_T=-150.0)           # cool-down, K
 combined = solver.solve('tension', applied_strain=0.005, delta_T=-150.0)
 ```
 
+In the Streamlit app the same two cases are under "Thermal residual
+stress (FE)" in the sidebar, shown for materials with CTEs. ΔT has no
+default there either; a suggested value is applied only by its button.
+
 ## Constitutive law and CTE
 
 With the thermal strain $\boldsymbol\varepsilon_\text{th} = \boldsymbol\alpha\,\Delta T$

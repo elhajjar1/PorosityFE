@@ -42,7 +42,7 @@ All notable changes to PorosityFE will be documented in this file.
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
 - **Thermal / cure residual-stress load case (IMPROVEMENT_PLAN 3.5, PRs 2
-  and 3).** Library only; the app does not expose it yet. Mechanical
+  and 3).** The app exposes it too (see the next entry). Mechanical
   solves without `delta_T` are bit-identical to before (checked on the
   production mesh, both element formulations, all four modes and three
   criteria).
@@ -95,6 +95,39 @@ All notable changes to PorosityFE will be documented in this file.
     (no chemical shrinkage, relaxation or moisture), geometric linearity,
     and that under the square-root strength rule porosity can lower the
     residual failure index.
+- **Thermal load case and VTU download in the app (IMPROVEMENT_PLAN 3.5
+  PR 4, 3.6 E1).** Runs with the thermal option off are unchanged.
+  - The sidebar has a new "Thermal residual stress (FE)" section. It
+    appears only for a material with lamina CTEs (`has_cte`, today only
+    `AS4_3501_6_epoxy`); for the others a caption says why the option is
+    unavailable. The choices are off, "add cure residual stress to the
+    mechanical case" (superposed on the FE solve of the selected loading
+    mode) and "thermal only".
+  - The "ΔT (K), negative = cool-down" input starts empty, with no hidden
+    default, and the Run button stays disabled until it is filled. A
+    labelled suggestion (−150 K for a 177 °C-cure epoxy cooled to room
+    temperature, or the preset's `T_stress_free` when one is recorded) is
+    applied only by its button.
+  - The thermal solve refuses a mesh whose element layers merge plies.
+    The sidebar warns before the run when `nz` is not a multiple of the
+    ply count. If the solve refuses, the app shows the solver's message
+    instead of crashing, and keeps the empirical results. Both places
+    offer a "Use nz = ..." button that switches on Expert mode with the
+    `nz` that resolves the layup.
+  - The Results tab shows the knockdown (n/a for thermal-only), the
+    residual and interior maximum failure indices, and the first-ply-
+    failure factor read with its `load_factor_basis`. For thermal-only
+    that factor is the critical ΔT (factor × ΔT). For the combined case
+    it multiplies the applied load, and the factor without the residual
+    stress is shown next to it. The knockdown chart has no FE bar for a
+    thermal-only run.
+  - The Export tab has a "Download FE results (VTU)" button
+    (`FieldResults.to_vtu`, binary, with the recovered nodal stress and
+    strain and the residual-stress fields of a thermal run). The bytes
+    are cached with `st.cache_data(max_entries=4)`.
+  - `run_analysis` takes `thermal_mode` and `delta_T` in its config. An
+    older config dict without them means no thermal load. The result
+    gains `fe_thermal`, `fe_mechanical_fpf` and `fe_nz_suggestion`.
 - **Incompatible-mode hex8 element (IMPROVEMENT_PLAN 3.6, step A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
   nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
   correction), condensed out per element and folded into an effective

@@ -14,6 +14,9 @@ Streamlit script-run context:
   and can be swapped for one).
 """
 
+import dataclasses
+import math
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -53,6 +56,30 @@ def comp_result():
     return app.run_analysis(_base_cfg())
 
 
+def _thermal_cfg(**overrides) -> dict:
+    """``_base_cfg`` on AS4/3501-6 (the preset with CTEs), one element layer
+    per ply, with the FE thermal load at ΔT = -150 K."""
+    cfg = _base_cfg(material_name="AS4_3501_6_epoxy", t_ply=0.125,
+                    nx=10, ny=6, nz=4, thermal_mode="thermal_only",
+                    delta_T=-150.0)
+    cfg.update(overrides)
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def thermal_result():
+    return app.run_analysis(_thermal_cfg())
+
+
+@pytest.fixture(scope="module")
+def combined_results():
+    """Tension with the residual stress, and the same tension without it."""
+    return (app.run_analysis(_thermal_cfg(thermal_mode="combined",
+                                          loading_mode="tension")),
+            app.run_analysis(_thermal_cfg(thermal_mode="off", delta_T=None,
+                                          loading_mode="tension")))
+
+
 class TestConfigToKey:
     def test_lists_become_tuples_and_key_is_hashable(self):
         cfg = _base_cfg()
@@ -72,6 +99,16 @@ class TestConfigToKey:
         assert key["material_name"] == "T800_epoxy"
         assert key["Vp"] == 3.0
         assert key["nx"] == 10
+
+    def test_thermal_fields_default_to_off_and_enter_the_key(self):
+        """A config without the thermal fields means no thermal load, and
+        each thermal setting gets its own cache entry."""
+        key = dict(app._config_to_key(_base_cfg()))
+        assert key["thermal_mode"] == "off" and key["delta_T"] is None
+        k1 = app._config_to_key(_thermal_cfg())
+        k2 = app._config_to_key(_thermal_cfg(delta_T=-100.0))
+        k3 = app._config_to_key(_thermal_cfg(thermal_mode="combined"))
+        assert len({k1, k2, k3, app._config_to_key(_base_cfg())}) == 4
 
 
 class TestRunAnalysis:
@@ -253,3 +290,163 @@ class TestValidateLayupInline:
                             {"layup_input": "garbage ###"})
         app._validate_layup_inline()
         assert app.st.session_state["_layup_status"][0] == "err"
+
+
+class TestThermalAnalysis:
+    """IMPROVEMENT_PLAN 3.5 PR 4: the FE thermal load case in the app."""
+
+    def test_thermal_only_result(self, thermal_result):
+        r = thermal_result
+        fe = r["fe_field"]
+        assert fe is not None, r["fe_skipped_reason"]
+        assert r["fe_loading"] == "thermal"
+        assert r["fe_thermal"] == {"mode": "thermal_only", "delta_T": -150.0}
+        assert fe.delta_T == -150.0
+        assert fe.load_factor_basis == "delta_T"
+        assert math.isnan(fe.knockdown)
+        assert r["fe_mechanical_fpf"] is None and r["fe_nz_suggestion"] is None
+        # The empirical side is unchanged by the thermal option.
+        plain = app.run_analysis(_thermal_cfg(thermal_mode="off", delta_T=None))
+        assert r["empirical"] == plain["empirical"]
+
+    def test_thermal_only_summary_reads_the_basis(self, thermal_result):
+        fe = thermal_result["fe_field"]
+        rows, caption = app.fe_thermal_summary(thermal_result)
+        values = {label: value for label, value, _ in rows}
+        assert list(values) == ["FE knockdown", "Residual max FI",
+                                "Interior max FI", "Critical ΔT (first-ply failure)"]
+        assert values["FE knockdown"] == "n/a"
+        assert values["Residual max FI"] == f"{fe.residual_max_failure_index:.3f}"
+        assert fe.interior_max_failure_index is not None   # 10 x 6 has an interior
+        assert values["Interior max FI"] == f"{fe.interior_max_failure_index:.3f}"
+        lam = fe.first_ply_failure_load_factor
+        assert values["Critical ΔT (first-ply failure)"] == f"{lam * -150.0:.0f} K"
+        assert "basis 'delta_T'" in caption
+        assert f"{lam:.3g} multiplies ΔT = -150 K" in caption
+
+    def test_summary_handles_unstressed_and_missing_values(self, thermal_result):
+        fe = dataclasses.replace(thermal_result["fe_field"],
+                                 first_ply_failure_load_factor=float("inf"),
+                                 interior_max_failure_index=None)
+        rows, caption = app.fe_thermal_summary({**thermal_result, "fe_field": fe})
+        values = {label: value for label, value, _ in rows}
+        assert values["Critical ΔT (first-ply failure)"] == "none"
+        assert values["Interior max FI"] == "n/a"
+        assert "infinite" in caption
+
+    @pytest.mark.parametrize("value, text", [
+        (None, "n/a"), (float("nan"), "n/a"), (float("inf"), "∞"), (0.12345, "0.123")])
+    def test_fmt_value(self, value, text):
+        assert app._fmt_value(value) == text
+
+    def test_combined_result_and_summary(self, combined_results):
+        comb, mech = combined_results
+        fe, fe_mech = comb["fe_field"], mech["fe_field"]
+        assert comb["fe_loading"] == "tension"
+        assert fe.load_factor_basis == "mechanical_with_residual"
+        assert fe_mech.load_factor_basis == "mechanical"
+        # Knockdown is the mechanical one; the reference factor is the
+        # mechanical-only solve's.
+        assert fe.knockdown == pytest.approx(fe_mech.knockdown, rel=1e-12)
+        assert comb["fe_mechanical_fpf"] == pytest.approx(
+            fe_mech.first_ply_failure_load_factor, rel=1e-9)
+        # Cool-down puts the 90 deg plies in transverse tension, so the
+        # residual stress brings tensile first-ply failure forward.
+        assert fe.first_ply_failure_load_factor < comb["fe_mechanical_fpf"]
+
+        rows, caption = app.fe_thermal_summary(comb)
+        values = {label: value for label, value, _ in rows}
+        assert values["FE knockdown"] == f"{fe.knockdown:.3f}"
+        assert values["FPF load factor"] == f"{fe.first_ply_failure_load_factor:.2f}"
+        assert "basis 'mechanical_with_residual'" in caption
+        assert (f"Without the residual stress the factor is "
+                f"{comb['fe_mechanical_fpf']:.2f}") in caption
+        assert app.fe_thermal_summary(mech) is None
+
+    def test_unresolved_layup_is_reported_with_the_nz_that_works(self):
+        r = app.run_analysis(_thermal_cfg(nz=6))
+        assert r["fe_field"] is None
+        assert "nz = k * n_plies" in r["fe_skipped_reason"]
+        assert r["fe_nz_suggestion"] == 8
+        assert app.fe_thermal_summary(r) is None
+        for mode in ("compression", "tension", "shear", "ilss"):
+            assert mode in r["empirical"]
+
+    def test_material_without_cte_is_reported(self):
+        r = app.run_analysis(_thermal_cfg(material_name="T800_epoxy"))
+        assert r["fe_field"] is None
+        assert "thermal expansion coefficients" in r["fe_skipped_reason"]
+        assert r["fe_nz_suggestion"] is None
+
+    @pytest.mark.parametrize("overrides, match", [
+        ({"thermal_mode": "sometimes"}, "Unknown thermal_mode"),
+        ({"delta_T": None}, "needs a finite delta_T"),
+        ({"delta_T": float("nan")}, "needs a finite delta_T"),
+        ({"thermal_mode": "combined", "delta_T": "150"}, "needs a finite delta_T"),
+    ])
+    def test_invalid_thermal_config_raises(self, overrides, match):
+        with pytest.raises(ValueError, match=match):
+            app.run_analysis(_thermal_cfg(**overrides))
+
+    def test_plot_results_has_no_fe_bar_for_thermal_only(self, thermal_result):
+        fig = app.plot_results(thermal_result, "0/90/90/0")
+        labels = fig.axes[0].get_legend_handles_labels()[1]
+        assert labels == ["Judd-Wright", "Power Law", "Linear"]
+        note = "\n".join(t.get_text() for t in fig.axes[0].texts)
+        assert "thermal-only solve has no stiffness knockdown" in note
+        plt.close(fig)
+
+    @pytest.mark.parametrize("nz, n_plies, expected", [
+        (12, 24, 24), (6, 4, 8), (8, 4, 8), (30, 24, 48), (2, 4, 4)])
+    def test_resolving_nz(self, nz, n_plies, expected):
+        assert app._resolving_nz(nz, n_plies) == expected
+
+    def test_delta_T_suggestion(self):
+        from porosity_fe import MATERIALS
+        mat = MATERIALS["AS4_3501_6_epoxy"]
+        assert mat.T_stress_free is None
+        value, basis = app._delta_T_suggestion(mat)
+        assert value == app._SUGGESTED_DELTA_T_177C_EPOXY
+        assert "177 °C-cure epoxy" in basis
+        recorded = dataclasses.replace(mat, T_stress_free=180.0)
+        assert app._delta_T_suggestion(recorded)[0] == recorded.T_ref - 180.0
+        service = dataclasses.replace(recorded, T_service=60.0)
+        assert app._delta_T_suggestion(service)[0] == 60.0 - 180.0
+
+    def test_callbacks_set_session_state(self, monkeypatch):
+        monkeypatch.setattr(app.st, "session_state", {})
+        app._set_delta_T(-150)
+        app._apply_nz_fix(24)
+        assert app.st.session_state == {"thermal_delta_T": -150.0,
+                                        "expert_mode": True, "mesh_nz": 24}
+
+
+class TestVTUDownload:
+    """The Export tab's FE results as VTU bytes (IMPROVEMENT_PLAN 3.6, E1)."""
+
+    def test_bytes_match_the_library_writer(self, comp_result, tmp_path):
+        data = app.fe_vtu_bytes(comp_result)
+        ref = tmp_path / "ref.vtu"
+        comp_result["fe_field"].to_vtu(comp_result["mesh"], ref)
+        assert data == ref.read_bytes()
+        head = data.split(b"<AppendedData")[0].decode("ascii")
+        assert head.startswith('<?xml version="1.0"?>')
+        assert '<VTKFile type="UnstructuredGrid"' in head
+        n_elem = len(comp_result["mesh"].elements)
+        assert f'NumberOfCells="{n_elem}"' in head
+        assert 'Name="knockdown"' in head and 'Name="sigma_xx_nodal"' in head
+
+    def test_thermal_bytes_carry_the_residual_stress(self, thermal_result):
+        head = app.fe_vtu_bytes(thermal_result).split(b"<AppendedData")[0].decode("ascii")
+        for name in ("residual_sigma_11_local", "residual_sigma_22_local",
+                     "residual_tau_12_local"):
+            assert f'Name="{name}"' in head
+        assert 'Name="knockdown"' not in head     # NaN for thermal-only
+
+    def test_cached_wrapper_returns_the_same_bytes(self, comp_result):
+        key = app._config_to_key(comp_result["config"])
+        assert app.fe_vtu_bytes_cached(key, comp_result) == app.fe_vtu_bytes(comp_result)
+
+    def test_no_fe_field_raises(self):
+        with pytest.raises(ValueError, match="no FE field"):
+            app.fe_vtu_bytes({"fe_field": None})
