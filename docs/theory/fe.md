@@ -152,6 +152,8 @@ results from before the change bit for bit.
 | `compression`, `tension` | displacement | $u_x = 0$ on $x_\text{min}$, $u_x = \varepsilon L_x$ on $x_\text{max}$, $u_y = 0$ on $y_\text{min}$, one corner fixed in $z$ |
 | `shear` | displacement | $u_x = \tfrac{\gamma}{2} y$, $u_y = \tfrac{\gamma}{2} x$ on the four $x$ and $y$ faces; one corner fixed in $z$ |
 | `ilss` | force | bottom-face nodes along both end edges pinned in $x, y, z$; total `applied_load` along $-z$ shared equally by the top-face nodes at mid-span |
+| `flexure_3pt` | force | roller supports: $u_z = 0$ on the bottom-face node lines at the two supports, plus $u_x$ at one node and $u_y$ at two (no horizontal reaction); `applied_load` as a consistent line load across the top face at mid-span; see [Flexure](#flexure) |
+| `flexure_4pt` | force | the same rollers; half of `applied_load` on each of two top-face lines `load_span` apart, centred on mid-span |
 | `thermal` | temperature change `delta_T` | statically determinate 3-2-1 supports on $z_\text{min}$ only, so the laminate is free; see {doc}`thermal` |
 
 Prescribed displacements are imposed exactly by eliminating the
@@ -187,7 +189,9 @@ mesh).
 The ILSS supports pin all three translations, so the model is a beam
 pinned at both ends, not one with a sliding roller as in ASTM D2344, and
 the absolute bending stiffness is higher than the test's. The knockdown
-below compares two solves with the same supports.
+below compares two solves with the same supports. The flexure modes use
+rollers, which exert no horizontal force: on the default coupon
+`'flexure_3pt'` is the ILSS geometry with rollers and a consistent load.
 ```
 
 ## Stiffness knockdown
@@ -202,21 +206,169 @@ KD_\text{FE} = \frac{\mathcal S_\text{porous}}{\mathcal S_\text{pristine}},
 \mathcal S =
 \begin{cases}
 \mathbf u^\mathsf T \mathbf K \mathbf u / \varepsilon^2 & \text{compression, tension, shear} \\
-P^2 / \mathbf u^\mathsf T \mathbf K \mathbf u & \text{ILSS}.
+P^2 / \mathbf u^\mathsf T \mathbf K \mathbf u & \text{ILSS, flexure}.
 \end{cases}
 $$
 
 For the displacement-controlled modes $\mathcal S$ is the effective
 modulus times the volume, so $KD_\text{FE}$ is the ratio of $E_x$ (or
-$G_{xy}$ for shear). For ILSS it is the ratio of beam stiffnesses
-(inverse compliances). The pristine solve is cached by mesh geometry, so a
+$G_{xy}$ for shear). For ILSS and flexure it is the ratio of beam
+stiffnesses (inverse compliances). The pristine solve is cached by mesh
+geometry (for flexure also by the support and load lines), so a
 porosity sweep on one mesh pays for it once. A ratio above 1 is not
 clipped; a warning is logged. `effective_modulus` reports
 $\mathbf u^\mathsf T \mathbf K \mathbf u / (\varepsilon^2 V)$ for the
-displacement-controlled modes.
+displacement-controlled modes and the flexural modulus for the flexure
+modes (below).
 
 $KD_\text{FE}$ is a *stiffness* knockdown. Strength enters through the
 failure criteria on {doc}`failure`.
+
+## Flexure
+
+`loading='flexure_3pt'` and `'flexure_4pt'` model the flexure tests of
+ASTM D7264 (polymer-matrix composites; procedure A three-point,
+procedure B four-point with the load span half the support span) and
+ASTM D790 (three-point). Both are force controlled by `applied_load`.
+
+**Geometry.** {meth}`CompositeMesh.for_flexure <porosity_fe.CompositeMesh.for_flexure>`
+builds the specimen and records the support and load lines as
+{attr}`~porosity_fe.CompositeMesh.flexure_geometry`
+({class}`~porosity_fe.FlexureGeometry`). Its defaults follow D7264: a
+support span $L$ of 32 laminate thicknesses (`span_to_thickness`; D7264
+also allows 16, 20, 40 and 60, D790 uses 16 by default and 32 to 60 for
+high-modulus composites), a 13 mm width, 10 % of the span overhanging each
+support, and a four-point load span of $L/2$ (loads at the quarter
+points). Every ply gets its own element layer ($n_z$ = ply count), and the
+element length is at most $\min(h, 20 h / n_z)$, which keeps the aspect
+ratio at or below 20 and $\Delta x / h \le 1$. $n_x$ is chosen so that the
+supports, mid-span and the four-point load lines fall on node lines. For
+the 24-ply T800 preset this gives a 140.5 mm span and $48 \times 4 \times 24$
+elements (18,375 degrees of freedom). Solving both procedures takes
+about 3 to 4 s on a pristine mesh and 7 to 8 s on a porous one, which
+adds the pristine reference solves (four cores); the two procedures share
+the supports and so the factorization. On a mesh without
+`flexure_geometry` the supports are the two bottom end edges.
+
+**Supports and loads.**
+{meth}`BoundaryHandler.roller_supports <porosity_fe.BoundaryHandler.roller_supports>`
+holds $u_z = 0$ along each support line of the bottom face. Three more
+constraints remove the in-plane rigid-body motions: $u_x$ at the
+mid-width node of the first support and $u_y$ at the mid-width nodes of
+both. They are statically determinate in the plane, so the supports
+exert no horizontal reaction (below $2 \times 10^{-9}$ N at
+$P = 100$ N) and the beam shortens and contracts across its width
+freely. {meth}`BoundaryHandler.line_load <porosity_fe.BoundaryHandler.line_load>`
+applies each load across the top face with consistent nodal forces:
+trapezoidal weights across the width (the edge nodes carry half an
+interior share, where equal shares would give them more) and the linear
+shape functions along $x$, so a load between two node lines is shared in
+proportion to the distance. `load_width` spreads it as a uniform pressure
+over a band instead of a line.
+
+**Flexural modulus.** `effective_modulus` is the modulus $E_f$ that
+Timoshenko beam theory needs to reproduce the mid-span deflection
+$\delta$, with the transverse shear deflection taken out:
+
+$$
+\frac{\delta}{P} = \frac{a\,(3L^2 - 4a^2)}{48\,E_f I} + \frac{a}{2\,b\,K_s},
+\qquad I = \frac{b h^3}{12},
+$$
+
+with $a$ the shear span ($L/2$ for three-point loading, $(L - L_\text{load})/2$
+for four-point), $b$ the width and $h$ the thickness. Without the shear
+term these are the D790 / D7264 formulas $E_f = L^3 m / (4 b h^3)$ and,
+for $a = L/4$, $E_f = 0.17\,L^3 m / (b h^3)$, with $m = P / \delta$.
+$\delta$ is the width-averaged mid-thickness deflection at mid-span minus
+its mean over the two support lines, which removes the local indentation
+at the supports. $K_s$ is the laminate transverse shear stiffness per unit
+width. Equilibrium gives the transverse shear stresses of the
+lamination-theory bending stresses of a narrow beam ($N = 0$,
+$M_y = M_{xy} = 0$), per unit shear force $V$:
+
+$$
+\mathbf t(z) = \begin{pmatrix} \tau_{yz} \\ \tau_{xz} \end{pmatrix} \Big/ V
+= -\int_{-h/2}^{z} \begin{pmatrix} s_{xy} \\ s_{x} \end{pmatrix} \mathrm dz',
+\qquad
+\mathbf s(z) = \bar{\mathbf Q}(z)\,(\boldsymbol\varepsilon^0 + z\,\boldsymbol\kappa),
+$$
+
+with $(\boldsymbol\varepsilon^0, \boldsymbol\kappa)$ the mid-plane strains
+and curvatures per unit $M_x$ from the inverse $ABD$ matrix. Equating
+their complementary energy to $V^2 / (2 K_s)$ gives
+
+$$
+\frac{1}{K_s} = \int_{-h/2}^{h/2} \mathbf t^\mathsf T\, \mathbf S(z)\, \mathbf t\, \mathrm dz,
+$$
+
+with $\mathbf S$ the inverse of each layer's transverse shear stiffness
+block. The layer stiffnesses are those of the model: the element layers'
+porosity-degraded, rotated $\mathbf C$, averaged over the span. For one
+orthotropic material $K_s = \tfrac56 G_{13} h$. At 32:1 transverse shear is
+1.6 % (QI) to 3.6 % (UD) of the T800 deflection, so the correction is small
+and its uncertainty smaller still. The D7264 and D790 moduli omit it and
+read lower by that fraction. The model compares with the
+classical-lamination-theory modulus
+$E_f = 12 / (h^3 d_{11})$, $d = D^{-1}$
+({func}`~porosity_fe.compute_degraded_clt_flexural_modulus`). On the
+default D7264 meshes of the 24-ply T800 preset (`'hex8i'`, uniform
+spherical porosity):
+
+| Laminate | $V_p$ | $E_f / E_f^\text{CLT}$, 3-point | 4-point | knockdown | $E_f / E_{f,0}$ | CLT $D_{11}^*$ ratio |
+|---|---|---|---|---|---|---|
+| UD | 0 | 1.0015 | 1.0010 | 1 | 1 | 1 |
+| UD | 0.05 | 1.0015 | 1.0010 | 0.9959 | 0.9993 | 0.9993 |
+| QI | 0 | 0.9888 | 0.9884 | 1 | 1 | 1 |
+| QI | 0.05 | 0.9876 | 0.9872 | 0.9869 | 0.9882 | 0.9894 |
+| $[0/90/0/90]_{s3}$ | 0 | 1.0012 | 1.0008 | 1 | 1 | 1 |
+
+The knockdown is a compliance ratio, so it also carries the shear
+deflection, which degrades faster with porosity than the bending stiffness
+($K_s$ drops about 8.5 % at $V_p = 0.05$); it sits a little below the bending
+stiffness ratio, which the modulus ratio $E_f / E_{f,0}$ follows.
+
+The QI shortfall is the free edge, not the mesh or the shear correction.
+Near the free edges of the $\pm 45°$ plies the in-plane stresses relax
+and interlaminar stresses appear, over a band about one thickness wide,
+so the deficit shrinks with the width-to-thickness ratio $b/h$: QI
+3-point $E_f / E_f^\text{CLT}$ is 0.963 at $b = h$, 0.989 at the D7264
+13 mm ($b \approx 3h$) and 0.996 at $b \approx 6h$, while the cross-ply
+laminate stays at 1.001 at every width. Refining the mesh to
+$102 \times 8 \times 24$ moves the QI value by 0.2 %.
+
+**Checks.** The UD three-point mid-span deflection matches Timoshenko
+beam theory ($E_{11}$, $G_{13}$, $\kappa = 5/6$) to 0.2 % at 32:1
+and 0.7 % at 16:1 (one element layer per ply), where shear is 13 % of the deflection. In shorter
+beams the FE deflection falls further below it (2.6 % at 8:1), because
+the load and supports restrain the warping of the cross-sections, so the
+shear-corrected modulus reads slightly high there (0.6 % for the
+cross-ply at 16:1). Prefer 32:1 for moduli. In the four-point inner span
+the section shear force is zero (below $10^{-9}$ of $P/2$) and the
+bending stress is uniform along $x$ to 0.1 %. The element-level
+$\tau_{xz}$ there is not zero in a QI laminate: free-edge interlaminar
+shear reaches about a third of the shear-span beam value.
+
+**Element formulation.** The plain `'hex8'` brick locks in bending
+(see [Element formulations](#element-formulations)), so it reads the
+flexural modulus high, increasingly so as the elements lengthen:
+
+| $\Delta x / h$ (mesh) | UD `hex8i` | UD `hex8` | QI `hex8i` | QI `hex8` |
+|---|---|---|---|---|
+| 0.5 ($78 \times 6 \times 24$) | 1.0011 | 1.0099 | 0.9875 | 1.0087 |
+| 0.8 ($48 \times 4 \times 24$, default) | 1.0015 | 1.0235 | 0.9888 | 1.0396 |
+| 2.0 ($20 \times 2 \times 24$) | 1.0047 | 1.1387 | 0.9988 | 1.2885 |
+
+(three-point $E_f / E_f^\text{CLT}$; the coarse QI row has only two
+elements across the width, which under-resolves the free-edge band.)
+
+**Peak stresses.** Line loads and line supports are singular, so the
+stresses right under them grow with refinement. At 32:1 first-ply failure
+is governed by the bending stress next to the load line, and the effect
+is small: the three-point first-ply-failure load of the QI preset is
+585, 582 and 580 N at element lengths of 3.5, 2.2 and 1.1 mm, and 588 to
+581 N with the load spread over a 2 mm band (`load_width=2.0`). Shorter
+spans concentrate more of the failure index under the load; use a band
+there.
 
 ## Stress recovery and export
 

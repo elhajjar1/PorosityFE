@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
+from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -17,6 +20,107 @@ logger = logging.getLogger("porosity_fe_analysis")
 
 # Two normalized ply angles closer than this (degrees) are the same angle.
 _ANGLE_TOL = 1e-6
+
+# Largest element aspect ratio check_mesh_quality accepts without a warning.
+_MAX_ASPECT_RATIO = 20.0
+
+
+@dataclass(frozen=True)
+class FlexureGeometry:
+    """Support and load positions of a flexure test on a mesh (mm).
+
+    The supports are line supports (rollers) along ``y`` on the bottom face
+    (``z_min``); the loads act along ``z`` on the top face (``z_max``),
+    spread evenly across the width. The three-point test (ASTM D790, D7264
+    procedure A) loads mid-span; the four-point test (D7264 procedure B)
+    loads two lines ``load_span`` apart, centred on mid-span.
+    :meth:`CompositeMesh.for_flexure` builds a mesh with these lines on node
+    lines and stores the geometry as :attr:`CompositeMesh.flexure_geometry`;
+    :meth:`~porosity_fe.BoundaryHandler.flexure_bcs` and the
+    ``'flexure_3pt'`` / ``'flexure_4pt'`` loading modes of
+    :class:`~porosity_fe.FESolver` read it from there.
+
+    Attributes
+    ----------
+    support_x : tuple of float
+        ``x`` of the left and right support lines (mm). The supports must
+        lie on node lines of the mesh.
+    load_span : float
+        Distance between the two load lines of the four-point test (mm),
+        ``0 < load_span < span``. D7264 procedure B uses half the support
+        span, so the loads sit at the quarter points. Not used by the
+        three-point test.
+    load_width : float
+        Width along ``x`` of the band each load is spread over as a uniform
+        pressure (mm). ``0.0`` (default) is a line load; a band about as
+        wide as the contact under a loading nose removes the stress
+        singularity under the load line. Each band must stay between the
+        supports and, in the four-point test, clear of the other band.
+
+    Raises
+    ------
+    ValueError
+        If a value is not finite, the supports are not in increasing order,
+        or the load span or width does not fit between the supports.
+    """
+
+    support_x: tuple[float, float]
+    load_span: float
+    load_width: float = 0.0
+
+    def __post_init__(self) -> None:
+        try:
+            x0, x1 = (float(v) for v in self.support_x)
+            load_span, load_width = float(self.load_span), float(self.load_width)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "FlexureGeometry needs two support positions and numeric "
+                f"load_span and load_width, got support_x={self.support_x!r}, "
+                f"load_span={self.load_span!r}, load_width={self.load_width!r}."
+            ) from None
+        if not all(math.isfinite(v) for v in (x0, x1, load_span, load_width)):
+            raise ValueError("FlexureGeometry values must be finite (mm).")
+        if not x1 > x0:
+            raise ValueError(
+                f"support_x must be increasing (left, right), got {(x0, x1)}.")
+        span = x1 - x0
+        if not 0.0 < load_span < span:
+            raise ValueError(
+                f"load_span must lie in (0, span = {span:g}) mm, got {load_span:g}.")
+        if not 0.0 <= load_width < min(load_span, span - load_span):
+            raise ValueError(
+                f"load_width must be >= 0 and leave the load bands clear of "
+                f"each other and of the supports (below "
+                f"{min(load_span, span - load_span):g} mm here), got "
+                f"{load_width:g}.")
+        object.__setattr__(self, 'support_x', (x0, x1))
+        object.__setattr__(self, 'load_span', load_span)
+        object.__setattr__(self, 'load_width', load_width)
+
+    @property
+    def span(self) -> float:
+        """Support span ``L`` (mm)."""
+        return self.support_x[1] - self.support_x[0]
+
+    @property
+    def midspan(self) -> float:
+        """``x`` of mid-span (mm)."""
+        return 0.5 * (self.support_x[0] + self.support_x[1])
+
+    def load_x(self, procedure: Literal['3pt', '4pt']) -> tuple[float, ...]:
+        """``x`` of the load line(s): mid-span (``'3pt'``) or the two lines
+        ``load_span`` apart (``'4pt'``)."""
+        if procedure == '3pt':
+            return (self.midspan,)
+        if procedure == '4pt':
+            half = 0.5 * self.load_span
+            return (self.midspan - half, self.midspan + half)
+        raise ValueError(f"procedure must be '3pt' or '4pt', got {procedure!r}.")
+
+    def shear_span(self, procedure: Literal['3pt', '4pt']) -> float:
+        """Distance ``a`` from each support to the nearer load line (mm):
+        ``L / 2`` (``'3pt'``) or ``(L - load_span) / 2`` (``'4pt'``)."""
+        return self.load_x(procedure)[0] - self.support_x[0]
 
 
 def _ply_at(num: np.ndarray, den: int, n_plies: int) -> np.ndarray:
@@ -131,6 +235,10 @@ class CompositeMesh:
         void.
     void_element_set : set of int
         Same content as ``void_elements`` for O(1) membership tests.
+    flexure_geometry : FlexureGeometry or None
+        Support and load lines of a flexure test, set by
+        :meth:`for_flexure`; ``None`` otherwise, and the flexure loading
+        modes then put the supports at the two bottom end edges.
     n_nodes, n_elements, n_dof : int
         Read-only sizes.
 
@@ -229,6 +337,7 @@ class CompositeMesh:
         self.ply_ids = None
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
         self.void_elements: np.ndarray | None = None
+        self.flexure_geometry: FlexureGeometry | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -236,6 +345,180 @@ class CompositeMesh:
         self._input_ply_angles = _resolve_ply_angles(
             ply_angles, none_means='QI', caller='CompositeMesh.ply_angles')
         self.generate_mesh()
+
+    @classmethod
+    def for_flexure(cls, porosity_field: PorosityField,
+                    material: MaterialProperties, *,
+                    span_to_thickness: float = 32.0,
+                    span: float | None = None,
+                    width: float = 13.0,
+                    overhang: float | None = None,
+                    load_span: float | None = None,
+                    load_width: float = 0.0,
+                    nz: int | None = None,
+                    ny: int | None = None,
+                    element_length: float | None = None,
+                    ply_angles: list[float] | str | None = 'QI',
+                    ) -> CompositeMesh:
+        """Mesh of a flexure specimen (ASTM D7264 / D790 proportions).
+
+        Sets the coupon length and width for a support span ``L`` of
+        ``span_to_thickness`` laminate thicknesses, chooses ``nx`` so that
+        the support lines, mid-span and (when possible) the four-point load
+        lines fall on node lines, and records them as
+        :attr:`flexure_geometry` for the ``'flexure_3pt'`` and
+        ``'flexure_4pt'`` loading modes of :class:`~porosity_fe.FESolver`.
+        One mesh serves both procedures.
+
+        ASTM D7264 (polymer-matrix composites) uses a standard
+        span-to-thickness ratio of 32:1 (16, 20, 40 and 60 are alternatives),
+        a 13 mm wide specimen about 20 % longer than the span, three-point
+        loading (procedure A) or four-point loading with the load span half
+        the support span (procedure B). ASTM D790 (three-point, plastics and
+        composites) uses 16:1 by default and 32:1 to 60:1 for high-modulus
+        composites, with at least 10 % of the span overhanging each support.
+        At 32:1 transverse shear adds only 1 to 4 % to the deflection of a
+        carbon-fibre laminate; at 16:1 it is four times as much.
+
+        Parameters
+        ----------
+        porosity_field : PorosityField
+            Porosity field, sampled at the nodes (its discrete voids keep
+            their absolute coordinates).
+        material : MaterialProperties
+            Ply material; the laminate thickness is
+            ``material.total_thickness``.
+        span_to_thickness : float
+            Support span over laminate thickness, default 32 (D7264
+            standard). Ignored when ``span`` is given.
+        span : float, optional
+            Support span in mm; overrides ``span_to_thickness``.
+        width : float
+            Specimen width ``L_y`` in mm, default 13 (D7264 standard; D790
+            uses 12.7).
+        overhang : float, optional
+            Length beyond each support in mm, default 10 % of the span. It is
+            rounded up to whole elements, so the specimen is at least as long
+            as requested.
+        load_span : float, optional
+            Distance between the four-point load lines in mm, default half
+            the span (D7264 procedure B: loads at the quarter points).
+        load_width : float
+            Width of the band each load is spread over in mm, default 0 (a
+            line load); see :class:`FlexureGeometry`.
+        nz : int, optional
+            Elements through the thickness, default ``material.n_plies`` so
+            every ply has its own element layer.
+        ny : int, optional
+            Elements across the width, default the smallest even count with
+            elements no wider than ``element_length``.
+        element_length : float, optional
+            Largest element length along ``x`` and ``y`` in mm. The default,
+            ``min(h, 20 h / nz)`` with ``h`` the laminate thickness, keeps
+            the element aspect ratio at or below 20 (no
+            :func:`check_mesh_quality` warning) and the element length at or
+            below ``h``, where the default ``'hex8i'`` element is free of
+            shear locking. The plain ``'hex8'`` element needs a much finer
+            mesh in bending.
+        ply_angles : list of float or {'QI', 'UD'}, optional
+            Layup, as for :class:`CompositeMesh`.
+
+        Returns
+        -------
+        CompositeMesh
+            Mesh with ``L_x = span + 2 * overhang``, ``L_y = width`` and
+            :attr:`flexure_geometry` set.
+
+        Raises
+        ------
+        ValueError
+            If a length or ratio is not positive and finite, or the load
+            span or width does not fit (see :class:`FlexureGeometry`).
+
+        Examples
+        --------
+        A D7264 specimen of the 24-ply T800 QI laminate (span 140.5 mm,
+        48 x 4 x 24 elements):
+
+        >>> mat = MATERIALS['T800_epoxy']
+        >>> field = PorosityField(mat, 0.02)
+        >>> mesh = CompositeMesh.for_flexure(field, mat)
+        >>> mesh.nx, mesh.ny, mesh.nz
+        (48, 4, 24)
+        >>> round(mesh.flexure_geometry.span / mat.total_thickness, 6)
+        32.0
+        """
+        h = float(material.total_thickness)
+
+        def positive(name: str, value: float | None) -> float | None:
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)) \
+                    or not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(
+                    f"CompositeMesh.for_flexure: {name} must be a positive "
+                    f"finite number, got {value!r}.")
+            return float(value)
+
+        ratio = positive('span_to_thickness', span_to_thickness)
+        L = positive('span', span)
+        if L is None:
+            assert ratio is not None
+            L = ratio * h
+        width_f = positive('width', width)
+        assert width_f is not None
+        if overhang is None:
+            overhang_f = 0.1 * L
+        elif isinstance(overhang, bool) or not isinstance(overhang, (int, float, np.number)) \
+                or not math.isfinite(float(overhang)) or float(overhang) < 0.0:
+            raise ValueError(
+                f"CompositeMesh.for_flexure: overhang must be a finite length "
+                f">= 0 in mm, got {overhang!r}.")
+        else:
+            overhang_f = float(overhang)
+        Ls = 0.5 * L if load_span is None else positive('load_span', load_span)
+        assert Ls is not None
+        # Validates load_span / load_width against the span up front.
+        FlexureGeometry(support_x=(0.0, L), load_span=Ls, load_width=load_width)
+        nz_f = int(material.n_plies) if nz is None else nz
+        if not isinstance(nz_f, (int, np.integer)) or nz_f <= 0:
+            raise ValueError(
+                f"CompositeMesh.for_flexure: nz must be a positive integer, got {nz!r}.")
+        dx_max = positive('element_length', element_length)
+        if dx_max is None:
+            dx_max = min(h, _MAX_ASPECT_RATIO * h / nz_f)
+
+        # Elements between the supports: even, so mid-span is a node line,
+        # and if possible such that the four-point load lines are too.
+        m0 = 2 * math.ceil(L / (2.0 * dx_max) - 1e-9)
+        shear_span = 0.5 * (L - Ls)
+
+        def aligned(m: int) -> bool:
+            k = shear_span * m / L
+            return abs(k - round(k)) < 1e-6
+
+        m = next((c for c in range(m0, 2 * m0 + 1, 2) if aligned(c)), m0)
+        if not aligned(m):
+            logger.info(
+                "CompositeMesh.for_flexure: the four-point load lines fall "
+                "between node lines; their load is shared by the neighbouring "
+                "nodes with consistent (linear shape-function) weights.")
+        dx = L / m
+        n_over = math.ceil(overhang_f / dx - 1e-9) if overhang_f > 0.0 else 0
+        nx = m + 2 * n_over
+        if ny is None:
+            ny = max(2, 2 * math.ceil(width_f / (2.0 * dx_max) - 1e-9))
+
+        mesh = cls(porosity_field, material, nx=nx, ny=ny, nz=nz_f,
+                   ply_angles=ply_angles)
+        mesh.L_x = nx * dx
+        mesh.L_y = width_f
+        mesh.generate_mesh()
+        x = np.linspace(0.0, mesh.L_x, nx + 1)
+        mesh.flexure_geometry = FlexureGeometry(
+            support_x=(float(x[n_over]), float(x[n_over + m])),
+            load_span=Ls, load_width=load_width)
+        return mesh
 
     def generate_mesh(self):
         x = np.linspace(0, self.L_x, self.nx + 1)
@@ -585,7 +868,7 @@ def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:
     min_detJ_per_elem = detJ.min(axis=1)
 
     n_inverted = int(np.sum(min_detJ_per_elem <= 0))
-    n_distorted = int(np.sum(aspect_ratios > 20.0))
+    n_distorted = int(np.sum(aspect_ratios > _MAX_ASPECT_RATIO))
 
     result = {
         'min_aspect_ratio': float(np.min(aspect_ratios)),

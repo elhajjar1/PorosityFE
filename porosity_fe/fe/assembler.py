@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import warnings
+from collections.abc import Sequence
 from dataclasses import astuple, dataclass
+from typing import Literal
 
 import numpy as np
 import scipy.sparse
 
 from .._types import FEFormulation
 from ..materials import MaterialProperties
-from ..mesh import CompositeMesh
+from ..mesh import CompositeMesh, FlexureGeometry
 from ..porosity_field import PorosityField
 from .batch import ElementBatch, build_element_batch, element_dofs
 from .element import _DEFAULT_FORMULATION, Hex8Element, _check_formulation
@@ -193,6 +196,42 @@ class GlobalAssembler:
 # ============================================================
 # SECTION 7f: BOUNDARY HANDLER
 # ============================================================
+
+def _hat_weights(grid: np.ndarray, x0: float, width: float,
+                 tol: float) -> np.ndarray:
+    """Consistent nodal shares of a unit load on a 1D grid of linear elements.
+
+    ``width = 0``: the linear shape functions at ``x0`` (a point within
+    ``tol`` of a node goes wholly to that node). ``width > 0``: the shape
+    functions averaged over ``[x0 - width/2, x0 + width/2]``, a uniform
+    pressure. The weights sum to 1.
+    """
+    n = grid.size
+    if n == 0:
+        raise ValueError("The loaded face has no nodes.")
+    lo, hi = float(grid[0]), float(grid[-1])
+    a, b = x0 - 0.5 * width, x0 + 0.5 * width
+    if a < lo - tol or b > hi + tol:
+        raise ValueError(
+            f"Load at x = {x0:g} mm (width {width:g} mm) lies outside the "
+            f"loaded face, x in [{lo:g}, {hi:g}] mm.")
+    w = np.zeros(n)
+    if width == 0.0:
+        near = int(np.argmin(np.abs(grid - x0)))
+        if abs(float(grid[near]) - x0) <= tol or n == 1:
+            w[near] = 1.0
+            return w
+        i = int(np.searchsorted(grid, x0))
+        t = (x0 - grid[i - 1]) / (grid[i] - grid[i - 1])
+        w[i - 1], w[i] = 1.0 - t, t
+        return w
+    left, right = grid[:-1], grid[1:]
+    p, q = np.clip(a, left, right), np.clip(b, left, right)
+    h = right - left
+    w[:-1] += ((right - p) ** 2 - (right - q) ** 2) / (2.0 * h)
+    w[1:] += ((q - left) ** 2 - (p - left) ** 2) / (2.0 * h)
+    return w / w.sum()
+
 
 @dataclass(frozen=True)
 class _DirichletPartition:
@@ -444,9 +483,10 @@ class BoundaryHandler:
         Notes
         -----
         This implementation assumes the **three-point bend** geometry of
-        ASTM D2344. The standard four-point bend variant (ASTM D7264)
-        requires a different BC method — either a new ``ilss_4pt_bcs``
-        with two upper load rollers, or the empirical-only path. The
+        ASTM D2344, on the mesh's own coupon (span ``L_x``, no overhang).
+        Three- and four-point flexure (ASTM D790 / D7264) on roller
+        supports with consistent line loads is :meth:`flexure_bcs`
+        (loading modes ``'flexure_3pt'`` and ``'flexure_4pt'``). The
         Tsai-Wu / strength-recovery code already handles the multi-axial
         stress state recovered from this solve.
         """
@@ -489,6 +529,238 @@ class BoundaryHandler:
                 f"(x = {Lx / 2.0}, z = {Lz}). Refine the mesh."
             )
         F[3 * midspan_top + 2] = applied_load / float(midspan_top.size)
+        return constrained, F
+
+    def _line_tolerance(self) -> float:
+        """Distance (mm) within which a node lies on a requested ``x`` line."""
+        x = self.mesh.nodes[:, 0]
+        return 1e-9 * max(float(x.max() - x.min()), 1.0)
+
+    def face_line_nodes(self, face: Literal['z_min', 'z_max'], x: float
+                        ) -> np.ndarray:
+        """Nodes of the bottom or top face on the line ``x = x0``.
+
+        Parameters
+        ----------
+        face : {'z_min', 'z_max'}
+            Bottom or top face.
+        x : float
+            ``x`` of the line (mm). Matched to within ``1e-9`` of the
+            specimen length.
+
+        Returns
+        -------
+        np.ndarray
+            Node indices sorted by ``y``; empty when no node line lies at
+            ``x``.
+        """
+        if face not in ('z_min', 'z_max'):
+            raise ValueError(f"face must be 'z_min' or 'z_max', got {face!r}.")
+        nodes = self.mesh.nodes_on_face(face)
+        on_line = nodes[np.abs(self.mesh.nodes[nodes, 0] - float(x))
+                        <= self._line_tolerance()]
+        return on_line[np.argsort(self.mesh.nodes[on_line, 1], kind='stable')]
+
+    def roller_supports(self, support_x: Sequence[float]) -> dict[int, float]:
+        """Simply supported line supports (rollers) on the bottom face.
+
+        Each support is the node line ``x = x_s`` of the bottom face
+        (``z_min``) across the full width, and holds ``u_z = 0`` at every
+        node of the line. The supports must lie on node lines. The rollers
+        leave the in-plane rigid-body motions free (translation along ``x``
+        and ``y``, rotation about ``z``); three more constraints at the
+        mid-width node of the outer lines remove them: ``u_x = 0`` on the
+        first line, ``u_y = 0`` on the first and the last. These three are
+        statically determinate in the ``x``-``y`` plane, so under loads
+        normal to the faces they carry no force: the supports exert no
+        horizontal reaction, and the beam is free to shorten, stretch and
+        contract across its width. Pinning ``u_x`` along both supports, as
+        :meth:`ilss_bcs` does, instead ties the support lines together, and
+        the beam carries part of the load as an arch.
+
+        Parameters
+        ----------
+        support_x : sequence of float
+            ``x`` of the support lines (mm), at least two distinct values.
+
+        Returns
+        -------
+        dict
+            ``{global_dof: 0.0}`` for every constrained DOF.
+
+        Raises
+        ------
+        ValueError
+            If fewer than two distinct supports are given or a support is
+            not on a bottom-face node line.
+        """
+        xs = sorted({float(x) for x in support_x})
+        if len(xs) < 2:
+            raise ValueError(
+                "roller_supports needs at least two distinct support lines; "
+                f"got {list(support_x)!r}.")
+        lines = []
+        for x in xs:
+            line = self.face_line_nodes('z_min', x)
+            if line.size == 0:
+                raise ValueError(
+                    f"No bottom-face node line at x = {x:g} mm for a roller "
+                    "support. Supports must lie on node lines: use "
+                    "CompositeMesh.for_flexure, or choose L_x and nx so that "
+                    "the support falls on a node.")
+            lines.append(line)
+
+        nodes = self.mesh.nodes
+        constrained: dict[int, float] = {}
+        for line in lines:
+            for nid in line:
+                constrained[3 * int(nid) + 2] = 0.0
+
+        def mid_width(line: np.ndarray) -> int:
+            y = nodes[line, 1]
+            return int(line[np.argmin(np.abs(y - 0.5 * (y.min() + y.max())))])
+
+        first, last = mid_width(lines[0]), mid_width(lines[-1])
+        constrained[3 * first] = 0.0
+        constrained[3 * first + 1] = 0.0
+        constrained[3 * last + 1] = 0.0
+        return constrained
+
+    def line_load(self, x: float, total_load: float, *,
+                  width: float = 0.0) -> np.ndarray:
+        """Consistent nodal forces of a load across the width of the top face.
+
+        Spreads ``total_load`` (N, along ``z``; negative is downward)
+        uniformly along ``y`` over the full width of the top face
+        (``z_max``), on the line ``x = x0`` (``width = 0``) or as a uniform
+        pressure over the band ``|x - x0| <= width / 2``. The nodal forces
+        are the work-equivalent (consistent) loads of the bilinear face shape
+        functions:
+
+        - along ``y``, trapezoidal weights: interior nodes take
+          ``dy / b`` of the load, the two edge nodes half that;
+        - along ``x``, each node line takes its linear shape function
+          evaluated at ``x0`` (``width = 0``) or averaged over the band, so a
+          line load on a node line loads only that line, and one between
+          two node lines is shared in proportion to the distance.
+
+        Equal shares, as :meth:`ilss_bcs` uses, put the same force on the
+        two edge nodes as on the interior ones (with five nodes across,
+        1/5 each instead of 1/8), which concentrates load at the free
+        edges.
+
+        Parameters
+        ----------
+        x : float
+            Centre of the line or band (mm), within the top face.
+        total_load : float
+            Total force along ``z`` (N).
+        width : float
+            Band width along ``x`` (mm), default ``0.0`` (a line load).
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(n_dof,)`` force vector, with ``z`` components only,
+            summing to ``total_load``.
+
+        Raises
+        ------
+        ValueError
+            If ``total_load`` or ``width`` is not finite, ``width`` is
+            negative, or the line or band leaves the top face.
+        """
+        total = float(total_load)
+        w = float(width)
+        if not math.isfinite(total):
+            raise ValueError(f"total_load must be finite, got {total_load!r}.")
+        if not math.isfinite(w) or w < 0.0:
+            raise ValueError(f"width must be a finite length >= 0, got {width!r}.")
+        top = self.mesh.nodes_on_face('z_max')
+        grid = np.unique(self.mesh.nodes[top, 0])
+        weights = _hat_weights(grid, float(x), w, self._line_tolerance())
+
+        F = np.zeros(self.mesh.n_dof, dtype=np.float64)
+        for xi, wx in zip(grid, weights, strict=True):
+            if wx == 0.0:
+                continue
+            line = self.face_line_nodes('z_max', float(xi))
+            y = self.mesh.nodes[line, 1]
+            wy = np.zeros(line.size)
+            if line.size == 1:
+                wy[0] = 1.0
+            else:
+                seg = np.diff(y)
+                wy[:-1] += 0.5 * seg
+                wy[1:] += 0.5 * seg
+                wy /= wy.sum()
+            F[3 * line + 2] += total * wx * wy
+        return F
+
+    def flexure_geometry(self) -> FlexureGeometry:
+        """Flexure test geometry of the mesh.
+
+        :attr:`CompositeMesh.flexure_geometry` when set (by
+        :meth:`CompositeMesh.for_flexure`); otherwise supports at the two
+        bottom end edges (span ``L_x``, no overhang) and a four-point load
+        span of half the span.
+        """
+        geometry = getattr(self.mesh, 'flexure_geometry', None)
+        if geometry is not None:
+            return geometry
+        x = self.mesh.nodes[:, 0]
+        x0, x1 = float(x.min()), float(x.max())
+        return FlexureGeometry(support_x=(x0, x1), load_span=0.5 * (x1 - x0))
+
+    def flexure_bcs(self, applied_load: float = -10.0, *,
+                    procedure: Literal['3pt', '4pt'] = '3pt',
+                    geometry: FlexureGeometry | None = None,
+                    ) -> tuple[dict[int, float], np.ndarray]:
+        """Three- or four-point bending on roller supports.
+
+        - Supports: :meth:`roller_supports` at ``geometry.support_x``
+          (span ``L``), so the supports exert no horizontal reaction.
+        - Loads: ``'3pt'`` (ASTM D790, D7264 procedure A) puts
+          ``applied_load`` at mid-span; ``'4pt'`` (D7264 procedure B) puts
+          half of it on each of two lines ``geometry.load_span`` apart,
+          centred on mid-span (the quarter points for the D7264 load span
+          ``L / 2``). Each load is a consistent line load (or band, with
+          ``geometry.load_width``) across the top face, see
+          :meth:`line_load`.
+
+        Force controlled, like :meth:`ilss_bcs`: the supports are
+        prescribed to zero and the load is in ``F``.
+
+        Parameters
+        ----------
+        applied_load : float
+            Total load along ``z`` (N, negative = downward), default
+            ``-10.0``.
+        procedure : {'3pt', '4pt'}
+            Three-point (default) or four-point bending.
+        geometry : FlexureGeometry, optional
+            Supports and load lines; defaults to :meth:`flexure_geometry`.
+
+        Returns
+        -------
+        constrained_dofs : dict
+            ``{global_dof: 0.0}`` from :meth:`roller_supports`.
+        F : np.ndarray
+            Shape ``(n_dof,)`` force vector on the top face.
+
+        Raises
+        ------
+        ValueError
+            If ``procedure`` is unknown, a support is not on a node line,
+            or a load line or band leaves the top face.
+        """
+        geom = self.flexure_geometry() if geometry is None else geometry
+        load_x = geom.load_x(procedure)
+        constrained = self.roller_supports(geom.support_x)
+        F = np.zeros(self.mesh.n_dof, dtype=np.float64)
+        for x in load_x:
+            F += self.line_load(x, applied_load / len(load_x),
+                                width=geom.load_width)
         return constrained, F
 
     def free_bcs(self) -> tuple[dict[int, float], np.ndarray]:

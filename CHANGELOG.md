@@ -5,6 +5,44 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Three- and four-point flexure on roller supports (IMPROVEMENT_PLAN
+  3.6, C1).** Library only; the app, CLI and pipeline do not expose it
+  yet, and the `'ilss'` mode is unchanged. Existing loading modes are
+  bit-identical (checked on the production mesh, both element
+  formulations, all five modes).
+  - `FESolver.solve(loading='flexure_3pt' | 'flexure_4pt',
+    applied_load=...)` (new `FELoadingMode` members): ASTM D790 / D7264
+    procedure A (mid-span load) and D7264 procedure B (two loads, the load
+    span half the support span by default). Force controlled, like ILSS;
+    `knockdown` is the porous over pristine beam stiffness `P^2 / u^T K u`,
+    with the pristine reference also keyed on the support and load lines.
+  - `effective_modulus` is the flexural modulus `E_f` from the mid-span
+    deflection with the transverse shear deflection removed (Timoshenko:
+    `delta / P = a (3 L^2 - 4 a^2) / (48 E_f I) + a / (2 b K_s)`, with the
+    laminate shear stiffness `K_s` from the lamination-theory shear-stress
+    energy, `(5/6) G13 h` for a UD beam). On the D7264 meshes of the
+    24-ply T800 preset it matches the CLT `E_f`
+    (`compute_degraded_clt_flexural_modulus`) within 0.15 % for UD and
+    cross-ply laminates, at `Vp = 0` and `0.05`; QI reads 1.1-1.3 % low,
+    the free-edge effect of the +-45 plies at the 13 mm width (0.4 % at
+    twice that width). The UD deflection matches Timoshenko beam theory
+    within 0.2 % at 32:1 and 0.7 % at 16:1. `'hex8'` reads 2-5 % stiffer
+    on the default mesh and 13-29 % at an element length of 2 h.
+  - `CompositeMesh.for_flexure(...)` builds the specimen: span 32
+    thicknesses (`span_to_thickness`, or `span`), 13 mm wide, 10 %
+    overhang, one element layer per ply, element length up to
+    `min(h, 20 h / nz)`, and `nx` chosen so the supports, mid-span and
+    four-point load lines are node lines (48 x 4 x 24 elements for the
+    24-ply T800 preset). It records them as `mesh.flexure_geometry`, a
+    `FlexureGeometry` (new, public): support positions, load span and an
+    optional `load_width` that spreads each load over a band.
+  - `BoundaryHandler.roller_supports` (`u_z = 0` on bottom-face support
+    lines plus three statically determinate in-plane constraints, so the
+    horizontal reaction is zero to round-off), `BoundaryHandler.line_load`
+    (consistent nodal forces: trapezoidal across the width, linear shape
+    functions along `x`, optional uniform-pressure band),
+    `BoundaryHandler.flexure_bcs`, `BoundaryHandler.flexure_geometry` and
+    `BoundaryHandler.face_line_nodes` (new).
 - **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
   E1).** Results and existing exports do not change.
   - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and

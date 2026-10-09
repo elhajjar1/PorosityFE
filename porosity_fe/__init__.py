@@ -113,6 +113,7 @@ from .io import save_results_to_json as save_results_to_json  # noqa: F401, E402
 from .materials import MATERIALS as MATERIALS  # noqa: F401, E402
 from .materials import MaterialProperties as MaterialProperties  # noqa: F401, E402
 from .mesh import CompositeMesh as CompositeMesh  # noqa: F401, E402
+from .mesh import FlexureGeometry as FlexureGeometry  # noqa: F401, E402
 from .mesh import check_mesh_quality as check_mesh_quality  # noqa: F401, E402
 from .pipeline import _analyze_one as _analyze_one  # noqa: F401, E402
 from .pipeline import _build_config_artifacts as _build_config_artifacts  # noqa: F401, E402
@@ -164,6 +165,7 @@ __all__ = [
     "PorosityField",
     # Mesh
     "CompositeMesh",
+    "FlexureGeometry",
     "check_mesh_quality",
     # Result dataclasses
     "ConfigArtifacts",
