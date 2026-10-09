@@ -647,9 +647,12 @@ def plot_results(result: dict, layup_str: str):
         note += (f"\nLayup amplification ({factors}): layup more "
                  "matrix-dominated than the QI calibration; not validated")
     # Footnote intentionally smaller than rcParams.font.size (annotation, not
-    # primary data); explicit override kept here on purpose.
-    ax.text(0.01, 0.01, note, transform=ax.transAxes,
-            fontsize=7, color="0.4", va="bottom")
+    # primary data); explicit override kept here on purpose. It sits below
+    # the tick labels (not inside the axes, where it ran under the legend);
+    # tight_layout makes room for it.
+    ax.annotate(note, xy=(0.0, 0.0), xycoords="axes fraction",
+                xytext=(0, -24), textcoords="offset points",
+                fontsize=7, color="0.4", ha="left", va="top")
 
     fig.tight_layout()
     return fig
