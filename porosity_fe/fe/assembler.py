@@ -456,9 +456,6 @@ class _ConstraintReduction:
         return u
 
 
-#: Historical name, still used by :class:`~porosity_fe.fe.solver.FESolver`.
-_DirichletPartition = _ConstraintReduction
-
 
 class BoundaryHandler:
     """Handles boundary conditions for the porosity FE model.

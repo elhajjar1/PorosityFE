@@ -114,7 +114,7 @@ All notable changes to PorosityFE will be documented in this file.
   API (`porosity_fe.fe._rve`, no `__all__` change); no result changes.
   - The constraint reduction of the FE solver
     (`porosity_fe.fe.assembler._ConstraintReduction`, formerly
-    `_DirichletPartition`, which stays as an alias) is now the affine map
+    `_DirichletPartition`) is now the affine map
     `u = T u_r + g`: besides prescribed values it takes master-slave ties
     `u_s = u_m + c`, chained or ending on a prescribed degree of freedom,
     and reduces to `T^T K T u_r = T^T (F - K g)`. Without ties it slices

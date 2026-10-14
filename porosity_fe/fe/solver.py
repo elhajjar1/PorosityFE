@@ -24,7 +24,7 @@ from ..porosity_field import PorosityField
 from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
-from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
+from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
 from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
@@ -1221,7 +1221,7 @@ class FESolver:
         """Impose the Dirichlet BCs exactly and solve ``K u = F``.
 
         Partitions the DOFs into free (``f``) and constrained (``c``) sets
-        (``_DirichletPartition`` in :mod:`porosity_fe.fe.assembler`), solves
+        (``_ConstraintReduction`` in :mod:`porosity_fe.fe.assembler`), solves
         ``K_ff u_f = F_f - K_fc u_c`` with the requested linear solver and
         returns the full vector with ``u_c`` equal to the prescribed values
         bit for bit.
@@ -1264,7 +1264,7 @@ class FESolver:
                 f"Unknown solver '{solver}'. "
                 "Use 'direct', 'cg', or 'minres'."
             )
-        part = _DirichletPartition.from_constraints(K.shape[0], constrained)
+        part = _ConstraintReduction.from_constraints(K.shape[0], constrained)
         if part.free.size == 0:
             return part.lift(), 0.0
 
@@ -1308,7 +1308,7 @@ class FESolver:
         return part.expand(u_f), rel_res
 
     def _free_dof_system(
-        self, K: scipy.sparse.spmatrix, part: _DirichletPartition,
+        self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
         *, factorize: bool,
     ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
         """``K_ff`` and (when ``factorize``) its sparse LU, cached.

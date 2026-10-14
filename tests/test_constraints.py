@@ -15,7 +15,7 @@ import pytest
 import scipy.sparse.linalg
 
 from porosity_fe import MATERIALS, CompositeMesh, FESolver, PorosityField
-from porosity_fe.fe.assembler import BoundaryHandler, _ConstraintReduction, _DirichletPartition
+from porosity_fe.fe.assembler import BoundaryHandler, _ConstraintReduction
 
 
 def _spd(n, seed=0):
@@ -55,9 +55,6 @@ class TestConstraintReduction:
     def _reduction(self, ties=TIES, constrained=None):
         constrained = self.CONSTRAINED if constrained is None else constrained
         return _ConstraintReduction.from_constraints(self.N, constrained, ties=ties)
-
-    def test_historical_name_is_the_same_class(self):
-        assert _DirichletPartition is _ConstraintReduction
 
     def test_without_ties_it_is_the_dirichlet_partition(self):
         for ties in (None, (np.array([], int), np.array([], int), np.array([]))):

@@ -2165,10 +2165,10 @@ class TestStiffnessAndFactorizationReuse:
 
     @staticmethod
     def _key(solver, loading):
-        from porosity_fe.fe.assembler import _DirichletPartition
+        from porosity_fe.fe.assembler import _ConstraintReduction
         strain = -0.01 if loading == 'compression' else 0.01
         constrained, _ = solver._apply_boundary_conditions(loading, strain, -10.0)
-        return _DirichletPartition.from_constraints(
+        return _ConstraintReduction.from_constraints(
             solver.mesh.n_dof, constrained).key
 
     def test_iterative_solves_reuse_the_free_block_without_factorizing(self, counters):
