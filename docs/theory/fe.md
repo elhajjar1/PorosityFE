@@ -188,9 +188,11 @@ master-slave ties $u_s = u_m + c$, chained or ending on a prescribed degree of
 freedom. None of the loading modes uses ties; the periodic unit cell that
 checks the Mori-Tanaka void model does ({doc}`micromechanics`).
 
-The default solve is a sparse LU factorization of $\mathbf K_{ff}$, cached
-and reused until the mesh, material, porosity or set of constrained degrees
-of freedom change. Jacobi-preconditioned conjugate gradients
+The default solve is a sparse LU factorization of $\mathbf K_{ff}$. A
+solver keeps the factorizations of the last two sets of constrained degrees
+of freedom (about 320 MB each on the production mesh), so load cases that
+share supports, or two that alternate, factorize once; all are rebuilt when
+the mesh, material or porosity change. Jacobi-preconditioned conjugate gradients
 (`solver='cg'`) agree with it to about $10^{-8}$ at the default
 `rtol = 1e-9` and need no fill-in, which pays off above roughly 40,000
 degrees of freedom. MINRES (`solver='minres'`) is deprecated and will be

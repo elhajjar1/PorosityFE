@@ -787,6 +787,19 @@ All notable changes to PorosityFE will be documented in this file.
   - The `cond_diag_ratio` INFO line and the "conditioning near float64
     limit" warning are replaced by one INFO line on the free-DOF diagonal
     ratio.
+- **`FESolver` keeps two sparse LU factorizations instead of one.** The
+  free-DOF systems (`K_ff` and its LU) of the last two constrained-DOF sets
+  are cached, least recently used evicted first, so alternating load cases
+  with different supports on one solver (shear and ILSS, compression and
+  ILSS) factorize each once instead of on every switch: on the production
+  mesh each alternating shear / ILSS solve takes 0.7-1.0 s instead of
+  4.7-5.4 s. A third set evicts the least recently used before its own
+  factorization is built, so at most two are alive at once, and a new
+  stiffness matrix (mesh, material, porosity or formulation changed) clears
+  the cache as before. Memory: one factorization is about 320 MB on the
+  production mesh (30 x 10 x 24; 120 MB on 30 x 10 x 12), so a solver that
+  alternates two sets now holds about 650 MB while it lives. Results are
+  unchanged.
 - **`solver='minres'` is deprecated.** `FESolver.solve(solver='minres')`
   and `refinement_study(solver='minres')` (once per study, not per level)
   emit a `DeprecationWarning` that points to `solver='cg'`; MINRES still

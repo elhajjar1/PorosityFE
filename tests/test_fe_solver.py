@@ -2158,20 +2158,96 @@ class TestStiffnessAndFactorizationReuse:
         assert counters == {'batch': 1, 'splu': 1}
         np.testing.assert_array_equal(r.displacement, ref.displacement)
 
+    @staticmethod
+    def _entries(solver):
+        """``(K_ff, has_lu)`` of the cached systems, least recently used first."""
+        return [(K_ff, lu is not None) for _, K_ff, lu in solver._lu_cache.values()]
+
+    @staticmethod
+    def _key(solver, loading):
+        from porosity_fe.fe.assembler import _DirichletPartition
+        strain = -0.01 if loading == 'compression' else 0.01
+        constrained, _ = solver._apply_boundary_conditions(loading, strain, -10.0)
+        return _DirichletPartition.from_constraints(
+            solver.mesh.n_dof, constrained).key
+
     def test_iterative_solves_reuse_the_free_block_without_factorizing(self, counters):
         mat, pf, mesh = self._problem()
         solver = FESolver(mesh, mat, pf)
         solver.solve('tension', applied_strain=0.01, solver='cg')
         assert counters['splu'] == 0
-        K_ff = solver._lu_cache[2]
+        [(K_ff, has_lu)] = self._entries(solver)
+        assert not has_lu
         with _minres_warns('minres'):
             solver.solve('compression', applied_strain=-0.01, solver='minres')
-        assert solver._lu_cache[2] is K_ff
+        assert self._entries(solver) == [(K_ff, False)]
         solver.solve('compression', applied_strain=-0.01)
         solver.solve('tension', applied_strain=0.01)
         solver.solve('tension', applied_strain=0.01, solver='cg')
-        assert solver._lu_cache[2] is K_ff
+        assert self._entries(solver) == [(K_ff, True)]
         assert counters == {'batch': 1, 'splu': 1}
+
+    def test_alternating_two_constraint_sets_factorizes_each_once(self, counters):
+        """Shear and ILSS have different supports; the two-entry cache keeps
+        both factorizations (a one-entry cache refactorized on every switch)."""
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        first = {loading: solver.solve(loading) for loading in ('shear', 'ilss')}
+        for _ in range(2):
+            for loading in ('shear', 'ilss'):
+                self._assert_same(solver.solve(loading), first[loading])
+        assert counters == {'batch': 1, 'splu': 2}
+        assert list(solver._lu_cache) == [self._key(solver, 'shear'),
+                                          self._key(solver, 'ilss')]
+        self._assert_same(first['ilss'], FESolver(mesh, mat, pf).solve('ilss'))
+
+    def test_third_constraint_set_evicts_the_least_recently_used(self, counters,
+                                                                 monkeypatch):
+        """LRU, not first-in-first-out: a hit refreshes an entry. The
+        evicted factorization is dropped before the new one is built, so at
+        most ``_LU_CACHE_SIZE`` are alive at once."""
+        import scipy.sparse.linalg as sla
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        alive_at_build = []
+        counting_splu = sla.splu
+
+        def splu(*a, **k):
+            alive_at_build.append(sum(lu is not None
+                                      for _, _, lu in solver._lu_cache.values()))
+            return counting_splu(*a, **k)
+
+        monkeypatch.setattr(sla, 'splu', splu)
+        A, B, C = 'tension', 'shear', 'ilss'
+        key = {name: self._key(solver, name) for name in (A, B, C)}
+        for loading, n_lu, cached in [
+                (A, 1, [A]), (B, 2, [A, B]),
+                (A, 2, [B, A]),          # hit: A becomes most recent
+                (C, 3, [A, C]),          # evicts B, the least recently used
+                (A, 3, [C, A]),          # still cached
+                (B, 4, [A, B])]:         # evicted, so refactorized
+            solver.solve(loading)
+            assert counters['splu'] == n_lu, loading
+            assert list(solver._lu_cache) == [key[c] for c in cached]
+        assert max(alive_at_build) == FESolver._LU_CACHE_SIZE - 1
+        assert counters['batch'] == 1
+
+    def test_new_stiffness_clears_every_cached_system(self, counters):
+        """An in-place porosity edit reassembles K; both cached systems
+        belonged to the old K and are dropped, so each set refactorizes."""
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('shear')
+        solver.solve('ilss')
+        K_old = solver.assembler.stiffness()
+        mesh.porosity *= 2.0   # in place, same array object
+        after = solver.solve('shear')
+        assert counters == {'batch': 2, 'splu': 3}
+        assert list(solver._lu_cache) == [self._key(solver, 'shear')]
+        assert all(K is not K_old for K, _, _ in solver._lu_cache.values())
+        solver.solve('ilss')
+        assert counters == {'batch': 2, 'splu': 4}
+        self._assert_same(after, FESolver(mesh, mat, pf).solve('shear'))
 
     def test_in_place_porosity_edit_triggers_reassembly(self, counters):
         mat, pf, mesh = self._problem()
