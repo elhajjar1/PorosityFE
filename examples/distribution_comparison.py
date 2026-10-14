@@ -114,7 +114,8 @@ def _fe_table(material):
 
     The FE knockdown comes from the field solve, so it picks up the local
     peak Vp — unlike the empirical path which collapses everything to the
-    specimen-mean.
+    specimen-mean. Compression runs on the coupon mesh, ILSS on the ASTM
+    D2344 short-beam specimen (``CompositeMesh.for_ilss``).
     """
     rows = []
     fields = {}  # label -> (mesh, FieldResults_for_compression)
@@ -128,7 +129,11 @@ def _fe_table(material):
                 if label not in fields:
                     fields[label] = (mesh, res)
             elif mode == "ilss":
-                res = solver.solve(loading="ilss", applied_load=-10.0)
+                # ASTM D2344 short-beam specimen (span 4h, 6h x 2h), not
+                # the coupon: 'ilss' needs its own mesh.
+                spec = CompositeMesh.for_ilss(pf, material)
+                res = FESolver(spec, material, pf, ply_angles="QI").solve(
+                    loading="ilss", applied_load=-10.0)
             rows.append({
                 "distribution": label,
                 "mode": mode,

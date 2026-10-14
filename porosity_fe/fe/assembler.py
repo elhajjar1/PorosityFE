@@ -19,6 +19,7 @@ from ..mesh import CompositeMesh, FlexureGeometry
 from ..porosity_field import PorosityField
 from .batch import ElementBatch, build_element_batch, element_dofs
 from .element import _DEFAULT_FORMULATION, Hex8Element, _check_formulation
+from .short_beam import require_ilss_geometry
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -594,91 +595,77 @@ class BoundaryHandler:
         F = np.zeros(n_dof, dtype=np.float64)
         return constrained, F
 
-    def ilss_bcs(self, applied_load: float = -10.0
+    def ilss_geometry(self) -> FlexureGeometry:
+        """Supports and loading-nose band of the short-beam (ILSS) test.
+
+        :attr:`CompositeMesh.ilss_geometry`, set by
+        :meth:`CompositeMesh.for_ilss`.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has no ILSS geometry; the message says how to
+            build the specimen (see
+            :func:`porosity_fe.fe.short_beam.require_ilss_geometry`).
+        """
+        return require_ilss_geometry(self.mesh)
+
+    def ilss_bcs(self, applied_load: float = -10.0, *,
+                 geometry: FlexureGeometry | None = None,
                  ) -> tuple[dict[int, float], np.ndarray]:
-        """ILSS (interlaminar short-beam shear) boundary conditions, ASTM D2344.
+        """ASTM D2344 short-beam-shear (ILSS) boundary conditions.
 
-        Three-point short-beam-shear setup:
+        Three-point bending of the short-beam specimen: :meth:`flexure_bcs`
+        with ``procedure='3pt'`` at the specimen's supports and loading
+        band, i.e.
 
-        - Two simple supports at the bottom face (``z_min``), one along the
-          ``x_min`` edge and one along the ``x_max`` edge. All three
-          translational DOFs are pinned at the support nodes so the beam
-          is fully simply-supported in the FE sense.
-        - A downward (``-z``) midspan load applied as a nodal force on
-          the top face (``z_max``) at ``x = L_x / 2``. The total load is
-          ``applied_load`` (typically negative for "downward"); it is
-          distributed equally across the midspan-top nodes.
+        - roller supports (:meth:`roller_supports`) on the bottom-face node
+          lines ``geometry.support_x``, which exert no horizontal reaction;
+        - ``applied_load`` (N, along ``z``, negative = downward) at
+          mid-span as a uniform pressure over the band
+          ``geometry.load_width`` across the top face, with consistent
+          nodal forces (:meth:`line_load`).
 
-        Unlike the compression/tension/shear BCs which are *displacement*
-        controlled, ILSS is **force controlled**: the returned ``F``
-        vector carries the load, and the support DOFs are prescribed to
-        zero and eliminated like any other constraint (see
-        :meth:`apply_elimination`).
+        Force controlled: the supports are prescribed to zero and the load
+        is in ``F``.
 
         Parameters
         ----------
         applied_load : float
-            Total midspan load in the ``z`` direction (negative = downward).
+            Total load along ``z`` (N), default ``-10.0``.
+        geometry : FlexureGeometry, optional
+            Keyword-only supports and band; default :meth:`ilss_geometry`
+            (the specimen from :meth:`CompositeMesh.for_ilss`).
 
         Returns
         -------
         constrained_dofs : dict
-            ``{global_dof: prescribed_value}`` — all-zero values at the
-            two support edges (left/right of the bottom face).
+            ``{global_dof: 0.0}`` from :meth:`roller_supports`.
         F : np.ndarray
-            Shape ``(n_dof,)`` force vector with the midspan load applied
-            to the top-face nodes near ``x = Lx/2``.
+            Shape ``(n_dof,)`` force vector on the top face.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has no ILSS geometry and none is given, or a
+            support is not on a node line.
 
         Notes
         -----
-        This implementation assumes the **three-point bend** geometry of
-        ASTM D2344, on the mesh's own coupon (span ``L_x``, no overhang).
-        Three- and four-point flexure (ASTM D790 / D7264) on roller
-        supports with consistent line loads is :meth:`flexure_bcs`
-        (loading modes ``'flexure_3pt'`` and ``'flexure_4pt'``). The
-        Tsai-Wu / strength-recovery code already handles the multi-axial
-        stress state recovered from this solve.
+        Changed in the ASTM D2344 rework (IMPROVEMENT_PLAN 3.6, C2). Before,
+        this pinned ``u_x``, ``u_y`` and ``u_z`` along both bottom end edges
+        of whatever coupon the mesh was (span ``L_x``, 11.4 thicknesses on
+        the 50 mm coupon) and split the load equally over the mid-span top
+        nodes. The pinned edges made a tied arch (horizontal reaction about
+        4 P, deflection about half the simply supported one), and the long
+        span made the test mostly flexure. The closest thing to the old
+        model is :meth:`flexure_bcs` (``loading='flexure_3pt'``) on a mesh
+        from ``CompositeMesh.for_flexure(field, material, span=50.0,
+        width=20.0, overhang=0.0)``, the old coupon on rollers instead of
+        pinned edges.
         """
-        n_dof = self.mesh.n_dof
-        Lx = self.mesh.L_x
-        Lz = self.mesh.L_z
-
-        zmin = self.mesh.nodes_on_face('z_min')
-        xmin = self.mesh.nodes_on_face('x_min')
-        xmax = self.mesh.nodes_on_face('x_max')
-
-        support_left = np.intersect1d(zmin, xmin)
-        support_right = np.intersect1d(zmin, xmax)
-
-        if support_left.size == 0 or support_right.size == 0:
-            raise RuntimeError(
-                "ilss_bcs: failed to locate bottom-face support edges "
-                "(intersection of z_min with x_min / x_max is empty). "
-                "Check mesh generation."
-            )
-
-        constrained: dict[int, float] = {}
-        for nid in np.concatenate([support_left, support_right]):
-            nid = int(nid)
-            constrained[3 * nid]     = 0.0  # ux
-            constrained[3 * nid + 1] = 0.0  # uy
-            constrained[3 * nid + 2] = 0.0  # uz
-
-        F = np.zeros(n_dof, dtype=np.float64)
-        # Tolerance must be wide enough to bracket *some* x-column when the
-        # exact midspan does not fall on a mesh node. Use half the x-edge
-        # plus a small fp epsilon so odd nx values still resolve a column.
-        dx = Lx / max(self.mesh.nx, 1)
-        dz = Lz / max(self.mesh.nz, 1)
-        tol = 0.5 * np.hypot(dx, dz) + 1e-9
-        midspan_top = self.mesh.find_nodes_near(x=Lx / 2.0, z=Lz, tol=tol)
-        if midspan_top.size == 0:
-            raise RuntimeError(
-                "ilss_bcs: no top-face nodes found near midspan "
-                f"(x = {Lx / 2.0}, z = {Lz}). Refine the mesh."
-            )
-        F[3 * midspan_top + 2] = applied_load / float(midspan_top.size)
-        return constrained, F
+        geom = self.ilss_geometry() if geometry is None else geometry
+        return self.flexure_bcs(applied_load, procedure='3pt', geometry=geom)
 
     def _line_tolerance(self) -> float:
         """Distance (mm) within which a node lies on a requested ``x`` line."""
@@ -723,9 +710,10 @@ class BoundaryHandler:
         statically determinate in the ``x``-``y`` plane, so under loads
         normal to the faces they carry no force: the supports exert no
         horizontal reaction, and the beam is free to shorten, stretch and
-        contract across its width. Pinning ``u_x`` along both supports, as
-        :meth:`ilss_bcs` does, instead ties the support lines together, and
-        the beam carries part of the load as an arch.
+        contract across its width. Pinning ``u_x`` along both supports (what
+        :meth:`ilss_bcs` did before the ASTM D2344 rework) instead ties the
+        support lines together, and the beam carries part of the load as an
+        arch.
 
         Parameters
         ----------
@@ -793,10 +781,10 @@ class BoundaryHandler:
           line load on a node line loads only that line, and one between
           two node lines is shared in proportion to the distance.
 
-        Equal shares, as :meth:`ilss_bcs` uses, put the same force on the
-        two edge nodes as on the interior ones (with five nodes across,
-        1/5 each instead of 1/8), which concentrates load at the free
-        edges.
+        Equal shares (what :meth:`ilss_bcs` used before the ASTM D2344
+        rework) put the same force on the two edge nodes as on the interior
+        ones (with five nodes across, 1/5 each instead of 1/8), which
+        concentrates load at the free edges.
 
         Parameters
         ----------

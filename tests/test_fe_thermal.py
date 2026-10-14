@@ -56,11 +56,17 @@ def _material(layup, t_ply=0.125, **overrides):
 
 
 def _solver(layup, nx, ny, *, formulation, vp=0.0, nz_per_ply=1,
-            material=None, **pf_kwargs):
+            material=None, ilss=False, **pf_kwargs):
+    """FE solver on a coupon, or (``ilss=True``) on the D2344 short-beam
+    specimen the ``'ilss'`` loading needs (``nx``/``ny`` then unused)."""
     mat = material if material is not None else _material(layup)
     pf = PorosityField(mat, vp, **pf_kwargs)
-    mesh = CompositeMesh(pf, mat, nx=nx, ny=ny, nz=nz_per_ply * len(layup),
-                         ply_angles=list(layup))
+    nz = nz_per_ply * len(layup)
+    if ilss:
+        mesh = CompositeMesh.for_ilss(pf, mat, nz=nz, ply_angles=list(layup),
+                                      element_length=mat.total_thickness / 2)
+    else:
+        mesh = CompositeMesh(pf, mat, nx=nx, ny=ny, nz=nz, ply_angles=list(layup))
     return FESolver(mesh, mat, pf, ply_angles=list(layup),
                     formulation=formulation)
 
@@ -459,7 +465,7 @@ class TestCombinedLoading:
     @pytest.mark.parametrize('loading', ['compression', 'tension', 'shear', 'ilss'])
     def test_superposition(self, formulation, loading):
         solver = _solver(CROSS_PLY, 12, 4, formulation=formulation, vp=0.02,
-                         distribution='clustered')
+                         distribution='clustered', ilss=loading == 'ilss')
         th = solver.solve('thermal', delta_T=DT)
         mech = solver.solve(loading)
         comb = solver.solve(loading, delta_T=DT)

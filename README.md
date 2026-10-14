@@ -354,6 +354,16 @@ stops at 48, so pass `mesh_res` to resolve a thicker laminate. `FESolver`
 logs a warning with the element layup, and
 `CompositeMesh.layup_discrepancies()` returns the same findings.
 
+The FE `'ilss'` mode is the ASTM D2344 short-beam-shear test and runs on
+its own specimen, not on the coupon: `CompositeMesh.for_ilss(field,
+material)` builds it (support span 4 h, length 6 h, width 2 h, roller
+supports, the loading nose as a pressure over its contact band;
+24 x 8 x `n_plies` elements), and `short_beam_shear(results, mesh)` reports
+the D2344 apparent shear `0.75 P / (b h)` beside the FE stresses and
+failure loads. `FESolver.solve('ilss')` on a mesh without that geometry
+raises with these instructions; the app builds the specimen itself. See
+the finite-element theory page, "Short-beam shear (ILSS)".
+
 ## Output Files
 
 | File Pattern | Description |

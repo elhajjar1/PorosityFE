@@ -20,7 +20,7 @@ import weakref
 import pytest
 
 import porosity_fe
-from porosity_fe import (MATERIALS, FESolver, PorosityField, QuantityConvergence,
+from porosity_fe import (MATERIALS, CompositeMesh, FESolver, PorosityField, QuantityConvergence,
                          RefinementLevel, RefinementStudy, refinement_study)
 from porosity_fe.fe import refinement as refinement_module
 from porosity_fe.fe.refinement import (QUANTITY_KINDS, _assess, _estimate_memory_bytes,
@@ -413,11 +413,40 @@ class TestOtherLoadCases:
             assert c.behavior == 'mesh-independent', c
             assert c.converged is True
 
-    def test_ilss_levels_use_even_nx(self):
-        st = _study('ilss', base_resolution=(11, 4, 4), factors=(1, 1.5),
-                    interior_margin=2.0)
+    def test_ilss_levels_are_d2344_specimens(self, monkeypatch):
+        # Each level is a CompositeMesh.for_ilss specimen; nx is rounded up
+        # to a multiple of 6 so the supports and mid-span stay on node lines.
+        built = []
+        real = CompositeMesh.for_ilss.__func__
+
+        def for_ilss(cls, *a, **k):
+            mesh = real(cls, *a, **k)
+            built.append(mesh)
+            return mesh
+
+        monkeypatch.setattr(CompositeMesh, 'for_ilss', classmethod(for_ilss))
+        st = _study('ilss', base_resolution=(11, 4, 4), factors=(1, 1.5))
         assert [lv.resolution[0] for lv in st.levels] == [12, 18]
+        assert [(m.nx, m.ny, m.nz) for m in built] == [(12, 4, 4), (18, 6, 4)]
+        h = MAT4.total_thickness
+        for mesh in built:
+            assert mesh.L_x == pytest.approx(6 * h, rel=1e-12)
+            assert mesh.ilss_geometry.span == pytest.approx(4 * h, rel=1e-12)
+        # The interior region (shear spans, h/2 clear of the contact zones)
+        # is fixed over the levels.
+        assert st.interior_margin == pytest.approx(0.5 * h, rel=1e-12)
         assert st.convergence['effective_modulus'].behavior == 'unavailable'
+
+    def test_ilss_explicit_levels_must_keep_supports_on_node_lines(self, monkeypatch):
+        monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)
+        with pytest.raises(ValueError, match="multiple of 6"):
+            _study('ilss', base_resolution=None,
+                   resolutions=[(12, 4, 4), (16, 4, 4)])
+
+    def test_ilss_default_base_is_the_specimen_mesh(self, monkeypatch):
+        monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)
+        with pytest.raises(ValueError, match=r"24x8x4: .* 48x16x4"):
+            refinement_study(MAT4, 0.02, 'ilss', max_elements=10)
 
     def test_refine_all_scales_nz_by_ply_multiples(self):
         st = _study(base_resolution=(10, 6, 4), refine='all', factors=(1, 2))

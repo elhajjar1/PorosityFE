@@ -24,6 +24,38 @@ _ANGLE_TOL = 1e-6
 # Largest element aspect ratio check_mesh_quality accepts without a warning.
 _MAX_ASPECT_RATIO = 20.0
 
+# ASTM D2344/D2344M short-beam-strength specimen, as multiples of the
+# laminate thickness h: support span 4 h, length 6 h, width 2 h. The loading
+# nose is a 6.0 mm diameter cylinder (radius 3.0 mm), the supports 3.0 mm.
+_D2344_SPAN_TO_THICKNESS = 4.0
+_D2344_LENGTH_TO_THICKNESS = 6.0
+_D2344_WIDTH_TO_THICKNESS = 2.0
+_D2344_NOSE_RADIUS = 3.0
+# Default in-plane element length of CompositeMesh.for_ilss, h / 4: the
+# quarter-span shear and the knockdown are within 0.2 % and 1.2 % (of the
+# stiffness loss) of an h / 8 mesh there (theory page, "Short-beam shear").
+_D2344_ELEMENTS_PER_THICKNESS = 4
+
+
+def _hertz_contact_width(material: MaterialProperties, *,
+                         nose_radius: float = _D2344_NOSE_RADIUS) -> float:
+    """Contact width (mm) of a short-beam loading nose at the pristine strength.
+
+    Hertz line contact of a rigid cylinder of radius ``R`` on an elastic
+    half-space: half-width ``a = sqrt(4 q R / (pi E*))`` for a load ``q``
+    per unit length, with ``E* = E33 / (1 - nu23^2)`` the through-thickness
+    plane-strain modulus of the ply. ``q`` is the load per unit width at
+    which the pristine laminate reaches its short-beam strength,
+    ``q = P / b = (4/3) tau_ilss h`` (ASTM D2344: ``F_sbs = 0.75 P / (b h)``).
+    Returns ``2 a``: about 0.77 mm (0.18 h) for the 24-ply T800/epoxy
+    preset. An estimate: a laminate is stiffer in plane than ``E33``, which
+    narrows the contact, and damage under the nose near failure widens it.
+    """
+    h = float(material.total_thickness)
+    q = 4.0 / 3.0 * float(material.tau_ilss) * h
+    e_star = float(material.E33) / (1.0 - float(material.nu23) ** 2)
+    return 4.0 * math.sqrt(q * float(nose_radius) / (math.pi * e_star))
+
 
 @dataclass(frozen=True)
 class FlexureGeometry:
@@ -237,8 +269,15 @@ class CompositeMesh:
         Same content as ``void_elements`` for O(1) membership tests.
     flexure_geometry : FlexureGeometry or None
         Support and load lines of a flexure test, set by
-        :meth:`for_flexure`; ``None`` otherwise, and the flexure loading
-        modes then put the supports at the two bottom end edges.
+        :meth:`for_flexure` (and :meth:`for_ilss`); ``None`` otherwise, and
+        the flexure loading modes then put the supports at the two bottom
+        end edges.
+    ilss_geometry : FlexureGeometry or None
+        Supports and loading-nose band of the ASTM D2344 short-beam test,
+        set by :meth:`for_ilss`; the ``'ilss'`` loading mode of
+        :class:`~porosity_fe.FESolver` needs it and raises without it. Set
+        it by hand (supports on node lines) to run the short-beam test on
+        another mesh.
     n_nodes, n_elements, n_dof : int
         Read-only sizes.
 
@@ -339,6 +378,7 @@ class CompositeMesh:
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
         self.void_elements: np.ndarray | None = None
         self.flexure_geometry: FlexureGeometry | None = None
+        self.ilss_geometry: FlexureGeometry | None = None
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -519,6 +559,175 @@ class CompositeMesh:
         mesh.flexure_geometry = FlexureGeometry(
             support_x=(float(x[n_over]), float(x[n_over + m])),
             load_span=Ls, load_width=load_width)
+        return mesh
+
+    @classmethod
+    def for_ilss(cls, porosity_field: PorosityField,
+                 material: MaterialProperties, *,
+                 span_to_thickness: float = _D2344_SPAN_TO_THICKNESS,
+                 length_to_thickness: float = _D2344_LENGTH_TO_THICKNESS,
+                 width_to_thickness: float = _D2344_WIDTH_TO_THICKNESS,
+                 load_width: float | None = None,
+                 nose_radius: float = _D2344_NOSE_RADIUS,
+                 nx: int | None = None,
+                 ny: int | None = None,
+                 nz: int | None = None,
+                 element_length: float | None = None,
+                 ply_angles: list[float] | str | None = 'QI',
+                 ) -> CompositeMesh:
+        """Mesh of an ASTM D2344 short-beam-shear (ILSS) specimen.
+
+        The specimen the ``'ilss'`` loading mode of
+        :class:`~porosity_fe.FESolver` needs: ASTM D2344/D2344M proportions
+        in laminate thicknesses ``h`` (support span ``4 h``, length ``6 h``,
+        width ``2 h``), roller supports on node lines, and the loading nose
+        modelled as a uniform pressure over a contact band at mid-span.
+        Built on :meth:`for_flexure`; the supports and band are recorded as
+        :attr:`ilss_geometry` (and, as the same object,
+        :attr:`flexure_geometry`, so ``'flexure_3pt'`` on this mesh runs the
+        same test but reports a flexural modulus, which at this span is
+        mostly shear correction).
+
+        The nose (a 6.0 mm diameter cylinder in D2344) touches the specimen
+        over a strip whose Hertz width grows with the load. The default band
+        is that width at the pristine short-beam strength,
+        ``P / b = (4/3) tau_ilss h``: ``2 a`` with
+        ``a = sqrt(4 (P / b) R / (pi E*))``, ``R`` the nose radius and
+        ``E* = E33 / (1 - nu23^2)`` (rigid nose; 0.77 mm, or 0.18 h, for
+        the 24-ply T800/epoxy preset). It removes the line-load singularity
+        from the problem, so refinement converges; on the default mesh it
+        is narrower than an element and acts on the nearest node lines with
+        consistent weights. The supports (3.0 mm cylinders) stay line
+        supports: their stress concentration is left out of the interior
+        quantities of the solve instead (see :meth:`FESolver.solve`).
+
+        Parameters
+        ----------
+        porosity_field : PorosityField
+            Porosity field, sampled at the nodes (discrete voids keep their
+            absolute coordinates, with the specimen from ``x = 0``,
+            ``y = 0``).
+        material : MaterialProperties
+            Ply material; the laminate thickness ``h`` is
+            ``material.total_thickness``.
+        span_to_thickness, length_to_thickness, width_to_thickness : float
+            Support span, specimen length and width in thicknesses; default
+            4, 6 and 2 (D2344). ISO 14130 uses 5, 10 and 5. The overhang
+            ``(length - span) / 2`` is rounded up to whole elements.
+        load_width : float, optional
+            Width of the loading-nose band in mm; ``0.0`` is a line load.
+            Default: the Hertz contact width above.
+        nose_radius : float
+            Loading-nose radius in mm for the default ``load_width``,
+            default 3.0 (D2344; ISO 14130 uses 5.0).
+        nx : int, optional
+            Elements along the length. It must put both supports and
+            mid-span on node lines: for the D2344 proportions a multiple of
+            6. Default: from ``element_length``.
+        ny : int, optional
+            Elements across the width; default the smallest even count with
+            elements no wider than the element length.
+        nz : int, optional
+            Elements through the thickness, default ``material.n_plies`` (one
+            element layer per ply).
+        element_length : float, optional
+            Largest in-plane element length in mm, default ``h / 4`` (24 x 8
+            elements in plane for the D2344 proportions). Ignored when
+            ``nx`` is given.
+        ply_angles : list of float or {'QI', 'UD'}, optional
+            Layup, as for :class:`CompositeMesh`.
+
+        Returns
+        -------
+        CompositeMesh
+            Mesh of the specimen with :attr:`ilss_geometry` set.
+
+        Raises
+        ------
+        ValueError
+            If a ratio or length is not positive and finite, the specimen
+            is shorter than the span, the band does not fit between the
+            supports, or ``nx`` puts a support or mid-span between node
+            lines.
+
+        Examples
+        --------
+        The 24-ply T800 QI laminate (h = 4.392 mm): a 26.4 x 8.8 mm
+        specimen on a 17.6 mm span, 24 x 8 x 24 elements:
+
+        >>> mat = MATERIALS['T800_epoxy']
+        >>> field = PorosityField(mat, 0.03)
+        >>> mesh = CompositeMesh.for_ilss(field, mat)
+        >>> mesh.nx, mesh.ny, mesh.nz
+        (24, 8, 24)
+        >>> round(mesh.ilss_geometry.span / mat.total_thickness, 6)
+        4.0
+        >>> round(mesh.ilss_geometry.load_width, 2)
+        0.77
+        """
+        h = float(material.total_thickness)
+
+        def positive(name: str, value: float) -> float:
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)) \
+                    or not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(
+                    f"CompositeMesh.for_ilss: {name} must be a positive finite "
+                    f"number, got {value!r}.")
+            return float(value)
+
+        span = positive('span_to_thickness', span_to_thickness) * h
+        length = positive('length_to_thickness', length_to_thickness) * h
+        width = positive('width_to_thickness', width_to_thickness) * h
+        if length < span * (1.0 - 1e-12):
+            raise ValueError(
+                f"CompositeMesh.for_ilss: the specimen ({length_to_thickness:g} h) "
+                f"must be at least as long as the span ({span_to_thickness:g} h).")
+        overhang = max(0.0, 0.5 * (length - span))
+        if load_width is None:
+            band = _hertz_contact_width(
+                material, nose_radius=positive('nose_radius', nose_radius))
+        elif isinstance(load_width, bool) \
+                or not isinstance(load_width, (int, float, np.number)) \
+                or not math.isfinite(float(load_width)) or float(load_width) < 0.0:
+            raise ValueError(
+                f"CompositeMesh.for_ilss: load_width must be a finite width "
+                f">= 0 in mm, got {load_width!r}.")
+        else:
+            band = float(load_width)
+        if nx is not None:
+            if isinstance(nx, bool) or not isinstance(nx, (int, np.integer)) or nx <= 0:
+                raise ValueError(
+                    f"CompositeMesh.for_ilss: nx must be a positive integer, got {nx!r}.")
+
+            def aligned(n: int) -> bool:
+                # Supports at overhang and overhang + span, mid-span between:
+                # each a whole number of elements of length / n.
+                n_over, n_span = overhang * n / length, span * n / length
+                return (abs(n_over - round(n_over)) <= 1e-6
+                        and abs(n_span - round(n_span)) <= 1e-6
+                        and round(n_span) % 2 == 0)
+
+            if not aligned(int(nx)):
+                unit = next((n for n in range(1, cls._MAX_ELEMENTS_PER_AXIS + 1)
+                             if aligned(n)), None)
+                hint = (f"use a multiple of {unit}" if unit is not None
+                        else "pass element_length instead")
+                raise ValueError(
+                    f"CompositeMesh.for_ilss: nx={nx} puts a support or mid-span "
+                    f"between node lines (a {length_to_thickness:g} h specimen on "
+                    f"a {span_to_thickness:g} h span); {hint}.")
+            dx_max: float | None = length / nx
+        else:
+            dx_max = h / _D2344_ELEMENTS_PER_THICKNESS if element_length is None \
+                else positive('element_length', element_length)
+        mesh = cls.for_flexure(
+            porosity_field, material, span=span, width=width, overhang=overhang,
+            load_width=band, nz=nz, ny=ny, element_length=dx_max,
+            ply_angles=ply_angles)
+        if nx is not None and mesh.nx != nx:   # pragma: no cover - guarded above
+            raise RuntimeError(
+                f"CompositeMesh.for_ilss: built nx={mesh.nx}, requested {nx}.")
+        mesh.ilss_geometry = mesh.flexure_geometry
         return mesh
 
     def generate_mesh(self):
@@ -778,8 +987,9 @@ class CompositeMesh:
 
         Notes
         -----
-        Used by ILSS short-beam BCs to locate midspan-top loading nodes
-        even when ``Lx / 2`` does not coincide with a mesh node.
+        A general lookup; the flexure and short-beam boundary conditions
+        locate their node lines with
+        :meth:`~porosity_fe.BoundaryHandler.face_line_nodes` instead.
         """
         if x is None and y is None and z is None:
             raise ValueError(

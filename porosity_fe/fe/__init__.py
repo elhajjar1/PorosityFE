@@ -6,6 +6,7 @@ from .element import Hex8Element
 from .export import write_pvd
 from .recovery import extrapolate_to_nodes
 from .refinement import QuantityConvergence, RefinementLevel, RefinementStudy, refinement_study
+from .short_beam import ShortBeamShear, short_beam_shear
 from .solver import FESolver, FieldResults
 
 __all__ = [
@@ -17,7 +18,9 @@ __all__ = [
     "QuantityConvergence",
     "RefinementLevel",
     "RefinementStudy",
+    "ShortBeamShear",
     "extrapolate_to_nodes",
     "refinement_study",
+    "short_beam_shear",
     "write_pvd",
 ]

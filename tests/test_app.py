@@ -50,6 +50,12 @@ def _base_cfg(**overrides) -> dict:
 
 
 @pytest.fixture(scope="module")
+def ilss_result():
+    """One ILSS analysis result (the D2344 specimen FE solve)."""
+    return app.run_analysis(_base_cfg(loading_mode="ilss"))
+
+
+@pytest.fixture(scope="module")
 def comp_result():
     """One compression analysis result, reused across the plot tests so the
     FE solve only runs once."""
@@ -125,12 +131,80 @@ class TestRunAnalysis:
         for mode in ("compression", "tension", "shear", "ilss"):
             assert mode in comp_result["empirical"]
 
-    def test_ilss_takes_force_controlled_branch(self):
+    def test_ilss_takes_force_controlled_branch(self, ilss_result):
         """``loading_mode='ilss'`` routes through the short-beam-shear
         (force-controlled) solve rather than the applied-strain branch."""
-        r = app.run_analysis(_base_cfg(loading_mode="ilss"))
+        r = ilss_result
         assert r["fe_loading"] == "ilss"
         assert r["fe_field"] is not None
+
+    def test_ilss_solves_the_d2344_specimen(self, ilss_result):
+        """The ILSS FE solve runs on the ASTM D2344 specimen (span 4h,
+        6h x 2h) with the configured nz, not on the nx x ny x nz coupon, and
+        the result's mesh is the one the field belongs to."""
+        from porosity_fe import ShortBeamShear
+        r = ilss_result
+        mesh = r["mesh"]
+        h = 4 * 0.183
+        assert mesh.ilss_geometry is not None
+        assert (mesh.nx, mesh.ny, mesh.nz) == (24, 8, 6)
+        assert r["fe_field"].displacement.shape == (mesh.n_nodes, 3)
+        spec = r["fe_specimen"]
+        assert spec["standard"] == "ASTM D2344"
+        assert spec["length_mm"] == pytest.approx(6 * h, rel=1e-12)
+        assert spec["width_mm"] == pytest.approx(2 * h, rel=1e-12)
+        assert spec["thickness_mm"] == pytest.approx(h, rel=1e-12)
+        assert spec["span_mm"] == pytest.approx(4 * h, rel=1e-12)
+        assert spec["load_width_mm"] == mesh.ilss_geometry.load_width
+        assert spec["mesh"] == "24x8x6"
+        assert isinstance(r["fe_short_beam"], ShortBeamShear)
+        # The empirical results do not depend on the mesh.
+        coupon = app.run_analysis(_base_cfg())
+        assert r["empirical"]["ilss"]["judd_wright"]["knockdown"] == \
+            coupon["empirical"]["ilss"]["judd_wright"]["knockdown"]
+
+    def test_short_beam_summary(self, ilss_result, comp_result):
+        rows, caption = app.fe_short_beam_summary(ilss_result)
+        labels = [label for label, _, _ in rows]
+        assert labels == ["FE knockdown", "Mid-plane shear / 0.75P/(bh)",
+                          "Interior FPF load", "Apparent ILSS at FPF"]
+        values = dict((label, value) for label, value, _ in rows)
+        sb = ilss_result["fe_short_beam"]
+        assert values["FE knockdown"] == f"{ilss_result['fe_field'].knockdown:.3f}"
+        assert values["Mid-plane shear / 0.75P/(bh)"] == \
+            f"{sb.midplane_shear / sb.apparent_shear:.3f}"
+        assert values["Apparent ILSS at FPF"] == \
+            f"{sb.interior_apparent_strength:.1f} MPa"
+        assert "ASTM D2344" in caption and "24 × 8 × 6" in caption
+        assert app.fe_short_beam_summary(comp_result) is None
+        assert comp_result["fe_specimen"] is None
+        assert comp_result["fe_short_beam"] is None
+
+    def test_thermal_only_with_ilss_selected_stays_on_the_coupon(self):
+        r = app.run_analysis(_thermal_cfg(loading_mode="ilss"))
+        assert r["fe_loading"] == "thermal"
+        assert r["fe_specimen"] is None and r["fe_short_beam"] is None
+        assert (r["mesh"].nx, r["mesh"].ny) == (10, 6)
+
+    def test_combined_thermal_ilss_uses_the_specimen(self):
+        r = app.run_analysis(_thermal_cfg(thermal_mode="combined",
+                                          loading_mode="ilss"))
+        assert r["fe_field"] is not None
+        assert r["mesh"].ilss_geometry is not None
+        assert r["fe_field"].load_factor_basis == "mechanical_with_residual"
+        assert r["fe_mechanical_fpf"] is not None
+        assert r["fe_short_beam"] is not None
+
+    def test_ilss_specimen_caption_matches_the_specimen_mesh(self):
+        from porosity_fe import MATERIALS, CompositeMesh, PorosityField
+        mat = MATERIALS["T800_epoxy"]
+        mesh = CompositeMesh.for_ilss(PorosityField(mat, 0.0), mat)
+        caption = app._ilss_specimen_caption(mat.n_plies, mat.t_ply, mesh.nz)
+        assert f"meshed {mesh.nx} × {mesh.ny} × {mesh.nz}" in caption
+        h = mat.total_thickness
+        assert f"{6 * h:.1f} × {2 * h:.1f} × {h:.2f} mm" in caption
+        assert f"{4 * h:.1f} mm span" in caption
+        assert "D2344" in app._ilss_specimen_caption(0, 0.183, 24)
 
     def test_clustered_distribution_branch(self):
         """A clustered distribution forwards ``cluster_location`` into the
@@ -292,6 +366,16 @@ class TestPlots:
         fig = app.plot_stress(comp_result, "Von Mises")
         assert fig is not None
         plt.close(fig)
+
+    def test_ilss_plots_and_vtu_use_the_specimen_mesh(self, ilss_result):
+        for fig in (app.plot_mesh(ilss_result),
+                    app.plot_stress(ilss_result, "τ₁₃ (interlaminar)"),
+                    app.plot_results(ilss_result, "0/90/90/0")):
+            assert fig is not None
+            plt.close(fig)
+        data = app.fe_vtu_bytes(ilss_result)
+        n = ilss_result["mesh"].n_nodes
+        assert f'NumberOfPoints="{n}"'.encode() in data
 
     def test_plot_stress_without_fe_field(self):
         """When no FE field is present the stress plot must short-circuit to

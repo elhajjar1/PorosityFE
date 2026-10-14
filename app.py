@@ -49,6 +49,7 @@ from porosity_fe import (
     _configure_matplotlib_style,
     build_empirical_pipeline,
     propagate_uncertainty,
+    short_beam_shear,
 )
 from porosity_fe.fe.failure import first_ply_failure_load_factor
 from porosity_fe.pipeline import _default_mesh_resolution
@@ -219,7 +220,16 @@ def run_analysis(cfg: dict) -> dict:
 
     Returns a dict with keys: config, material, porosity_field, mesh,
     empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale,
-    fe_thermal, fe_mechanical_fpf, fe_nz_suggestion.
+    fe_thermal, fe_mechanical_fpf, fe_nz_suggestion, fe_specimen,
+    fe_short_beam.
+
+    ``mesh`` is the mesh of the FE solve. For ``loading_mode="ilss"`` (with
+    a mechanical load) that is the ASTM D2344 short-beam specimen of
+    :meth:`CompositeMesh.for_ilss` with ``cfg["nz"]`` element layers, not
+    the ``nx x ny x nz`` coupon: ``fe_specimen`` then describes it
+    (dimensions, span, loading band, mesh) and ``fe_short_beam`` holds the
+    :func:`short_beam_shear` outputs of the solve (``None`` when it was
+    skipped). Both are ``None`` for the other modes.
 
     The empirical results are always returned. If the FE solve fails,
     ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
@@ -282,10 +292,21 @@ def run_analysis(cfg: dict) -> dict:
     emp_results = empirical.get_all_failure_loads()
 
     fe_loading = "thermal" if thermal_mode == "thermal_only" else cfg["loading_mode"]
+    fe_specimen = None
+    if fe_loading == "ilss":
+        # ILSS is the ASTM D2344 short-beam test: solve it on the standard
+        # specimen (span 4h, 6h x 2h), not on the coupon. The empirical
+        # results do not depend on the mesh.
+        mesh = CompositeMesh.for_ilss(porosity_field, material, nz=cfg["nz"],
+                                      ply_angles=cfg["angles"])
+        fe_specimen = _specimen_info(mesh)
     fe_field, fe_skipped_reason = _run_fe_solve(
         mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
         thermal_mode=thermal_mode, delta_T=delta_T,
     )
+    fe_short_beam = None
+    if fe_specimen is not None and fe_field is not None:
+        fe_short_beam = short_beam_shear(fe_field, mesh)
 
     fe_thermal = None
     fe_mechanical_fpf = None
@@ -318,6 +339,22 @@ def run_analysis(cfg: dict) -> dict:
         "fe_thermal": fe_thermal,
         "fe_mechanical_fpf": fe_mechanical_fpf,
         "fe_nz_suggestion": fe_nz_suggestion,
+        "fe_specimen": fe_specimen,
+        "fe_short_beam": fe_short_beam,
+    }
+
+
+def _specimen_info(mesh) -> dict:
+    """Dimensions (mm) and mesh of a :meth:`CompositeMesh.for_ilss` specimen."""
+    geometry = mesh.ilss_geometry
+    return {
+        "standard": "ASTM D2344",
+        "length_mm": float(mesh.L_x),
+        "width_mm": float(mesh.L_y),
+        "thickness_mm": float(mesh.L_z),
+        "span_mm": float(geometry.span),
+        "load_width_mm": float(geometry.load_width),
+        "mesh": f"{mesh.nx}x{mesh.ny}x{mesh.nz}",
     }
 
 
@@ -348,10 +385,10 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
             # cure residual stress, with no mechanical load.
             field = fe_solver.solve(loading="thermal", verbose=False, **thermal)
         elif loading_mode == "ilss":
-            # All four loading modes have FE BC support, including ILSS
-            # short-beam shear (ASTM D2344, 3-point bend, force-controlled).
-            # The 10 N midspan load is arbitrary: knockdown and field shapes
-            # are scale-invariant.
+            # ASTM D2344 short-beam shear on the specimen mesh: roller
+            # supports, the load over the loading-nose band, force
+            # controlled. The 10 N midspan load is arbitrary: knockdown and
+            # field shapes are scale-invariant.
             field = fe_solver.solve(
                 loading="ilss", applied_load=_FE_ILSS_LOAD_N, verbose=False,
                 **thermal,
@@ -412,6 +449,58 @@ def _applied_load_text(loading_mode: str, factor: float) -> str:
     sign = "-" if loading_mode == "compression" else ""
     name = "shear strain" if loading_mode == "shear" else "strain"
     return f"{sign}{factor * _FE_APPLIED_STRAIN * 100:.3g} % {name}"
+
+
+def fe_short_beam_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows ``(label, value, help)`` and a caption for an ILSS FE result.
+
+    ``None`` unless the analysis solved the ASTM D2344 short-beam specimen
+    (``result["fe_short_beam"]``). The rows give the FE knockdown, the FE
+    mid-plane shear at the quarter-span points next to the D2344 formula
+    ``0.75 P / (b h)``, and the short-beam strength D2344 would report at the
+    first-ply failure of the interior (the shear spans clear of the
+    supports and the loading nose); the caption gives the specimen.
+    """
+    sb = result.get("fe_short_beam")
+    spec = result.get("fe_specimen")
+    fe = result.get("fe_field")
+    if sb is None or spec is None or fe is None:
+        return None
+    ratio = sb.midplane_shear / sb.apparent_shear
+    rows = [
+        ("FE knockdown", _fmt_value(fe.knockdown),
+         "Porous over pristine stiffness of the short-beam specimen "
+         "(P² / uᵀKu), from two solves with the same supports and load."),
+        ("Mid-plane shear / 0.75P/(bh)", f"{ratio:.3f}",
+         f"FE τxz at mid-thickness, averaged across the width, half-way "
+         f"between each support and the nose: {sb.midplane_shear:.4g} MPa at "
+         f"{abs(sb.applied_load):g} N, against the D2344 formula "
+         f"0.75 P/(b h) = {sb.apparent_shear:.4g} MPa. At a span of four "
+         f"thicknesses beam theory is approximate: the profile is flatter "
+         f"than the parabola behind the formula, so the ratio is below 1 "
+         f"(0.91 for a UD T800 specimen; it depends on the layup)."),
+        ("Interior FPF load", _fmt_value(sb.interior_first_ply_failure_load,
+                                         "{:,.0f} N"),
+         "Load at first-ply failure in the shear spans, at least h/2 from "
+         "the supports, the loading band and the side faces. The domain-wide "
+         "value sits in the contact stresses under the nose or at a support, "
+         "which depend on the mesh."),
+        ("Apparent ILSS at FPF", _fmt_value(sb.interior_apparent_strength,
+                                            "{:.1f} MPa"),
+         "0.75 × (interior first-ply-failure load) / (b h): the short-beam "
+         "strength D2344 would report if the specimen failed at first-ply "
+         "failure. Compare with the empirical ILSS strength, which comes from "
+         "test data."),
+    ]
+    caption = (
+        f"{spec['standard']} short-beam specimen: {spec['length_mm']:.1f} × "
+        f"{spec['width_mm']:.1f} × {spec['thickness_mm']:.2f} mm on a "
+        f"{spec['span_mm']:.1f} mm span (4h), roller supports, the load spread "
+        f"over a {spec['load_width_mm']:.2f} mm loading-nose contact band; "
+        f"mesh {spec['mesh'].replace('x', ' × ')}. Domain-wide first-ply failure "
+        f"at {_fmt_value(sb.first_ply_failure_load, '{:,.0f}')} N (contact "
+        f"zone, mesh-dependent).")
+    return rows, caption
 
 
 def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
@@ -773,6 +862,18 @@ _DISTRIBUTION_OPTIONS = {
 }
 
 
+def _ilss_specimen_caption(n_plies: int, t_ply: float, nz: int) -> str:
+    """Sidebar note: the ILSS FE solve uses the D2344 specimen, not the coupon."""
+    if not n_plies:
+        return ("ILSS: the FE solve uses the ASTM D2344 short-beam specimen "
+                "(span 4h, 6h × 2h).")
+    h = n_plies * float(t_ply)
+    return (f"ILSS: the FE solve uses the ASTM D2344 short-beam specimen, "
+            f"{6 * h:.1f} × {2 * h:.1f} × {h:.2f} mm on a {4 * h:.1f} mm span, "
+            f"meshed 24 × 8 × {nz} (nz from this setting; nx and ny apply to "
+            f"the other modes).")
+
+
 def _validate_layup_inline():
     """On-change callback: validate the layup string and stash a status tuple.
 
@@ -991,7 +1092,9 @@ def _build_sidebar_inputs() -> dict | None:
             help=(
                 "All four modes are computed empirically; this selects the "
                 "primary mode for the FE solve and bar-chart highlight. "
-                "ILSS uses 3-point short-beam-shear BCs (ASTM D2344)."
+                "ILSS solves the ASTM D2344 short-beam specimen (span 4h, "
+                "length 6h, width 2h, roller supports, loading-nose contact "
+                "band) instead of the coupon below."
             ),
         )
 
@@ -1044,6 +1147,8 @@ def _build_sidebar_inputs() -> dict | None:
             nx, ny, nz = nx0, ny0, nz0
             st.caption(f"Default mesh: {nx} × {ny} × {nz}, {mesh_note} "
                        f"(enable Expert mode to change).")
+        if loading_mode == "ilss" and thermal_mode != "thermal_only":
+            st.caption(_ilss_specimen_caption(n_plies, t_ply, nz))
 
         if thermal_mode != "off":
             # The thermal solve refuses a mesh whose element layers merge
@@ -1154,10 +1259,16 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
             f" FE thermal load: ΔT = {thermal['delta_T']:g} K, "
             + ("thermal only." if thermal["mode"] == "thermal_only"
                else f"residual stress added to {cfg_r['loading_mode']}."))
+    spec = result.get("fe_specimen")
+    mesh_note = (f"mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}" if spec is None
+                 else f"FE on the {spec['standard']} short-beam specimen "
+                      f"({spec['length_mm']:.1f} × {spec['width_mm']:.1f} × "
+                      f"{spec['thickness_mm']:.2f} mm, mesh "
+                      f"{spec['mesh'].replace('x', '×')})")
     st.success(
         f"Last run: {cfg_r['material_name']}, layup {layup_for_title}, "
         f"Vp = {cfg_r['Vp']:.1f}%, {cfg_r['void_shape']}, "
-        f"{cfg_r['distribution']}, mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}."
+        f"{cfg_r['distribution']}, {mesh_note}."
         + thermal_note
     )
     if result.get("fe_skipped_reason"):
@@ -1193,8 +1304,22 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
         return
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
+    _build_short_beam_results(result)
     _build_thermal_results(result)
     _build_uq_expander(result)
+
+
+def _build_short_beam_results(result: dict) -> None:
+    """Metrics of the ASTM D2344 short-beam FE solve (nothing for other modes)."""
+    summary = fe_short_beam_summary(result)
+    if summary is None:
+        return
+    st.subheader("FE short-beam shear (ASTM D2344)")
+    rows, caption = summary
+    for col, (label, value, help_text) in zip(st.columns(len(rows)), rows,
+                                              strict=True):
+        col.metric(label, value, help=help_text)
+    st.caption(caption)
 
 
 def _build_thermal_results(result: dict) -> None:
