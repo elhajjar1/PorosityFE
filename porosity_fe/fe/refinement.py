@@ -13,11 +13,13 @@ the report flags instead of extrapolating.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import math
 import os
 import time
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
@@ -28,10 +30,10 @@ from scipy.optimize import brentq
 from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
-from ..pipeline import _DEFAULT_MESH_RES
+from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
-from .solver import FESolver, _check_delta_T
+from .solver import FESolver, _check_delta_T, _minres_deprecation
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -787,9 +789,10 @@ def refinement_study(
     ply_angles : list of float or {'QI', 'UD'}
         Layup, as :class:`~porosity_fe.CompositeMesh` (default ``'QI'``).
     base_resolution : (int, int, int), optional
-        Coarsest ``(nx, ny, nz)``. Default: the in-plane production
-        resolution with one element layer per ply,
-        ``(30, 10, material.n_plies)``.
+        Coarsest ``(nx, ny, nz)``. Default: the production resolution,
+        one element layer per ply, ``(30, 10, material.n_plies)``; unlike
+        the production default, ``nz`` stays at ``n_plies`` above 48 plies
+        (the memory guard below applies instead).
     factors : sequence of float, optional
         Refinement factors of the levels relative to ``base_resolution``,
         strictly increasing (default ``(1, 1.5, 2)``). Three or more levels
@@ -830,6 +833,8 @@ def refinement_study(
         Linear solver of the levels, as :meth:`FESolver.solve`. The
         pristine reference of the knockdown is always factorized directly,
         so ``'cg'`` saves memory only for a thermal or pore-free study.
+        ``'minres'`` is deprecated (one :class:`DeprecationWarning` per
+        call; removal in 2.0): use ``'cg'``.
     solver_rtol : float
         Residual tolerance of the iterative solvers.
     max_elements : int, optional
@@ -884,6 +889,9 @@ def refinement_study(
                          f"of {list(FESolver.SUPPORTED_FAILURE_CRITERIA)}.")
     if solver not in ('direct', 'cg', 'minres'):
         raise ValueError(f"Unknown solver {solver!r}; use 'direct', 'cg' or 'minres'.")
+    if solver == 'minres':
+        warnings.warn(_minres_deprecation('refinement_study'), DeprecationWarning,
+                      stacklevel=2)
     if isinstance(tol, bool) or not isinstance(tol, (int, float, np.number)) \
             or not (math.isfinite(float(tol)) and float(tol) > 0.0):
         raise ValueError(f"tol must be a positive finite number, got {tol!r}.")
@@ -911,9 +919,13 @@ def refinement_study(
     else:
         if refine not in ('in_plane', 'all'):
             raise ValueError(f"refine must be 'in_plane' or 'all', got {refine!r}.")
-        base = (_DEFAULT_MESH_RES[0], _DEFAULT_MESH_RES[1], material.n_plies) \
-            if base_resolution is None else _check_resolution(base_resolution,
-                                                              'base_resolution')
+        if base_resolution is None:
+            # The production resolution, but nz = n_plies even above its cap:
+            # a study must resolve the layup, and the memory guard applies.
+            nx0, ny0, _ = _default_mesh_resolution(material.n_plies)
+            base = (nx0, ny0, material.n_plies)
+        else:
+            base = _check_resolution(base_resolution, 'base_resolution')
         fac = (1.0, 1.5, 2.0) if factors is None else tuple(float(f) for f in factors)
         if not all(math.isfinite(f) and f > 0.0 for f in fac) or \
                 any(b <= a for a, b in zip(fac, fac[1:], strict=False)):
@@ -984,10 +996,18 @@ def refinement_study(
             # model is assembled, so its factorization is freed first: the
             # peak memory is one model's, not two.
             fe._pristine_stiffness_measure(loading)
-        out = fe.solve(loading, applied_strain=applied_strain,
-                       applied_load=applied_load, solver=solver, rtol=solver_rtol,
-                       delta_T=delta_T, allow_unresolved_layup=allow_unresolved_layup,
-                       interior_margin=margin)
+        quiet = warnings.catch_warnings() if solver == 'minres' \
+            else contextlib.nullcontext()
+        with quiet:
+            if solver == 'minres':
+                # Reported once above, at the caller, not once per level.
+                warnings.filterwarnings('ignore', message=r".*solver='minres'",
+                                        category=DeprecationWarning)
+            out = fe.solve(loading, applied_strain=applied_strain,
+                           applied_load=applied_load, solver=solver,
+                           rtol=solver_rtol, delta_T=delta_T,
+                           allow_unresolved_layup=allow_unresolved_layup,
+                           interior_margin=margin)
         level = RefinementLevel(
             resolution=res, n_elements=mesh.n_elements, n_dof=mesh.n_dof,
             element_size=size, solve_time_s=time.perf_counter() - t0,

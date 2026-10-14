@@ -184,6 +184,43 @@ class TestThermal:
         assert at.session_state["result"]["fe_field"] is not None
 
 
+class TestDefaultMesh:
+    """The default nz is one element layer per ply of the layup as entered."""
+
+    @staticmethod
+    def _captions(at: AppTest) -> str:
+        return " ".join(c.value for c in at.caption)
+
+    def test_default_nz_follows_the_layup_until_moved(self):
+        at = _fresh_app()                       # [0/45/-45/90]_3s: 24 plies
+        assert "Default mesh: 30 × 10 × 24, one element layer per ply" in \
+            self._captions(at)
+        at.toggle[0].set_value(True).run()
+        assert [s.value for s in at.slider] == [30, 10, 24]
+        at.text_input(key="layup_input").set_value("0/90/90/0").run()
+        assert at.slider[2].value == 4
+        at.slider[2].set_value(6).run()         # the user's choice stays
+        at.text_input(key="layup_input").set_value("[0/90]_2s").run()
+        assert at.slider[2].value == 6
+        assert not at.exception
+
+    def test_thick_layup_caps_nz_and_thermal_offers_the_resolving_nz(self):
+        """Above the cap the default no longer resolves the plies, which is
+        when the thermal "Use nz = N" hint still appears."""
+        at = _select(_fresh_app(), "Material", "AS4_3501_6_epoxy")
+        at.text_input(key="layup_input").set_value("[0/45/-45/90]_8s").run()
+        assert "30 × 10 × 48, nz capped at 48 for the 64-ply layup" in \
+            self._captions(at)
+        assert not any("Use nz" in w.value for w in at.warning)
+        at.radio(key="thermal_choice").set_value(_THERMAL_ONLY).run()
+        assert any("Use nz = 64" in w.value for w in at.warning)
+        _button(at, "Use nz = 64").click().run()
+        assert at.toggle[0].value is True
+        assert at.slider[2].value == 64
+        assert not any("Use nz" in w.value for w in at.warning)
+        assert not at.exception
+
+
 def test_uq_expander_reports_percentiles():
     """IMPROVEMENT_PLAN 3.4: the Results tab runs uncertainty propagation."""
     at = _run_small_analysis(_fresh_app())

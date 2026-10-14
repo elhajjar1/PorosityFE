@@ -7,7 +7,7 @@ import logging
 import math
 import warnings
 from collections.abc import Sequence
-from dataclasses import astuple, dataclass
+from dataclasses import astuple, dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -234,29 +234,61 @@ def _hat_weights(grid: np.ndarray, x0: float, width: float,
 
 
 @dataclass(frozen=True)
-class _DirichletPartition:
-    """Split of the global DOFs into free and prescribed (Dirichlet) sets.
+class _ConstraintReduction:
+    """Affine reduction ``u = T u_r + g`` of the global DOFs.
 
-    The one place where constrained DOFs are removed from the system:
-    ``K_ff u_f = F_f - K_fc u_c`` with ``u_c`` set exactly. Every
+    The one place where constraints are removed from the system. It takes
+    two kinds of constraint:
+
+    - prescribed (Dirichlet) values, ``u_c = values``;
+    - ties (master-slave multi-point constraints), ``u_s = u_m + offset``,
+      for example the periodic conditions ``u(x + L) = u(x) + E L`` of a
+      unit cell under the macroscopic strain ``E``.
+
+    The independent unknowns ``u_r`` are the DOFs that are neither
+    prescribed nor tied (:attr:`free`). ``T`` (``n_dof x n_free``) has a
+    unit entry in each free row and in each tied row whose master is free;
+    ``g`` (:meth:`lift`) holds the prescribed values and the tie offsets.
+    The reduced system is ``T^T K T u_r = T^T (F - K g)``: the stationary
+    point of the potential energy on the constrained subspace, symmetric
+    positive definite when the constraints remove every rigid-body mode.
+
+    Without ties ``T`` only selects the free columns, so ``T^T K T`` is the
+    free-DOF block ``K_ff`` and the right-hand side is ``F_f - K_fc u_c``.
+    That case is computed by slicing, as the solver always has (``T`` is
+    not built), so Dirichlet-only results are unchanged bit for bit. Every
     reduction goes through :meth:`reduce_matrix`, :meth:`reduce_rhs` and
-    :meth:`expand`, so multi-point or periodic constraints can later
-    replace "select the free columns" with a transformation ``u = T u_r + g``
-    here without touching the solver.
+    :meth:`expand`.
 
     Attributes
     ----------
     n_dof : int
         Total number of DOFs.
     free : np.ndarray
-        Sorted free DOF indices, shape ``(n_f,)``.
+        Sorted independent DOF indices (the columns of ``T``), shape
+        ``(n_f,)``.
     fixed : np.ndarray
-        Sorted constrained DOF indices, shape ``(n_c,)``.
+        Sorted prescribed DOF indices, shape ``(n_c,)``.
     values : np.ndarray
         Prescribed values aligned with ``fixed``.
     key : bytes
-        ``fixed.tobytes()``: identifies the reduced matrix ``K_ff``, which
-        depends on the constrained *set* only, not on the values.
+        Identifies the reduced matrix, which depends on the constrained
+        *topology* only (the prescribed set and the resolved tie map), not
+        on the values or offsets. ``fixed.tobytes()`` without ties, as
+        before; with ties a longer string whose length is not a multiple of
+        the index size, so the two kinds never collide.
+    tied : np.ndarray
+        Sorted tied (slave) DOF indices, shape ``(n_t,)``; empty without
+        ties.
+    masters : np.ndarray
+        Ultimate master of each tied DOF, aligned with ``tied``: a chain
+        ``a -> b -> c`` is resolved to ``a -> c``. A master is free or
+        prescribed, never tied.
+    offsets : np.ndarray
+        Accumulated offsets along each chain, aligned with ``tied``:
+        ``u[tied] = u[masters] + offsets``.
+    transform : scipy.sparse.csr_matrix or None
+        ``T``; ``None`` without ties.
     """
 
     n_dof: int
@@ -264,11 +296,38 @@ class _DirichletPartition:
     fixed: np.ndarray
     values: np.ndarray
     key: bytes
+    tied: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.intp))
+    masters: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.intp))
+    offsets: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=float))
+    transform: scipy.sparse.csr_matrix | None = None
 
     @classmethod
-    def from_constraints(cls, n_dof: int, constrained: dict[int, float]
-                         ) -> _DirichletPartition:
-        """Build the partition from a ``{dof: prescribed_value}`` map."""
+    def from_constraints(
+        cls, n_dof: int, constrained: dict[int, float], *,
+        ties: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+    ) -> _ConstraintReduction:
+        """Build the reduction from prescribed values and optional ties.
+
+        Parameters
+        ----------
+        n_dof : int
+            Total number of DOFs.
+        constrained : dict[int, float]
+            ``{dof: prescribed_value}``.
+        ties : (tied, master, offset), optional
+            Three equal-length 1-D arrays: ``u[tied[k]] = u[master[k]] +
+            offset[k]``. Each DOF is tied at most once and may not also be
+            prescribed; a master may itself be tied (chains are resolved)
+            or prescribed (the tied DOF then takes the master's value plus
+            the offset). ``None`` or empty arrays give the Dirichlet-only
+            reduction.
+
+        Raises
+        ------
+        ValueError
+            On a DOF index out of range, a non-finite value or offset, a DOF
+            tied twice or both tied and prescribed, or a cycle of ties.
+        """
         n = len(constrained)
         fixed = np.fromiter(constrained.keys(), dtype=np.intp, count=n)
         values = np.fromiter(constrained.values(), dtype=float, count=n)
@@ -282,30 +341,120 @@ class _DirichletPartition:
         fixed, values = fixed[order], values[order]
         is_free = np.ones(n_dof, dtype=bool)
         is_free[fixed] = False
-        return cls(n_dof=n_dof, free=np.flatnonzero(is_free), fixed=fixed,
-                   values=values, key=fixed.tobytes())
+        if ties is None or len(ties[0]) == 0:
+            return cls(n_dof=n_dof, free=np.flatnonzero(is_free), fixed=fixed,
+                       values=values, key=fixed.tobytes())
+
+        tied, masters, offsets = cls._resolve_ties(n_dof, is_free, ties)
+        is_free[tied] = False
+        free = np.flatnonzero(is_free)
+        column = np.full(n_dof, -1, dtype=np.intp)
+        column[free] = np.arange(free.size)
+        # One unit entry per free row and per tied row with a free master;
+        # a tied DOF whose master is prescribed has a zero row (all in g).
+        master_col = column[masters]
+        on_free = master_col >= 0
+        rows = np.concatenate([free, tied[on_free]])
+        cols = np.concatenate([np.arange(free.size), master_col[on_free]])
+        transform = scipy.sparse.csr_matrix(
+            (np.ones(rows.size), (rows, cols)), shape=(n_dof, free.size))
+        # bytes of intp arrays have a length divisible by the index size;
+        # the 6-byte separator keeps tie keys off every Dirichlet key.
+        key = fixed.tobytes() + b'|ties|' + tied.tobytes() + masters.tobytes()
+        return cls(n_dof=n_dof, free=free, fixed=fixed, values=values, key=key,
+                   tied=tied, masters=masters, offsets=offsets,
+                   transform=transform)
+
+    @staticmethod
+    def _resolve_ties(n_dof: int, is_free: np.ndarray,
+                      ties: tuple[np.ndarray, np.ndarray, np.ndarray]
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Validate ties and resolve chains to their ultimate masters.
+
+        Returns ``(tied, masters, offsets)`` sorted by the tied DOF.
+        """
+        tied = np.asarray(ties[0], dtype=np.intp).ravel()
+        masters = np.asarray(ties[1], dtype=np.intp).ravel()
+        offsets = np.asarray(ties[2], dtype=float).ravel()
+        if not tied.size == masters.size == offsets.size:
+            raise ValueError(
+                f"ties must be three equal-length arrays (tied, master, "
+                f"offset); got lengths {tied.size}, {masters.size}, "
+                f"{offsets.size}.")
+        for name, idx in (('Tied', tied), ('Master', masters)):
+            if idx.min() < 0 or idx.max() >= n_dof:
+                raise ValueError(
+                    f"{name} DOF index out of range [0, {n_dof}): "
+                    f"min {int(idx.min())}, max {int(idx.max())}.")
+        if not np.isfinite(offsets).all():
+            raise ValueError("Tie offsets must be finite.")
+        order = np.argsort(tied, kind='stable')
+        tied, masters, offsets = tied[order], masters[order], offsets[order]
+        if np.any(tied[1:] == tied[:-1]):
+            dup = int(tied[1:][tied[1:] == tied[:-1]][0])
+            raise ValueError(f"DOF {dup} is tied to more than one master.")
+        prescribed = ~is_free[tied]
+        if np.any(prescribed):
+            raise ValueError(
+                f"DOF {int(tied[prescribed][0])} is both tied and prescribed.")
+
+        # Follow the chains: replace each master that is itself tied by its
+        # own master, accumulating offsets. A chain cannot be longer than
+        # the number of ties, so more passes than that means a cycle.
+        link = np.full(n_dof, -1, dtype=np.intp)
+        link[tied] = masters
+        link_offset = np.zeros(n_dof, dtype=float)
+        link_offset[tied] = offsets
+        masters, offsets = masters.copy(), offsets.copy()
+        for _ in range(tied.size + 1):
+            step = link[masters] >= 0
+            if not step.any():
+                break
+            offsets[step] += link_offset[masters[step]]
+            masters[step] = link[masters[step]]
+        else:
+            raise ValueError("The ties contain a cycle (a DOF is its own master).")
+        return tied, masters, offsets
 
     def lift(self) -> np.ndarray:
-        """Full vector with ``u_c`` = prescribed values and ``u_f = 0``."""
+        """``g``: the prescribed values, the tie offsets (plus the value of a
+        prescribed master) and zero at the independent DOFs."""
         u = np.zeros(self.n_dof, dtype=float)
         u[self.fixed] = self.values
+        if self.tied.size:
+            u[self.tied] = u[self.masters] + self.offsets
         return u
 
     def reduce_matrix(self, K: scipy.sparse.spmatrix) -> scipy.sparse.csc_matrix:
-        """``K_ff``: the free-DOF block of ``K`` (column slice, then rows)."""
+        """``T^T K T``; without ties the free-DOF block ``K_ff`` (column
+        slice, then rows)."""
         K_csc = scipy.sparse.csc_matrix(K)
-        return K_csc[:, self.free][self.free, :].tocsc()
+        if self.transform is None:
+            return K_csc[:, self.free][self.free, :].tocsc()
+        T = self.transform
+        return (T.T @ (K_csc @ T)).tocsc()
 
     def reduce_rhs(self, K: scipy.sparse.spmatrix, F: np.ndarray) -> np.ndarray:
-        """``F_f - K_fc u_c``, without building ``K_fc``."""
+        """``T^T (F - K g)``; without ties ``F_f - K_fc u_c``, without
+        building ``K_fc``."""
         F = np.asarray(F, dtype=float)
-        return F[self.free] - (K @ self.lift())[self.free]
+        if self.transform is None:
+            return F[self.free] - (K @ self.lift())[self.free]
+        return self.transform.T @ (F - K @ self.lift())
 
     def expand(self, u_f: np.ndarray) -> np.ndarray:
-        """Full displacement vector from the free-DOF solution ``u_f``."""
+        """Full displacement vector ``T u_f + g`` from the reduced solution.
+
+        Prescribed DOFs hold their values exactly.
+        """
         u = self.lift()
         u[self.free] = u_f
+        if self.transform is not None:
+            # Tied rows of T u_f: the master's value, or 0 for a prescribed
+            # master (whose value is already in g).
+            u[self.tied] += (self.transform @ u_f)[self.tied]
         return u
+
 
 
 class BoundaryHandler:
@@ -854,7 +1003,7 @@ class BoundaryHandler:
             If a constrained DOF index is out of range or a prescribed
             value is not finite.
         """
-        part = _DirichletPartition.from_constraints(K.shape[0], constrained_dofs)
+        part = _ConstraintReduction.from_constraints(K.shape[0], constrained_dofs)
         return part.reduce_matrix(K), part.reduce_rhs(K, F), part.free
 
     @staticmethod

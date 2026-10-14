@@ -90,7 +90,8 @@ the UI.
   ruff's per-file ignores for exactly that reason. Reordering will
   silently break the headless run on hosts without a display.
 - **The Streamlit FE stress tab can take 30–60s to render** at the
-  production mesh resolution (`_DEFAULT_MESH_RES = (30, 10, 12)`).
+  production mesh resolution (`30 × 10 × n_plies`, from
+  `_default_mesh_resolution`; 30 × 10 × 24 for the default layup).
   Use a longer `page.wait_for_selector` timeout for the FE tabs than
   for the Profile / Mesh tabs.
 - **Streamlit Community Cloud's tier is 1 GB RAM.** If you're trying to

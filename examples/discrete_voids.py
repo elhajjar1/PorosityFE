@@ -46,7 +46,7 @@ def main() -> None:
     ]
     pf, mesh, solver = build_empirical_pipeline(
         material, 0.005,
-        mesh_res=(40, 15, 12),
+        mesh_res=(40, 15, material.n_plies),  # one element layer per ply
         porosity_config=dict(distribution="uniform", void_shape="spherical",
                              discrete_voids=voids),
     )

@@ -63,7 +63,12 @@ view logs, change the Python version, or set secrets.
 
 ## Resource notes
 
-The Community tier provides 1 GB RAM and 1 vCPU. The FE solve memory scales
-roughly with `nx * ny * nz`; the default 30×10×12 mesh fits comfortably, but
-expert-mode resolutions can exceed 1 GB. Reduce the mesh if you hit OOM
-errors in the deploy logs.
+The Community tier provides 1 GB RAM and 1 vCPU. The FE solve memory grows
+faster than `nx * ny * nz` (the sparse factorization dominates). The default
+mesh gives every ply its own element layer, 30×10×24 for the default 24-ply
+layup; one analysis on it peaked at about 0.75 GB (0.12 GB of that is the
+imports), and about 1.05 GB with the thermal residual stress added, which
+holds two factorizations. The mechanical default fits the tier with little
+headroom; the thermal option and finer expert-mode resolutions can exceed
+it. If you hit OOM errors in the deploy logs, reduce `nx` and `ny` first
+(keep `nz` a multiple of the ply count, which the thermal solve needs).

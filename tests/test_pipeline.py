@@ -14,6 +14,7 @@ Headline knockdowns are checked against the Judd-Wright closed form
 has a layup scale of exactly 1 for every mode).
 """
 
+import dataclasses
 import logging
 import math
 
@@ -36,7 +37,9 @@ from porosity_fe import (
 from porosity_fe import pipeline
 from porosity_fe.pipeline import (
     _DEFAULT_MESH_RES,
+    _DEFAULT_NZ_MAX,
     _analyze_one,
+    _default_mesh_resolution,
     _log_result_summary,
     _resolve_n_jobs,
 )
@@ -76,9 +79,56 @@ class TestBuildEmpiricalPipeline:
         assert len(mesh.nodes) == 6 * 3 * 4
 
     def test_default_mesh_is_production_resolution(self):
-        """Omitting ``mesh_res`` uses the single-source production default."""
+        """Omitting ``mesh_res`` uses the single-source production default:
+        30 x 10 in plane, one element layer per ply."""
+        assert _DEFAULT_MESH_RES == (30, 10, None)
         _, mesh, _ = build_empirical_pipeline(T800, 0.02)
-        assert (mesh.nx, mesh.ny, mesh.nz) == _DEFAULT_MESH_RES == (30, 10, 12)
+        assert (mesh.nx, mesh.ny, mesh.nz) == _default_mesh_resolution(24) \
+            == (30, 10, 24)
+        assert mesh.layup_discrepancies() == []
+
+    @pytest.mark.parametrize("name", sorted(MATERIALS))
+    def test_default_mesh_resolves_every_preset(self, name):
+        """Every preset (8, 16 and 24 plies) gets nz = n_plies, so the FE
+        laminate on the default mesh is the requested one."""
+        mat = MATERIALS[name]
+        _, mesh, _ = build_empirical_pipeline(mat, 0.02)
+        assert (mesh.nx, mesh.ny, mesh.nz) == (30, 10, mat.n_plies)
+        assert mesh.layup_discrepancies() == []
+
+    def test_default_nz_is_capped_for_thick_laminates(self, caplog):
+        """Above ``_DEFAULT_NZ_MAX`` plies the default stops at the cap (and
+        says so) instead of growing the FE mesh with the ply count."""
+        assert _default_mesh_resolution(_DEFAULT_NZ_MAX) == (30, 10, _DEFAULT_NZ_MAX)
+        with caplog.at_level(logging.INFO, logger="porosity_fe_analysis"):
+            assert _default_mesh_resolution(200) == (30, 10, _DEFAULT_NZ_MAX)
+        assert "nz capped at 48 for the 200-ply laminate" in caplog.text
+        thick = dataclasses.replace(T800, n_plies=60)
+        _, mesh, _ = build_empirical_pipeline(thick, 0.02)
+        assert mesh.nz == _DEFAULT_NZ_MAX
+        # The mesh caps stay far away: 30 * 10 * 48 elements.
+        assert mesh.n_elements == 14_400 < CompositeMesh._MAX_TOTAL_ELEMENTS
+
+    @pytest.mark.parametrize("bad", [0, -24, 2.5, True, None, "24"])
+    def test_default_mesh_rejects_bad_ply_counts(self, bad):
+        with pytest.raises(ValueError, match="n_plies must be a positive integer"):
+            _default_mesh_resolution(bad)
+
+    def test_empirical_failure_loads_do_not_depend_on_nz(self):
+        """The failure loads use the specimen-average Vp, so the old 12-layer
+        and the ply-resolving default mesh give the same numbers bit for
+        bit (same platform); only the sampled nodal field differs."""
+        cfg = POROSITY_CONFIGS['interface_penny']
+        _, old_mesh, old = build_empirical_pipeline(
+            T800, 0.03, mesh_res=(30, 10, 12), porosity_config=cfg)
+        _, new_mesh, new = build_empirical_pipeline(T800, 0.03, porosity_config=cfg)
+        a, b = old.get_all_failure_loads(), new.get_all_failure_loads()
+        for mode in a:
+            for model in a[mode]:
+                assert a[mode][model].failure_stress == b[mode][model].failure_stress
+                assert a[mode][model].knockdown == b[mode][model].knockdown
+        assert old.nodal_knockdown.shape == (old_mesh.n_nodes,)
+        assert new.nodal_knockdown.shape == (new_mesh.n_nodes,)
 
     def test_default_layup_is_qi(self):
         """Default layup is QI: the QI coefficients are used unscaled."""
@@ -229,7 +279,8 @@ class TestAnalyzeOne:
         assert result['porosity_field'].distribution == 'interface'
         assert result['porosity_field'].seed == 3
         assert result['porosity_field'].material is MATERIALS['IM7_8551_epoxy']
-        assert (result['mesh'].nx, result['mesh'].ny, result['mesh'].nz) == _DEFAULT_MESH_RES
+        assert (result['mesh'].nx, result['mesh'].ny, result['mesh'].nz) == \
+            _default_mesh_resolution(MATERIALS['IM7_8551_epoxy'].n_plies) == (30, 10, 24)
 
     def test_empirical_table_complete_and_closed_form(self):
         """All 5 modes x 3 built-in models; J-W values follow exp(-alpha*Vp)."""

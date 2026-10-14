@@ -103,3 +103,128 @@ Two simplifications to keep in mind:
 
 The CLT functions ({doc}`laminate`) use the same degraded ply stiffness
 with spherical voids.
+
+## Verification against a periodic unit cell
+
+Mori-Tanaka is a mean-field estimate: it knows the void volume fraction and
+shape, but not how the voids are arranged. To check it, an internal
+verification tool (`porosity_fe.fe._rve`, not public API) computes the
+stiffness of a periodic array of identical voids with the package's own
+elements, and compares it with `_mt_effective_stiffness` for the same
+matrix, void shape and void fraction.
+
+### Method
+
+**Cell.** A cube of isotropic matrix (the T800 preset: $E_m = 3500$ MPa,
+$\nu_m = 0.35$) with one centred, axis-aligned ellipsoidal void, meshed
+with $n^3$ elements. The void is the set of elements whose centroid lies
+inside the ellipsoid ({class}`~porosity_fe.VoidGeometry` and the void
+elements of {class}`~porosity_fe.CompositeMesh`), with the 1 MPa stiffness
+of the explicit-void path; every other element is pristine matrix, with no
+smeared porosity. The void is therefore a voxel staircase of the
+ellipsoid, and Mori-Tanaka is evaluated at the *voxel* void fraction: on a
+$12^3$ cell it differs from the nominal ellipsoid volume by up to 8 % for a
+sphere and 20 % for a thin penny. The 1 MPa void raises the cell stiffness
+over that of an empty void by at most 0.02 % (sphere) and 0.3 % (crowded
+penny).
+
+**Periodic boundary conditions.** The displacement is
+$\mathbf u = \bar{\boldsymbol\varepsilon}\,\mathbf x + \mathbf w$ with a
+uniform macroscopic strain $\bar{\boldsymbol\varepsilon}$ and a periodic
+fluctuation $\mathbf w$. Each node on a maximum face is tied to its image
+on the opposite face, $\mathbf u(\mathbf x + \mathbf L) = \mathbf u(\mathbf x)
++ \bar{\boldsymbol\varepsilon}\,\mathbf L$, through the solver's constraint
+reduction $\mathbf u = \mathbf T \mathbf u_r + \mathbf g$ ({doc}`fe`, edge
+and corner nodes tied in chains that end at the origin corner). That
+corner is pinned at $\bar{\boldsymbol\varepsilon}\,\mathbf x$ to remove the
+rigid translations; nothing else is constrained, so it carries no force.
+The six unit macro-strains (engineering shear, Voigt order
+$[11, 22, 33, 23, 13, 12]$) give the six columns of the cell stiffness as
+volume-averaged stresses. The tests (`tests/test_rve.py`) check that a
+homogeneous cell returns $\mathbf C_m$ to $10^{-14}$ with $\mathbf u =
+\bar{\boldsymbol\varepsilon}\,\mathbf x$ at every node, and that a cell
+with a void has a mean strain of exactly $\bar{\boldsymbol\varepsilon}$, a
+symmetric stiffness equal to $\mathbf u_i^\mathsf{T} \mathbf K \mathbf u_j /
+V$ (Hill-Mandel) and no force on the pinned corner, for both element
+formulations.
+
+**Cost.** A $24^3$ cell has 41,469 unknowns after the periodic reduction
+and takes about 35 s per element formulation. The ties wrap the mesh into
+a torus, on which SuperLU's minimum-degree ordering fills poorly; a
+geometric nested-dissection ordering cuts the factorization time four- to
+sixfold.
+
+### Results
+
+Cell stiffness over Mori-Tanaka, $24^3$ cell, `'hex8i'`. $K$ and $\mu$ are
+the isotropic (Voigt-average) projections that the FE path takes from the
+Mori-Tanaka tensor (see above); the penny is an oblate spheroid of aspect
+5 (radii $1 : 1 : 0.2$), its axis along $z$.
+
+| Void | $V_p$ (voxel) | MT $C_{11}/C_{m,11}$ | MT $C_{33}/C_{m,11}$ | $C_{11}$ | $C_{33}$ | $C_{12}$ | $C_{44}$ | $C_{66}$ | $K$ | $\mu$ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| sphere | 0.020 | 0.945 | 0.945 | 0.999 | 0.999 | 0.997 | 0.999 | 0.999 | 0.998 | 0.999 |
+| sphere | 0.049 | 0.875 | 0.875 | 0.998 | 0.998 | 0.992 | 0.993 | 0.993 | 0.995 | 0.998 |
+| sphere | 0.100 | 0.765 | 0.765 | 1.000 | 1.000 | 0.983 | 0.980 | 0.980 | 0.991 | 0.995 |
+| penny | 0.018 | 0.943 | 0.854 | 0.997 | 1.007 | 0.995 | 0.992 | 0.999 | 0.999 | 0.998 |
+| penny | 0.051 | 0.859 | 0.666 | 0.991 | 0.994 | 0.981 | 0.968 | 0.996 | 0.986 | 0.988 |
+| penny | 0.082 | 0.797 | 0.544 | 0.979 | 0.929 | 0.950 | 0.896 | 0.998 | 0.945 | 0.963 |
+| penny | 0.098 | 0.769 | 0.495 | 0.961 | 0.811 | 0.907 | 0.792 | 1.002 | 0.880 | 0.925 |
+
+`'hex8'` reads up to 0.5 % stiffer than `'hex8i'` (up to 1.1 % in $C_{33}$
+and $C_{13}$ of the crowded pennies).
+
+Refinement of the cell at $V_p \approx 0.05$ (FE / MT, `'hex8i'`, with
+`'hex8'` in parentheses):
+
+| Void | Elements | $V_p$ (voxel) | $C_{11}$ | $C_{33}$ | $C_{12}$ | $C_{44}$ |
+|---|---|---|---|---|---|---|
+| sphere | $12^3$ | 0.0509 | 0.998 (1.000) | 0.998 (1.000) | 0.991 (0.994) | 0.995 (0.997) |
+| sphere | $16^3$ | 0.0508 | 0.996 (0.998) | 0.996 (0.998) | 0.988 (0.991) | 0.992 (0.994) |
+| sphere | $24^3$ | 0.0486 | 0.998 (0.999) | 0.998 (0.999) | 0.992 (0.993) | 0.993 (0.994) |
+| sphere | $32^3$ | 0.0500 | 0.999 (0.999) | 0.999 (0.999) | 0.992 (0.994) | 0.993 (0.993) |
+| penny | $12^3$ | 0.0602 | 1.008 (1.011) | 1.135 (1.143) | 1.018 (1.023) | 1.006 (1.010) |
+| penny | $16^3$ | 0.0547 | 0.990 (0.993) | 1.009 (1.016) | 0.978 (0.983) | 0.956 (0.960) |
+| penny | $24^3$ | 0.0509 | 0.991 (0.993) | 0.994 (0.999) | 0.981 (0.984) | 0.968 (0.970) |
+| penny | $24 \times 24 \times 48$ | 0.0498 | 0.993 (0.994) | 0.982 (0.986) | 0.983 (0.985) | 0.969 (0.971) |
+
+The voxel void fraction does not converge monotonically, and neither do the
+ratios. For the sphere they settle within 0.1 % from $24^3$ on (a $32^3$
+cell takes about three minutes). The thin penny needs more elements through
+its thickness: on a $12^3$ cell it is two elements thick and the cell is
+13 % too stiff out of plane, and on the $24^3$ cell $C_{33}$ is still about
+1 % high, so the out-of-plane gaps of the pennies below are, if anything,
+slightly underestimated.
+
+### Conclusions
+
+- **Spherical voids** (the default shape of the FE path): Mori-Tanaka is
+  trustworthy over the calibrated range and beyond. The normal
+  stiffnesses agree within 0.2 % up to $V_p = 0.10$, and the bulk and shear
+  moduli within 1 %. At $V_p = 0.05$ the $C_{11}$ knockdown is 12.5 % from
+  Mori-Tanaka and 12.7 % from the cell. The single shear terms differ by
+  up to 2 % because a simple cubic array is not isotropic: at
+  $V_p = 0.10$, $C_{44}$ is 2.0 % below the Mori-Tanaka shear modulus and
+  $(C_{11} - C_{12})/2$ 1.7 % above it, so the isotropic estimate lies
+  between the array's two shear moduli. The cell's bulk modulus stays just
+  below Mori-Tanaka's (0.5 % at 0.05), consistent with Mori-Tanaka being
+  the Hashin-Shtrikman upper bound for spherical voids.
+- **Dilute oblate voids**: for the aspect-5 penny the two agree within
+  1 % at $V_p = 0.02$ and within 3.5 % at 0.05 (worst $C_{44}$).
+- **Crowded oblate voids**: Mori-Tanaka has no notion of void spacing, and
+  once neighbouring pennies come close it overestimates the out-of-plane
+  stiffness. At $V_p = 0.08$ (ligament between neighbours 8.6 % of the
+  cell, two elements) the cell is 7 % softer in $C_{33}$ (9 % on the
+  $24 \times 24 \times 48$ cell) and 10 % in $C_{44}$; at $V_p = 0.10$ the
+  pennies span 98.5 % of the cell width, the
+  ligament is thinner than one element at any affordable resolution, and
+  the voxel voids touch their neighbours on the $24^3$ cell (not on the
+  $16^3$ one, where the gap is 13 % in $C_{33}$ instead of 19 %). The
+  result then depends on how the cell is designed, not only on the
+  micromechanics: Mori-Tanaka is not a reliable estimate for oblate voids
+  at a local $V_p$ near 0.1, which clustered porosity reaches at a modest
+  mean (the `'clustered'` profile peaks at 2.4 times the mean at the
+  mid-plane and 4.8 times at the surface). The isotropic projection the FE
+  path uses softens the error but keeps it: 5.5 % in $K$ and 3.7 % in
+  $\mu$ at 0.08, 12 % and 7.5 % at 0.10. The in-plane shear $C_{66}$ of
+  the pennies stays within 0.5 % in every case.
