@@ -29,6 +29,7 @@ from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .export import write_vtk, write_vtu
+from .flexure import flexural_modulus
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -58,7 +59,7 @@ class FieldResults:
     knockdown : float
         Stiffness knockdown factor: porous over pristine structural
         stiffness from a pristine reference solve of the same mesh (``E_x``
-        or ``G_xy`` ratio; beam-stiffness ratio for ILSS).
+        or ``G_xy`` ratio; beam-stiffness ratio for ILSS and flexure).
     per_element_failure_index : np.ndarray or None
         Shape (n_elem,) max-over-Gauss-point failure index per element.
         Optional (defaults to ``None`` for back-compatibility with callers
@@ -73,9 +74,10 @@ class FieldResults:
         Per-mode breakdown of the maximum failure index across the model with
         keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
         ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
-        ``NaN`` (the polynomial does not separate modes); for ``max_stress``
-        the unused entries are zero. Lets the GUI and JSON exporter report
-        the dominant failure mode, not just severity.
+        ``NaN`` (the polynomial does not separate modes; ``null`` in the
+        JSON export); for ``max_stress`` the unused entries are zero. Lets
+        the GUI and JSON exporter report the dominant failure mode, not
+        just severity.
     reaction_forces : np.ndarray or None
         Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
         constrained DOFs and exactly zero at the free DOFs. A load applied
@@ -83,11 +85,24 @@ class FieldResults:
         reaction with the opposite sign. Summed over a loaded face they
         give the resultant the boundary conditions apply.
     effective_modulus : float or None
-        Homogenized modulus of the specimen (MPa) for the displacement-
-        controlled modes: ``E_x`` for ``'compression'`` / ``'tension'``
+        Homogenized modulus of the specimen (MPa). For the displacement-
+        controlled modes, ``E_x`` for ``'compression'`` / ``'tension'``
         and ``G_xy`` for ``'shear'``, from the strain energy
-        ``u^T K u / (strain^2 * V)``. ``None`` for the force-controlled
-        ``'ilss'`` three-point bend, which has no single modulus.
+        ``u^T K u / (strain^2 * V)``. For ``'flexure_3pt'`` /
+        ``'flexure_4pt'``, the flexural modulus ``E_f`` from the mid-span
+        deflection ``delta`` with the transverse shear deflection taken
+        out (Timoshenko beam theory)::
+
+            delta / P = a (3 L^2 - 4 a^2) / (48 E_f I) + a / (2 b K_s)
+
+        with ``I = b h^3 / 12``, support span ``L``, shear span ``a``
+        (``L / 2`` three-point, ``(L - load_span) / 2`` four-point) and
+        ``K_s`` the laminate transverse shear stiffness per unit width
+        (``(5/6) G_13 h`` for a UD beam); see the finite-element theory
+        page. Comparable with the classical-lamination-theory ``E_f``
+        (:func:`~porosity_fe.compute_degraded_clt_flexural_modulus`).
+        ``None`` for the ``'ilss'`` bend (its pinned supports make it no
+        simple beam) and ``'thermal'``.
     first_ply_failure_load_factor : float or None
         Multiplier on the applied load at which ``failure_criterion`` first
         reaches 1 at any Gauss point of a non-void element (linear
@@ -432,6 +447,19 @@ class FieldResults:
 
 _DEFAULT_APPLIED_STRAIN = {'compression': -0.01, 'tension': 0.01, 'shear': 0.01}
 
+#: Loading modes :meth:`FESolver.solve` accepts (see :data:`FELoadingMode`).
+_FE_LOADINGS: tuple[str, ...] = (
+    'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt',
+    'thermal')
+
+#: Flexure loading modes and their :class:`FlexureGeometry` procedure.
+_FLEXURE_PROCEDURE: dict[str, Literal['3pt', '4pt']] = {
+    'flexure_3pt': '3pt', 'flexure_4pt': '4pt'}
+
+#: Force-controlled modes: loaded by ``applied_load``, stiffness measured as
+#: inverse compliance.
+_FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE})
+
 
 def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float:
     """Mode-dependent default strain; warn when the sign contradicts the mode."""
@@ -536,10 +564,10 @@ def _stiffness_measure(loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
 
     ``u^T K u / strain^2`` for the displacement-controlled modes (the
     effective modulus times the volume) and ``load^2 / u^T K u`` (inverse
-    compliance) for the force-controlled ILSS bend.
+    compliance) for the force-controlled ILSS and flexure bends.
     """
     energy = float(u @ (K @ u))
-    if loading == 'ilss':
+    if loading in _FORCE_CONTROLLED:
         return applied_load ** 2 / energy
     return energy / applied_strain ** 2
 
@@ -784,7 +812,15 @@ class FESolver:
         Parameters
         ----------
         loading : str
-            'compression', 'tension', 'shear', 'ilss' or 'thermal'.
+            'compression', 'tension', 'shear', 'ilss', 'flexure_3pt',
+            'flexure_4pt' or 'thermal'.
+            ``'flexure_3pt'`` and ``'flexure_4pt'`` are three- and
+            four-point bending on roller supports (ASTM D790 / D7264
+            procedures A and B, :meth:`BoundaryHandler.flexure_bcs`) at the
+            supports and load lines of :attr:`CompositeMesh.flexure_geometry`
+            (build the mesh with :meth:`CompositeMesh.for_flexure`); without
+            one the supports are the two bottom end edges. They report the
+            flexural modulus as :attr:`FieldResults.effective_modulus`.
             ``'thermal'`` solves the free-standing laminate under the
             uniform temperature change ``delta_T`` (required) with
             statically determinate 3-2-1 supports
@@ -799,9 +835,10 @@ class FESolver:
             silently ran a compression solve.) A strain whose sign
             contradicts ``'compression'`` / ``'tension'`` logs a warning.
         applied_load : float
-            Total midspan load (force) used by the force-controlled ILSS
-            short-beam-shear mode (ASTM D2344). Ignored for the other
-            modes.
+            Total load (N, negative = downward) of the force-controlled
+            modes: the mid-span load of ``'ilss'`` (ASTM D2344) and
+            ``'flexure_3pt'``, the sum of the two loads of
+            ``'flexure_4pt'``. Ignored for the other modes.
         verbose : bool
             Print progress information.
         failure_criterion : {'tsai_wu', 'hashin', 'max_stress'}, optional
@@ -923,10 +960,10 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
 
-        if loading not in ('compression', 'tension', 'shear', 'ilss', 'thermal'):
+        if loading not in _FE_LOADINGS:
             raise ValueError(
                 f"Unknown loading '{loading}'. "
-                "Use compression/tension/shear/ilss/thermal."
+                f"Use one of {'/'.join(_FE_LOADINGS)}."
             )
         thermal_only = loading == 'thermal'
         dT = _check_delta_T(loading, delta_T, self.material)
@@ -999,7 +1036,8 @@ class FESolver:
             knockdown = self._compute_knockdown(
                 loading, K, u, applied_strain, applied_load)
             reactions, effective_modulus = self._reactions_and_modulus(
-                loading, K, u, F, applied_strain, constrained)
+                loading, K, u, F, applied_strain, constrained,
+                applied_load=applied_load)
             fpf_stress = stress_local
             prestress_local = residual_local
             basis = 'mechanical'
@@ -1090,21 +1128,24 @@ class FESolver:
 
         Dispatches to the matching :class:`BoundaryHandler` builder for the
         requested ``loading`` ('compression', 'tension', 'shear', 'ilss',
-        'thermal'). The displacement-controlled modes use
-        ``applied_strain``; the force-controlled ILSS short-beam-shear mode
-        uses ``applied_load``; ``'thermal'`` returns the 3-2-1 supports of
-        :meth:`BoundaryHandler.free_bcs` with a zero force vector (the
-        thermal load is built by :meth:`_thermal_unit_solution`).
+        'flexure_3pt', 'flexure_4pt', 'thermal'). The displacement-controlled
+        modes use ``applied_strain``; the force-controlled ILSS short-beam-
+        shear and flexure modes use ``applied_load``; ``'thermal'`` returns
+        the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs` with a zero
+        force vector (the thermal load is built by
+        :meth:`_thermal_unit_solution`).
 
         Parameters
         ----------
         loading : str
-            'compression', 'tension', 'shear', 'ilss' or 'thermal'.
+            'compression', 'tension', 'shear', 'ilss', 'flexure_3pt',
+            'flexure_4pt' or 'thermal'.
         applied_strain : float
             Applied nominal strain (used by the displacement-controlled
             modes).
         applied_load : float
-            Total midspan load (used by the ILSS mode; ignored otherwise).
+            Total load of the force-controlled modes (ILSS and flexure;
+            ignored otherwise).
         verbose : bool
             Log the number of applied BCs.
 
@@ -1119,7 +1160,7 @@ class FESolver:
         Raises
         ------
         ValueError
-            If ``loading`` is not one of the five supported modes.
+            If ``loading`` is not one of the supported modes.
         """
         if loading == 'thermal':
             constrained, F = self.bc_handler.free_bcs()
@@ -1131,10 +1172,13 @@ class FESolver:
             constrained, F = self.bc_handler.shear_bcs(applied_strain)
         elif loading == 'ilss':
             constrained, F = self.bc_handler.ilss_bcs(applied_load)
+        elif loading in _FLEXURE_PROCEDURE:
+            constrained, F = self.bc_handler.flexure_bcs(
+                applied_load, procedure=_FLEXURE_PROCEDURE[loading])
         else:
             raise ValueError(
                 f"Unknown loading '{loading}'. "
-                "Use compression/tension/shear/ilss/thermal."
+                f"Use one of {'/'.join(_FE_LOADINGS)}."
             )
 
         if verbose:
@@ -1276,8 +1320,9 @@ class FESolver:
     def _reactions_and_modulus(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
         F: np.ndarray, applied_strain: float, constrained: dict[int, float],
+        *, applied_load: float = -10.0,
     ) -> tuple[np.ndarray, float | None]:
-        """Nodal reactions and the strain-energy effective modulus.
+        """Nodal reactions and the effective modulus.
 
         Reactions are ``K u - F`` at the constrained DOFs (including any
         load applied there, which the support carries) and exactly zero at
@@ -1287,7 +1332,10 @@ class FESolver:
         moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
         twice the strain energy ``0.5 M strain^2 V``, giving ``M``: axial
         ``E_x = P / (A strain)`` for compression/tension, ``G_xy`` for the
-        homogeneous pure-shear BCs.
+        homogeneous pure-shear BCs. For the flexure modes it is the
+        shear-corrected flexural modulus from the mid-span deflection under
+        ``applied_load`` (:func:`~porosity_fe.fe.flexure.flexural_modulus`);
+        ``None`` for ILSS.
         """
         Ku = K @ u
         residual = Ku - F
@@ -1300,6 +1348,10 @@ class FESolver:
                 float(np.abs(residual[~is_fixed]).max()))
         residual[~is_fixed] = 0.0
         reactions = residual.reshape(-1, 3)
+        if loading in _FLEXURE_PROCEDURE:
+            return reactions, flexural_modulus(
+                self.mesh, self.assembler.element_batch(), u, applied_load,
+                self.bc_handler.flexure_geometry(), _FLEXURE_PROCEDURE[loading])
         if loading == 'ilss' or applied_strain == 0.0:
             return reactions, None
         volume = self.mesh.L_x * self.mesh.L_y * self.mesh.L_z
@@ -1466,11 +1518,12 @@ class FESolver:
         (cached across solvers by mesh geometry, see
         :meth:`_pristine_stiffness_measure`). For compression, tension and
         shear the ratio is ``E_x`` or ``G_xy`` porous / pristine; for the
-        ILSS bend it is the ratio of the beam stiffnesses (inverse
-        compliances). IMPROVEMENT_PLAN 2.4 replaced the earlier ratio of
-        signed domain-mean stresses, which read ``sigma_xx`` for shear, went
-        unstable for the sign-changing ILSS ``tau_xz`` field, and was
-        silently clamped to 1.
+        ILSS and flexure bends it is the ratio of the beam stiffnesses
+        (inverse compliances; the flexure reference also keys on the
+        support and load lines). IMPROVEMENT_PLAN 2.4 replaced the earlier
+        ratio of signed domain-mean stresses, which read ``sigma_xx`` for
+        shear, went unstable for the sign-changing ILSS ``tau_xz`` field,
+        and was silently clamped to 1.
 
         Returns 1.0 for a pristine mesh or a zero load. A ratio above 1 is
         not clamped; it is logged as a warning.
@@ -1478,7 +1531,8 @@ class FESolver:
         porosity = np.asarray(self.mesh.porosity, dtype=float)
         if not np.any(porosity > 0.0) and np.size(self.mesh.void_elements) == 0:
             return 1.0
-        if (applied_load if loading == 'ilss' else applied_strain) == 0.0:
+        if (applied_load if loading in _FORCE_CONTROLLED
+                else applied_strain) == 0.0:
             return 1.0
         porous = _stiffness_measure(loading, K, u, applied_strain, applied_load)
         pristine = self._pristine_stiffness_measure(loading)
@@ -1499,8 +1553,11 @@ class FESolver:
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
         # Key on every material field: repr() omits E33, G13, G23, ... .
-        key = (key_loading, h.hexdigest(), astuple(self.material),
-               self.formulation)
+        key: tuple = (key_loading, h.hexdigest(), astuple(self.material),
+                      self.formulation)
+        if key_loading in _FLEXURE_PROCEDURE:
+            # Supports and load lines are not part of the node arrays.
+            key += (self.bc_handler.flexure_geometry(),)
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:
             _PRISTINE_MEASURE_CACHE.move_to_end(key)
@@ -1599,6 +1656,32 @@ class FESolver:
             arrays so a full audit can re-derive the per-key summary
             statistics. Default ``False`` so existing outputs are not
             bloated (#55).
+
+        Notes
+        -----
+        The JSON is standard JSON: it never holds ``NaN`` or ``Infinity``,
+        which strict parsers reject. A value that is not defined is
+        ``null``:
+
+        * ``failure.mode_indices.<mode>``: the criterion does not separate
+          that mode (Tsai-Wu: every entry except ``max_fi``; ``NaN`` in
+          :attr:`FieldResults.failure_mode_indices`). Max-stress writes 0
+          for the modes it does not use.
+        * ``failure.knockdown_factor``: no stiffness measure
+          (``loading='thermal'``; ``NaN`` in :attr:`FieldResults.knockdown`).
+        * ``failure.first_ply_failure_load_factor`` and
+          ``failure.interior_first_ply_failure_load_factor``: no point is
+          stressed, so the factor is infinite; the interior one is also
+          ``null`` when no element is far enough from the lateral faces.
+        * ``failure.interior_max_failure_index`` (and the same key in
+          ``thermal``): no element is far enough from the lateral faces.
+        * ``stiffness.effective_modulus_MPa``: no single modulus (ILSS
+          bend, ``loading='thermal'``).
+
+        Any other non-finite value raises :class:`ValueError` naming its
+        location, before a file is written.
+        :func:`~porosity_fe.load_results_from_json` reads ``null`` as
+        ``None``.
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw)

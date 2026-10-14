@@ -5,6 +5,88 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Three- and four-point flexure on roller supports (IMPROVEMENT_PLAN
+  3.6, C1).** Library only; the app, CLI and pipeline do not expose it
+  yet, and the `'ilss'` mode is unchanged. Existing loading modes are
+  bit-identical (checked on the production mesh, both element
+  formulations, all five modes).
+  - `FESolver.solve(loading='flexure_3pt' | 'flexure_4pt',
+    applied_load=...)` (new `FELoadingMode` members): ASTM D790 / D7264
+    procedure A (mid-span load) and D7264 procedure B (two loads, the load
+    span half the support span by default). Force controlled, like ILSS;
+    `knockdown` is the porous over pristine beam stiffness `P^2 / u^T K u`,
+    with the pristine reference also keyed on the support and load lines.
+  - `effective_modulus` is the flexural modulus `E_f` from the mid-span
+    deflection with the transverse shear deflection removed (Timoshenko:
+    `delta / P = a (3 L^2 - 4 a^2) / (48 E_f I) + a / (2 b K_s)`, with the
+    laminate shear stiffness `K_s` from the lamination-theory shear-stress
+    energy, `(5/6) G13 h` for a UD beam). On the D7264 meshes of the
+    24-ply T800 preset it matches the CLT `E_f`
+    (`compute_degraded_clt_flexural_modulus`) within 0.15 % for UD and
+    cross-ply laminates, at `Vp = 0` and `0.05`; QI reads 1.1-1.3 % low,
+    the free-edge effect of the +-45 plies at the 13 mm width (0.4 % at
+    twice that width). The UD deflection matches Timoshenko beam theory
+    within 0.2 % at 32:1 and 0.7 % at 16:1. `'hex8'` reads 2-5 % stiffer
+    on the default mesh and 13-29 % at an element length of 2 h.
+  - `CompositeMesh.for_flexure(...)` builds the specimen: span 32
+    thicknesses (`span_to_thickness`, or `span`), 13 mm wide, 10 %
+    overhang, one element layer per ply, element length up to
+    `min(h, 20 h / nz)`, and `nx` chosen so the supports, mid-span and
+    four-point load lines are node lines (48 x 4 x 24 elements for the
+    24-ply T800 preset). It records them as `mesh.flexure_geometry`, a
+    `FlexureGeometry` (new, public): support positions, load span and an
+    optional `load_width` that spreads each load over a band.
+  - `BoundaryHandler.roller_supports` (`u_z = 0` on bottom-face support
+    lines plus three statically determinate in-plane constraints, so the
+    horizontal reaction is zero to round-off), `BoundaryHandler.line_load`
+    (consistent nodal forces: trapezoidal across the width, linear shape
+    functions along `x`, optional uniform-pressure band),
+    `BoundaryHandler.flexure_bcs`, `BoundaryHandler.flexure_geometry` and
+    `BoundaryHandler.face_line_nodes` (new).
+- **Mesh-convergence study `refinement_study` (IMPROVEMENT_PLAN 3.6, B1).**
+  Library only; no existing result changes. `refinement_study(material,
+  Vp_or_field, loading, ...)` solves one FE load case (any mode, with or
+  without `delta_T`) on a sequence of refined meshes, coarse to fine, and
+  returns a `RefinementStudy`: per level the resolution, element and DOF
+  counts, wall time, estimated peak memory, knockdown, effective modulus,
+  domain and interior maximum failure index and first-ply-failure load
+  factor (`RefinementLevel`); per quantity the relative changes, the
+  convergence behavior of the three finest levels (`'monotone'`,
+  `'non-monotone'`, `'diverging'`, `'mesh-independent'`), the observed
+  order, a Richardson extrapolate (monotone only, observed order at least
+  0.5), Roache's GCI and a converged flag against `tol` (default 1 %;
+  knockdown judged on `1 - KD`) (`QuantityConvergence`). `summary()`
+  prints the level table, the convergence table and notes;
+  `to_dict()` is strict JSON (non-finite values become `null`).
+  - Levels default to `(30, 10, n_plies)` refined in plane by factors
+    1, 1.5 and 2 with `nz` fixed; `refine='all'` also scales `nz` in whole
+    multiples of the ply count, and `resolutions=` takes explicit levels.
+    A level whose `nz` does not resolve the layup is refused (ply aliasing
+    would swamp the discretization error). For `'ilss'` the generated
+    levels use an even `nx`, so the load line stays on one node column.
+  - Interior quantities use one `interior_margin` for every level (by
+    default the coarsest level's `max(h, 2 dx, 2 dy)`), so they describe
+    one region.
+  - Before solving, a level above `max_elements` (default the mesh cap)
+    or above the memory budget (`max_memory_gb`, default 80 % of physical
+    memory where the platform reports it) raises `ValueError` listing the
+    estimate of every level. Each level is released before the next is
+    built, and its pristine reference is solved first, so the peak memory
+    is that of one model rather than two (1.5 GB instead of 2.9 GB at
+    45 x 15 x 24).
+  - On T800/epoxy QI (24 plies, midplane-clustered `Vp = 0.03`, `'hex8i'`)
+    from 30 x 10 x 24 to 60 x 20 x 24 (15 s, 63 s and 252 s; peak 3.4 GB),
+    compression: the knockdown moves by 4e-5 in all, the interior maximum
+    failure index converges (1.195, 1.145, 1.133; extrapolate 1.126, GCI
+    0.8 %), and the domain maximum grows at the gripped corners (1.23,
+    1.39, 1.74) and is flagged mesh-dependent. In `'ilss'` the mid-span
+    line load is singular, so its failure indices and load factors are
+    mesh-dependent at any resolution. The production default 30 x 10 x 12,
+    which does not resolve the 24-ply layup, converges in plane to a
+    different laminate (interior index 1.48). Method, tables and a
+    production-resolution recommendation are in the theory page
+    (finite-element model, "Mesh convergence"); `_DEFAULT_MESH_RES` is
+    unchanged.
 - **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
   E1).** Results and existing exports do not change.
   - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and
@@ -42,7 +124,7 @@ All notable changes to PorosityFE will be documented in this file.
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
 - **Thermal / cure residual-stress load case (IMPROVEMENT_PLAN 3.5, PRs 2
-  and 3).** Library only; the app does not expose it yet. Mechanical
+  and 3).** The app exposes it too (see the next entry). Mechanical
   solves without `delta_T` are bit-identical to before (checked on the
   production mesh, both element formulations, all four modes and three
   criteria).
@@ -95,6 +177,39 @@ All notable changes to PorosityFE will be documented in this file.
     (no chemical shrinkage, relaxation or moisture), geometric linearity,
     and that under the square-root strength rule porosity can lower the
     residual failure index.
+- **Thermal load case and VTU download in the app (IMPROVEMENT_PLAN 3.5
+  PR 4, 3.6 E1).** Runs with the thermal option off are unchanged.
+  - The sidebar has a new "Thermal residual stress (FE)" section. It
+    appears only for a material with lamina CTEs (`has_cte`, today only
+    `AS4_3501_6_epoxy`); for the others a caption says why the option is
+    unavailable. The choices are off, "add cure residual stress to the
+    mechanical case" (superposed on the FE solve of the selected loading
+    mode) and "thermal only".
+  - The "ΔT (K), negative = cool-down" input starts empty, with no hidden
+    default, and the Run button stays disabled until it is filled. A
+    labelled suggestion (−150 K for a 177 °C-cure epoxy cooled to room
+    temperature, or the preset's `T_stress_free` when one is recorded) is
+    applied only by its button.
+  - The thermal solve refuses a mesh whose element layers merge plies.
+    The sidebar warns before the run when `nz` is not a multiple of the
+    ply count. If the solve refuses, the app shows the solver's message
+    instead of crashing, and keeps the empirical results. Both places
+    offer a "Use nz = ..." button that switches on Expert mode with the
+    `nz` that resolves the layup.
+  - The Results tab shows the knockdown (n/a for thermal-only), the
+    residual and interior maximum failure indices, and the first-ply-
+    failure factor read with its `load_factor_basis`. For thermal-only
+    that factor is the critical ΔT (factor × ΔT). For the combined case
+    it multiplies the applied load, and the factor without the residual
+    stress is shown next to it. The knockdown chart has no FE bar for a
+    thermal-only run.
+  - The Export tab has a "Download FE results (VTU)" button
+    (`FieldResults.to_vtu`, binary, with the recovered nodal stress and
+    strain and the residual-stress fields of a thermal run). The bytes
+    are cached with `st.cache_data(max_entries=4)`.
+  - `run_analysis` takes `thermal_mode` and `delta_T` in its config. An
+    older config dict without them means no thermal load. The result
+    gains `fe_thermal`, `fe_mechanical_fpf` and `fe_nz_suggestion`.
 - **Incompatible-mode hex8 element (IMPROVEMENT_PLAN 3.6, step A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
   nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
   correction), condensed out per element and folded into an effective
@@ -232,6 +347,37 @@ All notable changes to PorosityFE will be documented in this file.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **The FE JSON export wrote invalid JSON.** Tsai-Wu does not separate
+  failure modes, so `FieldResults.failure_mode_indices` holds `NaN` for
+  every mode except `max_fi`, and `FESolver.export_results` wrote them
+  as the bare token `NaN`. Python reads that, but strict parsers
+  (JavaScript `JSON.parse`, jq, `json.loads(..., parse_constant=...)`)
+  reject the whole file. Every JSON writer (`export_results`,
+  `save_results_to_json`, the app's export and NCR JSON,
+  `save_uq_results_to_json`) now goes through one serializer with
+  `allow_nan=False`:
+  - A value that is not defined is written as `null`, and the schema and
+    the `export_results` docstring say what `null` means for each field.
+    The Tsai-Wu per-mode indices are `null` where they were `NaN`. The
+    nullable fields that were already `null` keep their meaning:
+    `knockdown_factor` (thermal-only), the first-ply-failure factors (no
+    stressed point), the interior values (no interior element) and
+    `effective_modulus_MPa` (ILSS, thermal).
+  - Any other non-finite value raises `ValueError` naming its location
+    (e.g. `$.failure.max_tsai_wu_index`) before any file is written.
+    Before, it was written silently. The JSON text is built before the
+    file is opened, so a refused export leaves no partial file and no
+    `.npz` sidecar.
+  - `load_results_from_json` reads `null` as `None`. It reads the `NaN` /
+    `Infinity` tokens of files written by earlier builds as `None` too,
+    with a logged warning, so old and new files load the same way.
+  - `validation/schemas/porosity_results_schema.json` declares the FE
+    `failure`, `stiffness` and `thermal` fields, with `null` allowed only
+    where it has a meaning.
+  - Tests parse every writer's output with a parser that rejects the
+    `NaN` / `Infinity` tokens, including the thermal and Tsai-Wu cases. A
+    static check fails if any `json.dump` call in the package omits
+    `allow_nan=False`.
 - **`FESolver.solve(solver='cg')` and `solver='minres'` returned wrong
   answers at the default `rtol` (result change for iterative-solver
   users).** The penalty rows put `alpha * v ~ 1e11 * v` into the

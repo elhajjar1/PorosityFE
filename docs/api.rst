@@ -24,6 +24,7 @@ Materials and porosity
    VoidGeometry
    PorosityField
    CompositeMesh
+   FlexureGeometry
    check_mesh_quality
 
 .. py:data:: MATERIALS
@@ -75,6 +76,10 @@ Finite-element solver
    BoundaryHandler
    extrapolate_to_nodes
    write_pvd
+   refinement_study
+   RefinementStudy
+   RefinementLevel
+   QuantityConvergence
 
 Laminate theory and transforms
 ------------------------------
@@ -192,8 +197,11 @@ type checkers use them; at run time each function validates its own input.
 
 .. py:data:: FELoadingMode
 
-   ``'compression' | 'tension' | 'shear' | 'ilss' | 'thermal'``, the
-   loading modes :meth:`FESolver.solve` has boundary conditions for.
+   ``'compression' | 'tension' | 'shear' | 'ilss' | 'flexure_3pt' |
+   'flexure_4pt' | 'thermal'``, the loading modes :meth:`FESolver.solve`
+   has boundary conditions for. ``'flexure_3pt'`` and ``'flexure_4pt'``
+   are three- and four-point bending on roller supports (ASTM D790 /
+   D7264), best on a mesh from :meth:`CompositeMesh.for_flexure`.
    ``'thermal'`` is the free-standing cure residual-stress solve; it needs
    ``delta_T=`` and lamina CTEs (see the theory page on thermal and cure
    residual stress).

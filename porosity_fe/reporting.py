@@ -22,7 +22,6 @@ from __future__ import annotations
 import csv
 import datetime
 import io
-import json
 import re
 import textwrap
 
@@ -147,8 +146,9 @@ def build_export_payload(result: dict) -> dict:
 
 
 def write_results_json(filepath: str, payload: dict) -> None:
+    text = _serialise_payload_json(payload)   # raises before the file is opened
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(_serialise_payload_json(payload))
+        f.write(text)
 
 
 def _format_csv_row(mode: str, model: str, r: dict) -> list:
@@ -187,10 +187,11 @@ def write_results_csv(filepath: str, payload: dict) -> None:
 
 
 def _serialise_payload_json(payload: dict) -> str:
-    from porosity_fe import FORMAT_EMPIRICAL_SWEEP, _json_default
-    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL, _wrap_envelope
+    """Standard JSON (no NaN / Infinity) of the app's empirical export payload."""
+    from porosity_fe import FORMAT_EMPIRICAL_SWEEP
+    from porosity_fe.io import _UNITS_STREAMLIT_EMPIRICAL, _dumps_json, _wrap_envelope
     envelope = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_STREAMLIT_EMPIRICAL, payload)
-    return json.dumps(envelope, indent=2, default=_json_default)
+    return _dumps_json(envelope)
 
 
 def _serialise_payload_csv(payload: dict) -> str:
@@ -444,10 +445,11 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
 
 
 def serialise_ncr_json(ncr: dict) -> str:
-    from porosity_fe import FORMAT_NCR, _json_default
-    from porosity_fe.io import _UNITS_NCR, _wrap_envelope
+    """Standard JSON (no NaN / Infinity) of an NCR validation summary."""
+    from porosity_fe import FORMAT_NCR
+    from porosity_fe.io import _UNITS_NCR, _dumps_json, _wrap_envelope
     envelope = _wrap_envelope(FORMAT_NCR, _UNITS_NCR, ncr)
-    return json.dumps(envelope, indent=2, default=_json_default)
+    return _dumps_json(envelope)
 
 
 def _per_mode_rows(ea: dict) -> list:
@@ -666,8 +668,9 @@ def serialise_ncr_pdf(ncr: dict) -> bytes:
 
 
 def write_ncr_json(filepath: str, ncr: dict) -> None:
+    text = serialise_ncr_json(ncr)   # raises before the file is opened
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(serialise_ncr_json(ncr))
+        f.write(text)
 
 
 def write_ncr_markdown(filepath: str, ncr: dict) -> None:

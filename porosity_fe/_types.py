@@ -26,11 +26,15 @@ LoadingMode = Literal[
 ]
 
 #: Loading modes accepted by :meth:`~porosity_fe.fe.solver.FESolver.solve`.
-#: The four mechanical modes have boundary-condition builders (no
-#: ``'transverse_tension'``); ``'thermal'`` is the free-standing thermal /
-#: cure residual-stress solve (needs ``delta_T=`` and lamina CTEs). Source
-#: of truth: the ``loading`` dispatch in ``FESolver.solve``.
-FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss', 'thermal']
+#: The mechanical modes have boundary-condition builders (no
+#: ``'transverse_tension'``): ``'flexure_3pt'`` / ``'flexure_4pt'`` are
+#: three- and four-point bending on roller supports (ASTM D790 / D7264);
+#: ``'thermal'`` is the free-standing thermal / cure residual-stress solve
+#: (needs ``delta_T=`` and lamina CTEs). Source of truth:
+#: ``porosity_fe.fe.solver._FE_LOADINGS`` (the ``loading`` dispatch in
+#: ``FESolver.solve``).
+FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss',
+                        'flexure_3pt', 'flexure_4pt', 'thermal']
 
 #: Hexahedral element formulations accepted by
 #: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8i'``

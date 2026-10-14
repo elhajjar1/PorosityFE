@@ -348,3 +348,250 @@ def test_config_result_dict_shim_unknown_key_get_and_keys():
         "Vp", "config_name", "config", "failure_stress",
         "knockdown", "model", "empirical", "seed",
     }
+
+
+# ----------------------------------------------------------------------
+# Standard JSON from every writer: no NaN / Infinity tokens
+# ----------------------------------------------------------------------
+# Python's json module writes NaN / Infinity by default; strict parsers
+# (JavaScript, jq, Go, ...) reject them. These tests parse every writer's
+# output with a parser that refuses those tokens.
+
+def _reject_constant(token):
+    raise ValueError(f"non-standard JSON token {token!r}")
+
+
+def _strict_loads(text):
+    return json.loads(text, parse_constant=_reject_constant)
+
+
+def _ncr_result():
+    return {
+        "config": {
+            "material_name": "T800_epoxy", "n_plies": 24, "t_ply": 0.183,
+            "Vp": 3.0, "distribution": "uniform", "void_shape": "spherical",
+            "nx": 30, "ny": 10, "nz": 12,
+        },
+        "empirical": {
+            "compression": {"judd_wright": {"failure_stress": 1234.5, "knockdown": 0.823}},
+            "ilss": {"judd_wright": {"failure_stress": 67.0, "knockdown": 0.744}},
+        },
+    }
+
+
+def _write_sweep(path):
+    save_results_to_json(_tiny_results(), path)
+
+
+def _write_app_export(path):
+    from porosity_fe.reporting import build_export_payload, write_results_json
+    write_results_json(path, build_export_payload(_ncr_result()))
+
+
+def _write_ncr(path):
+    from porosity_fe.reporting import build_ncr_record, write_ncr_json
+    write_ncr_json(path, build_ncr_record(_ncr_result(), {"prepared_by": "test"}))
+
+
+def _write_uq(path, include_samples=False):
+    from porosity_fe import propagate_uncertainty, save_uq_results_to_json
+    res = {"compression": propagate_uncertainty(
+        0.03, coef_cov=0.1, vp_cov=0.1, n_samples=20, seed=1)}
+    save_uq_results_to_json(res, path, include_samples=include_samples)
+
+
+def _write_uq_with_samples(path):
+    _write_uq(path, include_samples=True)
+
+
+@pytest.mark.parametrize("writer", [
+    _write_sweep, _write_app_export, _write_ncr, _write_uq, _write_uq_with_samples,
+], ids=["sweep", "app_export", "ncr", "uq", "uq_samples"])
+def test_empirical_writers_emit_standard_json(writer, tmp_path):
+    import jsonschema
+
+    path = tmp_path / "out.json"
+    writer(str(path))
+    doc = _strict_loads(path.read_text(encoding="utf-8"))
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    assert load_results_from_json(path) == doc
+
+
+@pytest.fixture(scope="module")
+def fe_tsai_wu():
+    """The reported case: T800_epoxy, Vp = 0.02, 6x3x24, compression; one
+    solve per failure criterion (Tsai-Wu is the default)."""
+    from porosity_fe import MATERIALS, CompositeMesh, FESolver, PorosityField
+    mat = MATERIALS["T800_epoxy"]
+    pf = PorosityField(mat, 0.02, seed=0)
+    mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=24)
+    solver = FESolver(mesh, mat, pf)
+    results = {"tsai_wu": solver.solve("compression")}
+    for crit in ("hashin", "max_stress"):
+        results[crit] = solver.solve("compression", failure_criterion=crit)
+    return results
+
+
+@pytest.fixture(scope="module")
+def fe_thermal():
+    """Thermal-only and combined solves of a CTE-carrying [0/90]_s laminate."""
+    from porosity_fe import MATERIALS, CompositeMesh, FESolver, PorosityField
+    mat = dataclasses.replace(MATERIALS["AS4_3501_6_epoxy"], n_plies=4, t_ply=0.125)
+    layup = [0.0, 90.0, 90.0, 0.0]
+    pf = PorosityField(mat, 0.02, seed=0)
+    mesh = CompositeMesh(pf, mat, nx=6, ny=2, nz=4, ply_angles=layup)
+    solver = FESolver(mesh, mat, pf, ply_angles=layup)
+    return {"thermal": solver.solve("thermal", delta_T=-150.0),
+            "combined": solver.solve("tension", delta_T=-150.0)}
+
+
+def _export_fe(result, path, **kwargs):
+    from porosity_fe import FESolver
+    FESolver.export_results(result, path, **kwargs)
+    return _strict_loads(path.read_text(encoding="utf-8"))
+
+
+def test_fe_json_tsai_wu_mode_indices_are_null(fe_tsai_wu, tmp_path):
+    """Regression: Tsai-Wu does not separate modes, so its per-mode indices
+    are NaN in FieldResults, and the JSON export wrote them as the invalid
+    token NaN."""
+    import jsonschema
+
+    r = fe_tsai_wu["tsai_wu"]
+    assert r.failure_criterion == "tsai_wu"
+    assert all(np.isnan(v) for k, v in r.failure_mode_indices.items() if k != "max_fi")
+
+    path = tmp_path / "fe.json"
+    doc = _export_fe(r, path, include_raw=True)
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    modes = doc["failure"]["mode_indices"]
+    assert set(modes) == set(r.failure_mode_indices)
+    assert modes["max_fi"] == r.failure_mode_indices["max_fi"]
+    assert all(v is None for k, v in modes.items() if k != "max_fi")
+    # The loader hands the nulls back as None and the rest unchanged.
+    loaded = load_results_from_json(path)
+    assert loaded == doc
+    assert loaded["failure"]["mode_indices"]["fiber_c"] is None
+
+
+@pytest.mark.parametrize("criterion", ["hashin", "max_stress"])
+def test_fe_json_separating_criteria_write_numbers(fe_tsai_wu, criterion, tmp_path):
+    r = fe_tsai_wu[criterion]
+    modes = _export_fe(r, tmp_path / "fe.json")["failure"]["mode_indices"]
+    assert modes == {k: float(v) for k, v in r.failure_mode_indices.items()}
+
+
+def test_fe_json_thermal_exports_are_standard(fe_thermal, tmp_path):
+    import jsonschema
+
+    th, comb = fe_thermal["thermal"], fe_thermal["combined"]
+    assert np.isnan(th.knockdown)
+    doc = _export_fe(th, tmp_path / "th.json", include_raw=True)
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    assert doc["failure"]["knockdown_factor"] is None
+    assert doc["failure"]["load_factor_basis"] == "delta_T"
+    assert doc["stiffness"]["effective_modulus_MPa"] is None
+    assert doc["thermal"]["delta_T_K"] == -150.0
+    loaded = load_results_from_json(tmp_path / "th.json")
+    assert loaded["failure"]["knockdown_factor"] is None
+
+    doc = _export_fe(comb, tmp_path / "comb.json")
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    assert doc["failure"]["knockdown_factor"] == comb.knockdown
+    assert doc["failure"]["load_factor_basis"] == "mechanical_with_residual"
+
+
+def test_fe_json_infinite_load_factor_is_null(fe_tsai_wu, tmp_path):
+    """An unstressed model has an infinite first-ply-failure factor: null."""
+    r = dataclasses.replace(fe_tsai_wu["hashin"],
+                            first_ply_failure_load_factor=float("inf"),
+                            interior_first_ply_failure_load_factor=float("inf"))
+    fail = _export_fe(r, tmp_path / "fe.json")["failure"]
+    assert fail["first_ply_failure_load_factor"] is None
+    assert fail["interior_first_ply_failure_load_factor"] is None
+
+
+def test_fe_json_refuses_unexpected_nan_before_writing(fe_tsai_wu, tmp_path):
+    """A NaN in a field with no documented null meaning is a bug upstream:
+    the writer raises, names the field, and leaves no file or sidecar."""
+    from porosity_fe import FESolver
+
+    bad = dataclasses.replace(fe_tsai_wu["tsai_wu"], max_failure_index=float("nan"))
+    path = tmp_path / "bad.json"
+    with pytest.raises(ValueError,
+                       match=r"non-finite value at \$\.failure\.max_tsai_wu_index"):
+        FESolver.export_results(bad, path, include_raw=True)
+    assert not path.exists()
+    assert not (tmp_path / "bad.json.npz").exists()
+
+
+def test_sweep_writer_refuses_nan_and_writes_nothing(tmp_path):
+    results = _tiny_results()
+    original = results["uniform_spherical"]
+    bad = dataclasses.replace(
+        original, config={**original.config, "Vp_scale": float("nan")})
+    path = tmp_path / "bad.json"
+    with pytest.raises(ValueError, match=r"\$\.uniform_spherical\.config\.Vp_scale"):
+        save_results_to_json({"uniform_spherical": bad}, str(path))
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("payload, where", [
+    ({"a": {"b": [1.0, float("nan")]}}, r"\$\.a\.b\[1\]"),
+    ({"a": np.float64("inf")}, r"\$\.a"),
+    ({"a": np.array([[0.0, 1.0], [2.0, -np.inf]])}, r"\$\.a\[1\]\[1\]"),
+    ({"a": (1, 2.5, float("-inf"))}, r"\$\.a\[2\]"),
+])
+def test_strict_serializer_names_the_non_finite_value(payload, where):
+    from porosity_fe.io import _dumps_json
+    with pytest.raises(ValueError, match=where):
+        _dumps_json(payload)
+
+
+def test_strict_serializer_keeps_finite_payloads():
+    from porosity_fe.io import _dumps_json
+    payload = {"x": np.float64(1.5), "y": np.arange(3), "z": None, "s": "NaN"}
+    assert _strict_loads(_dumps_json(payload)) == {
+        "x": 1.5, "y": [0, 1, 2], "z": None, "s": "NaN"}
+
+
+def test_loader_reads_legacy_nan_tokens_as_none(tmp_path, caplog):
+    """Files written before the fix hold NaN tokens; they load as None, the
+    same as a current file, with a warning."""
+    import logging
+
+    path = tmp_path / "legacy.json"
+    save_results_to_json(_tiny_results(), path)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["legacy_fe_block"] = {"fiber_t": float("nan"), "lam": float("inf")}
+    path.write_text(json.dumps(doc), encoding="utf-8")   # allow_nan default
+    assert "NaN" in path.read_text(encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="porosity_fe_analysis"):
+        loaded = load_results_from_json(path)
+    assert loaded["legacy_fe_block"] == {"fiber_t": None, "lam": None}
+    assert "Infinity, NaN" in caplog.text
+
+
+def test_every_package_json_call_disallows_nan():
+    """Static guard: every json.dump / json.dumps call in the package passes
+    allow_nan=False, so a new writer cannot reintroduce NaN tokens."""
+    import ast
+    from pathlib import Path
+
+    import porosity_fe
+
+    calls = []
+    for src in sorted(Path(porosity_fe.__file__).parent.rglob("*.py")):
+        tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("dump", "dumps")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "json"):
+                kw = {k.arg: k.value for k in node.keywords}
+                ok = (isinstance(kw.get("allow_nan"), ast.Constant)
+                      and kw["allow_nan"].value is False)
+                calls.append((f"{src.name}:{node.lineno}", ok))
+    assert calls, "expected the shared serializer's json.dumps call"
+    assert all(ok for _, ok in calls), [c for c, ok in calls if not ok]

@@ -5,6 +5,7 @@ from .element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401
 from .element import Hex8Element
 from .export import write_pvd
 from .recovery import extrapolate_to_nodes
+from .refinement import QuantityConvergence, RefinementLevel, RefinementStudy, refinement_study
 from .solver import FESolver, FieldResults
 
 __all__ = [
@@ -13,6 +14,10 @@ __all__ = [
     "FieldResults",
     "GlobalAssembler",
     "Hex8Element",
+    "QuantityConvergence",
+    "RefinementLevel",
+    "RefinementStudy",
     "extrapolate_to_nodes",
+    "refinement_study",
     "write_pvd",
 ]

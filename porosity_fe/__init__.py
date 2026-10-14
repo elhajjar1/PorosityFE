@@ -85,7 +85,11 @@ from .fe import FESolver as FESolver  # noqa: F401, E402
 from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
 from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
+from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
+from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
+from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
+from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
@@ -113,6 +117,7 @@ from .io import save_results_to_json as save_results_to_json  # noqa: F401, E402
 from .materials import MATERIALS as MATERIALS  # noqa: F401, E402
 from .materials import MaterialProperties as MaterialProperties  # noqa: F401, E402
 from .mesh import CompositeMesh as CompositeMesh  # noqa: F401, E402
+from .mesh import FlexureGeometry as FlexureGeometry  # noqa: F401, E402
 from .mesh import check_mesh_quality as check_mesh_quality  # noqa: F401, E402
 from .pipeline import _analyze_one as _analyze_one  # noqa: F401, E402
 from .pipeline import _build_config_artifacts as _build_config_artifacts  # noqa: F401, E402
@@ -164,6 +169,7 @@ __all__ = [
     "PorosityField",
     # Mesh
     "CompositeMesh",
+    "FlexureGeometry",
     "check_mesh_quality",
     # Result dataclasses
     "ConfigArtifacts",
@@ -195,6 +201,10 @@ __all__ = [
     "Hex8Element",
     "extrapolate_to_nodes",
     "write_pvd",
+    "QuantityConvergence",
+    "RefinementLevel",
+    "RefinementStudy",
+    "refinement_study",
     # Visualization
     "FEVisualizer",
     # IO
