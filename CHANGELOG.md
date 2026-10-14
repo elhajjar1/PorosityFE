@@ -109,6 +109,38 @@ All notable changes to PorosityFE will be documented in this file.
     `FESolver.export_results(fmt='vtu')` delegates to it. `write_pvd`
     (new) groups VTU files into a ParaView series. `to_vtk` and its
     output are unchanged and remain the default for `fmt='vtk'`.
+- **Periodic unit-cell check of the Mori-Tanaka void model
+  (IMPROVEMENT_PLAN 3.6, D1).** An internal verification tool, not public
+  API (`porosity_fe.fe._rve`, no `__all__` change); no result changes.
+  - The constraint reduction of the FE solver
+    (`porosity_fe.fe.assembler._ConstraintReduction`, formerly
+    `_DirichletPartition`, which stays as an alias) is now the affine map
+    `u = T u_r + g`: besides prescribed values it takes master-slave ties
+    `u_s = u_m + c`, chained or ending on a prescribed degree of freedom,
+    and reduces to `T^T K T u_r = T^T (F - K g)`. Without ties it slices
+    exactly as before: every loading mode is bit-identical on 30 x 10 x 12
+    and 30 x 10 x 24, both element formulations.
+  - The tool builds a cube of isotropic matrix holding one centred
+    ellipsoidal void (the elements whose centroid lies inside, at the
+    1 MPa explicit-void stiffness), applies periodic boundary conditions
+    `u(x + L) = u(x) + E L` with one corner pinned, and returns the 6 x 6
+    effective stiffness from the volume-averaged stress of six unit
+    macro-strains, for either element formulation. A 24^3 cell takes about
+    35 s (a geometric nested-dissection ordering makes the LU four to six
+    times faster than SuperLU's minimum-degree ordering on the wrapped
+    grid).
+  - Against `_mt_effective_stiffness` at the voxel void fraction (24^3,
+    `'hex8i'`, T800 matrix): spherical voids agree within 0.2 % on the
+    normal stiffnesses and 1 % on the isotropic bulk and shear moduli up
+    to `Vp = 0.10`; the individual shear terms differ by up to 2 % because
+    a simple cubic array is not isotropic (its two shear moduli bracket the
+    Mori-Tanaka value). Oblate voids of aspect 5 agree within 1 % at
+    `Vp = 0.02` and within 3.5 % at 0.05, but once neighbours crowd, the cell
+    is much softer out of plane: Mori-Tanaka overestimates `C33` and `C44`
+    by 7 % and 10 % at 0.08 and by about 20 % at 0.10. Table, mesh study
+    and conclusions are in the theory page (micromechanics, "Verification
+    against a periodic unit cell"). `tests/test_rve.py` checks the method
+    on cells up to 12^3; `POROSITY_FE_RVE_SWEEP=1` runs the 24^3 cases.
 - **Thermal expansion inputs (IMPROVEMENT_PLAN 3.5, first part).**
   `MaterialProperties` gains optional `alpha_1`, `alpha_2`, `alpha_3`
   (lamina CTEs in 1/K) and `T_stress_free` (deg C), all defaulting to

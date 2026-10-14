@@ -417,8 +417,8 @@ class _ConstraintReduction:
         return tied, masters, offsets
 
     def lift(self) -> np.ndarray:
-        """``g``: prescribed values, tie offsets (plus a prescribed master's
-        value), zero at the independent DOFs."""
+        """``g``: the prescribed values, the tie offsets (plus the value of a
+        prescribed master) and zero at the independent DOFs."""
         u = np.zeros(self.n_dof, dtype=float)
         u[self.fixed] = self.values
         if self.tied.size:
@@ -426,8 +426,8 @@ class _ConstraintReduction:
         return u
 
     def reduce_matrix(self, K: scipy.sparse.spmatrix) -> scipy.sparse.csc_matrix:
-        """``T^T K T``: the free-DOF block ``K_ff`` (column slice, then rows)
-        without ties."""
+        """``T^T K T``; without ties the free-DOF block ``K_ff`` (column
+        slice, then rows)."""
         K_csc = scipy.sparse.csc_matrix(K)
         if self.transform is None:
             return K_csc[:, self.free][self.free, :].tocsc()
@@ -435,7 +435,7 @@ class _ConstraintReduction:
         return (T.T @ (K_csc @ T)).tocsc()
 
     def reduce_rhs(self, K: scipy.sparse.spmatrix, F: np.ndarray) -> np.ndarray:
-        """``T^T (F - K g)``: ``F_f - K_fc u_c`` without ties, without
+        """``T^T (F - K g)``; without ties ``F_f - K_fc u_c``, without
         building ``K_fc``."""
         F = np.asarray(F, dtype=float)
         if self.transform is None:

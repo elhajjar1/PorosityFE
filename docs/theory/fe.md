@@ -175,6 +175,15 @@ of $10^6 \max_i K_{ii}$ on each constrained degree of freedom) gave
 $2.4 \times 10^7$ and left a boundary slack of about $10^{-8}$ of the
 displacement.
 
+The reduction is one affine map, $\mathbf u = \mathbf T \mathbf u_r + \mathbf g$,
+with the reduced system $\mathbf T^\mathsf{T} \mathbf K \mathbf T\, \mathbf u_r
+= \mathbf T^\mathsf{T} (\mathbf F - \mathbf K \mathbf g)$. For prescribed
+values alone $\mathbf T$ selects the free degrees of freedom, which gives the
+system above (computed by slicing, as before). The same map also takes
+master-slave ties $u_s = u_m + c$, chained or ending on a prescribed degree of
+freedom. None of the loading modes uses ties; the periodic unit cell that
+checks the Mori-Tanaka void model does ({doc}`micromechanics`).
+
 The default solve is a sparse LU factorization of $\mathbf K_{ff}$, cached
 and reused until the mesh, material, porosity or set of constrained degrees
 of freedom change. Jacobi-preconditioned conjugate gradients
