@@ -830,6 +830,9 @@ def _build_stress_tab(result: dict | None):
     slug = ("s11", "s22", "s33", "t23", "t13", "t12")[comp_idx] \
         if comp_idx >= 0 else "von_mises"
     _show_figure(plot_stress(result, comp_name), f"stress_{slug}", "dl_png_stress")
+    formulation = getattr(result["fe_field"], "formulation", None)
+    if formulation:
+        st.caption(f"FE element formulation: {formulation}.")
 
 
 def _build_export_tab(result: dict | None, layup_for_title: str):

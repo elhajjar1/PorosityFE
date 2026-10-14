@@ -92,11 +92,12 @@ class MaterialProperties:
         a magnitude of ``1e-3`` /K or more is rejected as a probable
         ppm/K value). ``None`` (default) means no thermal data. Give both
         or neither. ``alpha_1`` may be negative (carbon fibers contract
-        axially when heated); ``alpha_2`` must be positive. Inputs for the
-        planned thermal / cure-residual-stress load case: no solver reads
-        them yet, and they leave every current result unchanged. Held at
-        the pristine value: porosity barely changes the ply CTE (an empty
-        void does not change the free thermal expansion of the matrix
+        axially when heated); ``alpha_2`` must be positive. Read by the FE
+        thermal / cure-residual-stress load case
+        (``FESolver.solve(loading='thermal', delta_T=...)`` or ``delta_T=``
+        on a mechanical mode); without ``delta_T`` they change no result.
+        Held at the pristine value: porosity barely changes the ply CTE (an
+        empty void does not change the free thermal expansion of the matrix
         around it).
     alpha_3 : float, optional
         Through-thickness CTE in 1/K, positive. ``None`` (default) uses
@@ -104,9 +105,10 @@ class MaterialProperties:
         :attr:`alpha_3_eff`. Requires ``alpha_1`` and ``alpha_2``.
     T_stress_free : float, optional
         Stress-free temperature in deg C (typically near the cure
-        temperature), from which the thermal load case will take its
-        temperature difference. ``None`` (default) means unspecified.
-        Must be finite and above absolute zero.
+        temperature), recorded for the user's ``delta_T = T_service -
+        T_stress_free``. The solver does not read it: ``delta_T`` is always
+        passed explicitly. ``None`` (default) means unspecified. Must be
+        finite and above absolute zero.
 
     Attributes
     ----------
@@ -213,9 +215,9 @@ class MaterialProperties:
     fiber_shear_modulus: float | None = None
 
     # Lamina coefficients of thermal expansion (1/K, not ppm/K) and the
-    # stress-free temperature (deg C) for the planned thermal / cure
-    # residual-stress load case (IMPROVEMENT_PLAN 3.5). Optional; no
-    # solver reads them yet. alpha_3 = None means alpha_3 = alpha_2.
+    # stress-free temperature (deg C) for the thermal / cure residual-stress
+    # load case (IMPROVEMENT_PLAN 3.5). Optional; only FESolver.solve with
+    # delta_T reads the CTEs. alpha_3 = None means alpha_3 = alpha_2.
     alpha_1: float | None = None        # Fiber-direction CTE (1/K)
     alpha_2: float | None = None        # Transverse CTE (1/K)
     alpha_3: float | None = None        # Through-thickness CTE (1/K)

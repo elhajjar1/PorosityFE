@@ -40,6 +40,7 @@ micromechanics
 laminate
 empirical
 fe
+thermal
 failure
 fatigue_environment
 uncertainty

@@ -57,9 +57,11 @@ def _per_node_porosity(distribution):
 
 def _fe_max_failure_index(distribution):
     pf = PorosityField(MATERIAL, VP, distribution=distribution)
-    # nz=8 resolves the through-thickness clustering; the thin elements raise a
-    # benign mesh-distortion heads-up that is irrelevant to this contract.
-    mesh = CompositeMesh(pf, MATERIAL, nx=3, ny=2, nz=8)
+    # nz=24 gives each of the 24 plies its own element layer (an nz that merges
+    # plies analyzes a different laminate) and resolves the through-thickness
+    # clustering; the thin elements raise a benign mesh-distortion heads-up
+    # that is irrelevant to this contract.
+    mesh = CompositeMesh(pf, MATERIAL, nx=3, ny=2, nz=24)
     solver = FESolver(mesh, MATERIAL, pf)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -102,7 +104,7 @@ def test_fe_failure_index_depends_on_distribution():
     mean_fi = np.mean(list(fi.values()))
     spread = (max(fi.values()) - min(fi.values())) / mean_fi
     # The three shapes must produce a materially different worst-case failure
-    # index (observed ~0.5%); fp noise on this deterministic solve is ~1e-10.
+    # index (observed ~0.3%); fp noise on this deterministic solve is ~1e-10.
     assert spread > 1e-3
 
     # Concentrating porosity (clustered / interface) creates a worse local

@@ -26,16 +26,18 @@ LoadingMode = Literal[
 ]
 
 #: Loading modes accepted by :meth:`~porosity_fe.fe.solver.FESolver.solve`.
-#: Narrower than :data:`LoadingMode`: the FE boundary-condition builders
-#: cover only these four (no ``'transverse_tension'``). Source of truth:
-#: the ``loading`` dispatch in ``FESolver.solve``.
-FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss']
+#: The four mechanical modes have boundary-condition builders (no
+#: ``'transverse_tension'``); ``'thermal'`` is the free-standing thermal /
+#: cure residual-stress solve (needs ``delta_T=`` and lamina CTEs). Source
+#: of truth: the ``loading`` dispatch in ``FESolver.solve``.
+FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss', 'thermal']
 
 #: Hexahedral element formulations accepted by
-#: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8'``,
-#: the standard fully integrated trilinear brick, and ``'hex8i'``, the same
-#: brick enriched with nine Wilson-Taylor incompatible modes. Source of
-#: truth: ``porosity_fe.fe.element.ELEMENT_FORMULATIONS``.
+#: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8i'``
+#: (the default), the trilinear brick enriched with nine Wilson-Taylor
+#: incompatible modes, and ``'hex8'``, the standard fully integrated
+#: trilinear brick. Source of truth:
+#: ``porosity_fe.fe.element.ELEMENT_FORMULATIONS``.
 FEFormulation = Literal['hex8', 'hex8i']
 
 #: Built-in empirical knockdown model names. Source of truth:

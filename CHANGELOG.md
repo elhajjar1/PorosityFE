@@ -34,15 +34,68 @@ All notable changes to PorosityFE will be documented in this file.
   more is rejected as a probable ppm/K value ("pass 26e-6, not 26"),
   `alpha_1` and `alpha_2` must be given together, and only `alpha_1` may be
   negative. `has_cte` and `cte_vector()` (Voigt `[a1, a2, a3, 0, 0, 0]`)
-  are there for the solver. **The thermal / cure-residual-stress solve
-  itself is not implemented yet**: no solver reads these fields, and every
-  existing result is unchanged. Only `AS4_3501_6_epoxy` carries CTEs
+  are there for the solver. The thermal load case below is the only
+  reader; without `delta_T` every existing result is unchanged. Only
+  `AS4_3501_6_epoxy` carries CTEs
   (`alpha_1 = -1.0e-6`, `alpha_2 = 26e-6` /K, WWFE-I lamina data, Soden,
   Hinton & Kaddour 1998); the other presets leave them `None` until
   sourced values are confirmed. No preset sets `T_stress_free`. The CTE
   fields are not UQ-perturbable.
-- **Incompatible-mode hex8 element, opt-in (IMPROVEMENT_PLAN 3.6, step
-  A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
+- **Thermal / cure residual-stress load case (IMPROVEMENT_PLAN 3.5, PRs 2
+  and 3).** Library only; the app does not expose it yet. Mechanical
+  solves without `delta_T` are bit-identical to before (checked on the
+  production mesh, both element formulations, all four modes and three
+  criteria).
+  - `FESolver.solve(loading='thermal', delta_T=...)` solves the
+    free-standing laminate under a uniform temperature change (K, negative
+    for a cool-down) with statically determinate 3-2-1 supports
+    (`BoundaryHandler.free_bcs`, new), whose reactions come out at about
+    1e-9 N. The load `sum B^T C alpha dT det(J) w` uses the porosity-
+    degraded, ply-rotated stiffness and the pristine lamina CTE (an empty
+    void does not change the free thermal expansion); for
+    `formulation='hex8i'` the incompatible modes are loaded and condensed
+    consistently (`f_u + H^T f_a`, strain `B_eff u + G Kaa^-1 f_a`), and
+    match a solve with the internal modes kept as unknowns to 1e-13. Stress
+    is `C (B u - alpha dT)`; strains are totals. On a [0/90]_2s T800 plate
+    the interior stresses match CLT (47.573 MPa) to 0.07 % with `'hex8'`
+    and 0.3 % with `'hex8i'`; a distorted homogeneous block expands freely
+    with zero stress to round-off. `knockdown` is `nan` (`null` in JSON),
+    `effective_modulus` is `None`, and `first_ply_failure_load_factor`
+    multiplies `delta_T` (the critical temperature change).
+  - `delta_T=` on `'compression'`, `'tension'`, `'shear'` or `'ilss'`
+    superposes that residual state on the mechanical solve (two solves:
+    the residual stress forms before the laminate is gripped). Knockdown,
+    effective modulus and reactions stay those of the mechanical solve.
+    The first-ply-failure factor scales only the mechanical stress:
+    `first_ply_failure_load_factor(..., prestress_local=...)` (new
+    keyword) solves Tsai-Wu in closed form with the residual terms,
+    max-stress as linear with an offset, and Hashin branch by branch
+    because a residual stress lets a stress change sign as the load grows
+    (checked against bisection to 1e-6). For the cross-ply in tension the
+    factor drops from 7.0 to 2.7; scaling the total stress would have
+    given 1.3.
+  - `delta_T` is never inferred (not from `T_stress_free`); a material
+    without CTEs, a non-finite `delta_T`, or a mesh whose element layers
+    do not resolve the requested layup (`nz` not a multiple of `n_plies`)
+    raises `ValueError`, the last unless `allow_unresolved_layup=True`.
+    An unsymmetric element layup logs a warning (linear theory; `'hex8'`
+    underpredicts its curvature, 0.84 of CLT where `'hex8i'` gives 1.00).
+  - `FieldResults` gains `delta_T`, `residual_stress_local`,
+    `residual_max_failure_index`, `load_factor_basis`, `cte_local`, and,
+    for every solve, `interior_max_failure_index` and
+    `interior_first_ply_failure_load_factor` over the elements at least
+    `interior_margin` from the lateral faces, away from the free-edge
+    singularity. The JSON export adds a `thermal` block, these keys in
+    `failure` and `delta_T_K` in the provenance (`JSON_SCHEMA_VERSION`
+    1.2, additive); VTK/VTU files add `residual_sigma_11_local`,
+    `residual_sigma_22_local` and `residual_tau_12_local` cell fields and
+    leave out the `knockdown` field when it is `nan`. `FELoadingMode`
+    gains `'thermal'`. Theory: `docs/theory/thermal.md`.
+  - Caveats documented there: CTE data (one preset), effective `delta_T`
+    (no chemical shrinkage, relaxation or moisture), geometric linearity,
+    and that under the square-root strength rule porosity can lower the
+    residual failure index.
+- **Incompatible-mode hex8 element (IMPROVEMENT_PLAN 3.6, step A1).** `FESolver(..., formulation='hex8i')` enriches each brick with the
   nine Wilson-Taylor incompatible modes (with Taylor's centroid-Jacobian
   correction), condensed out per element and folded into an effective
   `B = B + G H` in the batched path, so stiffness, stress recovery,
@@ -62,9 +115,9 @@ All notable changes to PorosityFE will be documented in this file.
   formulations never share a cached result. `GlobalAssembler`,
   `build_element_batch` and `Hex8Element` take the same keyword
   (`Hex8Element.G_matrix` / `strain_operator` expose the enrichment); the
-  new `FEFormulation` type alias names the accepted values. `'hex8'`
-  remains the default and its results are unchanged bit for bit. See
-  "Element formulations" in `docs/theory/fe.md`.
+  new `FEFormulation` type alias names the accepted values. It is now the
+  default (see "Changed"); `formulation='hex8'` reproduces the earlier
+  results bit for bit. See "Element formulations" in `docs/theory/fe.md`.
 - **Documentation: theory pages, CLI reference, full API reference
   (IMPROVEMENT_PLAN 6.5).** New `docs/theory/` pages state the porosity
   field, Mori-Tanaka/Eshelby micromechanics, CLT, the empirical knockdown
@@ -420,6 +473,42 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The incompatible-mode element `'hex8i'` is the default FE formulation
+  (IMPROVEMENT_PLAN 3.6, step A2).** `FESolver`, `GlobalAssembler`,
+  `build_element_batch` and `Hex8Element` now default to
+  `formulation='hex8i'`, so the pipeline, the Streamlit app (which shows the
+  formulation under the stress plot) and the examples pick it up; the plain
+  brick stays available as `formulation='hex8'`, which reproduces the
+  previous results bit for bit. `FieldResults` built directly, and the JSON
+  export of a result without the field, record `'hex8i'`. **Result change**
+  for every FE solve that did not pass `formulation=`. Measured on T800 QI
+  (uniform `Vp` 3 % and 6 %, midplane-clustered and interface-penny 3 %),
+  `'hex8'` to `'hex8i'`:
+
+  | quantity | 30x10x12 (production) | 30x10x24 |
+  |---|---|---|
+  | compression / tension / shear knockdown | -2e-5 to 0 | -5e-5 to 0 |
+  | ILSS knockdown | +0.0006 to +0.0034 | +0.0007 to +0.0019 |
+  | ILSS peak `abs(tau_13)` | -45 to -47 % | -34 to -36 % |
+  | ILSS first-ply-failure load factor | +17 to +25 % | +13 to +15 % |
+  | compression max failure index | -13.3 to -13.7 % | -7.7 to -11.5 % |
+
+  The tension maximum failure index drops by 1.4-2.8 % (30x10x12) and
+  3.1-3.5 % (30x10x24); `effective_modulus` in compression and tension by
+  about 0.1 %; shear is unchanged. Cost: the per-element condensation adds
+  about 0.06 s per assembly at 3,600 elements and 0.18 s at 7,200; a first
+  solve on a new mesh assembles twice (porous and pristine reference), so
+  it takes 0-7 % longer depending on the machine (4.1 s for both elements
+  here at 30x10x12, best of five); repeat solves and memory are unchanged.
+  The README FE distribution table (12x4x12) is regenerated: uniform
+  0.9922 -> 0.9921, interface 0.9821 -> 0.9820. The empirical path,
+  including the validation MAE, is unchanged. Tests: the Hashin ILSS
+  delamination check and the distribution-contract FE checks now use
+  ply-resolving meshes (`nz = 24`), because on the earlier ply-merging
+  meshes the lock-free element changes which failure mode governs (matrix
+  tension in the outer 90 deg element layer) and shrinks the
+  uniform-to-clustered contrast in the corner failure index below the
+  test's 0.1 % threshold.
 - **Dirichlet boundary conditions are eliminated exactly instead of by a
   penalty (IMPROVEMENT_PLAN 1.6).** `FESolver` solves
   `K_ff u_f = F_f - K_fc u_c` with the prescribed values set exactly, in

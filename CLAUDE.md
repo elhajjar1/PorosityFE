@@ -70,7 +70,9 @@ different numerical answers for the same inputs**, not the same answer:
   `compression` scale by `max(1, CLT-energy blend / alpha_QI)`, so QI
   layups are unchanged and a scale above 1 is flagged as unvalidated. The
   old `f_md` / `F_MD_*` constants are deprecated and drive nothing.
-- `FESolver` (`porosity_fe/fe/solver.py`) — builds a hex8 mesh and
+- `FESolver` (`porosity_fe/fe/solver.py`) — builds a hex mesh of
+  incompatible-mode bricks (`formulation='hex8i'`, the default; plain
+  `'hex8'` stays selectable), eliminates the Dirichlet BCs exactly, and
   applies stiffness degradation **per element** via Eshelby/Mori-Tanaka
   micromechanics on the local `Vp(x, y, z)`. Assembly and stress recovery
   run on batched per-element arrays (`porosity_fe/fe/batch.py`), not
