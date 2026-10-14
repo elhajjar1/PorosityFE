@@ -8,7 +8,8 @@ element by element from the local porosity.
 
 {class}`~porosity_fe.CompositeMesh` divides the specimen into
 $n_x \times n_y \times n_z$ eight-node hexahedra (default production
-resolution $30 \times 10 \times 12$). Each element gets the ply angle of
+resolution $30 \times 10 \times n_\text{plies}$, one element layer per ply,
+with $n_z$ capped at 48). Each element gets the ply angle of
 the ply containing its centroid; a centroid on a ply interface takes the
 ply above. The porosity field is sampled at every node. Elements whose
 centroid lies inside a discrete void are flagged as void elements. The
@@ -17,12 +18,15 @@ total element count is capped at $10^6$.
 ```{warning}
 An element layer that spans several plies takes only one of their angles,
 so unless $n_z$ is a multiple of the ply count the FE laminate is not the
-requested one. The default $n_z = 12$ does not resolve the 24-ply presets:
-for the T800/epoxy QI laminate it models $[90/{-45}/45/0]_3$, which keeps
-the angle fractions but not the stacking sequence or symmetry (pristine
-$E_x$ 1.6 % below CLT; $n_z = 24$ is within 0.5 %). Bending, interlaminar
-stresses and failure indices are more sensitive to the sequence than the
-membrane stiffness is.
+requested one. $n_z = 12$, the production default before it became the
+ply count, does not resolve the 24-ply presets: for the T800/epoxy QI
+laminate it models $[90/{-45}/45/0]_3$, which keeps the angle fractions but
+not the stacking sequence or symmetry (pristine $E_x$ 1.6 % below CLT;
+$n_z = 24$ is within 0.5 %). Bending, interlaminar stresses and failure
+indices are more sensitive to the sequence than the membrane stiffness is
+(see "Production resolution" below). Above 48 plies the default $n_z$
+stops at 48 and no longer resolves the plies; pass `mesh_res` (or build the
+mesh) with $n_z = n_\text{plies}$ for such a laminate.
 {meth}`~porosity_fe.CompositeMesh.layup_discrepancies` lists the
 differences, and {class}`~porosity_fe.FESolver` logs them as a warning.
 ```
@@ -170,10 +174,10 @@ $\mathbf R_c = \mathbf K_{cf} \mathbf u_f + \mathbf K_{cc} \bar{\mathbf u}_c - \
 at the constrained degrees of freedom and zero elsewhere; a load applied at
 a supported node goes into that support's reaction. $\mathbf K_{ff}$ keeps
 the conditioning of the physical stiffness: on the production mesh its
-diagonal ratio is about 24, where the penalty method used before (a spring
-of $10^6 \max_i K_{ii}$ on each constrained degree of freedom) gave
-$2.4 \times 10^7$ and left a boundary slack of about $10^{-8}$ of the
-displacement.
+diagonal ratio is about 31 (T800/epoxy QI, compression), where the penalty
+method used before (a spring of $10^6 \max_i K_{ii}$ on each constrained
+degree of freedom) gives $3.2 \times 10^7$ and left a boundary slack of
+about $10^{-8}$ of the displacement.
 
 The reduction is one affine map, $\mathbf u = \mathbf T \mathbf u_r + \mathbf g$,
 with the reduced system $\mathbf T^\mathsf{T} \mathbf K \mathbf T\, \mathbf u_r
@@ -579,10 +583,12 @@ Every field is also on {class}`~porosity_fe.RefinementStudy`,
 {class}`~porosity_fe.RefinementLevel` and
 {class}`~porosity_fe.QuantityConvergence`.
 
-**Production resolution.** The production default $30 \times 10 \times 12$
-does not resolve the 24-ply presets. In-plane refinement at $n_z = 12$
-converges the compression interior failure index (1.477, 1.472, 1.472),
-but to the value of a different laminate:
+**Production resolution.** The production default is
+$30 \times 10 \times n_\text{plies}$, one element layer per ply ($n_z$
+capped at 48). It was $30 \times 10 \times 12$, which does not resolve the
+24-ply presets: in-plane refinement at $n_z = 12$ converges the compression
+interior failure index (1.477, 1.472, 1.472), but to the value of a
+different laminate:
 
 | T800 QI, $V_p = 0.03$ clustered | $30 \times 10 \times 12$ | $30 \times 10 \times 24$ | $60 \times 20 \times 24$ (extrapolate) |
 |---|---|---|---|
@@ -592,13 +598,12 @@ but to the value of a different laminate:
 | ILSS knockdown | 0.98397 | 0.98286 | 0.98308 |
 | first compression solve, incl. pristine reference | 4.7 s | 14.5 s | 252 s |
 
-For the FE path, one element layer per ply at the production in-plane
-size, $30 \times 10 \times n_\text{plies}$, puts the knockdowns within
-$2 \times 10^{-4}$ of the finest mesh and the interior failure index 6 %
-above its extrapolate, at three times the cost of $n_z = 12$;
-$45 \times 15 \times n_\text{plies}$ brings the interior index within
-2 % (one minute, 1.5 GB). Read failure from the interior quantities: the
-domain maximum is mesh-dependent at every resolution.
+One element layer per ply at the production in-plane size puts the
+knockdowns within $2 \times 10^{-4}$ of the finest mesh and the interior
+failure index 6 % above its extrapolate, at three times the cost of
+$n_z = 12$; $45 \times 15 \times n_\text{plies}$ brings the interior index
+within 2 % (one minute, 1.5 GB). Read failure from the interior
+quantities: the domain maximum is mesh-dependent at every resolution.
 
 **Cost and guards.** Levels are solved coarse to fine and each is released
 before the next is built. Each level's pristine reference is solved before

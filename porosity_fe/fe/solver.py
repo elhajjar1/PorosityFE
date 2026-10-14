@@ -856,8 +856,9 @@ class FESolver:
             unchanged. ``K_ff`` is symmetric positive definite, so
             ``'cg'`` (conjugate gradient with a Jacobi preconditioner) is
             a memory-light alternative; it needs no LU fill-in and is
-            the better choice above roughly 40k DOF (about 3x the default
-            production mesh), where LU time and memory grow fastest.
+            the better choice above roughly 40k DOF (about 1.6x the
+            25,575 DOF of the default production mesh of a 24-ply laminate,
+            30 x 10 x 24), where LU time and memory grow fastest.
             ``'minres'`` is offered for completeness; SciPy's MINRES
             stops on a preconditioned residual estimate, so it is
             warm-restarted with a tighter internal tolerance until the

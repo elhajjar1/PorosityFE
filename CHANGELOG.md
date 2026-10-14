@@ -81,12 +81,12 @@ All notable changes to PorosityFE will be documented in this file.
     0.8 %), and the domain maximum grows at the gripped corners (1.23,
     1.39, 1.74) and is flagged mesh-dependent. In `'ilss'` the mid-span
     line load is singular, so its failure indices and load factors are
-    mesh-dependent at any resolution. The production default 30 x 10 x 12,
-    which does not resolve the 24-ply layup, converges in plane to a
-    different laminate (interior index 1.48). Method, tables and a
-    production-resolution recommendation are in the theory page
-    (finite-element model, "Mesh convergence"); `_DEFAULT_MESH_RES` is
-    unchanged.
+    mesh-dependent at any resolution. The former production default
+    30 x 10 x 12, which does not resolve the 24-ply layup, converges in
+    plane to a different laminate (interior index 1.48). Method, tables and
+    a production-resolution recommendation are in the theory page
+    (finite-element model, "Mesh convergence"); the production default now
+    follows it (see Changed).
 - **Nodal stress recovery and binary VTU export (IMPROVEMENT_PLAN 3.6,
   E1).** Results and existing exports do not change.
   - `extrapolate_to_nodes` (new, also `FieldResults.nodal_stress` and
@@ -651,6 +651,71 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The production FE mesh resolves every ply: 30 x 10 x `n_plies`.**
+  `_DEFAULT_MESH_RES` is now `(30, 10, None)`; `nz = None` means one element
+  layer per ply, resolved by `_default_mesh_resolution(n_plies)` and capped
+  at 48 layers (14,400 elements; a direct FE solve on it peaks at 1.3 to
+  2.3 GB), so a thick custom laminate does not get an unbounded default
+  mesh; above the cap the plies are not resolved and an INFO line says so.
+  `build_empirical_pipeline`, `compare_configurations`,
+  `sweep_configurations`, `porosity-analyze`, the app, the examples and
+  `refinement_study` (whose default base keeps `nz = n_plies` past the cap,
+  under its memory guard) all take it from there. The 24-ply presets get
+  30 x 10 x 24 (7,200 elements, was 3,600), the 16-ply presets
+  30 x 10 x 16 and `CF_PEEK` 30 x 10 x 8. The former `nz = 12` resolved no
+  preset, so the FE laminate was not the requested one: the 24-ply QI
+  layup became `[90/-45/45/0]_3`, which is not symmetric.
+  - App: the default `nz`, and the Expert-mode slider's starting value, is
+    the ply count of the layup as entered, and follows layup edits until
+    the user moves the slider. The thermal "Use nz = N" hint now appears
+    only for a hand-set `nz` or a layup above 48 plies. The app solves the
+    knockdown's pristine reference before the porous model, so only one
+    factorization is alive at a time: an analysis on the default mesh
+    peaks at about 0.75 GB instead of 1.2 GB (0.6 GB on the former
+    30 x 10 x 12 mesh), and at about 1.05 GB with the thermal residual
+    stress, which holds two.
+  - **Result change** for FE solves on the default mesh (the app, or
+    `FESolver` on a mesh from `build_empirical_pipeline` without
+    `mesh_res`). T800 QI (uniform `Vp` 3 % and 6 %, midplane-clustered and
+    interface-penny 3 %), 30 x 10 x 12 to 30 x 10 x 24:
+
+    | quantity | change |
+    |---|---|
+    | compression / tension knockdown | -4e-5 to +7e-4 |
+    | compression / tension `effective_modulus` | +1.1 to +1.2 % |
+    | shear knockdown | -1.0e-3 to 0 |
+    | ILSS knockdown | -0.0011 to +0.0114 |
+    | compression max failure index (interior) | -42 to -43 % (-19 to -20 %) |
+    | tension max failure index (interior) | -25 to -30 % (-3 to -6 %) |
+    | compression / tension first-ply-failure load factor | +40 to +42 % / +23 to +30 % |
+    | ILSS max failure index | -52 to -56 % |
+    | ILSS first-ply-failure load factor (interior) | +5 to +8 % (+62 to +66 %) |
+
+    The new values are closer to the mesh-converged ones: in the
+    refinement study of the theory page ("Mesh convergence", "Production
+    resolution") the 30 x 10 x 24 knockdowns are within 2e-4 of the finest
+    mesh and the interior compression failure index (1.195) is 6 % above
+    its extrapolate (1.126), against 1.477 on 30 x 10 x 12. On the 16-ply
+    `T300_934_epoxy` (uniform 3 %) the compression modulus drops 13.8 %
+    (its 12 element layers were 33 % 0 deg plies instead of 25 %) and the
+    knockdown by 9e-4; on `CF_PEEK` (8 plies) the modulus rises 0.8 %.
+  - Cost: a first FE solve on the default mesh, pristine reference
+    included, takes about three times as long (12.5-19 s instead of
+    4-7 s on two four-core machines), a repeat solve 0.7-1 s instead of
+    0.25-0.4 s, and one sparse LU factorization holds about 320 MB instead
+    of 120 MB.
+  - Unchanged: every empirical result. The failure loads use the
+    specimen-average `Vp`; only the per-node `nodal_knockdown` field (for
+    plots) is sampled on the finer mesh. The validation MAE stays
+    4.49 % / 3.89 % (`validate_porosity` builds its own
+    10 x 5 x `n_plies` meshes).
+  - The FE timing guard (`tests/test_fe_performance.py`,
+    `POROSITY_FE_BENCHMARK=1`) measures the default mesh; its budgets go
+    from 20 s / 2 s to 40 s / 3 s (first / repeat solve).
+  - The README FE distribution table is regenerated: its example
+    (`examples/distribution_comparison.py`) now uses 12 x 4 x 24, one
+    element layer per ply (compression knockdowns 0.9924, 0.9925, 0.9928,
+    0.9819).
 - **The incompatible-mode element `'hex8i'` is the default FE formulation
   (IMPROVEMENT_PLAN 3.6, step A2).** `FESolver`, `GlobalAssembler`,
   `build_element_batch` and `Hex8Element` now default to

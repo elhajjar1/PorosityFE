@@ -466,9 +466,11 @@ class TestElementLayup:
         assert not any(self._WARNING in r.getMessage() for r in caplog.records)
 
     def test_empirical_pipeline_does_not_warn(self, caplog):
-        # The empirical solver never reads the element layup.
+        # The empirical solver never reads the element layup, so even a
+        # mesh that merges plies (the default resolves them) gets no warning.
         from porosity_fe import build_empirical_pipeline
         with caplog.at_level("WARNING", logger="porosity_fe_analysis"):
-            _, mesh, _ = build_empirical_pipeline(MATERIALS['T800_epoxy'], 0.02)
+            _, mesh, _ = build_empirical_pipeline(MATERIALS['T800_epoxy'], 0.02,
+                                                  mesh_res=(30, 10, 12))
         assert mesh.layup_discrepancies() != []
         assert not any(self._WARNING in r.getMessage() for r in caplog.records)

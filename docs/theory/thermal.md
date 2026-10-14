@@ -227,8 +227,9 @@ $|\sigma_{zz}|$ is 0.005 MPa against 4.4 MPa at the edge.
 ## Layup resolution
 
 Residual stresses come from the ply-to-ply mismatch, so an element layup
-that merges plies gives the wrong laminate: on the production mesh
-($n_z = 12$) a 24-ply QI preset becomes unsymmetric and unbalanced, warps
+that merges plies gives the wrong laminate: with $n_z = 12$ (the
+production default before it became the ply count) a 24-ply QI preset
+becomes unsymmetric and unbalanced, warps
 by 0.2 mm on cool-down, and its interior $\sigma_{22}$ ranges from 31 to
 46 MPa against 47.6 MPa with every ply resolved. With `delta_T` the solve
 therefore raises when

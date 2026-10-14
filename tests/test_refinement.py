@@ -231,6 +231,19 @@ class TestPlanning:
             _study(max_memory_gb=0.01)
         assert 'Planned levels: 12x8x4' in str(exc.value)
 
+    def test_default_base_is_the_production_resolution(self, monkeypatch):
+        """The default base is the production mesh, one element layer per
+        ply; nz stays at n_plies past the production cap (the study must
+        resolve the layup), so a thick laminate meets the guards instead."""
+        monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)
+        with pytest.raises(ValueError, match='above the limit') as exc:
+            refinement_study(MATERIALS['T800_epoxy'], 0.03, max_elements=1)
+        assert 'Planned levels: 30x10x24: 7,200 elements' in str(exc.value)
+        thick = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=60)
+        with pytest.raises(ValueError, match='above the limit') as exc:
+            refinement_study(thick, 0.03, max_elements=1)
+        assert 'Planned levels: 30x10x60: 18,000 elements' in str(exc.value)
+
     def test_unresolved_layup_is_refused(self):
         with pytest.raises(ValueError, match='does not resolve the 4-ply layup'):
             _study(base_resolution=(12, 8, 2))

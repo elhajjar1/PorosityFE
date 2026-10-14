@@ -79,8 +79,9 @@ field as a `.vtu` file for ParaView). The thermal option appears for materials
 with lamina CTEs (today `AS4_3501_6_epoxy`). It solves the cure residual
 stress alone, or adds it to the mechanical FE case. ΔT is entered in K,
 negative for a cool-down, and has no default. The mesh must give every ply
-its own element layer, so `nz` must be a multiple of the ply count; the app
-offers that `nz` when it is not. See [Thermal inputs](#thermal-inputs). See
+its own element layer, so `nz` must be a multiple of the ply count. The
+default `nz` is the layup's ply count (up to 48); when `nz` is not a
+multiple of it, the app offers one that is. See [Thermal inputs](#thermal-inputs). See
 [`DEPLOYMENT_STREAMLIT.md`](DEPLOYMENT_STREAMLIT.md) for hosting on Streamlit
 Community Cloud.
 
@@ -159,7 +160,7 @@ my_material = MaterialProperties(
 )
 
 pf = PorosityField(my_material, void_volume_fraction=0.03, distribution='uniform')
-mesh = CompositeMesh(pf, my_material, nx=30, ny=10, nz=12)
+mesh = CompositeMesh(pf, my_material, nx=30, ny=10, nz=24)   # one element layer per ply
 solver = EmpiricalSolver(mesh, my_material)
 print(solver.get_failure_load(mode='compression', model='judd_wright'))
 ```
@@ -293,14 +294,15 @@ gives distinct compression knockdowns even at matched mean:
 
 ```
 mode = compression, FE Tsai-Wu, Vp_mean = 3 %
-  uniform               0.9921
-  clustered (midplane)  0.9923
-  clustered (surface)   0.9914
-  interface             0.9820   (penny voids, sharpest local field)
+  uniform               0.9924
+  clustered (midplane)  0.9925
+  clustered (surface)   0.9928
+  interface             0.9819   (penny voids, sharpest local field)
 ```
 
-(Numbers reproduced by `python examples/distribution_comparison.py`;
-exact values depend on mesh resolution. The interface case is clearly
+(Numbers reproduced by `python examples/distribution_comparison.py`, on a
+12 x 4 x 24 mesh with one element layer per ply; exact values depend on
+mesh resolution. The interface case is clearly
 the lowest; the uniform and clustered cases differ by less than 0.1
 percentage point, so their order can change with the mesh.)
 
@@ -344,9 +346,12 @@ Guidance on which to use:
 For the FE solver, give every ply its own element layer: `nz` a multiple
 of `n_plies`. Each element takes the angle of the ply at its centroid, so
 an element layer spanning plies of different angles keeps only one of
-them. The production mesh (`nz = 12`) resolves none of the presets: a
-24-ply `'QI'` layup becomes `[90, -45, 45, 0]` three times over, which is
-not symmetric. `FESolver` logs a warning with the element layup, and
+them: with `nz = 12`, a 24-ply `'QI'` layup becomes `[90, -45, 45, 0]`
+three times over, which is not symmetric. The production mesh
+(`build_empirical_pipeline`, `compare_configurations`, the app) is
+30 x 10 x `n_plies`, which resolves every preset; above 48 plies `nz`
+stops at 48, so pass `mesh_res` to resolve a thicker laminate. `FESolver`
+logs a warning with the element layup, and
 `CompositeMesh.layup_discrepancies()` returns the same findings.
 
 ## Output Files

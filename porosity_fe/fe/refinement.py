@@ -28,7 +28,7 @@ from scipy.optimize import brentq
 from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
-from ..pipeline import _DEFAULT_MESH_RES
+from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
 from .solver import FESolver, _check_delta_T
@@ -787,9 +787,10 @@ def refinement_study(
     ply_angles : list of float or {'QI', 'UD'}
         Layup, as :class:`~porosity_fe.CompositeMesh` (default ``'QI'``).
     base_resolution : (int, int, int), optional
-        Coarsest ``(nx, ny, nz)``. Default: the in-plane production
-        resolution with one element layer per ply,
-        ``(30, 10, material.n_plies)``.
+        Coarsest ``(nx, ny, nz)``. Default: the production resolution,
+        one element layer per ply, ``(30, 10, material.n_plies)``; unlike
+        the production default, ``nz`` stays at ``n_plies`` above 48 plies
+        (the memory guard below applies instead).
     factors : sequence of float, optional
         Refinement factors of the levels relative to ``base_resolution``,
         strictly increasing (default ``(1, 1.5, 2)``). Three or more levels
@@ -911,9 +912,13 @@ def refinement_study(
     else:
         if refine not in ('in_plane', 'all'):
             raise ValueError(f"refine must be 'in_plane' or 'all', got {refine!r}.")
-        base = (_DEFAULT_MESH_RES[0], _DEFAULT_MESH_RES[1], material.n_plies) \
-            if base_resolution is None else _check_resolution(base_resolution,
-                                                              'base_resolution')
+        if base_resolution is None:
+            # The production resolution, but nz = n_plies even above its cap:
+            # a study must resolve the layup, and the memory guard applies.
+            nx0, ny0, _ = _default_mesh_resolution(material.n_plies)
+            base = (nx0, ny0, material.n_plies)
+        else:
+            base = _check_resolution(base_resolution, 'base_resolution')
         fac = (1.0, 1.5, 2.0) if factors is None else tuple(float(f) for f in factors)
         if not all(math.isfinite(f) and f > 0.0 for f in fac) or \
                 any(b <= a for a, b in zip(fac, fac[1:], strict=False)):

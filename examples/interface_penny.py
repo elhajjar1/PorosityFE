@@ -38,7 +38,6 @@ def main() -> None:
     material = MATERIALS["T800_epoxy"]
     pf, mesh, solver = build_empirical_pipeline(
         material, 0.03,
-        mesh_res=(30, 10, 24),
         porosity_config=dict(distribution="interface", void_shape="penny"),
     )
     res_ilss = solver.get_failure_load(mode="ilss", model="judd_wright")
