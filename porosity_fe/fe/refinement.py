@@ -13,11 +13,13 @@ the report flags instead of extrapolating.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import math
 import os
 import time
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
@@ -31,7 +33,7 @@ from ..mesh import CompositeMesh
 from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
-from .solver import FESolver, _check_delta_T
+from .solver import FESolver, _check_delta_T, _minres_deprecation
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -831,6 +833,8 @@ def refinement_study(
         Linear solver of the levels, as :meth:`FESolver.solve`. The
         pristine reference of the knockdown is always factorized directly,
         so ``'cg'`` saves memory only for a thermal or pore-free study.
+        ``'minres'`` is deprecated (one :class:`DeprecationWarning` per
+        call; removal in 2.0): use ``'cg'``.
     solver_rtol : float
         Residual tolerance of the iterative solvers.
     max_elements : int, optional
@@ -885,6 +889,9 @@ def refinement_study(
                          f"of {list(FESolver.SUPPORTED_FAILURE_CRITERIA)}.")
     if solver not in ('direct', 'cg', 'minres'):
         raise ValueError(f"Unknown solver {solver!r}; use 'direct', 'cg' or 'minres'.")
+    if solver == 'minres':
+        warnings.warn(_minres_deprecation('refinement_study'), DeprecationWarning,
+                      stacklevel=2)
     if isinstance(tol, bool) or not isinstance(tol, (int, float, np.number)) \
             or not (math.isfinite(float(tol)) and float(tol) > 0.0):
         raise ValueError(f"tol must be a positive finite number, got {tol!r}.")
@@ -989,10 +996,18 @@ def refinement_study(
             # model is assembled, so its factorization is freed first: the
             # peak memory is one model's, not two.
             fe._pristine_stiffness_measure(loading)
-        out = fe.solve(loading, applied_strain=applied_strain,
-                       applied_load=applied_load, solver=solver, rtol=solver_rtol,
-                       delta_T=delta_T, allow_unresolved_layup=allow_unresolved_layup,
-                       interior_margin=margin)
+        quiet = warnings.catch_warnings() if solver == 'minres' \
+            else contextlib.nullcontext()
+        with quiet:
+            if solver == 'minres':
+                # Reported once above, at the caller, not once per level.
+                warnings.filterwarnings('ignore', message=r".*solver='minres'",
+                                        category=DeprecationWarning)
+            out = fe.solve(loading, applied_strain=applied_strain,
+                           applied_load=applied_load, solver=solver,
+                           rtol=solver_rtol, delta_T=delta_T,
+                           allow_unresolved_layup=allow_unresolved_layup,
+                           interior_margin=margin)
         level = RefinementLevel(
             resolution=res, n_elements=mesh.n_elements, n_dof=mesh.n_dof,
             element_size=size, solve_time_s=time.perf_counter() - t0,

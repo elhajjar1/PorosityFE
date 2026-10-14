@@ -14,6 +14,7 @@ import gc
 import json
 import logging
 import math
+import warnings
 import weakref
 
 import pytest
@@ -267,6 +268,23 @@ class TestPlanning:
     def test_bad_options_raise(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             _study(**kwargs)
+
+    def test_minres_is_deprecated_once_per_study(self):
+        """``solver='minres'`` warns once, at the caller, not once per level,
+        and the study still runs; CG gives the same values."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            st = _study(solver='minres', factors=(1, 1.5))
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].filename == __file__
+        assert str(deprecations[0].message).startswith(
+            "refinement_study(solver='minres') is deprecated")
+        assert "use solver='cg'" in str(deprecations[0].message)
+        ref = _study(solver='cg', factors=(1, 1.5))
+        for a, b in zip(st.levels, ref.levels, strict=True):
+            assert a.knockdown == pytest.approx(b.knockdown, rel=1e-9)
+            assert a.effective_modulus == pytest.approx(b.effective_modulus, rel=1e-9)
 
     def test_bad_loading_and_thermal_inputs_raise(self):
         with pytest.raises(ValueError, match='Unknown loading'):

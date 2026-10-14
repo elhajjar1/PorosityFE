@@ -787,6 +787,17 @@ All notable changes to PorosityFE will be documented in this file.
   - The `cond_diag_ratio` INFO line and the "conditioning near float64
     limit" warning are replaced by one INFO line on the free-DOF diagonal
     ratio.
+- **`solver='minres'` is deprecated.** `FESolver.solve(solver='minres')`
+  and `refinement_study(solver='minres')` (once per study, not per level)
+  emit a `DeprecationWarning` that points to `solver='cg'`; MINRES still
+  works and will be removed in 2.0. With the prescribed DOFs eliminated,
+  the reduced stiffness `K_ff` is symmetric positive definite, so CG covers
+  every case, and MINRES, which minimizes the residual rather than the
+  energy-norm error, is less accurate at the same `rtol`. On the
+  production mesh (30 x 10 x 24, T800 QI, clustered `Vp = 0.03`, default
+  `rtol`) the displacements of MINRES are 3.6e-7 (compression), 1.7e-6
+  (shear) and 7e-10 (ILSS) from the direct solve, those of CG 5e-9, 1e-8
+  and 1e-11. The tests that cover MINRES now also assert the warning.
 - **`FESolver.solve(penalty_factor=..., diag_scale=...)` are deprecated
   and have no effect.** Both now default to `None`, and passing any value
   emits a `DeprecationWarning`. `BoundaryHandler.apply_penalty` still

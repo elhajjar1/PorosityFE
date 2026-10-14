@@ -193,10 +193,14 @@ and reused until the mesh, material, porosity or set of constrained degrees
 of freedom change. Jacobi-preconditioned conjugate gradients
 (`solver='cg'`) agree with it to about $10^{-8}$ at the default
 `rtol = 1e-9` and need no fill-in, which pays off above roughly 40,000
-degrees of freedom. MINRES (`solver='minres'`) is warm-restarted until its
-true residual meets `rtol`, but being a residual minimizer it is less
-accurate than CG at the same tolerance (about $10^{-6}$ on the production
-mesh).
+degrees of freedom. MINRES (`solver='minres'`) is deprecated and will be
+removed in 2.0; it emits a `DeprecationWarning`. $\mathbf K_{ff}$ is
+symmetric positive definite, so CG covers every case, and MINRES, a
+residual minimizer, is less accurate at the same tolerance: on the
+production mesh its displacements are $4 \times 10^{-7}$ to
+$2 \times 10^{-6}$ from the direct solve in compression and shear (CG:
+$5 \times 10^{-9}$ to $10^{-8}$). Until then it still works, warm-restarted
+until its true residual meets `rtol`.
 
 ```{note}
 The ILSS supports pin all three translations, so the model is a beam

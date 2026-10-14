@@ -461,6 +461,14 @@ _FLEXURE_PROCEDURE: dict[str, Literal['3pt', '4pt']] = {
 _FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE})
 
 
+def _minres_deprecation(caller: str) -> str:
+    """Message of the ``solver='minres'`` :class:`DeprecationWarning`."""
+    return (f"{caller}(solver='minres') is deprecated and will be removed in "
+            "2.0; use solver='cg'. The reduced stiffness K_ff is symmetric "
+            "positive definite, so conjugate gradients cover every case and "
+            "give more accurate displacements at the same rtol.")
+
+
 def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float:
     """Mode-dependent default strain; warn when the sign contradicts the mode."""
     if applied_strain is None:
@@ -592,7 +600,7 @@ def _relative_residual(A: scipy.sparse.spmatrix, x: np.ndarray,
 def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
                      diag: np.ndarray, *, solver: str, rtol: float,
                      max_restarts: int = 3) -> tuple[np.ndarray, float]:
-    """Jacobi-preconditioned CG or MINRES on the reduced SPD system.
+    """Jacobi-preconditioned CG or (deprecated) MINRES on the reduced SPD system.
 
     A result is accepted when the true relative residual
     ``||K_ff u - rhs|| / ||rhs||`` is at most ``10 * rtol`` (the slack
@@ -606,7 +614,8 @@ def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
     ``rtol / achieved``, at most ``max_restarts`` times (one restart
     suffices on the shipped load cases). MINRES minimizes the residual,
     not the energy-norm error, so at the same residual its displacement
-    error is larger than CG's.
+    error is larger than CG's; it is deprecated (:meth:`FESolver.solve`
+    warns) and stays here until its removal in 2.0.
 
     Raises
     ------
@@ -660,7 +669,7 @@ class FESolver:
     1. Assemble K via GlobalAssembler
     2. Build BCs via BoundaryHandler
     3. Eliminate the prescribed DOFs: ``K_ff u_f = F_f - K_fc u_c``
-    4. Solve the reduced system (sparse LU, or CG / MINRES)
+    4. Solve the reduced system (sparse LU or CG; MINRES is deprecated)
     5. Recover stresses at Gauss points
     6. Evaluate failure criterion at each GP (Tsai-Wu, Hashin, or max-stress)
     7. Compute knockdown factor
@@ -859,14 +868,16 @@ class FESolver:
             the better choice above roughly 40k DOF (about 1.6x the
             25,575 DOF of the default production mesh of a 24-ply laminate,
             30 x 10 x 24), where LU time and memory grow fastest.
-            ``'minres'`` is offered for completeness; SciPy's MINRES
-            stops on a preconditioned residual estimate, so it is
+            ``'minres'`` is deprecated and will be removed in 2.0: it
+            emits a :class:`DeprecationWarning`; use ``'cg'``. Because
+            ``K_ff`` is SPD, CG covers every case, while MINRES minimizes
+            the residual rather than the energy-norm error, so at the same
+            ``rtol`` its displacements are less accurate (4e-7 to 2e-6
+            relative to direct on the production mesh at the default
+            ``rtol``, against 5e-9 to 1e-8 for CG). It still works: SciPy's
+            MINRES stops on a preconditioned residual estimate, so it is
             warm-restarted with a tighter internal tolerance until the
-            true relative residual meets ``rtol``. MINRES minimizes the
-            residual rather than the energy-norm error, so at the same
-            ``rtol`` its displacements are less accurate than CG's (about
-            1e-6 vs 1e-8 relative to direct on the production mesh at the
-            default ``rtol``); prefer ``'cg'``. Auto-switching is
+            true relative residual meets ``rtol``. Auto-switching is
             intentionally *not* performed: callers select the path
             explicitly (issue #57).
         rtol : float
@@ -952,6 +963,9 @@ class FESolver:
                     DeprecationWarning,
                     stacklevel=2,
                 )
+        if solver == 'minres':
+            warnings.warn(_minres_deprecation('FESolver.solve'),
+                          DeprecationWarning, stacklevel=2)
         t0 = time.perf_counter()
         criterion = failure_criterion if failure_criterion is not None \
             else self.failure_criterion
@@ -1213,7 +1227,8 @@ class FESolver:
         constrained : dict[int, float]
             Constrained-DOF map from :meth:`_apply_boundary_conditions`.
         solver : {'direct', 'cg', 'minres'}
-            Linear solver to use. See :meth:`solve` for details.
+            Linear solver to use. See :meth:`solve` for details
+            (``'minres'`` is deprecated; :meth:`solve` warns).
         rtol : float
             Relative-residual tolerance for the iterative solvers.
         verbose : bool
