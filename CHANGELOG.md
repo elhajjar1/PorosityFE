@@ -651,6 +651,39 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **`fe/solver.py` split into focused modules, and lower FE peak memory
+  (IMPROVEMENT_PLAN 5.1).** No result changes: every `FieldResults` field
+  (reactions and mode indices included) and the JSON export are bit
+  for bit the same, checked by sha256 fingerprints on the production meshes
+  of AS4/3501-6 for compression, tension, shear, thermal, combined
+  `delta_T`, three- and four-point flexure and ILSS, both element
+  formulations, all three failure criteria, direct and CG solves.
+  - `fe/solver.py` (1,768 lines) keeps `FESolver` as the orchestrator
+    (about 750 lines, half of them the public docstrings). `FieldResults`
+    moves to `fe/results.py`; the steps of a solve to private modules:
+    `fe/_load_cases.py` (loading modes, argument and `delta_T` checks,
+    boundary-condition dispatch, interior region), `fe/_constrained_solve.py`
+    (exact Dirichlet elimination, the per-constrained-set LU cache, CG /
+    MINRES), `fe/_knockdown.py` (stiffness measure, pristine reference and
+    its cache), `fe/_thermal.py` (layup check, unit-`delta_T` free-standing
+    solve) and `fe/_postprocess.py` (stress / strain recovery, reactions and
+    modulus, failure metrics). `from porosity_fe.fe.solver import FESolver,
+    FieldResults` and the private names other modules and the tests use
+    still work.
+  - `FESolver.solve` solves (or looks up) the knockdown's pristine
+    reference before it assembles the porous model, so the reference's
+    factorization is freed before the porous one is built: peak RSS of a
+    30 x 10 x 24 compression solve (T800, `[0/45/-45/90]_3s`) drops from
+    1.22 GB to 0.74 GB. The app and `refinement_study` no longer call the
+    private `_pristine_stiffness_measure` first to get that.
+  - The unit-`delta_T` thermal solution is cached and rescaled, so its
+    3-2-1 factorization now leaves the LU cache once the solution is cached
+    instead of staying next to the mechanical one (the mechanical entries
+    keep their LRU behaviour). Peak RSS on the same mesh (AS4/3501-6,
+    `delta_T = -157` K): a combined compression solve 1.55 GB to 0.74 GB;
+    the app's combined residual-stress run 1.06 GB to 0.76 GB (ILSS
+    specimen: 0.66 GB to 0.50 GB). `refinement_study`'s memory estimate
+    counts one factorization for direct solves with `delta_T` (was two).
 - **The FE `'ilss'` mode is the ASTM D2344 short-beam test (IMPROVEMENT_PLAN
   3.6, C2).** It was a three-point bend of whatever coupon the mesh was,
   with both bottom end edges pinned in x, y and z and the load split
