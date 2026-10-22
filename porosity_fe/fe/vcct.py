@@ -1,0 +1,681 @@
+"""Virtual crack closure (VCCT) on an explicit delamination, and its growth criterion.
+
+Energy release rates along the front of a :class:`~porosity_fe.Delamination`
+from the tie forces of the bonded front pairs and the openings of the pairs
+one element behind (Krueger 2004, the 8-node brick formulas), the mixed-mode
+Benzeggagh-Kenane toughness and the critical load factor. The duplicated
+interface nodes, the bonded ties and the front come from
+:class:`~porosity_fe.CompositeMesh`; :meth:`FESolver.solve
+<porosity_fe.FESolver.solve>` fills :attr:`FieldResults.crack_front
+<porosity_fe.FieldResults.crack_front>` with the table built here. See the
+theory page "Delamination" for the frame, the tributary widths and the load
+factor.
+
+Units: forces in N, lengths in mm, energy release rates and toughness in
+N/mm (1 N/mm = 1 kJ/m^2).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+import math
+from dataclasses import dataclass
+
+import numpy as np
+import scipy.optimize
+
+from ..materials import MaterialProperties
+from ..mesh import CompositeMesh
+
+logger = logging.getLogger("porosity_fe_analysis")
+
+#: In-plane offsets ``(di, dj)`` of the eight grid neighbours of a node, the
+#: four edge-sharing ones first.
+_NEIGHBOURS: tuple[tuple[int, int], ...] = (
+    (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1))
+_N_EDGE = 4
+
+
+@dataclass(frozen=True, eq=False)
+class CrackFront:
+    """Virtual-crack-closure table of a delamination front, one row per front node.
+
+    The front nodes are the bonded duplicated node pairs with a delaminated
+    pair among their eight in-plane neighbours
+    (:meth:`CompositeMesh.crack_front_pairs
+    <porosity_fe.CompositeMesh.crack_front_pairs>`), interfaces in increasing
+    order, each in structured order. Every array has one entry per front
+    node (the vectors one row of three components).
+
+    Each node has a local frame: ``x'`` is the in-plane growth direction, the
+    unit vector from the delaminated pair behind it to the node (exactly
+    ``+-x`` along a straight front across ``y``, one of eight grid
+    directions on a staircase front); ``y' = +z`` is the interface normal;
+    ``z' = x' x y'`` runs along the front. With ``F'`` the force the tie
+    exerts on the upper crack face (the duplicate) and ``Delta'`` the
+    opening (upper minus lower face) of the pair behind, both in that frame,
+    the energy release rates are (Krueger 2004, 8-node bricks)::
+
+        G_I = -F'_y Delta'_y / (2 Delta_a b)
+        G_II = -F'_x Delta'_x / (2 Delta_a b)
+        G_III = -F'_z Delta'_z / (2 Delta_a b)
+
+    with ``Delta_a`` the distance to the pair behind and ``b`` the tributary
+    width, so ``Delta_a b`` is the node's tributary area of the interface
+    (half at a plate edge, a quarter at a plate corner). A negative product
+    is set to zero: the faces behind are closed (contact) or the mode
+    vanishes and only round-off is left.
+
+    Attributes
+    ----------
+    node, duplicate : np.ndarray
+        Original (lower face) and duplicate (upper face) node of each front
+        pair, ``int``.
+    pair : np.ndarray
+        Index of the pair in :meth:`CompositeMesh.interface_node_pairs
+        <porosity_fe.CompositeMesh.interface_node_pairs>`.
+    interface : np.ndarray
+        Ply interface of the pair.
+    behind : np.ndarray
+        Original node of the delaminated pair behind, whose opening enters
+        the formulas.
+    x, y, z : np.ndarray
+        Coordinates of the front node (mm).
+    direction : np.ndarray
+        ``(n, 2)`` in-plane unit vector ``x'`` (growth direction).
+    delta_a, width : np.ndarray
+        ``Delta_a`` and ``b`` (mm).
+    force_local : np.ndarray
+        ``(n, 3)`` tie force on the upper face, ``(F'_x, F'_y, F'_z)`` (N).
+    opening_local : np.ndarray
+        ``(n, 3)`` opening of the pair behind, ``(Delta'_x, Delta'_y,
+        Delta'_z)`` (mm): sliding, normal opening, tearing.
+    G_I, G_II, G_III, G_T : np.ndarray
+        Energy release rates (N/mm); ``G_T`` is their sum.
+    psi : np.ndarray
+        Mode mixity ``(G_II + G_III) / G_T``; ``NaN`` where ``G_T = 0``.
+    Vp : np.ndarray
+        Porosity (fraction) at the front node, for a porosity-dependent
+        toughness (unused so far: the toughness is the pristine one).
+    G_c : np.ndarray or None
+        Mixed-mode toughness at the node's ``psi``
+        (:func:`critical_energy_release_rate`, N/mm); ``None`` without
+        toughness data.
+    lambda_c : np.ndarray or None
+        Critical load factor: the multiplier on the load at which ``G_T``
+        reaches ``G_c`` (``inf`` where the load releases no energy);
+        ``None`` without toughness data. See
+        :func:`fracture_load_factors`.
+
+    See Also
+    --------
+    vcct_energy_release_rates, fracture_load_factors
+    """
+
+    node: np.ndarray
+    duplicate: np.ndarray
+    pair: np.ndarray
+    interface: np.ndarray
+    behind: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    z: np.ndarray
+    direction: np.ndarray
+    delta_a: np.ndarray
+    width: np.ndarray
+    force_local: np.ndarray
+    opening_local: np.ndarray
+    G_I: np.ndarray
+    G_II: np.ndarray
+    G_III: np.ndarray
+    G_T: np.ndarray
+    psi: np.ndarray
+    Vp: np.ndarray
+    G_c: np.ndarray | None = None
+    lambda_c: np.ndarray | None = None
+
+    def __len__(self) -> int:
+        return int(self.node.size)
+
+    @property
+    def area(self) -> np.ndarray:
+        """Tributary area ``Delta_a b`` of each front node (mm^2)."""
+        return self.delta_a * self.width
+
+    @property
+    def governing(self) -> int | None:
+        """Row of the smallest :attr:`lambda_c`, or ``None`` (no toughness,
+        an empty front, or no finite factor)."""
+        if self.lambda_c is None or self.lambda_c.size == 0:
+            return None
+        finite = np.isfinite(self.lambda_c)
+        if not finite.any():
+            return None
+        return int(np.argmin(np.where(finite, self.lambda_c, np.inf)))
+
+    @property
+    def load_factor(self) -> float | None:
+        """Smallest :attr:`lambda_c` over the front: ``None`` without
+        toughness data or front, ``inf`` when no node is driven."""
+        if self.lambda_c is None or self.lambda_c.size == 0:
+            return None
+        return float(np.min(self.lambda_c))
+
+    def to_dict(self) -> dict[str, list | None]:
+        """The table as a dict of equal-length lists (JSON-ready).
+
+        Non-finite values (``psi`` where ``G_T = 0``, an infinite
+        ``lambda_c``) become ``None``; ``G_c`` and ``lambda_c`` are
+        ``None`` columns without toughness data. Keys carry their unit:
+        ``x_mm``, ``G_T_N_per_mm`` and so on.
+        """
+        def col(values: np.ndarray | None) -> list | None:
+            if values is None:
+                return None
+            return [float(v) if math.isfinite(float(v)) else None
+                    for v in np.asarray(values, dtype=float)]
+
+        return {
+            'node': [int(v) for v in self.node],
+            'interface': [int(v) for v in self.interface],
+            'x_mm': col(self.x),
+            'y_mm': col(self.y),
+            'z_mm': col(self.z),
+            'direction_x': col(self.direction[:, 0]),
+            'direction_y': col(self.direction[:, 1]),
+            'delta_a_mm': col(self.delta_a),
+            'width_mm': col(self.width),
+            'G_I_N_per_mm': col(self.G_I),
+            'G_II_N_per_mm': col(self.G_II),
+            'G_III_N_per_mm': col(self.G_III),
+            'G_T_N_per_mm': col(self.G_T),
+            'psi': col(self.psi),
+            'Vp': col(self.Vp),
+            'G_c_N_per_mm': col(self.G_c),
+            'lambda_c': col(self.lambda_c),
+        }
+
+
+@dataclass(frozen=True)
+class _FrontGeometry:
+    """Front nodes, the pairs behind and their frames; see :class:`CrackFront`."""
+
+    pair: np.ndarray
+    behind_pair: np.ndarray
+    node: np.ndarray
+    duplicate: np.ndarray
+    behind_node: np.ndarray
+    behind_duplicate: np.ndarray
+    interface: np.ndarray
+    xyz: np.ndarray
+    direction: np.ndarray
+    delta_a: np.ndarray
+    width: np.ndarray
+
+
+def _tributary(coords: np.ndarray) -> np.ndarray:
+    """Half the spacing to each neighbour on a 1-D node line (mm): the dual
+    cell length, half a spacing at either end."""
+    w = np.zeros(coords.size, dtype=float)
+    if coords.size > 1:
+        seg = np.diff(coords)
+        w[:-1] += 0.5 * seg
+        w[1:] += 0.5 * seg
+    return w
+
+
+def _front_geometry(mesh: CompositeMesh) -> _FrontGeometry | None:
+    """Front pairs of every delaminated interface, the pair behind each, the
+    growth direction, ``Delta_a`` and the tributary width; ``None`` when
+    there is no front.
+
+    The pair behind is the delaminated grid neighbour most aligned with the
+    mean direction from the node's delaminated edge-sharing neighbours (the
+    diagonal ones when it has none): straight back along a straight front,
+    the diagonal at a staircase corner. ``x'`` points from it to the node and
+    ``Delta_a`` is their distance, so ``Delta_a b`` is the node's tributary
+    area of the interface plane (its dual cell on the structured grid, half
+    at a plate edge).
+    """
+    originals, duplicates = mesh.interface_node_pairs()
+    if originals.size == 0:
+        return None
+    bonded = mesh.bonded_pairs()
+    nodes = np.asarray(mesh.nodes, dtype=float)
+    nx1, ny1 = mesh.nx + 1, mesh.ny + 1
+    layer = nx1 * ny1
+    out: dict[str, list[np.ndarray]] = {k: [] for k in (
+        'pair', 'behind_pair', 'direction', 'delta_a', 'width', 'interface')}
+    # The pairs of the duplicated interfaces follow each other, interfaces
+    # in increasing order, each a full node plane in structured order.
+    for q, k in enumerate(mesh.delaminated_interfaces):
+        sel = q * layer + np.arange(layer)
+        b = bonded[sel].reshape(ny1, nx1)
+        xyz = nodes[originals[sel]].reshape(ny1, nx1, 3)
+        X, Y = xyz[..., 0], xyz[..., 1]
+        area = np.outer(_tributary(Y[:, 0]), _tributary(X[0, :]))
+        jj, ii = np.nonzero(b)
+        n_cand = len(_NEIGHBOURS)
+        cand_i = ii[:, None] + np.array([d[0] for d in _NEIGHBOURS])
+        cand_j = jj[:, None] + np.array([d[1] for d in _NEIGHBOURS])
+        inside = (cand_i >= 0) & (cand_i < nx1) & (cand_j >= 0) & (cand_j < ny1)
+        ci, cj = np.clip(cand_i, 0, nx1 - 1), np.clip(cand_j, 0, ny1 - 1)
+        open_ = inside & ~b[cj, ci]                         # delaminated neighbour
+        front = open_.any(axis=1)
+        if not front.any():
+            continue
+        ii, jj, ci, cj, open_ = ii[front], jj[front], ci[front], cj[front], open_[front]
+        vec = np.stack([X[jj, ii][:, None] - X[cj, ci],
+                        Y[jj, ii][:, None] - Y[cj, ci]], axis=-1)   # q -> p
+        dist = np.linalg.norm(vec, axis=-1)
+        unit = vec / np.where(dist > 0.0, dist, 1.0)[..., None]
+        edge = np.zeros(n_cand, dtype=bool)
+        edge[:_N_EDGE] = True
+        use = np.where(open_[:, :_N_EDGE].any(axis=1)[:, None], open_ & edge, open_)
+        mean = (unit * use[..., None]).sum(axis=1)
+        weak = np.linalg.norm(mean, axis=1) <= 1e-12
+        if weak.any():
+            # Opposite delaminated neighbours (a one-node ligament): fall back
+            # on every delaminated neighbour, then on the first one.
+            mean[weak] = (unit[weak] * open_[weak][..., None]).sum(axis=1)
+            still = weak & (np.linalg.norm(mean, axis=1) <= 1e-12)
+            first = np.argmax(open_, axis=1)
+            mean[still] = unit[still, first[still]]
+        score = np.einsum('nck,nk->nc', unit, mean)
+        score += 1e-9 * edge            # ties: prefer an edge-sharing neighbour
+        score[~open_] = -np.inf
+        best = np.argmax(score, axis=1)
+        rows = np.arange(best.size)
+        bi, bj = ci[rows, best], cj[rows, best]
+        delta_a = dist[rows, best]
+        out['pair'].append(sel[jj * nx1 + ii])
+        out['behind_pair'].append(sel[bj * nx1 + bi])
+        out['direction'].append(unit[rows, best])
+        out['delta_a'].append(delta_a)
+        out['width'].append(area[jj, ii] / delta_a)
+        out['interface'].append(np.full(best.size, k, dtype=np.intp))
+    if not out['pair']:
+        return None
+    pair = np.concatenate(out['pair'])
+    behind = np.concatenate(out['behind_pair'])
+    return _FrontGeometry(
+        pair=pair, behind_pair=behind,
+        node=originals[pair], duplicate=duplicates[pair],
+        behind_node=originals[behind], behind_duplicate=duplicates[behind],
+        interface=np.concatenate(out['interface']),
+        xyz=nodes[originals[pair]],
+        direction=np.concatenate(out['direction']),
+        delta_a=np.concatenate(out['delta_a']),
+        width=np.concatenate(out['width']))
+
+
+def _local(vectors: np.ndarray, direction: np.ndarray) -> np.ndarray:
+    """Global ``(n, 3)`` vectors in the front frames ``(x', y', z')``."""
+    dx, dy = direction[:, 0], direction[:, 1]
+    vx, vy, vz = vectors[:, 0], vectors[:, 1], vectors[:, 2]
+    return np.column_stack([vx * dx + vy * dy, vz, vx * dy - vy * dx])
+
+
+def _rates(force_local: np.ndarray, opening_local: np.ndarray,
+           area: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(G_I, G_II, G_III)`` from the local force and opening (clipped at 0)."""
+    work = -force_local * opening_local / (2.0 * area[:, None])
+    work = np.maximum(work, 0.0)
+    return work[:, 1], work[:, 0], work[:, 2]
+
+
+def _mixity(G_I: np.ndarray, G_II: np.ndarray, G_III: np.ndarray
+            ) -> tuple[np.ndarray, np.ndarray]:
+    """``G_T`` and ``psi = (G_II + G_III) / G_T`` (``NaN`` where ``G_T = 0``)."""
+    G_T = G_I + G_II + G_III
+    with np.errstate(invalid='ignore', divide='ignore'):
+        psi = np.where(G_T > 0.0, (G_II + G_III) / np.where(G_T > 0.0, G_T, 1.0),
+                       np.nan)
+    return G_T, psi
+
+
+def _as_nodal(values: np.ndarray, n_nodes: int, name: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.size != 3 * n_nodes:
+        raise ValueError(
+            f"{name} must have 3 entries per node ({3 * n_nodes}), got "
+            f"shape {arr.shape}.")
+    return arr.reshape(n_nodes, 3)
+
+
+def _evaluate(geometry: _FrontGeometry, mesh: CompositeMesh,
+              displacement: np.ndarray, pair_forces: np.ndarray) -> CrackFront:
+    """:class:`CrackFront` of a displacement field and interface forces."""
+    u = _as_nodal(displacement, int(np.asarray(mesh.nodes).shape[0]), 'displacement')
+    forces = np.asarray(pair_forces, dtype=float)[geometry.pair]
+    opening = u[geometry.behind_duplicate] - u[geometry.behind_node]
+    force_local = _local(forces, geometry.direction)
+    opening_local = _local(opening, geometry.direction)
+    area = geometry.delta_a * geometry.width
+    G_I, G_II, G_III = _rates(force_local, opening_local, area)
+    G_T, psi = _mixity(G_I, G_II, G_III)
+    return CrackFront(
+        node=geometry.node, duplicate=geometry.duplicate, pair=geometry.pair,
+        interface=geometry.interface, behind=geometry.behind_node,
+        x=geometry.xyz[:, 0], y=geometry.xyz[:, 1], z=geometry.xyz[:, 2],
+        direction=geometry.direction, delta_a=geometry.delta_a,
+        width=geometry.width, force_local=force_local,
+        opening_local=opening_local, G_I=G_I, G_II=G_II, G_III=G_III,
+        G_T=G_T, psi=psi,
+        Vp=np.asarray(mesh.porosity, dtype=float)[geometry.node])
+
+
+def _pair_forces(mesh: CompositeMesh, nodal_forces: np.ndarray,
+                 ties: tuple[np.ndarray, np.ndarray, np.ndarray] | None
+                 ) -> np.ndarray:
+    """Force on the upper crack face of every duplicated pair, from its tie.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        Mesh with duplicated interface nodes.
+    nodal_forces : np.ndarray
+        ``K u - F`` at every DOF (``(n_dof,)`` or ``(n_nodes, 3)``), before
+        the tie forces are folded onto the masters: at a tied DOF it is the
+        force its tie exerts on it.
+    ties : (tied, master, offset) or None
+        The ties of the solve (bonded pairs on all three components, a pair
+        in contact on ``z`` only).
+
+    Returns
+    -------
+    np.ndarray
+        ``(n_pairs, 3)`` force (N) the lower face exerts on the upper face
+        (the duplicate) through each tied component, in global axes and
+        :meth:`CompositeMesh.interface_node_pairs` order; zero for an
+        untied component (an open crack face).
+    """
+    originals, duplicates = mesh.interface_node_pairs()
+    out = np.zeros((originals.size, 3), dtype=float)
+    if originals.size == 0 or ties is None or len(ties[0]) == 0:
+        return out
+    r = np.asarray(nodal_forces, dtype=float).ravel()
+    master_of = np.full(r.size, -1, dtype=np.intp)
+    master_of[np.asarray(ties[0], dtype=np.intp)] = np.asarray(ties[1], dtype=np.intp)
+    comp = np.arange(3)
+    dup_dofs = 3 * duplicates[:, None] + comp
+    orig_dofs = 3 * originals[:, None] + comp
+    dup_slave = master_of[dup_dofs] == orig_dofs
+    orig_slave = master_of[orig_dofs] == dup_dofs
+    out[dup_slave] = r[dup_dofs[dup_slave]]
+    out[orig_slave] = -r[orig_dofs[orig_slave]]
+    return out
+
+
+def vcct_energy_release_rates(mesh: CompositeMesh, displacement: np.ndarray,
+                              interface_forces: np.ndarray) -> CrackFront | None:
+    """Energy release rates along the delamination front by virtual crack closure.
+
+    The front, the frames and the tributary widths come from the mesh
+    (:class:`CrackFront`); the tie force of each front pair from
+    ``interface_forces`` and the opening of the pair behind from
+    ``displacement``. :meth:`FESolver.solve <porosity_fe.FESolver.solve>`
+    calls it and stores the table as :attr:`FieldResults.crack_front
+    <porosity_fe.FieldResults.crack_front>`; call it to recompute the
+    table from a result (``results.displacement``,
+    ``results.interface_forces``), or after a solve of your own boundary
+    conditions with
+    :func:`~porosity_fe.fe._constrained_solve.solve_constrained`.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The mesh of the solve, with :attr:`CompositeMesh.delaminations
+        <porosity_fe.CompositeMesh.delaminations>` as solved.
+    displacement : np.ndarray
+        Nodal displacements, ``(n_nodes, 3)`` or ``(n_dof,)`` (mm).
+    interface_forces : np.ndarray
+        ``(n_pairs, 3)`` force on the upper face of each duplicated pair
+        (:attr:`FieldResults.interface_forces
+        <porosity_fe.FieldResults.interface_forces>`), or the full ``K u -
+        F`` vector of a solve whose ties are the mesh's bonded ties
+        (``(n_dof,)`` or ``(n_nodes, 3)``), from which the bonded front
+        pairs' tie forces are read.
+
+    Returns
+    -------
+    CrackFront or None
+        The table, without toughness (``G_c`` and ``lambda_c`` are
+        ``None``; see :func:`fracture_load_factors`). ``None`` when the mesh
+        has no delaminated pair, so no front.
+
+    Raises
+    ------
+    ValueError
+        If an array does not match the mesh.
+
+    Examples
+    --------
+    >>> front = vcct_energy_release_rates(mesh, result.displacement,
+    ...                                   result.interface_forces)
+    >>> front.G_T.max()                       # N/mm               # doctest: +SKIP
+    """
+    geometry = _front_geometry(mesh)
+    if geometry is None:
+        return None
+    n_nodes = int(np.asarray(mesh.nodes).shape[0])
+    n_pairs = mesh.interface_node_pairs()[0].size
+    forces = np.asarray(interface_forces, dtype=float)
+    if forces.size == 3 * n_pairs:
+        pair_forces = forces.reshape(n_pairs, 3)
+    elif forces.size == 3 * n_nodes:
+        slaves, masters = mesh.bonded_ties()
+        pair_forces = _pair_forces(
+            mesh, forces, (slaves, masters, np.zeros(slaves.size)))
+    else:
+        raise ValueError(
+            f"interface_forces must have shape (n_pairs, 3) = ({n_pairs}, 3) "
+            f"or 3 entries per node ({3 * n_nodes}), got shape {forces.shape}.")
+    return _evaluate(geometry, mesh, displacement, pair_forces)
+
+
+def _interface_toughness(material: MaterialProperties, Vp: np.ndarray
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Mode I, II and III toughness (N/mm) at interface porosity ``Vp``.
+
+    The hook of a porosity-dependent toughness (delamination plan, phase
+    4): it returns the pristine values of ``material`` at every ``Vp`` for
+    now. ``material.has_toughness`` must be true.
+    """
+    Vp = np.asarray(Vp, dtype=float)
+    assert material.G_Ic is not None and material.G_IIc is not None
+    G_IIIc = material.G_IIIc_eff
+    assert G_IIIc is not None
+    return (np.full(Vp.shape, float(material.G_Ic)),
+            np.full(Vp.shape, float(material.G_IIc)),
+            np.full(Vp.shape, G_IIIc))
+
+
+def critical_energy_release_rate(material: MaterialProperties,
+                                 G_I: np.ndarray | float,
+                                 G_II: np.ndarray | float,
+                                 G_III: np.ndarray | float = 0.0, *,
+                                 Vp: np.ndarray | float = 0.0) -> np.ndarray:
+    """Mixed-mode toughness ``G_c`` (N/mm) at the mode mix of ``(G_I, G_II, G_III)``.
+
+    Benzeggagh-Kenane (1996), with Reeder's (2006) term for a separate mode
+    III toughness::
+
+        psi = (G_II + G_III) / G_T
+        G_c = G_Ic + (G_IIc - G_Ic) psi^eta
+              + (G_IIIc - G_IIc) (G_III / (G_II + G_III)) psi^eta
+
+    which is plain B-K when ``G_IIIc = G_IIc`` (the default,
+    ``material.G_IIIc = None``): ``G_Ic`` in pure mode I (``psi = 0``),
+    ``G_IIc`` in pure mode II and ``G_IIIc`` in pure mode III. ``psi`` is
+    clipped to ``[0, 1]``.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``
+        (:attr:`MaterialProperties.has_toughness`).
+    G_I, G_II, G_III : array_like
+        Energy release rates (N/mm), broadcast together; only their ratios
+        matter.
+    Vp : array_like
+        Interface porosity (fraction) at each point. Accepted for the
+        porosity-toughness coupling to come (delamination plan, phase 4);
+        it does not change the result yet: the toughness is the pristine
+        one.
+
+    Returns
+    -------
+    np.ndarray
+        ``G_c`` (N/mm); ``NaN`` where ``G_T = 0`` (no mode mix).
+
+    Raises
+    ------
+    ValueError
+        If the material has no toughness data.
+    """
+    if not material.has_toughness:
+        raise ValueError(
+            "The mixed-mode toughness needs MaterialProperties.G_Ic, G_IIc "
+            "and bk_eta (N/mm, N/mm, dimensionless); "
+            f"got G_Ic={material.G_Ic!r}, G_IIc={material.G_IIc!r}, "
+            f"bk_eta={material.bk_eta!r}.")
+    G_I, G_II, G_III, Vp = np.broadcast_arrays(
+        np.asarray(G_I, dtype=float), np.asarray(G_II, dtype=float),
+        np.asarray(G_III, dtype=float), np.asarray(Vp, dtype=float))
+    G_Ic, G_IIc, G_IIIc = _interface_toughness(material, Vp)
+    assert material.bk_eta is not None
+    eta = float(material.bk_eta)
+    shear = G_II + G_III
+    G_T = G_I + shear
+    with np.errstate(invalid='ignore', divide='ignore'):
+        psi = np.clip(shear / G_T, 0.0, 1.0)
+        tear = np.where(shear > 0.0, G_III / np.where(shear > 0.0, shear, 1.0), 0.0)
+        mix = psi ** eta
+        G_c = G_Ic + (G_IIc - G_Ic) * mix + (G_IIIc - G_IIc) * tear * mix
+    return np.where(G_T > 0.0, G_c, np.nan)
+
+
+def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
+                    D_M: np.ndarray, area: float, material: MaterialProperties,
+                    Vp: float) -> float:
+    """Critical factor ``lam`` of one node under ``u = u_T + lam u_M``.
+
+    Each mode's closure work is quadratic in ``lam``; the smallest positive
+    root of ``G_T(lam) - G_c(psi(lam))`` is bracketed on a geometric grid
+    and refined with :func:`scipy.optimize.brentq`. 0 when the prestress
+    alone reaches the toughness; ``inf`` when no load drives the node.
+    """
+    def rates(lam: float) -> np.ndarray:
+        work = -(F_T + lam * F_M) * (D_T + lam * D_M) / (2.0 * area)
+        return np.maximum(work, 0.0)
+
+    def excess(lam: float) -> float:
+        g = rates(lam)
+        G_T = float(g.sum())
+        if G_T <= 0.0:
+            return -math.inf
+        G_c = float(critical_energy_release_rate(material, g[1], g[0], g[2], Vp=Vp))
+        return G_T - G_c
+
+    if excess(0.0) >= 0.0:
+        return 0.0
+    g_M = np.maximum(-F_M * D_M / (2.0 * area), 0.0)
+    if g_M.sum() <= 0.0:
+        return math.inf
+    # Mechanical estimate as the scale of the grid; it brackets the root
+    # well inside 1e-6 .. 1e6 of it.
+    G_c_M = float(critical_energy_release_rate(material, g_M[1], g_M[0], g_M[2], Vp=Vp))
+    scale = math.sqrt(G_c_M / float(g_M.sum()))
+    grid = scale * np.geomspace(1e-6, 1e6, 241)
+    prev, f_prev = 0.0, excess(0.0)
+    for lam in grid:
+        f = excess(float(lam))
+        if f >= 0.0:
+            if f_prev == -math.inf:
+                # G_T was zero at prev: bisect on the sign alone.
+                lo, hi = prev, float(lam)
+                for _ in range(200):
+                    mid = 0.5 * (lo + hi)
+                    if excess(mid) >= 0.0:
+                        hi = mid
+                    else:
+                        lo = mid
+                return hi
+            return float(scipy.optimize.brentq(excess, prev, float(lam),
+                                               xtol=1e-14 * float(lam), rtol=1e-12))
+        prev, f_prev = float(lam), f
+    return math.inf
+
+
+def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
+                          prestress: CrackFront | None = None) -> CrackFront:
+    """Mixed-mode toughness and critical load factor at every front node.
+
+    Without ``prestress`` every quantity scales with the load: the energy
+    release rates grow as ``lam^2`` and the mode mix does not change, so the
+    factor at which node ``i`` starts to grow is
+    ``lambda_c = sqrt(G_c(psi_i) / G_T,i)`` (``inf`` where ``G_T = 0``).
+    With crack-face contact this needs the contact zone not to change with
+    the load, which holds for proportional loading from a zero gap
+    (frictionless contact is positively homogeneous).
+
+    With ``prestress`` (a fixed state such as the thermal residual one) the
+    front is ``u = u_P + lam u``: each mode's closure work is quadratic in
+    ``lam`` and the mix changes with it, so ``lambda_c`` is the smallest
+    positive root of ``G_T(lam) = G_c(psi(lam))``, bracketed on a grid and
+    refined with :func:`scipy.optimize.brentq` per node; 0 where the
+    prestress alone reaches the toughness. The contact zone of the applied
+    state is held for every ``lam``, an approximation (see the theory page).
+
+    Parameters
+    ----------
+    front : CrackFront
+        The part that the factor scales (the mechanical load).
+    material : MaterialProperties
+        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``.
+    prestress : CrackFront, optional
+        The fixed part, on the same front nodes.
+
+    Returns
+    -------
+    CrackFront
+        With ``G_c`` and ``lambda_c`` filled; with ``prestress`` the energy
+        release rates are those of the sum (``lam = 1``).
+
+    Raises
+    ------
+    ValueError
+        If the material has no toughness data, or ``prestress`` is on other
+        nodes.
+    """
+    if not material.has_toughness:
+        raise ValueError(
+            "The critical load factor needs MaterialProperties.G_Ic, G_IIc "
+            "and bk_eta.")
+    if prestress is None:
+        G_c = critical_energy_release_rate(
+            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            lam = np.where(front.G_T > 0.0,
+                           np.sqrt(G_c / np.where(front.G_T > 0.0, front.G_T, 1.0)),
+                           np.inf)
+        return dataclasses.replace(front, G_c=G_c, lambda_c=lam)
+    if prestress.node.shape != front.node.shape or \
+            not np.array_equal(prestress.node, front.node):
+        raise ValueError("prestress must be a CrackFront on the same front nodes.")
+    area = front.area
+    force = prestress.force_local + front.force_local
+    opening = prestress.opening_local + front.opening_local
+    G_I, G_II, G_III = _rates(force, opening, area)
+    G_T, psi = _mixity(G_I, G_II, G_III)
+    lam = np.array([
+        _thermal_factor(prestress.force_local[i], prestress.opening_local[i],
+                        front.force_local[i], front.opening_local[i],
+                        float(area[i]), material, float(front.Vp[i]))
+        for i in range(len(front))], dtype=float)
+    G_c = critical_energy_release_rate(material, G_I, G_II, G_III, Vp=front.Vp)
+    return dataclasses.replace(
+        front, force_local=force, opening_local=opening, G_I=G_I, G_II=G_II,
+        G_III=G_III, G_T=G_T, psi=psi, G_c=G_c, lambda_c=lam)

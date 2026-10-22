@@ -82,6 +82,7 @@ from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
 from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
 from .fatigue import FatigueModel as FatigueModel  # noqa: F401, E402
 from .fe import BoundaryHandler as BoundaryHandler  # noqa: F401, E402
+from .fe import CrackFront as CrackFront  # noqa: F401, E402
 from .fe import FESolver as FESolver  # noqa: F401, E402
 from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
@@ -90,9 +91,12 @@ from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
 from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
 from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
 from .fe import ShortBeamShear as ShortBeamShear  # noqa: F401, E402
+from .fe import critical_energy_release_rate as critical_energy_release_rate  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
+from .fe import fracture_load_factors as fracture_load_factors  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
+from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
@@ -211,6 +215,11 @@ __all__ = [
     "refinement_study",
     "ShortBeamShear",
     "short_beam_shear",
+    # Delamination fracture mechanics (VCCT)
+    "CrackFront",
+    "vcct_energy_release_rates",
+    "fracture_load_factors",
+    "critical_energy_release_rate",
     # Visualization
     "FEVisualizer",
     # IO
