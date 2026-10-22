@@ -21,6 +21,12 @@ SUPPORTED_FAILURE_CRITERIA: tuple[str, ...] = ('tsai_wu', 'hashin', 'max_stress'
 
 #: Empty per-mode failure-index dict used when an element is skipped
 #: (void) or for criteria that do not populate a particular mode.
+#: Separate failure modes of the Hashin and max-stress criteria, the keys
+#: of :attr:`~porosity_fe.FieldResults.failure_mode_maxima` (besides
+#: ``'max_fi'`` in the breakdown at the maximum).
+MODE_KEYS: tuple[str, ...] = (
+    'fiber_t', 'fiber_c', 'matrix_t', 'matrix_c', 'shear', 'delamination')
+
 EMPTY_MODE_FI: dict[str, float] = {
     'max_fi': 0.0,
     'fiber_t': 0.0,
@@ -147,7 +153,8 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
 def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                      elements: np.ndarray, material: MaterialProperties,
                      void_shape_radii: tuple, criterion: str = 'tsai_wu',
-                     void_elements=None
+                     void_elements=None,
+                     mode_fields: dict[str, np.ndarray] | None = None,
                      ) -> tuple[float, np.ndarray, dict[str, float]]:
     """Evaluate the chosen failure criterion at every Gauss point.
 
@@ -174,6 +181,12 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         Geometric void elements (``CompositeMesh.void_elements``). They are
         skipped, as are elements whose mean porosity exceeds
         :data:`~porosity_fe.fe.element.VOID_VP_THRESHOLD`.
+    mode_fields : dict, optional
+        If given (an empty dict to fill), it receives the per-element
+        maximum over the Gauss points of every separate mode, one
+        ``(n_elem,)`` array per key of :data:`MODE_KEYS` (0.0 for skipped
+        void elements), for ``'hashin'`` and ``'max_stress'``. Tsai-Wu does
+        not separate modes and leaves it empty.
 
     Returns
     -------
@@ -212,6 +225,10 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
 
     max_fi = 0.0
     best_mode_indices: dict[str, float] = dict(EMPTY_MODE_FI)
+    per_mode = None
+    if mode_fields is not None and criterion != 'tsai_wu':
+        per_mode = {k: np.zeros(n_elem, dtype=float) for k in MODE_KEYS}
+        mode_fields.update(per_mode)
     if criterion == 'tsai_wu':
         # Tsai-Wu polynomial couples all components — per-mode breakdown
         # is undefined. Surface NaN sentinels so downstream consumers see
@@ -260,6 +277,9 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                 )
             elem_max = float(fi_per_gp.max())
             per_elem_fi[e] = elem_max
+            if per_mode is not None:
+                for k in MODE_KEYS:
+                    per_mode[k][e] = float(np.max(mode_fi_per_gp[k]))
             if elem_max > max_fi:
                 max_fi = elem_max
                 g_max = int(np.argmax(fi_per_gp))

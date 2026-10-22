@@ -2402,6 +2402,75 @@ class TestHashinDelaminationMode:
         assert 'delamination' in keys['hashin']
 
 
+class TestFailureModeMaxima:
+    """Delamination plan, phase 0: each mode's maximum over the model."""
+
+    @pytest.fixture(scope="class")
+    def solves(self):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03)
+        mesh = CompositeMesh(pf, mat, nx=6, ny=2, nz=8, ply_angles=[0, 90, 90, 0])
+        solver = FESolver(mesh, mat, pf, ply_angles=[0, 90, 90, 0])
+        return {c: solver.solve('compression', failure_criterion=c)
+                for c in ('tsai_wu', 'hashin', 'max_stress')}
+
+    @pytest.mark.parametrize('crit', ['hashin', 'max_stress'])
+    def test_maxima_cover_every_mode_and_the_overall_maximum(self, solves, crit):
+        from porosity_fe.fe.failure import MODE_KEYS
+        r = solves[crit]
+        assert set(r.failure_mode_maxima) == set(MODE_KEYS)
+        assert max(r.failure_mode_maxima.values()) == pytest.approx(
+            r.max_failure_index, rel=1e-12)
+        per = r.per_element_mode_failure_index
+        assert set(per) == set(MODE_KEYS)
+        for k in MODE_KEYS:
+            assert per[k].shape == r.per_element_failure_index.shape
+            assert per[k].max() == r.failure_mode_maxima[k]
+            # Each mode's maximum is at least its value at the overall max.
+            assert r.failure_mode_maxima[k] >= r.failure_mode_indices[k]
+        np.testing.assert_array_equal(
+            np.max(np.stack([per[k] for k in MODE_KEYS]), axis=0),
+            r.per_element_failure_index)
+
+    def test_a_non_governing_mode_is_still_reported(self, solves):
+        # Compression is governed by an in-plane mode; the breakdown at the
+        # maximum need not show the largest delamination index anywhere.
+        r = solves['hashin']
+        assert r.failure_mode_maxima['delamination'] > 0.0
+        assert r.failure_mode_maxima['delamination'] >= \
+            r.failure_mode_indices['delamination']
+
+    def test_max_stress_has_no_delamination_mode(self, solves):
+        assert solves['max_stress'].failure_mode_maxima['delamination'] == 0.0
+
+    def test_tsai_wu_does_not_separate_modes(self, solves):
+        r = solves['tsai_wu']
+        assert r.failure_mode_maxima is None
+        assert r.per_element_mode_failure_index is None
+
+    def test_mode_fields_argument(self):
+        from porosity_fe.fe.failure import MODE_KEYS, evaluate_failure
+        mat = MATERIALS['T800_epoxy']
+        rng = np.random.default_rng(3)
+        stress = rng.normal(scale=30.0, size=(3, 8, 6))
+        porosity = np.full(8, 0.02)
+        elements = np.tile(np.arange(8), (3, 1))
+        fields: dict = {}
+        _, per_elem, _ = evaluate_failure(stress, porosity, elements, mat,
+                                          (1, 1, 1), 'hashin', mode_fields=fields)
+        assert set(fields) == set(MODE_KEYS)
+        np.testing.assert_array_equal(
+            np.max(np.stack(list(fields.values())), axis=0), per_elem)
+        tw: dict = {}
+        evaluate_failure(stress, porosity, elements, mat, (1, 1, 1), 'tsai_wu',
+                         mode_fields=tw)
+        assert tw == {}
+
+    def test_summary_details_carry_the_maxima(self, solves):
+        details = solves['hashin'].summary().details
+        assert details['failure_mode_maxima'] == solves['hashin'].failure_mode_maxima
+
+
 @pytest.fixture(scope="module")
 def voided():
     """UD mesh containing geometric void elements, with its solver."""

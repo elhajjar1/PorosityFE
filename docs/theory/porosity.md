@@ -33,7 +33,16 @@ The mean $\langle f \rangle$ is evaluated on 1000 points.
 
 Because every profile is renormalized to the same mean, the empirical
 solver (which uses only $\bar V_p$) gives the same answer for all three.
-The FE solver samples $V_p$ at every node and does see the difference.
+The FE solver samples $V_p$ at every node and does see the difference, with
+one caveat for `interface`. With one element layer per ply
+($n_z = n_\text{plies}$) every interface is a node layer, so the nodes
+sample the Gaussian peaks, and the FE volume average comes out above the
+requested mean: 0.0354 for $\bar V_p = 0.03$ on the 24-ply presets. Part of
+the lower FE knockdown of interface porosity is this, and most of the rest
+the void shape: at 3 %, on a $12 \times 4 \times 24$ mesh, the compression
+knockdowns are 0.9924 for uniform spherical voids, 0.9846 for uniform
+penny voids, 0.9824 for uniform penny voids at 0.0354, and 0.9819 for
+interface penny voids.
 
 ## Void shapes
 

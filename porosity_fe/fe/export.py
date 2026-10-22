@@ -112,7 +112,13 @@ def _cell_fields(results: FieldResults,
     candidates += [(name, sig[:, i]) for i, name in enumerate(_STRESS_NAMES)]
     candidates += [(name, eps[:, i]) for i, name in enumerate(_STRAIN_NAMES)]
     if results.per_element_failure_index is not None:
+        # 'failure_index' is the criterion's index; 'tsai_wu_index' is the
+        # legacy name of the same array, written whatever the criterion.
+        candidates.append(("failure_index", results.per_element_failure_index))
         candidates.append(("tsai_wu_index", results.per_element_failure_index))
+    for mode, values in (getattr(results, 'per_element_mode_failure_index', None)
+                         or {}).items():
+        candidates.append((f"failure_index_{mode}", values))
     # Element-averaged nodal porosity over the 8 corner nodes.
     if getattr(mesh, 'porosity', None) is not None:
         candidates.append(("Vp_elem", np.mean(
@@ -441,6 +447,7 @@ def export_results(field_results: FieldResults,
             'std': float(np.std(arr)),
         }
 
+    mode_maxima = getattr(field_results, 'failure_mode_maxima', None)
     results_data = {
         'displacement': {
             'n_nodes': int(field_results.displacement.shape[0]),
@@ -461,6 +468,9 @@ def export_results(field_results: FieldResults,
         'stress_local': {
             'sigma_11': _array_stats(field_results.stress_local[:, :, 0]),
             'sigma_22': _array_stats(field_results.stress_local[:, :, 1]),
+            'sigma_33': _array_stats(field_results.stress_local[:, :, 2]),
+            'tau_23': _array_stats(field_results.stress_local[:, :, 3]),
+            'tau_13': _array_stats(field_results.stress_local[:, :, 4]),
             'tau_12': _array_stats(field_results.stress_local[:, :, 5]),
         },
         'strain_global': {
@@ -481,6 +491,12 @@ def export_results(field_results: FieldResults,
                  for k, v in field_results.failure_mode_indices.items()}
                 if field_results.failure_mode_indices is not None
                 else None
+            ),
+            # Each mode's maximum over the model (Hashin, max-stress);
+            # null for Tsai-Wu, which does not separate modes.
+            'mode_maxima': (
+                {k: _finite_or_none(v) for k, v in mode_maxima.items()}
+                if mode_maxima is not None else None
             ),
             # null when the solve has no stiffness measure
             # (loading='thermal'; NaN in FieldResults).

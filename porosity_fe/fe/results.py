@@ -54,13 +54,15 @@ class FieldResults:
         ``per_element_failure_index``. One of ``'tsai_wu'`` (default for
         back-compat), ``'hashin'``, or ``'max_stress'``.
     failure_mode_indices : dict or None
-        Per-mode breakdown of the maximum failure index across the model with
-        keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
-        ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
-        ``NaN`` (the polynomial does not separate modes; ``null`` in the
-        JSON export); for ``max_stress`` the unused entries are zero. Lets
-        the GUI and JSON exporter report the dominant failure mode, not
-        just severity.
+        Per-mode breakdown **at the Gauss point of the maximum failure
+        index** (not each mode's own maximum, see
+        :attr:`failure_mode_maxima`), with keys ``'fiber_t'``,
+        ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``, ``'shear'``,
+        ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode
+        entries are ``NaN`` (the polynomial does not separate modes;
+        ``null`` in the JSON export); for ``max_stress`` the unused entries
+        are zero. Lets the GUI and JSON exporter report the governing
+        failure mode, not just severity.
     reaction_forces : np.ndarray or None
         Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
         constrained DOFs and exactly zero at the free DOFs. A load applied
@@ -142,6 +144,21 @@ class FieldResults:
     cte_local : tuple of float or None
         Lamina CTEs ``(alpha_1, alpha_2, alpha_3)`` (1/K) used with
         ``delta_T``; ``None`` without it.
+    failure_mode_maxima : dict or None
+        Maximum over the whole model of each separate mode of the
+        ``'hashin'`` and ``'max_stress'`` criteria (keys as
+        :attr:`failure_mode_indices` without ``'max_fi'``), so a mode that
+        does not govern is still visible. The ``'delamination'`` entry is
+        the stress-based delamination-initiation index: Hashin's
+        interlaminar mode evaluated at the ply Gauss points, which sit
+        inside the plies, not on the interfaces; there is no explicit
+        delamination in the model. ``None`` for Tsai-Wu, which does not
+        separate modes.
+    per_element_mode_failure_index : dict or None
+        Per-element maximum over the Gauss points of each mode, one
+        ``(n_elem,)`` array per key of :attr:`failure_mode_maxima`
+        (written to the VTK/VTU exports as ``failure_index_<mode>``);
+        ``None`` for Tsai-Wu.
 
     Notes
     -----
@@ -185,6 +202,8 @@ class FieldResults:
     interior_first_ply_failure_load_factor: float | None = None
     load_factor_basis: str = 'mechanical'
     cte_local: tuple[float, float, float] | None = None
+    failure_mode_maxima: dict[str, float] | None = None
+    per_element_mode_failure_index: dict[str, np.ndarray] | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -239,6 +258,10 @@ class FieldResults:
                     dict(self.failure_mode_indices)
                     if self.failure_mode_indices is not None else None
                 ),
+                'failure_mode_maxima': (
+                    dict(self.failure_mode_maxima)
+                    if self.failure_mode_maxima is not None else None
+                ),
                 'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
                 'effective_modulus': self.effective_modulus,
                 'formulation': self.formulation,
@@ -272,7 +295,12 @@ class FieldResults:
         - element-averaged ``von_mises`` and the six global stress
           (``sigma_xx`` .. ``tau_xy``) and strain (``eps_xx`` .. ``gamma_xy``)
           components (Gauss points reduced by mean),
-        - ``tsai_wu_index`` (max-over-GP per element, if available),
+        - ``failure_index`` (max-over-GP per element of the solve's
+          criterion, if available) and its legacy alias ``tsai_wu_index``
+          (the same array whatever the criterion),
+        - for ``'hashin'`` and ``'max_stress'``, ``failure_index_<mode>``
+          per mode (``fiber_t``, ``fiber_c``, ``matrix_t``, ``matrix_c``,
+          ``shear``, ``delamination``),
         - ``Vp_elem`` (mean nodal porosity over the 8 corners),
         - ``ply_id``, ``ply_angle_deg``, ``is_void`` and ``knockdown`` where
           available (``knockdown`` only when finite: it is ``nan`` for
@@ -327,7 +355,8 @@ class FieldResults:
         ---------
         The :meth:`to_vtk` cell fields: element-mean ``von_mises``,
         ``sigma_xx`` .. ``tau_xy``, ``eps_xx`` .. ``gamma_xy``,
-        ``tsai_wu_index``, ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
+        ``failure_index`` (and ``tsai_wu_index``, ``failure_index_<mode>``),
+        ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
         ``is_void`` and ``knockdown`` where available, and the
         ``residual_*_local`` fields of a thermal load.
 

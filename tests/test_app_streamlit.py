@@ -239,14 +239,32 @@ class TestDefaultMesh:
         assert not at.exception
 
 
+def test_hashin_criterion_shows_the_failure_modes():
+    """The sidebar criterion reaches the FE solve and the Results tab lists
+    each mode's maximum, including delamination onset."""
+    at = _fresh_app()
+    _select(at, "FE failure criterion", "hashin")
+    at = _run_small_analysis(at)
+    assert not at.exception
+    result = at.session_state["result"]
+    assert result["config"]["failure_criterion"] == "hashin"
+    assert result["fe_field"].failure_criterion == "hashin"
+    assert any(h.value == "FE failure" for h in at.subheader)
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Criterion"] == "Hashin"
+    table = at.dataframe[0].value
+    assert "Delamination onset" in list(table["Mode"])
+
+
 def test_uq_expander_reports_percentiles():
     """IMPROVEMENT_PLAN 3.4: the Results tab runs uncertainty propagation."""
     at = _run_small_analysis(_fresh_app())
     _button(at, "Run uncertainty analysis").click().run()
     assert not at.exception
-    labels = [m.label for m in at.metric]
-    assert labels == ["Knockdown p5", "Knockdown p50", "Knockdown p95"]
-    p5, p50, p95 = (float(m.value) for m in at.metric)
+    # The FE failure block's metrics come first on the Results tab.
+    uq = [m for m in at.metric if m.label.startswith("Knockdown p")]
+    assert [m.label for m in uq] == ["Knockdown p5", "Knockdown p50", "Knockdown p95"]
+    p5, p50, p95 = (float(m.value) for m in uq)
     assert p5 < p50 < p95
 
 

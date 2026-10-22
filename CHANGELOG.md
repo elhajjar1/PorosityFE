@@ -5,6 +5,49 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Failure modes made visible, and the docs say what delamination
+  coverage exists** (delamination plan, phase 0). The default Tsai-Wu
+  results, the knockdowns and the validation MAE are unchanged.
+  - `FieldResults.failure_mode_maxima`: each separate mode's maximum over
+    the model, for Hashin and maximum stress (`None` for Tsai-Wu).
+    - `failure_mode_indices` is the breakdown at the Gauss point of the
+      overall maximum only, so a mode that does not govern used to be
+      invisible: for example, Hashin's delamination-onset mode in a
+      compression solve.
+    - `FieldResults.per_element_mode_failure_index` holds each mode's
+      per-element maximum.
+    - `porosity_fe.fe.failure.evaluate_failure` takes an optional
+      `mode_fields=` dict to fill. `MODE_KEYS` lists the modes.
+  - Exports:
+    - VTK/VTU write `failure_index` (the criterion's index) and, for Hashin
+      and maximum stress, `failure_index_<mode>` per mode. The legacy
+      `tsai_wu_index` stays as an alias, written whatever the criterion.
+    - JSON schema 1.3 adds `failure.mode_maxima` and the interlaminar
+      components `sigma_33`, `tau_23` and `tau_13` to the `stress_local`
+      summary, which carried only the in-plane ones.
+  - App:
+    - A sidebar "FE failure criterion" selector: Tsai-Wu (default), Hashin
+      or maximum stress. It also applies to the convergence check.
+    - A Results-tab **FE failure** block: domain and interior maximum
+      index, the interior first-ply-failure load factor, the governing
+      mode, and each mode's maximum for Hashin and maximum stress.
+      Maximum stress has no delamination mode, so its row reads n/a.
+  - Docs:
+    - The README limitation now says what exists: Hashin's stress-based
+      delamination-onset index at the ply Gauss points, and no explicit
+      delamination, energy release rate or growth.
+    - The README states the 3D Tsai-Wu polynomial the code evaluates,
+      instead of the in-plane one labelled "Full 3D".
+    - `examples/interface_penny.py` no longer calls interface penny
+      porosity the "worst-case ILSS morphology": its empirical knockdowns
+      depend only on the mean `Vp`.
+    - The README and the porosity theory page note two things about the
+      FE knockdown of interface penny porosity at 3 %. Most of its
+      reduction is the penny shape: uniform penny voids give 0.9846, and
+      interface penny voids 0.9819. And with one element layer per ply
+      the `interface` profile's FE volume average is 0.0354, not 0.03.
+    - The failure theory page describes the delamination mode's limits and
+      the reported mode quantities.
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled

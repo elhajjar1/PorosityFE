@@ -522,6 +522,8 @@ class FESolver:
             cte_local=(None if thermal is None else
                        (float(thermal.alpha_local[0]), float(thermal.alpha_local[1]),
                         float(thermal.alpha_local[2]))),
+            failure_mode_maxima=fm.mode_maxima,
+            per_element_mode_failure_index=fm.per_element_mode_fi,
         )
 
     # Steps of solve(). The work is done in the private step modules; tests

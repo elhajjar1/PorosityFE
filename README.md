@@ -91,6 +91,12 @@ the thickness exaggerated (the z axis label gives the factor). The stress
 map uses a diverging scale centred on zero only when the stress changes
 sign, and the Stress tab opens on the component that governs the load
 case (τ13 for ILSS, σ22 for thermal only, τ12 for shear, σ11 otherwise).
+The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
+stress), and the Results tab's **FE failure** block gives the domain and
+interior failure index, the first-ply-failure load factor and the
+governing mode, with each mode's maximum for Hashin and maximum stress.
+Hashin's delamination-onset mode is the only delamination check: the model
+has no explicit delamination (see [Limitations](#limitations)).
 The Results tab has an optional **Mesh convergence check**: it solves the
 analysis again on two or three in-plane refinements of its mesh (the
 coupon, or the D2344 or D7264 specimen; `refinement_study`), lists the
@@ -239,7 +245,7 @@ python examples/uniform_spherical.py
 |---|---|
 | [`examples/uniform_spherical.py`](examples/uniform_spherical.py) | Uniform porosity, spherical voids; empirical compression knockdown (Judd-Wright). |
 | [`examples/clustered_midplane.py`](examples/clustered_midplane.py) | Gaussian-clustered porosity at the midplane; ILSS knockdown. |
-| [`examples/interface_penny.py`](examples/interface_penny.py) | Interface-concentrated porosity with penny-shaped voids — the worst-case ILSS morphology. |
+| [`examples/interface_penny.py`](examples/interface_penny.py) | Interface-concentrated porosity with penny-shaped voids: the through-thickness profile and the empirical knockdowns, which depend only on the mean `Vp` (the FE comparison is in `distribution_comparison.py`). |
 | [`examples/discrete_voids.py`](examples/discrete_voids.py) | Explicit `VoidGeometry` ellipsoids on top of a low-uniform background; renders the SCF field around one void. |
 | [`examples/compute_degraded_clt_moduli.py`](examples/compute_degraded_clt_moduli.py) | CLT path: laminate effective moduli `(Ex, Ey, Gxy)` vs. `Vp` for a quasi-isotropic layup. |
 | [`examples/distribution_comparison.py`](examples/distribution_comparison.py) | Side-by-side `uniform` vs `clustered` vs `interface` at matched `Vp_mean`; shows empirical KDs collapse, FE KDs diverge (#83). |
@@ -329,6 +335,14 @@ mode = compression, FE Tsai-Wu, Vp_mean = 3 %
 mesh resolution. The interface case is clearly
 the lowest; the uniform and clustered cases differ by less than 0.1
 percentage point, so their order can change with the mesh.)
+
+Most of the interface case's lower knockdown is the penny shape, not the
+location of the voids. Uniform penny voids at 3 % give 0.9846. On a mesh with
+one element layer per ply the nodes also sit on the interface peaks, so the
+FE volume average of the `interface` profile is 0.0354, not 0.03; uniform
+penny voids at 0.0354 give 0.9824. Clustering at the interfaces adds only
+about 0.0005 on top of that. Interface penny porosity remains smeared
+porosity, not a delamination.
 
 ### Guidance
 
@@ -612,10 +626,14 @@ Theory pages of the documentation site (`docs/theory/`).
 
 ### Failure Criterion
 
-Full 3D Tsai-Wu with degraded strengths:
+3D Tsai-Wu with degraded strengths, Voigt order `[11, 22, 33, 23, 13, 12]`:
 ```
-F1*s1 + F2*s2 + F11*s1^2 + F22*s2^2 + F66*s6^2 + 2*F12*s1*s2 = 1
+F1*s1 + F2*s2 + F3*s3 + F11*s1^2 + F22*s2^2 + F33*s3^2
+  + F44*s4^2 + F55*s5^2 + F66*s6^2 + 2*(F12*s1*s2 + F13*s1*s3 + F23*s2*s3) = 1
 ```
+with transverse isotropy `F3 = F2`, `F33 = F22`, `F13 = F12`,
+`F23 = -0.5*F22`, `F44 = 1/S23^2` (`S23 = tau_ilss`) and
+`F55 = F66 = 1/S12^2`.
 
 **Tsai-Wu `F_12` convention (caveat for external comparisons).** When
 benchmarking PorosityFE Tsai-Wu predictions against another code or
@@ -665,7 +683,7 @@ The two aggregations differ because datasets carry very different numbers of poi
 - FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
 - Thermal residual stress is linear thermoelastic under a uniform effective `delta_T` (FE path only); chemical shrinkage, viscoelastic relaxation and moisture swelling are not modelled, and only `AS4_3501_6_epoxy` ships with lamina CTEs
 - Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
-- Delamination initiation/propagation is not explicitly simulated
+- Delamination is not modelled explicitly: there is no crack, interface element or energy release rate, and no growth. Initiation is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
 - **Flexural strength** was removed from the validation database in v1.1.1
   because 3-point bend failure involves mixed compression + interlaminar
   shear mechanisms that the Judd-Wright mode proxy cannot capture reliably

@@ -156,7 +156,11 @@ def _write_json(obj, filename: str | os.PathLike) -> None:
 # the provenance of thermal solves. Additive. Every writer now emits
 # standard JSON: the per-mode ``failure.mode_indices`` a criterion does
 # not separate (Tsai-Wu) are null, where 1.1 wrote the invalid token NaN.
-JSON_SCHEMA_VERSION = "1.2"
+# 1.3 (delamination plan, phase 0): FE-field exports gain
+# ``failure.mode_maxima`` (each mode's maximum over the model, null for
+# Tsai-Wu) and the interlaminar components sigma_33 / tau_23 / tau_13 in the
+# ``stress_local`` summary.
+JSON_SCHEMA_VERSION = "1.3"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"

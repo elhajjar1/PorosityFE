@@ -75,6 +75,11 @@
           "properties": {"max_fi": {"type": "number"}},
           "additionalProperties": {"type": ["number", "null"]}
         },
+        "mode_maxima": {
+          "type": ["object", "null"],
+          "description": "Each separate failure mode's maximum over the model (Hashin, max-stress; keys fiber_t, fiber_c, matrix_t, matrix_c, shear, delamination). The delamination entry is the stress-based initiation index at ply Gauss points; the model has no explicit delamination. null for Tsai-Wu, which does not separate modes. Added in schema_version 1.3.",
+          "additionalProperties": {"type": ["number", "null"]}
+        },
         "knockdown_factor": {
           "type": ["number", "null"],
           "description": "FE stiffness knockdown, porous over pristine. null when the solve has no stiffness measure (loading='thermal')."

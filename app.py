@@ -108,12 +108,30 @@ from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Str
 _CFG_KEYS = (
     "material_name", "angles", "n_plies", "t_ply", "Vp",
     "distribution", "cluster_location", "void_shape", "loading_mode",
-    "nx", "ny", "nz", "thermal_mode", "delta_T",
+    "nx", "ny", "nz", "thermal_mode", "delta_T", "failure_criterion",
 )
 
 #: Config fields that an older config dict may lack, and the value that
-#: absence means (no thermal load).
-_CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None}
+#: absence means (no thermal load, the Tsai-Wu criterion).
+_CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
+                 "failure_criterion": "tsai_wu"}
+
+#: FE failure criteria offered in the sidebar: key -> label.
+_CRITERION_LABELS = {
+    "tsai_wu": "Tsai-Wu (one interactive index)",
+    "hashin": "Hashin (separate modes, incl. delamination onset)",
+    "max_stress": "Maximum stress (separate modes)",
+}
+
+#: Failure-mode keys of FieldResults.failure_mode_maxima -> labels.
+_MODE_LABELS = {
+    "fiber_t": "Fibre tension",
+    "fiber_c": "Fibre compression",
+    "matrix_t": "Matrix tension",
+    "matrix_c": "Matrix compression",
+    "shear": "Shear",
+    "delamination": "Delamination onset",
+}
 
 
 def _config_to_key(cfg: dict) -> tuple:
@@ -361,6 +379,7 @@ def run_analysis(cfg: dict) -> dict:
         fe_field, fe_skipped_reason = _run_fe_solve(
             mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
             thermal_mode=thermal_mode, delta_T=delta_T,
+            failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
         )
     else:
         fe_field, fe_skipped_reason = None, specimen_error
@@ -478,7 +497,8 @@ def _clt_flexure_reference(material, angles, vp: float, loading: str) -> dict:
 
 
 def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
-                  *, thermal_mode: str = "off", delta_T: float | None = None):
+                  *, thermal_mode: str = "off", delta_T: float | None = None,
+                  failure_criterion: str = "tsai_wu"):
     """Run the FE solve for ``loading_mode``; return ``(field, skipped_reason)``.
 
     Exactly one of the pair is ``None``. Any exception from the FE path is
@@ -489,10 +509,12 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     ``thermal_mode="combined"`` passes ``delta_T`` to the mechanical solve
     (residual stress superposed); ``"thermal_only"`` solves
     ``loading='thermal'`` at ``delta_T`` instead of ``loading_mode``.
+    ``failure_criterion`` is the FE criterion (``FESolver``'s).
     """
     thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
     try:
-        fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
+        fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles,
+                             failure_criterion=failure_criterion)
         if thermal_mode == "thermal_only":
             # Free-standing laminate under delta_T (3-2-1 supports): the
             # cure residual stress, with no mechanical load.
@@ -574,6 +596,86 @@ def _applied_load_text(loading_mode: str, factor: float) -> str:
     sign = "-" if loading_mode == "compression" else ""
     name = "shear strain" if loading_mode == "shear" else "strain"
     return f"{sign}{factor * _FE_APPLIED_STRAIN * 100:.3g} % {name}"
+
+
+def fe_failure_summary(result: dict) -> tuple[list[tuple[str, str, str]],
+                                              list[dict], str] | None:
+    """Metric rows, failure-mode rows and a caption for the FE failure block.
+
+    ``None`` without an FE field. Metric rows ``(label, value, help)``: the
+    criterion, the domain and interior maximum failure index, the
+    governing mode and, unless the analysis has a thermal load (whose block
+    reports the load factors), the first-ply-failure load factors. Mode
+    rows (``Mode``, ``Max over model``), one per separate mode of the
+    Hashin and maximum-stress criteria, from
+    :attr:`~porosity_fe.FieldResults.failure_mode_maxima`; empty for
+    Tsai-Wu, which does not separate modes. Maximum stress has no
+    delamination mode, so that row reads ``n/a``.
+    """
+    fe = result.get("fe_field")
+    if fe is None:
+        return None
+    crit = fe.failure_criterion
+    maxima = fe.failure_mode_maxima
+    loading = result.get("fe_loading") or result["config"]["loading_mode"]
+    if maxima:
+        candidates = {k: v for k, v in maxima.items()
+                      if not (crit == "max_stress" and k == "delamination")}
+        governing = _MODE_LABELS.get(max(candidates, key=candidates.get),
+                                     max(candidates, key=candidates.get))
+    else:
+        governing = "not separated (Tsai-Wu)"
+    rows = [
+        ("Criterion", _CRITERION_LABELS.get(crit, crit).split(" (")[0],
+         "FE failure criterion of this run (sidebar)."),
+        ("Max FI (domain)", _fmt_value(fe.max_failure_index, "{:.4g}"),
+         "Largest failure index over every element, at the applied load. "
+         "Free edges, corners and load points concentrate stress there, so "
+         "it depends on the mesh."),
+        ("Interior max FI", _fmt_value(fe.interior_max_failure_index, "{:.4g}"),
+         f"Maximum failure index of the elements "
+         f"{_interior_region_text(result.get('fe_loading'))}; n/a when no "
+         f"element is that far in."),
+        ("Governing mode", governing,
+         "Mode with the largest index over the model (Hashin, maximum "
+         "stress). Tsai-Wu's single polynomial does not separate modes."),
+    ]
+    if not result.get("fe_thermal"):
+        rows.append((
+            "FPF load factor (interior)",
+            _fmt_value(fe.interior_first_ply_failure_load_factor, "{:.3g}"),
+            "Multiplier on the applied load at which the first interior "
+            "element reaches the criterion (domain value in the caption)."))
+    mode_rows = []
+    for key, label in _MODE_LABELS.items():
+        if not maxima or key not in maxima:
+            continue
+        value = ("n/a" if crit == "max_stress" and key == "delamination"
+                 else _fmt_value(maxima[key], "{:.4g}"))
+        mode_rows.append({"Mode": label, "Max over model": value})
+    parts = [f"Failure indices at the applied load "
+             f"({_applied_load_text(loading, 1.0)})."
+             if loading != "thermal" else "Failure indices at the entered ΔT."]
+    if not result.get("fe_thermal"):
+        lam = fe.first_ply_failure_load_factor
+        if lam is not None and math.isfinite(lam):
+            parts.append(f"First-ply failure over the whole model at "
+                         f"{_applied_load_text(loading, lam)}.")
+    if crit == "hashin":
+        parts.append(
+            "Delamination onset is Hashin's interlaminar mode: "
+            "(σ33/Yt)² + (τ13² + τ23²)/S², at the ply Gauss points (inside "
+            "the plies, not on the interfaces) against the porosity-"
+            "degraded transverse tensile strength and interlaminar shear "
+            "strength. The model has no explicit delamination, so it "
+            "screens initiation only.")
+    elif crit == "max_stress":
+        parts.append("Maximum stress has no delamination mode; σ33 and the "
+                     "transverse shears enter its matrix and shear modes.")
+    else:
+        parts.append("Pick Hashin in the sidebar to see the failure modes, "
+                     "including delamination onset.")
+    return rows, mode_rows, " ".join(parts)
 
 
 def fe_short_beam_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
@@ -903,6 +1005,7 @@ def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
         material, cfg["Vp"] / 100.0, loading,
         porosity_config=pf_kwargs, ply_angles=cfg["angles"],
         resolutions=[tuple(r) for r in resolutions],
+        failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
         delta_T=None if thermal_mode == "off" else cfg["delta_T"],
         allow_unresolved_layup=thermal_mode == "off",
         **kwargs,
@@ -1742,6 +1845,23 @@ def _build_sidebar_inputs() -> dict | None:
             ),
         )
 
+        failure_criterion = st.selectbox(
+            "FE failure criterion",
+            options=list(_CRITERION_LABELS),
+            format_func=_CRITERION_LABELS.__getitem__,
+            index=0,
+            help=(
+                "Criterion of the FE failure index and first-ply-failure "
+                "load factor. Tsai-Wu gives one interactive index; Hashin "
+                "and maximum stress separate the failure modes, and Hashin "
+                "includes a delamination-onset mode (interlaminar normal "
+                "and shear stress at the ply Gauss points against the "
+                "porosity-degraded transverse tensile and interlaminar "
+                "shear strengths). There is no explicit delamination in "
+                "the model: this screens initiation only."
+            ),
+        )
+
         thermal_mode, delta_T = _build_thermal_inputs(material_name)
 
         # Ply count of the laminate as entered (the analysis replaces the
@@ -1853,6 +1973,7 @@ def _build_sidebar_inputs() -> dict | None:
         "nz": int(nz),
         "thermal_mode": thermal_mode,
         "delta_T": delta_T,
+        "failure_criterion": failure_criterion,
     }
     return {"cfg": cfg, "layup_str": layup_str, "run": run}
 
@@ -1961,11 +2082,27 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
         return
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
+    _build_fe_failure_results(result)
     _build_short_beam_results(result)
     _build_flexure_results(result)
     _build_thermal_results(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
+
+
+def _build_fe_failure_results(result: dict) -> None:
+    """FE failure index, governing mode and per-mode maxima (any FE run)."""
+    summary = fe_failure_summary(result)
+    if summary is None:
+        return
+    rows, mode_rows, caption = summary
+    st.subheader("FE failure")
+    for col, (label, value, help_text) in zip(st.columns(len(rows)), rows,
+                                              strict=True):
+        col.metric(label, value, help=help_text)
+    if mode_rows:
+        st.dataframe(mode_rows, hide_index=True, use_container_width=True)
+    st.caption(caption)
 
 
 def _build_flexure_results(result: dict) -> None:

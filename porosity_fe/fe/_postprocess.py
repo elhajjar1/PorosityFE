@@ -131,6 +131,8 @@ class FailureMetrics:
     residual_max_fi: float | None
     interior_max_fi: float | None
     interior_load_factor: float | None
+    mode_maxima: dict[str, float] | None = None
+    per_element_mode_fi: dict[str, np.ndarray] | None = None
 
 
 def failure_metrics(
@@ -154,14 +156,21 @@ def failure_metrics(
     The per-element failure index is the max over Gauss points (0.0 for
     skipped void elements), ``max_fi`` its overall maximum, and the mode
     breakdown has ``NaN`` entries for Tsai-Wu, which does not separate
-    modes (:func:`porosity_fe.fe.failure.evaluate_failure`).
+    modes (:func:`porosity_fe.fe.failure.evaluate_failure`). For the
+    criteria that do, ``per_element_mode_fi`` holds each mode's
+    per-element maximum and ``mode_maxima`` its maximum over the model
+    (``None`` for Tsai-Wu).
     """
-    def evaluate(stress: np.ndarray) -> tuple[float, np.ndarray, dict[str, float]]:
+    def evaluate(stress: np.ndarray, mode_fields: dict | None = None
+                 ) -> tuple[float, np.ndarray, dict[str, float]]:
         return failure.evaluate_failure(
             stress, mesh.porosity, mesh.elements, material, void_shape_radii,
-            criterion, void_elements=mesh.void_elements)
+            criterion, void_elements=mesh.void_elements, mode_fields=mode_fields)
 
-    max_fi, per_elem_fi, mode_indices = evaluate(stress_local)
+    mode_fields: dict[str, np.ndarray] = {}
+    max_fi, per_elem_fi, mode_indices = evaluate(stress_local, mode_fields)
+    mode_maxima = ({k: float(v.max()) if v.size else 0.0
+                    for k, v in mode_fields.items()} if mode_fields else None)
     lam_elem = failure._element_load_factors(
         load_stress_local, mesh.porosity, mesh.elements, material,
         void_shape_radii, criterion, void_elements=mesh.void_elements,
@@ -187,4 +196,6 @@ def failure_metrics(
         load_factor=load_factor, residual_max_fi=residual_max_fi,
         interior_max_fi=float(per_elem_fi[interior].max()) if has_interior else None,
         interior_load_factor=float(lam_elem[interior].min()) if has_interior else None,
+        mode_maxima=mode_maxima,
+        per_element_mode_fi=mode_fields or None,
     )
