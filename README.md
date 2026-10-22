@@ -662,7 +662,7 @@ The two aggregations differ because datasets carry very different numbers of poi
 
 - Empirical models are calibrated for porosity levels up to ~5% (`Vp ≲ 0.05`); higher values are extrapolated and flagged with a warning
 - FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
-- Thermal residual stresses are not included
+- Thermal residual stress is linear thermoelastic under a uniform effective `delta_T` (FE path only); chemical shrinkage, viscoelastic relaxation and moisture swelling are not modelled, and only `AS4_3501_6_epoxy` ships with lamina CTEs
 - Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
 - Delamination initiation/propagation is not explicitly simulated
 - **Flexural strength** was removed from the validation database in v1.1.1
