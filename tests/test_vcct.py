@@ -657,7 +657,7 @@ def penny():
     u, r = _solve(mesh, K, constrained, F, solver='cg')
     front = vcct_energy_release_rates(mesh, u, r)
     G_ref = 4.0 * sigma ** 2 * a * (1.0 - 0.3 ** 2) / (math.pi * mat.E11)
-    return dict(front=front, a=a, G_ref=G_ref)
+    return dict(front=front, a=a, G_ref=G_ref, mesh=mesh)
 
 
 class TestPennyCrack:
@@ -678,6 +678,10 @@ class TestPennyCrack:
 
     def test_mode_I_and_the_staircase_frame(self, penny):
         front = penny['front']
+        # The front is the mesh's crack_front_pairs(), in the same order.
+        originals, duplicates = penny['mesh'].crack_front_pairs()
+        np.testing.assert_array_equal(front.node, originals)
+        np.testing.assert_array_equal(front.duplicate, duplicates)
         assert np.min(front.G_I / front.G_T) > 0.999
         # Eight grid directions, the radial one on the axes.
         on_x = np.abs(front.y) < 1e-9
