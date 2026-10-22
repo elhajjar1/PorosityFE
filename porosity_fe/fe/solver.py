@@ -159,8 +159,13 @@ class FESolver:
     delaminations=...)``) every loading mode ties the bonded part of each
     duplicated interface (:meth:`CompositeMesh.bonded_ties`), prescribes
     no tied duplicate on a face, and measures the knockdown against the
-    laminate with no porosity, voids or delamination; see the theory page
-    "Delamination".
+    laminate with no porosity, voids or delamination. It keeps the crack
+    faces from interpenetrating (frictionless contact, ``crack_contact``),
+    reports the virtual-crack-closure energy release rates along the front
+    (:attr:`FieldResults.crack_front`) and, when the material has
+    interlaminar toughness, the load factor at which the delamination
+    starts to grow (:attr:`FieldResults.fracture_load_factor`); see the
+    theory page "Delamination".
     """
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime

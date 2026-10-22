@@ -95,8 +95,10 @@ The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
 governing mode, with each mode's maximum for Hashin and maximum stress.
-Hashin's delamination-onset mode is the only delamination check: the model
-has no explicit delamination (see [Limitations](#limitations)).
+Hashin's delamination-onset mode is the app's only delamination check: it
+has no input for an explicit delamination yet, which the Python API
+supports with energy release rates and a growth criterion (see
+[Limitations](#limitations)).
 The Results tab has an optional **Mesh convergence check**: it solves the
 analysis again on two or three in-plane refinements of its mesh (the
 coupon, or the D2344 or D7264 specimen; `refinement_study`), lists the
@@ -683,7 +685,7 @@ The two aggregations differ because datasets carry very different numbers of poi
 - FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
 - Thermal residual stress is linear thermoelastic under a uniform effective `delta_T` (FE path only); chemical shrinkage, viscoelastic relaxation and moisture swelling are not modelled, and only `AS4_3501_6_epoxy` ships with lamina CTEs
 - Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
-- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`; the crack faces are traction free and the bonded part is tied), but there are no energy release rates (VCCT), toughness criterion, growth or crack-face contact yet. Initiation is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
+- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`). The FE solve keeps its faces from interpenetrating (frictionless contact), reports the VCCT energy release rates G_I, G_II and G_III along the front (`FieldResults.crack_front`) and, when the material has interlaminar toughness (`G_Ic`, `G_IIc`, `bk_eta`; no preset has them), the Benzeggagh-Kenane load factor at which growth starts (`FieldResults.fracture_load_factor`). It is linear fracture mechanics: growth onset only, no propagation, cohesive zone or delamination buckling. Planform fronts are staircases on the structured grid, so G scatters from node to node; porosity does not change the toughness yet, and the app has no delamination input. Initiation from an intact interface is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
 - **Flexural strength** was removed from the validation database in v1.1.1
   because 3-point bend failure involves mixed compression + interlaminar
   shear mechanisms that the Judd-Wright mode proxy cannot capture reliably

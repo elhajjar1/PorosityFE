@@ -6,20 +6,36 @@ in $x$-$y$. It is a defect separate from porosity. The porosity field stays
 an input of its own, and a delamination neither adds nor removes voids.
 
 The FE model represents the crack and solves the delaminated laminate with
-the same linear solver as every other load case. Energy release rates
-(virtual crack closure), crack-face contact and a fracture criterion are
-the next steps; until then, delamination *initiation* is screened by the
-stress-based Hashin delamination mode ({doc}`failure`).
+the same linear solver as every other load case. The crack faces are kept
+from interpenetrating by frictionless contact. Along the crack front the
+solve reports the energy release rates $G_\text{I}$, $G_\text{II}$ and
+$G_\text{III}$ by the virtual crack closure technique (VCCT). When the
+material has interlaminar toughness data, it also reports the critical load
+factor at which the delamination starts to grow, from the
+Benzeggagh-Kenane mixed-mode criterion. Delamination *initiation* from an
+intact interface is still screened by the stress-based Hashin delamination
+mode ({doc}`failure`).
 
 ```python
+import dataclasses
+
 from porosity_fe import (MATERIALS, CompositeMesh, Delamination, FESolver,
                          PorosityField)
 
-mat = MATERIALS['T800_epoxy']                       # 24 plies
+# No preset has toughness data. For illustration only, the IM7/8552 values
+# of the table under "Toughness data" on the T800 preset (24 plies); use
+# values measured for your material (N/mm).
+mat = dataclasses.replace(MATERIALS['T800_epoxy'],
+                          G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)
 pf = PorosityField(mat, 0.02)
 crack = Delamination.ellipse(11, center=(25.0, 10.0), half_size=(6.0, 4.0))
 mesh = CompositeMesh(pf, mat, nx=30, ny=10, nz=24, delaminations=[crack])
 result = FESolver(mesh, mat, pf).solve('compression')
+
+front = result.crack_front              # one row per front node
+front.G_T, front.psi                    # N/mm, mode mixity
+result.fracture_load_factor             # growth at this multiple of the load
+result.contact_pairs                    # crack-face pairs in contact
 ```
 
 ## Crack representation
@@ -106,8 +122,9 @@ solve factorizes the new reduced system without reassembly. A delamination
 at a new interface needs {meth}`~porosity_fe.CompositeMesh.generate_mesh`
 again. {meth}`~porosity_fe.CompositeMesh.crack_front_pairs` lists the
 bonded pairs on the front: those with a delaminated pair among their eight
-in-plane neighbours, i.e. in a shared element face. They are where the
-virtual crack closure technique will read the tie forces.
+in-plane neighbours, i.e. in a shared element face. The virtual crack
+closure technique reads their tie forces
+([Energy release rates](#energy-release-rates-vcct)).
 
 ## Boundary conditions
 
@@ -141,9 +158,193 @@ $KD_\text{FE} = \mathcal S_\text{porous, delaminated} / \mathcal S_\text{pristin
 and a delamination alone, without porosity, gives a knockdown below 1. The
 reference cache is keyed on the tie set the reference uses (every pair
 bonded), so cracks of different sizes at the same interfaces share one
-reference, and it never shares an entry with a solve of other ties.
-Splitting the knockdown into porosity-only and delamination-only parts
-comes with the fracture outputs.
+reference, and it never shares an entry with a solve of other ties. The
+knockdown is not yet split into porosity-only and delamination-only parts.
+
+## Crack-face contact
+
+A linear solve lets the two faces of a delaminated pair pass through each
+other: under bending, compression or shear the laminate then comes out too
+compliant and the opening-mode energy release rate is spurious. The solve
+therefore enforces frictionless contact with zero initial gap
+({meth}`FESolver.solve(..., crack_contact=True) <porosity_fe.FESolver.solve>`,
+the default; plan decision D7). The normal opening of a delaminated pair is
+$g = u_z(\text{duplicate}) - u_z(\text{original})$: the interface normal is
+$+z$ and the duplicate is the upper face. A primal-dual active set finds the
+pairs in contact:
+
+1. Solve with the bonded ties plus, for every active pair, a normal-only tie
+   $u_z(\text{duplicate}) = u_z(\text{original})$. It is a tie on the $z$
+   degree of freedom alone, so the faces slide freely. When the duplicate's
+   $u_z$ is prescribed, the original follows it instead; a pair with both
+   prescribed is left out.
+2. Add every inactive pair with $g < -\varepsilon \max\lvert u\rvert$, and
+   release every active pair whose contact force is tensile,
+   $p < -\varepsilon \max\lvert r\rvert$, with $p$ the residual
+   $(\mathbf K \mathbf u - \mathbf F)$ of the tied degree of freedom: the
+   force the lower face exerts on the upper one, compressive positive.
+   $\varepsilon = 10^{-9}$ for the direct solver, $100\,\text{rtol}$ for
+   conjugate gradients.
+3. Repeat until the set does not change: at most 30 solves, with a warning
+   (and `contact_converged = False`) if it still changes.
+
+Only the ties change between solves; $\mathbf K$ is assembled once. Every new
+active set is a new reduced matrix $\mathbf T^\mathsf T \mathbf K \mathbf T$,
+so it is factorized again. The first solve (no pair active) uses the
+solver's LU cache, like a solve without contact. Every later set is
+factorized in a separate one-entry cache, so the intermediate sets never
+evict the load cases' factorizations and at most one factorization more is
+alive. The set a load case settles on is the warm start of its next solve on
+the same solver (same prescribed degrees of freedom, bonded ties and load
+parts), so repeating a solve or rescaling its load takes one solve.
+
+The results record `crack_contact`, `contact_iterations` (the solves of the
+loop), `contact_pairs` and `contact_converged`.
+{attr}`~porosity_fe.FieldResults.interface_forces` holds the force every
+duplicated pair transmits: the tie force of a bonded pair, the normal contact
+force of a pair in contact, zero for an open pair.
+
+**Load scaling.** Under proportional mechanical loading from a zero gap, the
+contact problem is positively homogeneous: scaling every prescribed
+displacement and force by $\lambda > 0$ scales the solution by $\lambda$, with
+the same pairs in contact. The energy release rates then grow as
+$\lambda^2$, which the linear load factor below relies on (the tests check
+it: twice the load gives the same contact pairs and half the factor). With
+a thermal prestress, the contact is that of the total state at the applied
+load (residual plus mechanical), and both the thermal unit solve and the
+mechanical solve take its active set, so the two still superpose. That set
+is not invariant when only the mechanical part is scaled, $\mathbf u_T +
+\lambda \mathbf u_M$: the load factor keeps the applied state's set for every
+$\lambda$. This is an approximation, exact when no pair changes status
+between $\lambda = 1$ and $\lambda_c$. A thermal load alone
+(`loading='thermal'`) is proportional in `delta_T`, so its set is invariant.
+
+## Energy release rates (VCCT)
+
+The front nodes are the bonded pairs with a delaminated pair among their
+eight in-plane neighbours
+({meth}`~porosity_fe.CompositeMesh.crack_front_pairs`). For each front node
+$p$:
+
+- **The pair behind**, $q$, is the delaminated neighbour most aligned with
+  the mean direction from the node's delaminated edge-sharing neighbours to
+  $p$ (from its delaminated diagonal neighbours when it has no edge-sharing
+  one). On a straight front it is the neighbour straight behind; at a corner
+  of a staircase front it is the diagonal one.
+- **The local frame**: $x' = (\mathbf x_p - \mathbf x_q) / \lvert \mathbf
+  x_p - \mathbf x_q\rvert$ is the in-plane growth direction, the outward
+  normal of the delaminated region: exactly $\pm x$ on a front across the
+  width, one of eight grid directions on a staircase. $y' = +z$ is the
+  interface normal and $z' = x' \times y'$ runs along the front.
+- **$\Delta a$ and $b$**: $\Delta a = \lvert \mathbf x_p - \mathbf
+  x_q\rvert$, the element length along $x'$, and $b = A_p / \Delta a$, with
+  $A_p$ the node's tributary (dual) cell of the interface on the structured
+  grid: half the spacing to each neighbour along $x$ times the same along
+  $y$. So $b$ is halved at a plate edge and $A_p$ quartered at a plate
+  corner. On a straight front $\Delta a\, b = \Delta x\, \Delta y$, Krueger's
+  area with the half width at the edges, and $\sum G_T\, b\, \Delta a$ over
+  the front is the closure work of the whole front.
+- **Force and opening**: $\mathbf F'$ is the force the tie exerts on the
+  upper face (the duplicate) at $p$, the residual $(\mathbf K \mathbf u -
+  \mathbf F)$ at the duplicate's degrees of freedom, read before the tie
+  forces are folded onto the originals for the reactions.
+  $\boldsymbol\Delta'$ is the opening at $q$, upper minus lower face. Both
+  are rotated into the frame.
+
+The 8-node brick formulas (Krueger 2004) are then
+
+$$
+G_\text{I} = -\frac{F'_y \Delta'_y}{2 \Delta a\, b}, \qquad
+G_\text{II} = -\frac{F'_x \Delta'_x}{2 \Delta a\, b}, \qquad
+G_\text{III} = -\frac{F'_z \Delta'_z}{2 \Delta a\, b},
+$$
+
+$G_T = G_\text{I} + G_\text{II} + G_\text{III}$ and $\psi = (G_\text{II} +
+G_\text{III}) / G_T$. In an opening double-cantilever beam the tie holds the
+upper face down ($F'_y < 0$) while the faces behind open ($\Delta'_y > 0$),
+so $G_\text{I} > 0$. A negative product is set to zero: the faces behind are
+closed (a pair in contact has $\Delta'_y = 0$) or the mode vanishes and only
+round-off is left. $G_T$ does not depend on the frame (it is the dot
+product $-\mathbf F' \cdot \boldsymbol\Delta' / (2 \Delta a\, b)$); on a
+staircase front only the choice of $q$ matters for it, while the split
+between $G_\text{II}$ and $G_\text{III}$ follows the quantized $x'$. At an
+interface between plies of different orientation the split depends on
+$\Delta a$ (the oscillatory bimaterial singularity) while $G_T$ converges,
+so $G_T$ is the quantity to compare (plan decision D5).
+
+{attr}`FieldResults.crack_front <porosity_fe.FieldResults.crack_front>` is
+a {class}`~porosity_fe.CrackFront` table with one row per front node.
+{func}`~porosity_fe.vcct_energy_release_rates` builds it from a displacement
+field and the interface forces
+({meth}`FieldResults.energy_release_rates <porosity_fe.FieldResults.energy_release_rates>`
+recomputes it from a result), or from the full $\mathbf K \mathbf u -
+\mathbf F$ of a solve of your own boundary conditions.
+
+## Growth criterion and load factor
+
+The mixed-mode toughness is Benzeggagh and Kenane's (1996), with Reeder's
+(2006) term for a separate mode III toughness
+({func}`~porosity_fe.critical_energy_release_rate`):
+
+$$
+G_c = G_{Ic} + (G_{IIc} - G_{Ic})\, \psi^\eta
+      + (G_{IIIc} - G_{IIc}) \frac{G_\text{III}}{G_\text{II} + G_\text{III}}\, \psi^\eta ,
+$$
+
+plain B-K when $G_{IIIc} = G_{IIc}$, which is the default. It gives
+$G_{Ic}$ at $\psi = 0$, $G_{IIc}$ in pure mode II and $G_{IIIc}$ in pure mode
+III. The inputs are the optional {class}`~porosity_fe.MaterialProperties`
+fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. No
+preset sets them (see [Toughness data](#toughness-data)). Without them the
+solve still reports the energy release rates, logs one INFO line, and the
+load factor is `None`. The function receives the porosity at each front node
+as the hook of the porosity-toughness law of plan phase 4; for now it
+returns the pristine toughness.
+
+**Mechanical load.** Every energy release rate scales with $\lambda^2$ and
+$\psi$ does not change, so node $i$ starts to grow at
+
+$$
+\lambda_{c,i} = \sqrt{G_c(\psi_i) / G_{T,i}}
+$$
+
+($\infty$ where $G_T = 0$). The smallest over the front is
+{attr}`~porosity_fe.FieldResults.fracture_load_factor`, at the node
+{attr}`~porosity_fe.FieldResults.fracture_governing_node`
+(`summary().details` adds its $\psi$ and $G_T$). It multiplies the load named
+by `load_factor_basis`: the applied load, or `delta_T` for
+`loading='thermal'`.
+
+**Thermal prestress** (a mechanical load with `delta_T`, basis
+`'mechanical_with_residual'`). The front state is
+$\mathbf F' = \mathbf F'_T + \lambda \mathbf F'_M$,
+$\boldsymbol\Delta' = \boldsymbol\Delta'_T + \lambda \boldsymbol\Delta'_M$,
+so each mode's closure work is quadratic in $\lambda$ and the mix changes
+with it. $\lambda_c$ is the smallest positive root of
+$G_T(\lambda) = G_c(\psi(\lambda))$ at each node
+({func}`~porosity_fe.fracture_load_factors` with `prestress=`): bracketed on
+a geometric grid of 12 % steps around the mechanical estimate and refined
+with `scipy.optimize.brentq`. It is 0 where the residual state alone reaches
+$G_c$ and $\infty$ where the load releases no energy. The contact set of the
+applied state is held for every $\lambda$ (see
+[Crack-face contact](#crack-face-contact)).
+
+## Outputs and exports
+
+- {class}`~porosity_fe.FieldResults`: `crack_front`, `fracture_load_factor`,
+  `fracture_governing_node`, `interface_forces`, `crack_contact`,
+  `contact_iterations`, `contact_pairs` and `contact_converged`, all `None`
+  without a delaminated pair; `summary().details` carries them.
+- JSON ({meth}`FESolver.export_results <porosity_fe.FESolver.export_results>`,
+  schema 1.3): a `fracture` block with the contact counts, the load factor,
+  the governing node, its $\psi$ and $G_T$, and the front table (one array
+  per column, unit-suffixed keys such as `G_T_N_per_mm`). Undefined or
+  infinite values are `null`. A mesh without a delaminated pair writes no
+  block.
+- VTU ({meth}`FieldResults.to_vtu <porosity_fe.FieldResults.to_vtu>`): point
+  data `G_I`, `G_II`, `G_III` and `G_T` at both nodes of every front pair,
+  `NaN` elsewhere. The legacy ASCII VTK leaves them out, since its readers do
+  not parse `NaN` reliably.
 
 ## Verification
 
@@ -154,10 +355,10 @@ comes with the fracture outputs.
   element formulations: displacements, stresses, reactions, knockdown,
   effective modulus, failure indices and load factors agree within
   $5 \times 10^{-11}$ relative (`tests/test_delamination.py`).
-- **Double-cantilever beam.** A 16-ply UD T800/epoxy beam, 60 x 4 mm, with
-  1 mm elements, a mid-plane strip from the loaded end, the hinge lines of
-  the two arms opened by $\pm\delta$ and the far end clamped. With
-  $h$ the arm thickness, root-rotation-corrected beam theory gives
+- **Double-cantilever beam compliance.** A 16-ply UD T800/epoxy beam,
+  60 x 4 mm, with 1 mm elements, a mid-plane strip from the loaded end, the
+  hinge lines of the two arms opened by $\pm\delta$ and the far end clamped.
+  With $h$ the arm thickness, root-rotation-corrected beam theory gives
   $C = 8 (a + \chi h)^3 / (E_{11} b h^3)$ and
   $G = 12 P^2 (a + \chi h)^2 / (E_{11} b^2 h^3)$, with
   $\chi = \sqrt{\frac{E_{11}}{11 G_{13}}\left(3 - 2\left(\frac{\Gamma}{1 + \Gamma}\right)^2\right)}$
@@ -168,16 +369,85 @@ comes with the fracture outputs.
   (311 J/m²), is 0.989 of the beam-theory $G$ at the mean crack length,
   21.5 mm. Uncorrected beam theory ($\chi = 0$) gives 0.245 N/mm there.
 
+The fracture-mechanics checks (`tests/test_vcct.py`, measured values;
+"centred" is the difference over one element either side of $a$, which
+estimates the derivative at $a$ like VCCT, while the one-element forward
+difference is centred half an element ahead):
+
+| Check | Model | Reference | Measured | Test tolerance |
+|---|---|---|---|---|
+| DCB $G_\text{I}$ | the beam above, $a = 21$ mm | $\frac{P^2}{2b}\frac{dC}{da}$, one-element forward / centred | 0.959 / 0.9991 (width average 0.2986 N/mm) | 5 % / 0.5 % |
+| DCB $G_\text{I}$ | same | corrected beam theory at $a$ | 0.988 | 3 % |
+| DCB mode purity | same | $G_\text{II} = G_\text{III} = 0$ | $G_\text{II}/G_\text{I}$, $G_\text{III}/G_\text{I} < 10^{-24}$ | $10^{-3}$ |
+| Crack closure identity | one-element extension, fixed grips | $U(a) - U(a + \Delta a)$ | $2 \times 10^{-12}$ relative | $10^{-9}$ |
+| Energy balance | $\sum G_T\, b\, \Delta a$ (one-step VCCT) | $[U(a - \Delta a) - U(a + \Delta a)] / 2$ | 0.9938 (1.085 against the forward extension alone) | 2 % |
+| Width, no Poisson coupling | $\nu = 0$, 4 mm wide, 5 front nodes | uniform | spread $1.7 \times 10^{-12}$ | $10^{-6}$ |
+| Width, T800 | 20 mm wide, 2 mm elements | uniform away from the edges | 1.031 to 1.043 of the mean from 4 to 16 mm (1.2 % spread); 0.736 at the free edges | 2 % |
+| Convergence | $a = 20$ mm, $\Delta a$ = 2, 1, 0.5 (0.25) mm | corrected beam theory | 0.9792, 0.9878, 0.9931 (0.9961) | monotone, 1 % at 0.5 mm |
+| Single-leg $\psi$ | upper arm loaded, $a = 21$ mm | Williams with root rotation ($\chi h$ in mode I, $0.42\,\chi h$ in mode II, Wang and Williams 1992): 0.3936; $3/7 = 0.4286$ for a long crack | 0.3897 (0.990) | 5 % |
+| Single-leg $G_T$ | same | centred / forward compliance derivative | 0.9991 / 0.957 | 5 % |
+| ENF $G_\text{II}$ | three-point bend, span 50 mm, 0.96 mm elements, $a = 15.4$ mm (0.6 of the half span), with contact | centred / forward compliance derivative | 0.9983 / 0.943; $G_\text{II}$ is 99.5 % of $G_T$ | 2 % |
+| ENF contact | same | $G_\text{I} = 0$, no penetration | $G_\text{I} \le 1.1 \times 10^{-6}\, G_T$; least opening 0; 15 pairs in contact after 4 solves | $10^{-4}\, G_T$ |
+| ENF without contact | same, `crack_contact=False` | | the faces overlap by up to 0.86 mm (deflection 0.63 mm); compliance 1.49 times | a visible overlap |
+| Load scaling | ENF at twice the load | $\lambda_c / 2$ | ratio 0.5 to $10^{-9}$, the same 15 pairs, 1 solve (warm start) | $10^{-9}$ |
+| Thermal $\lambda_c$ | cross-ply $[0/90/0/90]_s$ AS4/3501-6, 0/90 interface, $\Delta T = -100$ K, no contact | root of $G_T(\lambda) = G_c(\psi(\lambda))$ from the separate thermal and mechanical solves | identical; 0.2148 against 0.2771 without the residual state | $10^{-10}$ |
+| Penny crack | isotropic block, quarter model, $4a \times 4a \times 8a$, $h = a/8$, remote tension | $G = (1 - \nu^2) K_I^2 / E$, $K_I = 2\sigma\sqrt{a/\pi}$ | front mean 1.061 at the nominal $a$, 1.003 at the mean front radius (1.058 $a$); 0.785 to 1.434 around the front | 10 % / 5 % |
+
+The penny crack's front nodes lie between $a$ and $a + \sqrt 2\, h$ from
+the centre: the modelled crack is the staircase, larger than the circle, and
+the closed form scales with $a$. Outside the test suite, the same model
+gave a front mean of 1.131, 1.061, 1.046 and 1.035 of the closed form at the
+nominal radius for $h = a/4$, $a/8$, $a/12$ and $a/16$ (1.032, 1.003, 1.010
+and 1.003 at the mean front radius), and 1.038 (0.981) with the block
+enlarged to $6a \times 6a \times 12a$ at $h = a/8$. The node-to-node scatter
+around the staircase does not shrink with refinement (0.73 to 1.43 at
+$h = a/16$); the front average converges.
+
+## Toughness data
+
+No preset carries toughness. Sourced values from the delamination plan's
+literature brief (N/mm; [P] read in the primary source, [S] from a
+secondary source, [NV] not verified):
+
+| Material | $G_{Ic}$ | $G_{IIc}$ | B-K $\eta$ | Source |
+|---|---|---|---|---|
+| IM7/8552 (benchmark reference) | 0.212 | 0.774 | 2.1 | Krueger, NASA/CR-2012-217562 [P] |
+| IM7/8552 | 0.206 (fatigue precracked) to 0.237 (insert) | 0.739 to 0.807 (precracked) | | Czabaj and Ratcliffe 2013, doi:10.1016/j.compscitech.2013.09.008; O'Brien et al., NASA/TM-2010-216838 [P] |
+| AS4/3501-6 | 0.077 to 0.091 | 0.54 to 0.71 | NV | Reeder 1992, NASA TM-104210 [P] |
+| AS4/PEEK (APC-2) | 0.969 | 1.719 | 2.284 | Camanho and Dávila, NASA/TM-2002-211737 [P] (Reeder: 0.78 to 0.84 / 1.16 to 1.25) |
+| E-glass/epoxy (M10) | 0.118 | 2.906 | 2.6 [S] | Kenane and Benzeggagh 1997, doi:10.1016/S0266-3538(97)00021-3 [P] |
+| IM7/8551-7 | 0.61 to 0.63 (initiation) | NV | NV | Naik, Crews and Shivakumar, NASA TM-101677 [P] |
+| T300/934 | about 0.088 | NV | NV | Funk and Deaton, NASA TP-2950 [P] |
+| T700/EPON 828 | 0.52 (at 1.49 % voids) | NV | NV | Hakim et al. 2017, doi:10.4236/msa.2017.82011 [P] |
+| T800H/3900-2 | 0.564 (initiation) | NV | NV | Zhang and Fox 2007, doi:10.1080/10426910701385432 [P, abstract] |
+| T800S/M21, HTA/EHkF420 | NV | NV | NV | No verified values found |
+| T300/914C (DCB benchmark) | 0.1703 | 0.4936 | 1.62 | Krueger, NASA/TM-2008-215123 [P] |
+| C12K/R6376 (SLB benchmark) | 0.3405 | 1.286 | 3.39 | Krueger, NASA/TM-2008-215123 [P] |
+
+Use precracked or initiation values as the base that a porosity knockdown
+would apply to; values measured from the insert run high.
+
 ## Limitations
 
-- No energy release rates or fracture criterion yet, so no critical load
-  for growth; that is the next step (virtual crack closure,
-  Benzeggagh-Kenane).
-- No crack-face contact: under compression, shear or bending the faces of
-  a delamination can interpenetrate, which makes the laminate too
-  compliant (end-notched flexure needs contact).
+- Linear elastic fracture mechanics: $\lambda_c$ is the load at which growth
+  *starts*. There is no propagation, R-curve, cohesive zone or unstable
+  growth, and no delamination buckling.
+- The crack size is quantized to node lines, and a planform front is a
+  staircase whose nodes lie up to one diagonal element outside the
+  planform. On a staircase $G$ scatters from node to node (0.79 to 1.43 of
+  the closed form around the penny crack at $h = a/8$), so read the front
+  average, or refine; $G_\text{II}$ and $G_\text{III}$ are split along one of
+  eight grid directions.
+- Where the front meets a free edge, the edge node reads a lower $G$ (0.74
+  of the mean on the 20 mm UD beam) that depends on the mesh, the corner
+  singularity of the free surface.
+- At an interface between plies of different orientation the mode split
+  depends on $\Delta a$; compare $G_T$.
+- Contact is frictionless, node to node on the matching duplicated nodes
+  (small sliding), from a zero gap. With a thermal prestress the load factor
+  holds the contact set of the applied state.
+- No preset has toughness data, and porosity does not change the toughness
+  yet (plan phase 4). The knockdown is not split into porosity and
+  delamination parts.
 - The stresses at the front are singular, so stresses and failure indices
-  next to it depend on the mesh. Planform fronts are staircases on the
-  structured grid.
-- Linear and static: no cohesive zone, no progressive growth, no
-  delamination buckling.
+  next to it depend on the mesh.

@@ -99,8 +99,9 @@ The delamination mode is a stress-based *initiation* screen and nothing
 more. It is evaluated at the ply Gauss points, which sit about
 $0.21\,t_\text{ply}$ inside each ply with one element per ply, not on the
 interfaces, and without the averaging distance of the original criterion.
-The model has no explicit delamination: no crack surface, energy release
-rate or growth. There is no through-thickness tensile strength input, so
+It knows nothing of an explicit delamination ({doc}`delamination`), whose
+growth is judged by energy release rates instead. There is no
+through-thickness tensile strength input, so
 $Y_t$ (from $\sigma_{2t}$) stands in for $Z_t$, and $S_{23}$ is the
 apparent short-beam strength $\tau_\text{ilss}$. Both are degraded by the
 same in-plane $r_m$ as the other matrix strengths, whatever the void shape.
