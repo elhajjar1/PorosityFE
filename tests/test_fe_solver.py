@@ -1970,6 +1970,25 @@ class TestKnockdownFromPristineReference:
         b.solve('shear')
         assert len(calls) == 2
 
+    @pytest.mark.parametrize("loading", ["compression", "ilss"])
+    def test_pristine_reference_is_freed_before_the_porous_factorization(
+            self, monkeypatch, lu_alive_at_build, loading):
+        """solve() solves the knockdown's pristine reference before it
+        factorizes the porous model, and frees it first, so one
+        factorization is alive at a time (two before: about 1.2 GB instead
+        of 0.75 GB on the 30 x 10 x 24 production mesh)."""
+        from collections import OrderedDict
+
+        from porosity_fe.fe import _knockdown
+        monkeypatch.setattr(_knockdown, '_PRISTINE_MEASURE_CACHE', OrderedDict())
+        porous = self._ilss_pair()[0] if loading == 'ilss' else self._pair()[0]
+        r = porous.solve(loading)
+        assert lu_alive_at_build == [1, 1]          # pristine, then porous
+        assert len(_knockdown._PRISTINE_MEASURE_CACHE) == 1
+        # A repeat solve reuses both the reference and the factorization.
+        assert porous.solve(loading).knockdown == r.knockdown
+        assert lu_alive_at_build == [1, 1]
+
     def test_pristine_cache_keys_on_fields_missing_from_repr(self):
         # E33 / G13 / G23 are absent from MaterialProperties.__repr__, so a
         # repr-keyed cache handed the soft material the T800 reference.

@@ -385,6 +385,14 @@ class FESolver:
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
 
+        # The knockdown's pristine reference (a cached value, or a direct
+        # solve whose factorization is freed on return) comes before the
+        # porous model is assembled and factorized, so one factorization is
+        # alive at a time, not two.
+        pristine = self._pristine_stiffness_measure(loading) \
+            if _knockdown.needs_pristine_reference(
+                self.mesh, loading, applied_strain, applied_load) else None
+
         # 1. Global stiffness (re-assembled only if the mesh, material or
         #    porosity changed since the last solve on this solver).
         if verbose:
@@ -441,10 +449,12 @@ class FESolver:
              strain_local) = _postprocess.recover_stresses(
                 self.assembler.element_batch(), self.mesh, u, verbose=verbose)
 
-            # 7. Knockdown: porous / pristine structural stiffness, and the
-            #    reactions and modulus, all from the mechanical solve.
-            knockdown = self._compute_knockdown(
-                loading, K, u, applied_strain, applied_load)
+            # 7. Knockdown: porous / pristine structural stiffness (1.0 for
+            #    a pristine mesh or a zero load), and the reactions and
+            #    modulus, all from the mechanical solve.
+            knockdown = 1.0 if pristine is None else _knockdown.knockdown(
+                loading, _stiffness_measure(loading, K, u, applied_strain,
+                                            applied_load), pristine)
             reactions, effective_modulus = self._reactions_and_modulus(
                 loading, K, u, F, applied_strain, constrained,
                 applied_load=applied_load)
@@ -604,27 +614,11 @@ class FESolver:
         self._thermal_cache = (K, key, sol)
         return sol
 
-    def _compute_knockdown(
-        self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
-        applied_strain: float, applied_load: float,
-    ) -> float:
-        """Stiffness knockdown: porous over pristine structural stiffness.
-
-        ``E_x`` or ``G_xy`` porous / pristine for compression, tension and
-        shear, the beam-stiffness (inverse compliance) ratio for the ILSS
-        and flexure bends (``_knockdown``). 1.0 for a pristine mesh or a
-        zero load; a ratio above 1 is logged, not clamped.
-        """
-        if not _knockdown.needs_pristine_reference(
-                self.mesh, loading, applied_strain, applied_load):
-            return 1.0
-        porous = _stiffness_measure(loading, K, u, applied_strain, applied_load)
-        return _knockdown.knockdown(
-            loading, porous, self._pristine_stiffness_measure(loading))
-
     def _pristine_stiffness_measure(self, loading: str) -> float:
-        """Stiffness measure of this mesh with no porosity or voids, cached
-        across solvers (``_knockdown.pristine_stiffness_measure``)."""
+        """Stiffness measure of this mesh with no porosity or voids, the
+        knockdown's reference, cached across solvers
+        (``_knockdown.pristine_stiffness_measure``). :meth:`solve` calls it
+        before it assembles the porous model."""
         return _knockdown.pristine_stiffness_measure(
             loading, self.mesh, self.material, self.porosity_field,
             self.formulation, self.bc_handler)

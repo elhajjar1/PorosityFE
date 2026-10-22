@@ -44,3 +44,40 @@ def _restore_porosity_logger():
     for h in list(logger.handlers):
         if getattr(h, "_porosity_cli", False):
             logger.removeHandler(h)
+
+
+@pytest.fixture
+def lu_alive_at_build(monkeypatch):
+    """Sparse LU factorizations alive each time one is built.
+
+    Wraps :func:`scipy.sparse.linalg.splu` (which the FE solver looks up at
+    call time) so every factorization it returns is a proxy that counts
+    itself while it is referenced. The returned list gets, at each build,
+    the number alive including the new one: ``[1, 1, 1]`` means each
+    factorization was freed before the next was built. CPython frees an
+    object when its last reference goes, so the count is exact.
+    """
+    import scipy.sparse.linalg as sla
+
+    real_splu = sla.splu
+    alive = [0]
+    counts: list[int] = []
+
+    class _Tracked:
+        def __init__(self, lu):
+            self._lu = lu
+            alive[0] += 1
+
+        def solve(self, rhs, *args, **kwargs):
+            return self._lu.solve(rhs, *args, **kwargs)
+
+        def __del__(self):
+            alive[0] -= 1
+
+    def splu(*args, **kwargs):
+        lu = _Tracked(real_splu(*args, **kwargs))
+        counts.append(alive[0])
+        return lu
+
+    monkeypatch.setattr(sla, "splu", splu)
+    return counts

@@ -680,7 +680,7 @@ def _peak_factorizations(loading: str, solver: str, delta_T: float | None,
 
     The pristine reference of the knockdown is always factorized directly
     (but freed before the porous model is built, see
-    :func:`refinement_study`); a direct solve factorizes the porous model,
+    :meth:`FESolver.solve`); a direct solve factorizes the porous model,
     and a mechanical solve with ``delta_T`` also the free-standing thermal
     problem, both held at the moment the second is built.
     """
@@ -1032,11 +1032,6 @@ def refinement_study(
         size = float(np.prod([dims[a] / res[a] for a in axes]) ** (1.0 / len(axes)))
         fe = FESolver(mesh, material, field, ply_angles=ply_angles,
                       failure_criterion=failure_criterion, formulation=formulation)
-        if _needs_pristine_reference(mesh, loading, applied_strain, applied_load):
-            # Solve (and cache) the pristine reference before the porous
-            # model is assembled, so its factorization is freed first: the
-            # peak memory is one model's, not two.
-            fe._pristine_stiffness_measure(loading)
         quiet = warnings.catch_warnings() if solver == 'minres' \
             else contextlib.nullcontext()
         with quiet:
@@ -1081,16 +1076,3 @@ def refinement_study(
         applied_load=float(applied_load),
         delta_T=None if delta_T is None else float(delta_T),
         levels=tuple(levels), convergence=convergence)
-
-
-def _needs_pristine_reference(mesh: CompositeMesh, loading: str,
-                              applied_strain: float | None,
-                              applied_load: float) -> bool:
-    """Whether :meth:`FESolver.solve` will solve a pristine reference for the knockdown."""
-    if loading == 'thermal':
-        return False
-    porous = bool(np.any(np.asarray(mesh.porosity) > 0.0)) or \
-        np.size(mesh.void_elements) > 0
-    load = applied_load if loading == 'ilss' else \
-        (-0.01 if applied_strain is None else applied_strain)
-    return porous and load != 0.0

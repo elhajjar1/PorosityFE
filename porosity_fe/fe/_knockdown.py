@@ -4,10 +4,10 @@ The structural stiffness measure of a linear solve, the pristine reference
 solve of the same mesh with no porosity or voids, and the module-level cache
 of those references, shared across solvers so a porosity sweep on one mesh
 solves each reference once. Split out of ``fe/solver.py``
-(IMPROVEMENT_PLAN 5.1); :mod:`porosity_fe.fe.solver` re-exports the
-underscored names, and :class:`FESolver <porosity_fe.fe.solver.FESolver>`
-keeps ``_pristine_stiffness_measure`` and ``_compute_knockdown`` as thin
-wrappers.
+(IMPROVEMENT_PLAN 5.1); :class:`FESolver <porosity_fe.fe.solver.FESolver>`
+keeps ``_pristine_stiffness_measure`` as a thin wrapper and calls it before
+it assembles the porous model, so the reference's factorization is freed
+before the porous one is built.
 """
 
 from __future__ import annotations

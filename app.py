@@ -374,12 +374,6 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
-        if thermal_mode != "thermal_only":
-            # The knockdown needs the pristine reference solve (Vp >= 0.1 %
-            # here). Solving it before the porous model is factorized keeps
-            # one factorization alive instead of two: on the default
-            # 30 x 10 x 24 mesh the peak drops from 1.2 GB to 0.74 GB.
-            fe_solver._pristine_stiffness_measure(loading_mode)
         if thermal_mode == "thermal_only":
             # Free-standing laminate under delta_T (3-2-1 supports): the
             # cure residual stress, with no mechanical load.
