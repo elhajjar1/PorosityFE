@@ -143,12 +143,47 @@ class TestRunAnalysis:
         with pytest.raises(ValueError, match="Unknown material"):
             app.run_analysis(_base_cfg(material_name="unobtainium"))
 
+    @pytest.mark.parametrize("thermal_mode, expected", [
+        ("off", ["pristine:ilss", "solve:ilss"]),
+        ("thermal_only", ["solve:thermal"]),
+    ])
+    def test_pristine_reference_is_solved_before_the_porous_model(
+            self, monkeypatch, thermal_mode, expected):
+        """The knockdown's pristine reference is solved (and its
+        factorization freed) before the porous model is factorized, so one
+        factorization is alive at a time; a thermal-only solve needs none."""
+        from porosity_fe import FESolver
+        calls = []
+        real_pristine, real_solve = FESolver._pristine_stiffness_measure, FESolver.solve
+
+        def pristine(self, loading):
+            calls.append(f"pristine:{loading}")
+            return real_pristine(self, loading)
+
+        def solve(self, loading='compression', *args, **kwargs):
+            calls.append(f"solve:{loading}")
+            return real_solve(self, loading, *args, **kwargs)
+
+        monkeypatch.setattr(FESolver, "_pristine_stiffness_measure", pristine)
+        monkeypatch.setattr(FESolver, "solve", solve)
+        cfg = _thermal_cfg(thermal_mode=thermal_mode, loading_mode="ilss") \
+            if thermal_mode != "off" else _base_cfg(loading_mode="ilss")
+        r = app.run_analysis(cfg)
+        assert r["fe_field"] is not None
+        # (The solve's own knockdown lookup then hits the cached reference.)
+        assert calls[:len(expected)] == expected
+        if thermal_mode == "thermal_only":
+            assert not any(c.startswith("pristine") for c in calls)
+
     def test_fe_failure_keeps_empirical_results(self, monkeypatch):
         """An exception from the FE path must not discard the empirical
         results; it is reported through ``fe_skipped_reason`` instead."""
         class _ExplodingFESolver:
             def __init__(self, *args, **kwargs):
                 pass
+
+            def _pristine_stiffness_measure(self, loading):
+                return 1.0
 
             def solve(self, **kwargs):
                 raise RuntimeError("singular stiffness matrix")

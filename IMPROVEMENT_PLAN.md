@@ -32,6 +32,29 @@ polish, (5) architecture cleanups, and (6) CI/packaging/docs/hygiene. Items are
 tagged **[S]**mall (≤ half day), **[M]**edium (1–3 days), **[L]**arge (multi-day
 / design needed).
 
+## Status (2026-10-14)
+
+The sections below are kept as written on 2026-07-16 (file:line references
+point at that tree). What has landed since, by pull request:
+
+| PR | Items |
+|---|---|
+| #195 | Phases 1–2: 2.1, 4.1–4.3, 4.5, 4.7, 5.2–5.4, 6.1–6.3, 6.5 (metadata), 1.1–1.5 |
+| #196 | Phase 3: 2.2–2.6, 3.1–3.4, 4.4, 4.6, 5.1 (failure and export split out), 6.4, 6.6 |
+| #197 | 1.7, 2.8, 6.7, 4.7 leftovers |
+| #198 | 6.5 (theory pages, CLI and full API reference); `tsai_wu_F12` fix |
+| #199, #200 | FE cache keyed on every material field; exact element ply assignment |
+| #201 | 1.6 (exact BC elimination, CG/MINRES fix); 3.6 incompatible-mode element (opt-in), nodal stress recovery and VTU; 3.5 CTE inputs |
+| #202 | 2.7 (layup scaling, design R1) |
+| #203 | 3.6 incompatible-mode element as default; 3.5 thermal / residual-stress load case |
+| #204 | 3.5 in the app; 3.6 flexure modes and `refinement_study`; strict JSON export |
+| #205 (open) | Production mesh resolves every ply; MINRES deprecated; 2-entry LU cache; 3.6 periodic unit-cell check of Mori-Tanaka |
+
+In progress: 3.6 ILSS as a true ASTM D2344 short beam; a second `fe/solver.py`
+split (thermal, constraint handling and knockdown have grown it back to about
+1,600 lines). The generated validation reports are no longer tracked (the
+rest of 6.2).
+
 ---
 
 ## Workstream 1 — FE solver performance (biggest measurable win)

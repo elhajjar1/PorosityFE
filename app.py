@@ -51,6 +51,7 @@ from porosity_fe import (
     propagate_uncertainty,
 )
 from porosity_fe.fe.failure import first_ply_failure_load_factor
+from porosity_fe.pipeline import _default_mesh_resolution
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
 # rcParams nudges, so the Streamlit plots match the static PNGs (#53).
@@ -336,6 +337,12 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
+        if thermal_mode != "thermal_only":
+            # The knockdown needs the pristine reference solve (Vp >= 0.1 %
+            # here). Solving it before the porous model is factorized keeps
+            # one factorization alive instead of two: on the default
+            # 30 x 10 x 24 mesh the peak drops from 1.2 GB to 0.74 GB.
+            fe_solver._pristine_stiffness_measure(loading_mode)
         if thermal_mode == "thermal_only":
             # Free-standing laminate under delta_T (3-2-1 supports): the
             # cure residual stress, with no mechanical load.
@@ -791,6 +798,21 @@ def _apply_nz_fix(nz: int) -> None:
     st.session_state["mesh_nz"] = int(nz)
 
 
+def _sync_default_nz(nz_default: int) -> None:
+    """Keep the Expert-mode ``nz`` slider on the default until the user moves it.
+
+    The default is one element layer per ply, so it changes with the layup.
+    The slider follows it while it still shows the previous default (or has
+    no value yet); a value the user set, by hand or with "Use nz = ...",
+    stays. Must run before the slider is created in the script run.
+    """
+    previous = st.session_state.get("_mesh_nz_default")
+    current = st.session_state.get("mesh_nz")
+    if current is None or current == previous:
+        st.session_state["mesh_nz"] = min(int(nz_default), _NZ_SLIDER_MAX)
+    st.session_state["_mesh_nz_default"] = min(int(nz_default), _NZ_SLIDER_MAX)
+
+
 def _set_delta_T(value: float) -> None:
     """On-click callback: put ``value`` (K) into the ΔT input."""
     st.session_state["thermal_delta_T"] = float(value)
@@ -975,13 +997,25 @@ def _build_sidebar_inputs() -> dict | None:
 
         thermal_mode, delta_T = _build_thermal_inputs(material_name)
 
+        # Ply count of the laminate as entered (the analysis replaces the
+        # preset's n_plies with it); the preset's when the layup is invalid.
+        try:
+            n_plies = len(parse_layup(layup_str))
+        except ValueError:
+            n_plies = 0
+        nx0, ny0, nz0 = _default_mesh_resolution(
+            n_plies or MATERIALS[material_name].n_plies)
+        mesh_note = ("one element layer per ply" if not n_plies or nz0 == n_plies
+                     else f"nz capped at {nz0} for the {n_plies}-ply layup")
+
         st.subheader("Mesh")
         if expert:
-            nx = st.slider("nx", min_value=2, max_value=200, value=30, step=1)
-            ny = st.slider("ny", min_value=2, max_value=100, value=10, step=1)
+            nx = st.slider("nx", min_value=2, max_value=200, value=nx0, step=1)
+            ny = st.slider("ny", min_value=2, max_value=100, value=ny0, step=1)
             # Keyed and initialised through st.session_state (not value=) so
-            # the "Use nz = ..." button can set it.
-            st.session_state.setdefault("mesh_nz", 12)
+            # the "Use nz = ..." button can set it; it follows the layup's
+            # default until the user moves it.
+            _sync_default_nz(nz0)
             nz = st.slider("nz", min_value=2, max_value=_NZ_SLIDER_MAX, step=1,
                            key="mesh_nz")
             total_elems = nx * ny * nz
@@ -989,7 +1023,8 @@ def _build_sidebar_inputs() -> dict | None:
                 st.warning(
                     f"⚠ Mesh is very coarse ({total_elems} elements). "
                     f"FE results from meshes below ~100 elements are unreliable. "
-                    f"Defaults (30×10×12 = 3600 elements) are recommended."
+                    f"The default ({nx0}×{ny0}×{nz0} = {nx0 * ny0 * nz0} "
+                    f"elements, {mesh_note}) is recommended."
                 )
             elif total_elems > CompositeMesh._MAX_TOTAL_ELEMENTS:
                 st.error(
@@ -1006,16 +1041,13 @@ def _build_sidebar_inputs() -> dict | None:
                     f"Consider reducing for iteration."
                 )
         else:
-            nx, ny, nz = 30, 10, 12
-            st.caption(f"Default mesh: {nx} × {ny} × {nz} (enable Expert mode to change).")
+            nx, ny, nz = nx0, ny0, nz0
+            st.caption(f"Default mesh: {nx} × {ny} × {nz}, {mesh_note} "
+                       f"(enable Expert mode to change).")
 
         if thermal_mode != "off":
             # The thermal solve refuses a mesh whose element layers merge
             # plies; say so before the run, with the nz that resolves them.
-            try:
-                n_plies = len(parse_layup(layup_str))
-            except ValueError:
-                n_plies = 0
             if n_plies and nz % n_plies:
                 nz_fix = _resolving_nz(nz, n_plies)
                 st.warning(

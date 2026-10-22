@@ -46,7 +46,7 @@ A 2 %-porosity T800/epoxy laminate, compressed in displacement control:
    field = PorosityField(mat, void_volume_fraction=0.02,
                          distribution="uniform",
                          void_shape="spherical")
-   mesh = CompositeMesh(field, mat, nx=20, ny=8, nz=12)
+   mesh = CompositeMesh(field, mat, nx=20, ny=8, nz=mat.n_plies)  # a layer per ply
    solver = FESolver(mesh, mat, field)
    result = solver.solve(loading="compression", applied_strain=-0.01)
    print(f"max Tsai-Wu index = {result.max_failure_index:.3f}")

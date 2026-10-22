@@ -7,6 +7,8 @@ import logging
 import os
 from typing import Any
 
+import numpy as np
+
 from .empirical import EmpiricalSolver
 from .materials import MATERIALS, MaterialProperties
 from .mesh import CompositeMesh
@@ -21,9 +23,50 @@ logger = logging.getLogger("porosity_fe_analysis")
 # from an immutable sequence.
 LayupSpec = str | list[float] | tuple[float, ...]
 
-# Default mesh resolution used by the production sweep (``_analyze_one``) so
-# every call site picks up the same defaults.
-_DEFAULT_MESH_RES: tuple[int, int, int] = (30, 10, 12)
+# Production mesh resolution ``(nx, ny, nz)``, the single source of truth for
+# the sweep (``_analyze_one``), the app and ``refinement_study``. ``nz = None``
+# means one element layer per ply; resolve the triple for a laminate with
+# :func:`_default_mesh_resolution`, never by reading this tuple directly.
+_DEFAULT_MESH_RES: tuple[int, int, int | None] = (30, 10, None)
+
+# Largest ``nz`` of the production default. A laminate with more plies gets
+# this many element layers, which do not resolve its plies (``FESolver`` warns,
+# thermal solves refuse); pass an explicit ``mesh_res`` to resolve them. At the
+# cap the mesh has 14,400 elements, and a direct FE solve with the knockdown
+# peaked at 1.3 GB (pristine reference solved first, as the app does) to
+# 2.3 GB (``FESolver.solve`` alone keeps the porous factorization while it
+# solves the pristine reference).
+_DEFAULT_NZ_MAX = 48
+
+
+def _default_mesh_resolution(n_plies: int) -> tuple[int, int, int]:
+    """Production ``(nx, ny, nz)`` for a laminate of ``n_plies`` plies.
+
+    ``nx`` and ``ny`` come from :data:`_DEFAULT_MESH_RES`; ``nz`` is
+    ``n_plies`` (one element layer per ply, so the FE laminate is the
+    requested one) up to :data:`_DEFAULT_NZ_MAX`, which bounds the memory of
+    an FE solve on the default mesh of a thick custom laminate. The 24-ply
+    presets give ``(30, 10, 24)``. The empirical failure loads do not depend
+    on the mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``n_plies`` is not a positive integer.
+    """
+    if isinstance(n_plies, bool) or not isinstance(n_plies, (int, np.integer)) \
+            or n_plies <= 0:
+        raise ValueError(f"n_plies must be a positive integer, got {n_plies!r}.")
+    nx, ny, nz = _DEFAULT_MESH_RES
+    if nz is None:
+        nz = min(int(n_plies), _DEFAULT_NZ_MAX)
+        if n_plies > _DEFAULT_NZ_MAX:
+            logger.info(
+                "Default mesh: nz capped at %d for the %d-ply laminate, so its "
+                "element layers do not resolve every ply; pass mesh_res="
+                "(%d, %d, %d) to resolve them in an FE solve.",
+                _DEFAULT_NZ_MAX, n_plies, nx, ny, n_plies)
+    return (nx, ny, nz)
 
 
 def build_empirical_pipeline(
@@ -31,7 +74,7 @@ def build_empirical_pipeline(
     void_volume_fraction: float,
     *,
     ply_angles: LayupSpec = 'QI',
-    mesh_res: tuple[int, int, int] = _DEFAULT_MESH_RES,
+    mesh_res: tuple[int, int, int] | None = None,
     porosity_config: dict[str, Any] | None = None,
     seed: int | None = None,
     solver_kwargs: dict[str, Any] | None = None,
@@ -55,8 +98,11 @@ def build_empirical_pipeline(
         Layup descriptor passed to both :class:`CompositeMesh` and
         :class:`EmpiricalSolver`. Defaults to ``'QI'``.
     mesh_res : (int, int, int), optional
-        ``(nx, ny, nz)`` element counts. Defaults to the production sweep
-        resolution ``(30, 10, 12)``.
+        ``(nx, ny, nz)`` element counts. Defaults to the production
+        resolution ``(30, 10, material.n_plies)``, one element layer per ply
+        (``nz`` capped at 48; see :func:`_default_mesh_resolution`). The
+        empirical failure loads do not depend on it; the per-node
+        ``nodal_knockdown`` field is sampled at its nodes.
     porosity_config : dict, optional
         Extra keyword arguments forwarded to :class:`PorosityField` (e.g.
         ``distribution``, ``void_shape``, ``cluster_location``,
@@ -80,7 +126,8 @@ def build_empirical_pipeline(
     if seed is not None:
         pf_kwargs['seed'] = seed
     pf = PorosityField(material, void_volume_fraction, **pf_kwargs)
-    nx, ny, nz = mesh_res
+    nx, ny, nz = _default_mesh_resolution(material.n_plies) if mesh_res is None \
+        else mesh_res
     mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz,
                          ply_angles=ply_angles)
     emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles,

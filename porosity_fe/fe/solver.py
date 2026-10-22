@@ -24,7 +24,7 @@ from ..porosity_field import PorosityField
 from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
-from .assembler import BoundaryHandler, GlobalAssembler, _DirichletPartition
+from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
 from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
@@ -461,6 +461,14 @@ _FLEXURE_PROCEDURE: dict[str, Literal['3pt', '4pt']] = {
 _FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE})
 
 
+def _minres_deprecation(caller: str) -> str:
+    """Message of the ``solver='minres'`` :class:`DeprecationWarning`."""
+    return (f"{caller}(solver='minres') is deprecated and will be removed in "
+            "2.0; use solver='cg'. The reduced stiffness K_ff is symmetric "
+            "positive definite, so conjugate gradients cover every case and "
+            "give more accurate displacements at the same rtol.")
+
+
 def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float:
     """Mode-dependent default strain; warn when the sign contradicts the mode."""
     if applied_strain is None:
@@ -592,7 +600,7 @@ def _relative_residual(A: scipy.sparse.spmatrix, x: np.ndarray,
 def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
                      diag: np.ndarray, *, solver: str, rtol: float,
                      max_restarts: int = 3) -> tuple[np.ndarray, float]:
-    """Jacobi-preconditioned CG or MINRES on the reduced SPD system.
+    """Jacobi-preconditioned CG or (deprecated) MINRES on the reduced SPD system.
 
     A result is accepted when the true relative residual
     ``||K_ff u - rhs|| / ||rhs||`` is at most ``10 * rtol`` (the slack
@@ -606,7 +614,8 @@ def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
     ``rtol / achieved``, at most ``max_restarts`` times (one restart
     suffices on the shipped load cases). MINRES minimizes the residual,
     not the energy-norm error, so at the same residual its displacement
-    error is larger than CG's.
+    error is larger than CG's; it is deprecated (:meth:`FESolver.solve`
+    warns) and stays here until its removal in 2.0.
 
     Raises
     ------
@@ -660,7 +669,7 @@ class FESolver:
     1. Assemble K via GlobalAssembler
     2. Build BCs via BoundaryHandler
     3. Eliminate the prescribed DOFs: ``K_ff u_f = F_f - K_fc u_c``
-    4. Solve the reduced system (sparse LU, or CG / MINRES)
+    4. Solve the reduced system (sparse LU or CG; MINRES is deprecated)
     5. Recover stresses at Gauss points
     6. Evaluate failure criterion at each GP (Tsai-Wu, Hashin, or max-stress)
     7. Compute knockdown factor
@@ -777,10 +786,12 @@ class FESolver:
                 f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
             )
         self.failure_criterion = failure_criterion
-        # Most recent free-DOF stiffness block and its sparse LU
-        # factorization (built lazily by direct solves), reused while K and
-        # the constrained-DOF set are unchanged: (K, key, K_ff, SuperLU|None).
-        self._lu_cache: tuple | None = None
+        # Free-DOF stiffness blocks and their sparse LU factorizations
+        # (built lazily by direct solves) of the last _LU_CACHE_SIZE
+        # constrained-DOF sets, least recently used first, all for the
+        # current assembled K: {partition key: (K, K_ff, SuperLU | None)}.
+        # See _free_dof_system.
+        self._lu_cache: OrderedDict[bytes, tuple] = OrderedDict()
         # Free-standing thermal solution per unit delta_T, reused while K,
         # the CTEs and the linear solver are unchanged:
         # (K, key, _ThermalUnitSolution).
@@ -851,21 +862,26 @@ class FESolver:
             Linear solver for the reduced system ``K_ff u_f = F_f - K_fc u_c``
             left after the prescribed DOFs are eliminated. ``'direct'``
             (default) uses a sparse LU factorization
-            (:func:`scipy.sparse.linalg.splu`), cached and reused while
-            the mesh, material, porosity and constrained-DOF set are
-            unchanged. ``K_ff`` is symmetric positive definite, so
+            (:func:`scipy.sparse.linalg.splu`), cached for the last two
+            constrained-DOF sets and reused while the mesh, material and
+            porosity are unchanged (about 320 MB per factorization on the
+            production mesh; see :meth:`_free_dof_system`). ``K_ff`` is
+            symmetric positive definite, so
             ``'cg'`` (conjugate gradient with a Jacobi preconditioner) is
             a memory-light alternative; it needs no LU fill-in and is
-            the better choice above roughly 40k DOF (about 3x the default
-            production mesh), where LU time and memory grow fastest.
-            ``'minres'`` is offered for completeness; SciPy's MINRES
-            stops on a preconditioned residual estimate, so it is
+            the better choice above roughly 40k DOF (about 1.6x the
+            25,575 DOF of the default production mesh of a 24-ply laminate,
+            30 x 10 x 24), where LU time and memory grow fastest.
+            ``'minres'`` is deprecated and will be removed in 2.0: it
+            emits a :class:`DeprecationWarning`; use ``'cg'``. Because
+            ``K_ff`` is SPD, CG covers every case, while MINRES minimizes
+            the residual rather than the energy-norm error, so at the same
+            ``rtol`` its displacements are less accurate (4e-7 to 2e-6
+            relative to direct on the production mesh at the default
+            ``rtol``, against 5e-9 to 1e-8 for CG). It still works: SciPy's
+            MINRES stops on a preconditioned residual estimate, so it is
             warm-restarted with a tighter internal tolerance until the
-            true relative residual meets ``rtol``. MINRES minimizes the
-            residual rather than the energy-norm error, so at the same
-            ``rtol`` its displacements are less accurate than CG's (about
-            1e-6 vs 1e-8 relative to direct on the production mesh at the
-            default ``rtol``); prefer ``'cg'``. Auto-switching is
+            true relative residual meets ``rtol``. Auto-switching is
             intentionally *not* performed: callers select the path
             explicitly (issue #57).
         rtol : float
@@ -951,6 +967,9 @@ class FESolver:
                     DeprecationWarning,
                     stacklevel=2,
                 )
+        if solver == 'minres':
+            warnings.warn(_minres_deprecation('FESolver.solve'),
+                          DeprecationWarning, stacklevel=2)
         t0 = time.perf_counter()
         criterion = failure_criterion if failure_criterion is not None \
             else self.failure_criterion
@@ -1190,6 +1209,10 @@ class FESolver:
     #: :func:`_iterative_solve`).
     _MINRES_MAX_RESTARTS = 3
 
+    #: Constrained-DOF sets whose free-DOF system (``K_ff`` and its LU) a
+    #: solver keeps; see :meth:`_free_dof_system`.
+    _LU_CACHE_SIZE = 2
+
     def _solve_constrained(
         self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
         *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
@@ -1198,7 +1221,7 @@ class FESolver:
         """Impose the Dirichlet BCs exactly and solve ``K u = F``.
 
         Partitions the DOFs into free (``f``) and constrained (``c``) sets
-        (``_DirichletPartition`` in :mod:`porosity_fe.fe.assembler`), solves
+        (``_ConstraintReduction`` in :mod:`porosity_fe.fe.assembler`), solves
         ``K_ff u_f = F_f - K_fc u_c`` with the requested linear solver and
         returns the full vector with ``u_c`` equal to the prescribed values
         bit for bit.
@@ -1212,7 +1235,8 @@ class FESolver:
         constrained : dict[int, float]
             Constrained-DOF map from :meth:`_apply_boundary_conditions`.
         solver : {'direct', 'cg', 'minres'}
-            Linear solver to use. See :meth:`solve` for details.
+            Linear solver to use. See :meth:`solve` for details
+            (``'minres'`` is deprecated; :meth:`solve` warns).
         rtol : float
             Relative-residual tolerance for the iterative solvers.
         verbose : bool
@@ -1240,7 +1264,7 @@ class FESolver:
                 f"Unknown solver '{solver}'. "
                 "Use 'direct', 'cg', or 'minres'."
             )
-        part = _DirichletPartition.from_constraints(K.shape[0], constrained)
+        part = _ConstraintReduction.from_constraints(K.shape[0], constrained)
         if part.free.size == 0:
             return part.lift(), 0.0
 
@@ -1284,7 +1308,7 @@ class FESolver:
         return part.expand(u_f), rel_res
 
     def _free_dof_system(
-        self, K: scipy.sparse.spmatrix, part: _DirichletPartition,
+        self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
         *, factorize: bool,
     ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
         """``K_ff`` and (when ``factorize``) its sparse LU, cached.
@@ -1292,14 +1316,33 @@ class FESolver:
         ``K_ff`` depends only on the assembled ``K`` and the *set* of
         constrained DOFs, not their prescribed values, so e.g. compression
         and tension on the same mesh, or repeat solves of one load case,
-        share it and its factorization. Only the most recent one is kept,
-        bounding memory; the LU is built only for direct solves.
+        share it and its factorization. The systems of the last
+        :attr:`_LU_CACHE_SIZE` (2) constrained sets are kept, keyed on the
+        set, so alternating two load cases with different supports (e.g.
+        shear and ILSS, or compression and ILSS) factorizes each once; a
+        third set evicts the least recently used before its own
+        factorization is built, so at most two are alive at once. (The
+        thermal 3-2-1 supports are one more set; the thermal solution itself
+        is cached per unit ``delta_T``, see :meth:`_thermal_unit_solution`.)
+        Every entry belongs to the assembled ``K`` it was built from: a new
+        ``K`` (the mesh, material, porosity or formulation changed) clears
+        them all. The LU is built only for direct solves; iterative solves
+        cache ``K_ff`` alone.
+
+        Memory: one factorization of the production mesh of a 24-ply
+        laminate (30 x 10 x 24) takes about 320 MB (120 MB on 30 x 10 x 12),
+        so a solver that alternates two sets holds about 650 MB.
         """
-        cached = self._lu_cache
-        if cached is not None and cached[0] is K and cached[1] == part.key:
-            K_ff, lu = cached[2], cached[3]
-        else:
+        cache = self._lu_cache
+        if cache and next(iter(cache.values()))[0] is not K:
+            cache.clear()
+        entry = cache.get(part.key)
+        if entry is None:
+            while len(cache) >= self._LU_CACHE_SIZE:
+                cache.popitem(last=False)
             K_ff, lu = part.reduce_matrix(K), None
+        else:
+            _, K_ff, lu = entry
         if factorize and lu is None:
             # K_ff is symmetric: a symmetric fill-reducing ordering with
             # diagonal pivoting factors ~20% faster than SuperLU's default
@@ -1314,7 +1357,8 @@ class FESolver:
                     f"failed ({exc}). A singular matrix usually means the "
                     "boundary conditions leave a rigid-body mode "
                     "unrestrained.") from exc
-        self._lu_cache = (K, part.key, K_ff, lu)
+        cache[part.key] = (K, K_ff, lu)
+        cache.move_to_end(part.key)
         return K_ff, lu
 
     def _reactions_and_modulus(

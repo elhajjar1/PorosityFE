@@ -275,11 +275,12 @@ class CompositeMesh:
     The element layers resolve the layup only when none of them spans
     plies of different angles, which ``nz`` a multiple of ``n_plies``
     guarantees. Otherwise each element layer keeps just the ply at its
-    centroid and the FE solver analyzes a different laminate: on the
-    production mesh (``nz = 12``) a 24-ply ``'QI'`` layup becomes
-    ``[90, -45, 45, 0]`` repeated three times, which is no longer
-    symmetric. :meth:`layup_discrepancies` lists what is lost, and
-    :class:`FESolver` logs it as a warning.
+    centroid and the FE solver analyzes a different laminate: with
+    ``nz = 12`` a 24-ply ``'QI'`` layup becomes ``[90, -45, 45, 0]``
+    repeated three times, which is no longer symmetric. The production
+    resolution (:func:`~porosity_fe.build_empirical_pipeline`, the app)
+    uses ``nz = n_plies``. :meth:`layup_discrepancies` lists what is lost,
+    and :class:`FESolver` logs it as a warning.
     """
 
     # Cap mesh dimensions to prevent accidental memory blowup. A million-element

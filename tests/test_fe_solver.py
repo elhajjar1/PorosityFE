@@ -4,7 +4,9 @@
 Split out of the monolithic tests/test_porosity_fe.py for issue #124.
 """
 
+import contextlib
 import dataclasses
+import warnings
 
 import numpy as np
 import scipy.sparse
@@ -23,6 +25,17 @@ def _default_strain(loading):
     """The default ``applied_strain`` FESolver.solve uses for ``loading``."""
     from porosity_fe.fe.solver import _resolve_applied_strain
     return _resolve_applied_strain(loading, None)
+
+
+#: The ``solver='minres'`` deprecation warning (removal in 2.0).
+_MINRES_DEPRECATED = r"solver='minres'\) is deprecated .* 2\.0; use solver='cg'"
+
+
+def _minres_warns(solver_name):
+    """``pytest.warns`` for the MINRES deprecation; a no-op for other solvers."""
+    if solver_name == 'minres':
+        return pytest.warns(DeprecationWarning, match=_MINRES_DEPRECATED)
+    return contextlib.nullcontext()
 
 
 class TestHex8Element:
@@ -715,7 +728,8 @@ class TestFESolver:
     ])
     def test_every_constrained_dof_is_exact(self, loading, solver_name):
         solver = FESolver(self.mesh, self.material, self.pf)
-        results = solver.solve(loading=loading, solver=solver_name)
+        with _minres_warns(solver_name):
+            results = solver.solve(loading=loading, solver=solver_name)
         constrained, _ = solver._apply_boundary_conditions(
             loading, _default_strain(loading), -10.0)
         dofs = np.fromiter(constrained, dtype=int)
@@ -881,10 +895,11 @@ class TestFESolverIterative:
             loading='compression', applied_strain=-0.001, solver='direct',
         )
         solver_minres = FESolver(self.mesh, self.material, self.pf)
-        r_minres = solver_minres.solve(
-            loading='compression', applied_strain=-0.001,
-            solver='minres', rtol=1e-14,
-        )
+        with _minres_warns('minres'):
+            r_minres = solver_minres.solve(
+                loading='compression', applied_strain=-0.001,
+                solver='minres', rtol=1e-14,
+            )
         ux_direct = r_direct.displacement[:, 0]
         ux_mr = r_minres.displacement[:, 0]
         scale = float(np.max(np.abs(ux_direct)))
@@ -925,7 +940,8 @@ class TestFESolverIterative:
 
     def test_minres_nonconvergence_raises(self):
         solver = FESolver(self.mesh, self.material, self.pf)
-        with pytest.raises(RuntimeError, match="minres failed to converge"):
+        with _minres_warns('minres'), \
+                pytest.raises(RuntimeError, match="minres failed to converge"):
             solver.solve(
                 loading='compression', applied_strain=-0.001,
                 solver='minres', rtol=1e-30,
@@ -944,8 +960,9 @@ class TestFESolverIterative:
         monkeypatch.setattr(sla, 'minres', stalled_minres)
         solver = FESolver(self.mesh, self.material, self.pf)
         n = FESolver._MINRES_MAX_RESTARTS
-        with pytest.raises(RuntimeError,
-                           match=rf"minres failed to converge.*after {n} warm restarts"):
+        with _minres_warns('minres'), \
+                pytest.raises(RuntimeError,
+                              match=rf"minres failed to converge.*after {n} warm restarts"):
             solver.solve(loading='compression', applied_strain=-0.001,
                          solver='minres')
         assert len(x0s) == 1 + n
@@ -1001,7 +1018,8 @@ class TestIterativeSolversAtDefaultTolerance:
     @pytest.mark.parametrize("loading", ["compression", "tension", "shear", "ilss"])
     def test_small_mesh_all_modes(self, clustered_6x3x4, loading, solver_name):
         r_direct = clustered_6x3x4.solve(loading)
-        r_iter = clustered_6x3x4.solve(loading, solver=solver_name)
+        with _minres_warns(solver_name):
+            r_iter = clustered_6x3x4.solve(loading, solver=solver_name)
         du, ds, dfi = _relative_differences(r_iter, r_direct)
         assert du < 1e-7, f"max|du|/max|u| = {du:.2e}"
         assert ds < 1e-7, f"max|ds|/max|s| = {ds:.2e}"
@@ -1027,7 +1045,8 @@ class TestIterativeSolversAtDefaultTolerance:
         # the same rtol its displacements are less accurate than CG's
         # (measured du 1.3e-6 / 1.8e-7; with penalty BCs 0.08 / 0.007).
         solver, direct = clustered_20x8x12
-        r_mr = solver.solve(loading, solver='minres')
+        with _minres_warns('minres'):
+            r_mr = solver.solve(loading, solver='minres')
         du, ds, dfi = _relative_differences(r_mr, direct[loading])
         assert du < 1e-5, f"max|du|/max|u| = {du:.2e}"
         assert ds < 1e-5, f"max|ds|/max|s| = {ds:.2e}"
@@ -1039,10 +1058,35 @@ class TestIterativeSolversAtDefaultTolerance:
         """The ILSS point load puts SciPy's MINRES estimate ~1000x below the
         true residual: one call fails the check, the warm restart passes."""
         monkeypatch.setattr(FESolver, '_MINRES_MAX_RESTARTS', 0)
-        with pytest.raises(RuntimeError, match="minres failed to converge"):
+        with _minres_warns('minres'), \
+                pytest.raises(RuntimeError, match="minres failed to converge"):
             clustered_6x3x4.solve('ilss', solver='minres')
         monkeypatch.undo()
-        clustered_6x3x4.solve('ilss', solver='minres')
+        with _minres_warns('minres'):
+            clustered_6x3x4.solve('ilss', solver='minres')
+
+    def test_minres_is_deprecated_and_still_matches_cg(self, clustered_6x3x4):
+        """``solver='minres'`` warns once per call, at the caller, pointing
+        to 'cg', and still returns the solution; CG and the direct solver do
+        not warn."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            r_cg = clustered_6x3x4.solve('compression', solver='cg')
+            r_direct = clustered_6x3x4.solve('compression')
+        assert not [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            r_mr = clustered_6x3x4.solve('compression', solver='minres')
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].filename == __file__
+        message = str(deprecations[0].message)
+        assert message.startswith("FESolver.solve(solver='minres') is deprecated")
+        assert "use solver='cg'" in message and "2.0" in message
+        du, _, _ = _relative_differences(r_mr, r_direct)
+        assert du < 1e-5
+        du_cg, _, _ = _relative_differences(r_cg, r_direct)
+        assert du_cg < 1e-7
 
 
 class TestDirichletElimination:
@@ -1173,7 +1217,8 @@ class TestDirichletElimination:
     @pytest.mark.parametrize("solver_name", ["direct", "cg", "minres"])
     def test_zero_load_gives_zero_field(self, solver_name):
         solver = FESolver(self.mesh, self.material, self.pf)
-        r = solver.solve('compression', applied_strain=0.0, solver=solver_name)
+        with _minres_warns(solver_name):
+            r = solver.solve('compression', applied_strain=0.0, solver=solver_name)
         assert np.all(r.displacement == 0.0)
         assert r.knockdown == 1.0
         assert r.effective_modulus is None
@@ -2113,19 +2158,96 @@ class TestStiffnessAndFactorizationReuse:
         assert counters == {'batch': 1, 'splu': 1}
         np.testing.assert_array_equal(r.displacement, ref.displacement)
 
+    @staticmethod
+    def _entries(solver):
+        """``(K_ff, has_lu)`` of the cached systems, least recently used first."""
+        return [(K_ff, lu is not None) for _, K_ff, lu in solver._lu_cache.values()]
+
+    @staticmethod
+    def _key(solver, loading):
+        from porosity_fe.fe.assembler import _ConstraintReduction
+        strain = -0.01 if loading == 'compression' else 0.01
+        constrained, _ = solver._apply_boundary_conditions(loading, strain, -10.0)
+        return _ConstraintReduction.from_constraints(
+            solver.mesh.n_dof, constrained).key
+
     def test_iterative_solves_reuse_the_free_block_without_factorizing(self, counters):
         mat, pf, mesh = self._problem()
         solver = FESolver(mesh, mat, pf)
         solver.solve('tension', applied_strain=0.01, solver='cg')
         assert counters['splu'] == 0
-        K_ff = solver._lu_cache[2]
-        solver.solve('compression', applied_strain=-0.01, solver='minres')
-        assert solver._lu_cache[2] is K_ff
+        [(K_ff, has_lu)] = self._entries(solver)
+        assert not has_lu
+        with _minres_warns('minres'):
+            solver.solve('compression', applied_strain=-0.01, solver='minres')
+        assert self._entries(solver) == [(K_ff, False)]
         solver.solve('compression', applied_strain=-0.01)
         solver.solve('tension', applied_strain=0.01)
         solver.solve('tension', applied_strain=0.01, solver='cg')
-        assert solver._lu_cache[2] is K_ff
+        assert self._entries(solver) == [(K_ff, True)]
         assert counters == {'batch': 1, 'splu': 1}
+
+    def test_alternating_two_constraint_sets_factorizes_each_once(self, counters):
+        """Shear and ILSS have different supports; the two-entry cache keeps
+        both factorizations (a one-entry cache refactorized on every switch)."""
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        first = {loading: solver.solve(loading) for loading in ('shear', 'ilss')}
+        for _ in range(2):
+            for loading in ('shear', 'ilss'):
+                self._assert_same(solver.solve(loading), first[loading])
+        assert counters == {'batch': 1, 'splu': 2}
+        assert list(solver._lu_cache) == [self._key(solver, 'shear'),
+                                          self._key(solver, 'ilss')]
+        self._assert_same(first['ilss'], FESolver(mesh, mat, pf).solve('ilss'))
+
+    def test_third_constraint_set_evicts_the_least_recently_used(self, counters,
+                                                                 monkeypatch):
+        """LRU, not first-in-first-out: a hit refreshes an entry. The
+        evicted factorization is dropped before the new one is built, so at
+        most ``_LU_CACHE_SIZE`` are alive at once."""
+        import scipy.sparse.linalg as sla
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        alive_at_build = []
+        counting_splu = sla.splu
+
+        def splu(*a, **k):
+            alive_at_build.append(sum(lu is not None
+                                      for _, _, lu in solver._lu_cache.values()))
+            return counting_splu(*a, **k)
+
+        monkeypatch.setattr(sla, 'splu', splu)
+        A, B, C = 'tension', 'shear', 'ilss'
+        key = {name: self._key(solver, name) for name in (A, B, C)}
+        for loading, n_lu, cached in [
+                (A, 1, [A]), (B, 2, [A, B]),
+                (A, 2, [B, A]),          # hit: A becomes most recent
+                (C, 3, [A, C]),          # evicts B, the least recently used
+                (A, 3, [C, A]),          # still cached
+                (B, 4, [A, B])]:         # evicted, so refactorized
+            solver.solve(loading)
+            assert counters['splu'] == n_lu, loading
+            assert list(solver._lu_cache) == [key[c] for c in cached]
+        assert max(alive_at_build) == FESolver._LU_CACHE_SIZE - 1
+        assert counters['batch'] == 1
+
+    def test_new_stiffness_clears_every_cached_system(self, counters):
+        """An in-place porosity edit reassembles K; both cached systems
+        belonged to the old K and are dropped, so each set refactorizes."""
+        mat, pf, mesh = self._problem()
+        solver = FESolver(mesh, mat, pf)
+        solver.solve('shear')
+        solver.solve('ilss')
+        K_old = solver.assembler.stiffness()
+        mesh.porosity *= 2.0   # in place, same array object
+        after = solver.solve('shear')
+        assert counters == {'batch': 2, 'splu': 3}
+        assert list(solver._lu_cache) == [self._key(solver, 'shear')]
+        assert all(K is not K_old for K, _, _ in solver._lu_cache.values())
+        solver.solve('ilss')
+        assert counters == {'batch': 2, 'splu': 4}
+        self._assert_same(after, FESolver(mesh, mat, pf).solve('shear'))
 
     def test_in_place_porosity_edit_triggers_reassembly(self, counters):
         mat, pf, mesh = self._problem()

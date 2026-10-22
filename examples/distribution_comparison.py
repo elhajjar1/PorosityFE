@@ -77,10 +77,14 @@ MODELS = ("judd_wright", "power_law", "linear")
 FE_MODES = ("compression", "ilss")
 
 
-def _build(material, kwargs, *, nx=12, ny=4, nz=12):
-    """Build (PorosityField, CompositeMesh) at matched ``VP_MEAN``."""
+def _build(material, kwargs, *, nx=12, ny=4):
+    """Build (PorosityField, CompositeMesh) at matched ``VP_MEAN``.
+
+    A coarse in-plane mesh keeps the script fast; ``nz = n_plies`` gives
+    every ply its own element layer, so the FE laminate is the requested one.
+    """
     pf = PorosityField(material, VP_MEAN, **kwargs)
-    mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz)
+    mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=material.n_plies)
     return pf, mesh
 
 
@@ -90,7 +94,7 @@ def _empirical_table(material):
     for label, kwargs in DISTRIBUTIONS:
         _pf, _mesh, solver = build_empirical_pipeline(
             material, VP_MEAN,
-            mesh_res=(12, 4, 12),
+            mesh_res=(12, 4, material.n_plies),
             porosity_config=kwargs,
         )
         kds = solver.get_all_failure_loads()
