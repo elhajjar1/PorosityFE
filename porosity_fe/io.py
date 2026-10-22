@@ -159,7 +159,12 @@ def _write_json(obj, filename: str | os.PathLike) -> None:
 # 1.3 (delamination plan, phase 0): FE-field exports gain
 # ``failure.mode_maxima`` (each mode's maximum over the model, null for
 # Tsai-Wu) and the interlaminar components sigma_33 / tau_23 / tau_13 in the
-# ``stress_local`` summary.
+# ``stress_local`` summary. Also 1.3 (phase 2.4-2.8), additive: an FE-field
+# export of a mesh with an explicit delamination gains a ``fracture`` block
+# (crack-face contact iterations and pairs, the critical load factor and its
+# governing node, and the virtual-crack-closure front table: coordinates,
+# G_I / G_II / G_III / G_T in N/mm, mode mixity, toughness and load factor
+# per front node), null for every undefined or infinite value.
 JSON_SCHEMA_VERSION = "1.3"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"

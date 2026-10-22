@@ -451,7 +451,12 @@ class FieldResults:
           ``eps_xx_nodal`` .. ``gamma_xy_nodal`` (global frame, engineering
           shear strain) and ``von_mises_nodal``;
         - with ``exploded=True``: ``node_id``, the original node of each
-          point.
+          point;
+        - on a delaminated mesh with a front (:attr:`crack_front`):
+          ``G_I``, ``G_II``, ``G_III`` and ``G_T`` (N/mm) at both nodes of
+          every front pair and ``NaN`` at every other node (binary VTK XML
+          stores ``NaN``; the legacy ASCII file of :meth:`to_vtk` leaves
+          them out, and the JSON export carries the front table).
 
         Cell data
         ---------

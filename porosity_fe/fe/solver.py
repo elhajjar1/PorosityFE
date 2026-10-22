@@ -941,6 +941,12 @@ class FESolver:
           ``thermal``): no element is far enough from the lateral faces.
         * ``stiffness.effective_modulus_MPa``: no single modulus (ILSS
           bend, ``loading='thermal'``).
+        * In the ``fracture`` block of a delaminated mesh:
+          ``fracture_load_factor`` and the front's ``G_c_N_per_mm`` and
+          ``lambda_c`` without toughness data or where infinite (no energy
+          released), ``governing_*`` without a governing node, ``psi``
+          where ``G_T = 0``, ``front`` without a front, and the contact
+          counts when ``crack_contact=False``.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.

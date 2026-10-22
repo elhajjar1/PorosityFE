@@ -96,6 +96,59 @@ def _point_fields(results: FieldResults,
     return fields
 
 
+def _front_point_fields(results: FieldResults,
+                        mesh: CompositeMesh) -> list[tuple[str, np.ndarray]]:
+    """Energy release rates of the delamination front as ``(N,)`` point data.
+
+    ``G_I``, ``G_II``, ``G_III`` and ``G_T`` (N/mm) at the original and the
+    duplicate node of every front pair, ``NaN`` at every other node; empty
+    without a front. VTU only: binary VTK XML stores ``NaN``, which legacy
+    ASCII readers do not parse reliably.
+    """
+    front = getattr(results, 'crack_front', None)
+    n_nodes = np.asarray(mesh.nodes).shape[0]
+    if front is None or len(front) == 0 or int(np.max(front.duplicate)) >= n_nodes:
+        return []
+    fields = []
+    for name in ('G_I', 'G_II', 'G_III', 'G_T'):
+        values = np.full(n_nodes, np.nan, dtype=float)
+        rates = np.asarray(getattr(front, name), dtype=float)
+        values[front.node] = rates
+        values[front.duplicate] = rates
+        fields.append((name, values))
+    return fields
+
+
+def _fracture_block(results: FieldResults) -> dict | None:
+    """The ``fracture`` block of the JSON export, or ``None`` without a
+    delaminated node pair.
+
+    Finite values only: an undefined or infinite value is ``null`` (no
+    toughness data, no front, ``psi`` where ``G_T = 0``, an infinite
+    critical load factor).
+    """
+    contact = getattr(results, 'crack_contact', None)
+    front = getattr(results, 'crack_front', None)
+    if contact is None and front is None:
+        return None
+    row = None if front is None else front.governing
+    return {
+        'crack_contact': contact,
+        'contact_iterations': results.contact_iterations,
+        'contact_pairs': results.contact_pairs,
+        'contact_converged': results.contact_converged,
+        'load_factor_basis': str(results.load_factor_basis),
+        'fracture_load_factor': _finite_or_none(results.fracture_load_factor),
+        'governing_node': results.fracture_governing_node,
+        'governing_psi': (None if row is None
+                          else _finite_or_none(front.psi[row])),  # type: ignore[union-attr]
+        'governing_G_T_N_per_mm': (None if row is None
+                                   else _finite_or_none(front.G_T[row])),  # type: ignore[union-attr]
+        'n_front_nodes': 0 if front is None else len(front),
+        'front': None if front is None else front.to_dict(),
+    }
+
+
 def _cell_fields(results: FieldResults,
                  mesh: CompositeMesh) -> list[tuple[str, np.ndarray]]:
     """Per-element ``(E,)`` scalars shared by the VTK and VTU writers, in write order.
@@ -251,6 +304,7 @@ def write_vtu(results: FieldResults, mesh: CompositeMesh,
     fdt = '<f8' if precision == 'float64' else '<f4'
 
     point_fields = _point_fields(results, mesh)
+    point_fields += _front_point_fields(results, mesh)
     if nodal:
         s_nodal, s_corner = extrapolate_to_nodes(
             results.stress_global, mesh, average=average)
@@ -531,6 +585,9 @@ def export_results(field_results: FieldResults,
                 'tau_12': _array_stats(residual[:, :, 5]),
             }),
         }
+    fracture = _fracture_block(field_results)
+    if fracture is not None:
+        results_data['fracture'] = fracture
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),
