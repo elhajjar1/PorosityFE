@@ -283,7 +283,8 @@ recomputes it from a result), or from the full $\mathbf K \mathbf u -
 ## Growth criterion and load factor
 
 The mixed-mode toughness is Benzeggagh and Kenane's (1996), with Reeder's
-(2006) term for a separate mode III toughness
+(2006; NASA NTRS 20060048260, which interpolates linearly between the mode II
+and mode III toughness) term for a separate mode III toughness
 ({func}`~porosity_fe.critical_energy_release_rate`):
 
 $$
@@ -384,7 +385,7 @@ difference is centred half an element ahead):
 | Width, no Poisson coupling | $\nu = 0$, 4 mm wide, 5 front nodes | uniform | spread $1.7 \times 10^{-12}$ | $10^{-6}$ |
 | Width, T800 | 20 mm wide, 2 mm elements | uniform away from the edges | 1.031 to 1.043 of the mean from 4 to 16 mm (1.2 % spread); 0.736 at the free edges | 2 % |
 | Convergence | $a = 20$ mm, $\Delta a$ = 2, 1, 0.5 (0.25) mm | corrected beam theory | 0.9792, 0.9878, 0.9931 (0.9961) | monotone, 1 % at 0.5 mm |
-| Single-leg $\psi$ | upper arm loaded, $a = 21$ mm | Williams with root rotation ($\chi h$ in mode I, $0.42\,\chi h$ in mode II, Wang and Williams 1992): 0.3936; $3/7 = 0.4286$ for a long crack | 0.3897 (0.990) | 5 % |
+| Single-leg $\psi$ | upper arm loaded, $a = 21$ mm | Williams with root rotation ($\chi h$ in mode I, $0.42\,\chi h$ in mode II, attributed to Wang and Williams 1992; that citation is not checked against the paper): 0.3936; $3/7 = 0.4286$ for a long crack | 0.3897 (0.990) | 5 % |
 | Single-leg $G_T$ | same | centred / forward compliance derivative | 0.9991 / 0.957 | 5 % |
 | ENF $G_\text{II}$ | three-point bend, span 50 mm, 0.96 mm elements, $a = 15.4$ mm (0.6 of the half span), with contact | centred / forward compliance derivative | 0.9983 / 0.943; $G_\text{II}$ is 99.5 % of $G_T$ | 2 % |
 | ENF contact | same | $G_\text{I} = 0$, no penetration | $G_\text{I} \le 1.1 \times 10^{-6}\, G_T$; least opening 0; 15 pairs in contact after 4 solves | $10^{-4}\, G_T$ |

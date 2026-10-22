@@ -305,8 +305,8 @@ class TestSingleLegBending:
     arms, ``G_I = 12 M_I^2 / (E b^2 h^3)``, ``G_II = 9 M_II^2 / (E b^2 h^3)``
     with ``M_I = M_II = M / 2``, gives ``G_II / G_T = 3/7`` for a long crack;
     root rotation lengthens each mode's arm, by ``chi h`` in mode I and
-    ``0.42 chi h`` in mode II (Wang and Williams 1992), which gives 0.3936
-    at ``a / h = 14``."""
+    ``0.42 chi h`` in mode II (attributed to Wang and Williams 1992, not
+    checked against the paper), which gives 0.3936 at ``a / h = 14``."""
 
     def test_faces_open(self, single_leg):
         assert all(s['min_opening'] > 0.0 for s in single_leg.values())
