@@ -13,7 +13,9 @@ with $n_z$ capped at 48). Each element gets the ply angle of
 the ply containing its centroid; a centroid on a ply interface takes the
 ply above. The porosity field is sampled at every node. Elements whose
 centroid lies inside a discrete void are flagged as void elements. The
-total element count is capped at $10^6$.
+total element count is capped at $10^6$. An explicit delamination
+(`delaminations=`) duplicates the node plane of its ply interface and
+appends the copies after the structured nodes; see {doc}`delamination`.
 
 ```{warning}
 An element layer that spans several plies takes only one of their angles,
@@ -191,8 +193,10 @@ with the reduced system $\mathbf T^\mathsf{T} \mathbf K \mathbf T\, \mathbf u_r
 values alone $\mathbf T$ selects the free degrees of freedom, which gives the
 system above (computed by slicing, as before). The same map also takes
 master-slave ties $u_s = u_m + c$, chained or ending on a prescribed degree of
-freedom. None of the loading modes uses ties; the periodic unit cell that
-checks the Mori-Tanaka void model does ({doc}`micromechanics`).
+freedom. A delaminated mesh ties the bonded part of each duplicated
+interface, in every loading mode ({doc}`delamination`); without a
+delamination no loading mode uses ties. The periodic unit cell that checks
+the Mori-Tanaka void model does too ({doc}`micromechanics`).
 
 The default solve is a sparse LU factorization of $\mathbf K_{ff}$. A
 solver keeps the factorizations of the last two sets of constrained degrees
@@ -224,7 +228,8 @@ overhang=0.0)`, on rollers instead of pinned edges.
 
 The FE `knockdown` compares the structural stiffness of the porous model
 with a pristine reference solve of the same mesh, loading and supports,
-with zero porosity and no void elements:
+with zero porosity, no void elements and, on a delaminated mesh, every
+interface node pair bonded ({doc}`delamination`):
 
 $$
 KD_\text{FE} = \frac{\mathcal S_\text{porous}}{\mathcal S_\text{pristine}},

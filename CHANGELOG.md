@@ -48,6 +48,43 @@ All notable changes to PorosityFE will be documented in this file.
       the `interface` profile's FE volume average is 0.0354, not 0.03.
     - The failure theory page describes the delamination mode's limits and
       the reported mode quantities.
+- **Explicit delaminations in the FE model** (delamination plan, phase
+  2.1-2.3). Results without a delamination are unchanged bit for bit.
+  - `Delamination` (public): a crack at ply interface `k`, between ply `k`
+    and ply `k + 1` from the bottom, with a `'strip'` (through the width,
+    `x_start` to `x_end`), `'rectangle'` or `'ellipse'` planform (`center`,
+    `half_size`, mm). The region is open: nodes on its boundary stay
+    bonded and form the crack front; a strip or rectangle edge on the plate
+    edge opens to it. Several delaminations at one interface act as their
+    union.
+  - `CompositeMesh(..., delaminations=...)`, also on `for_flexure` and
+    `for_ilss`, duplicates the node plane of every delaminated interface
+    at the end of `generate_mesh()`: the copies follow the structured
+    nodes, whose ids are unchanged, and the element layer above is rewired
+    to them. Needs `nz` a multiple of `n_plies`. New
+    `n_structured_nodes`, `delaminated_interfaces`,
+    `interface_node_pairs()`, `bonded_pairs()`, `bonded_ties()` and
+    `crack_front_pairs()`. Replacing `mesh.delaminations` at the same
+    interfaces changes only the ties, so a crack grows without reassembly.
+  - `FESolver` ties each bonded duplicate to its original, in every loading
+    mode, direct or CG, and in the thermal unit solve; the LU and thermal
+    caches are keyed on the tie set. Boundary conditions prescribe the
+    original nodes and the delaminated duplicates on a face, never a tied
+    duplicate. Reactions fold each tie force onto its original. The
+    knockdown's pristine reference has every pair bonded (no porosity,
+    voids or delamination), so a delamination alone gives a knockdown
+    below 1; its cache key holds that tie set.
+  - `extrapolate_to_nodes` averages a bonded pair as one node and reports
+    the two crack faces of a delaminated pair separately. The
+    flexural-modulus deflection and the structured section helpers read
+    the structured nodes.
+  - Verified: with every pair bonded the solution equals the undelaminated
+    one within 5e-11 relative in every loading mode and both formulations; on a
+    16-ply UD double-cantilever beam the compliance is 0.983 of
+    root-rotation-corrected beam theory and the energy release rate from
+    the compliance derivative is 0.311 N/mm, 0.989 of beam theory. Energy
+    release rates by virtual crack closure, crack-face contact and fracture
+    criteria are the next step. Theory page "Delamination".
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled

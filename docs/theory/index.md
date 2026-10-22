@@ -42,6 +42,7 @@ empirical
 fe
 thermal
 failure
+delamination
 fatigue_environment
 uncertainty
 ```
