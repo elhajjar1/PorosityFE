@@ -123,7 +123,12 @@ class FieldResults:
         ``h / 2``) from both support lines, the edges of the loading band
         and the side faces, so the contact stresses under the nose and at
         the supports are left out
-        (:func:`porosity_fe.fe.short_beam.interior_element_mask`).
+        (:func:`porosity_fe.fe.short_beam.interior_element_mask`). For
+        ``'flexure_3pt'`` and ``'flexure_4pt'`` it is the span between
+        the supports, at least ``interior_margin`` (default ``h / 2``)
+        from the side faces and, in the ``x``-``z`` plane, from each
+        support line and load band, so the bending stress at mid-span
+        stays in (:func:`porosity_fe.fe.flexure.interior_element_mask`).
         ``None`` when no element is that far from the edges.
     interior_first_ply_failure_load_factor : float or None
         :attr:`first_ply_failure_load_factor` over the interior elements

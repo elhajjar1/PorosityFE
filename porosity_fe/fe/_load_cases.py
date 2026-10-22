@@ -18,7 +18,7 @@ import numpy as np
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
-from . import short_beam
+from . import flexure, short_beam
 from .assembler import BoundaryHandler
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -165,12 +165,19 @@ def interior_mask(loading: str, mesh: CompositeMesh,
     For ``'ilss'``, the ASTM D2344 shear spans, clear of the contact zones
     (supports, loading band) and the side faces
     (:func:`~porosity_fe.fe.short_beam.interior_element_mask`; raises
-    :class:`ValueError` without a specimen mesh). Otherwise the elements at
-    least ``margin`` from the lateral faces (:func:`_interior_element_mask`).
+    :class:`ValueError` without a specimen mesh). For the flexure modes,
+    the span clear of a half-disc around each support and load line and of
+    the side faces (:func:`~porosity_fe.fe.flexure.interior_element_mask`).
+    Otherwise the elements at least ``margin`` from the lateral faces
+    (:func:`_interior_element_mask`).
     """
     if loading == 'ilss':
         return short_beam.interior_element_mask(
             mesh, bc_handler.ilss_geometry(), margin)
+    if loading in _FLEXURE_PROCEDURE:
+        return flexure.interior_element_mask(
+            mesh, bc_handler.flexure_geometry(), _FLEXURE_PROCEDURE[loading],
+            margin)
     return _interior_element_mask(mesh, margin)
 
 

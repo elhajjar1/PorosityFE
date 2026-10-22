@@ -92,11 +92,12 @@ map uses a diverging scale centred on zero only when the stress changes
 sign, and the Stress tab opens on the component that governs the load
 case (τ13 for ILSS, σ22 for thermal only, τ12 for shear, σ11 otherwise).
 The Results tab has an optional **Mesh convergence check**: it solves the
-analysis again on two or three in-plane refinements of its mesh
-(`refinement_study`), lists the element counts, estimated memory and a
-rough time before running, and then gives each quantity's verdict. The
-domain-maximum failure index sits at free edges and corners and is
-mesh-dependent; read the interior values.
+analysis again on two or three in-plane refinements of its mesh (the
+coupon, or the D2344 or D7264 specimen; `refinement_study`), lists the
+element counts, estimated memory and a rough time before running, and then
+gives each quantity's verdict. The domain-maximum failure index sits at
+free edges, corners and load points and is mesh-dependent; read the
+interior values.
 
 The thermal option appears for materials
 with lamina CTEs (today `AS4_3501_6_epoxy`). It solves the cure residual

@@ -411,6 +411,21 @@ def run_analysis(cfg: dict) -> dict:
     }
 
 
+def _interior_region_text(fe_loading: str | None) -> str:
+    """Where the interior failure metrics of an FE solve of ``fe_loading`` look."""
+    if fe_loading == "ilss":
+        return ("in the shear spans, at least h/2 (h the laminate thickness) "
+                "from the supports, the loading band and the side faces, clear "
+                "of the contact stresses")
+    if fe_loading in _FLEXURE_MODES:
+        return ("at least h/2 (h the laminate thickness) from every support "
+                "and load line and from the side faces, clear of the contact "
+                "stresses")
+    return ("away from the free edges (at least max(h, 2 element widths) in, "
+            "h the laminate thickness), where the free-edge stress peak does "
+            "not reach")
+
+
 def _specimen_info(mesh) -> dict:
     """Dimensions (mm) and mesh of a :meth:`CompositeMesh.for_ilss` specimen."""
     geometry = mesh.ilss_geometry
@@ -714,10 +729,9 @@ def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] |
         f"whole model (free-edge peak included). At or above 1 the laminate "
         f"fails on cool-down, before any load.")
     interior_help = (
-        "Maximum failure index of the elements away from the free edges "
-        "(at least max(h, 2 element widths) in, h the laminate thickness), "
-        "where the free-edge stress peak does not reach; n/a when no element "
-        "is that far in.")
+        f"Maximum failure index of the elements "
+        f"{_interior_region_text(result.get('fe_loading'))}; n/a when no "
+        f"element is that far in.")
 
     if fe.load_factor_basis == "delta_T":
         finite = lam is not None and math.isfinite(lam)
@@ -809,24 +823,22 @@ def convergence_unavailable_reason(result: dict) -> str | None:
     if result.get("fe_field") is None:
         return ("The FE solve of this analysis was skipped, so there is no FE "
                 "mesh to refine.")
-    if result.get("fe_loading") in _FLEXURE_MODES:
-        return ("Not available for the flexure modes yet: refinement_study "
-                "refines the plain coupon, not the ASTM D7264 specimen.")
     return None
 
 
 def convergence_plan(result: dict, factors) -> list[dict]:
     """The levels a convergence check of ``result`` solves, with estimates.
 
-    The levels refine the analysis mesh (the coupon, or the D2344 specimen
-    for ``'ilss'``) in plane, as :func:`refinement_study` with
-    ``refine='in_plane'`` does: ``nx`` and ``ny`` times each factor,
-    rounded half up (for ``'ilss'``, ``nx`` then up to a multiple of 6),
-    ``nz`` fixed. Each entry holds ``resolution``, ``n_elements``,
-    ``n_dof``, ``memory_gb`` (the study's own peak-memory estimate, on the
-    generous side) and ``time_s``: the analysis FE solve time scaled by the
-    DOF ratio to the power 1.5, roughly how the sparse factorization grows
-    (``None`` when the result recorded no time). A rough guide only.
+    The levels refine the analysis mesh (the coupon, the D2344 specimen
+    for ``'ilss'`` or the D7264 specimen for flexure) in plane, as
+    :func:`refinement_study` with ``refine='in_plane'`` does: ``nx`` and
+    ``ny`` times each factor, rounded half up (``nx`` then up to a multiple
+    of 6 for ``'ilss'``, up to even for flexure), ``nz`` fixed. Each entry
+    holds ``resolution``, ``n_elements``, ``n_dof``, ``memory_gb`` (the
+    study's own peak-memory estimate, on the generous side) and
+    ``time_s``: the analysis FE solve time scaled by the DOF ratio to the
+    power 1.5, roughly how the sparse factorization grows (``None`` when
+    the result recorded no time). A rough guide only.
     """
     mesh = result["mesh"]
     nx0, ny0, nz0 = int(mesh.nx), int(mesh.ny), int(mesh.nz)
@@ -839,6 +851,8 @@ def convergence_plan(result: dict, factors) -> list[dict]:
         ny = max(1, math.floor(ny0 * f + 0.5))
         if result.get("fe_loading") == "ilss":
             nx = _ILSS_NX_MULTIPLE * math.ceil(nx / _ILSS_NX_MULTIPLE)
+        elif result.get("fe_loading") in _FLEXURE_MODES:
+            nx += nx % 2
         res = (nx, ny, nz0)
         n_dof = 3 * (nx + 1) * (ny + 1) * (nz0 + 1)
         plan.append({
@@ -880,6 +894,8 @@ def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
     kwargs = {}
     if loading == "ilss":
         kwargs["applied_load"] = _FE_ILSS_LOAD_N
+    elif loading in _FLEXURE_MODES:
+        kwargs["applied_load"] = _FE_FLEXURE_LOAD_N
     elif loading != "thermal":
         kwargs["applied_strain"] = (-_FE_APPLIED_STRAIN if loading == "compression"
                                     else _FE_APPLIED_STRAIN)
@@ -910,8 +926,10 @@ def convergence_tables(study: RefinementStudy) -> tuple[list[dict], list[dict]]:
             "Mesh": lv.mesh.replace("x", " × "),
             "Elements": f"{lv.n_elements:,}",
             "Knockdown": _fmt_value(lv.knockdown, "{:.4f}"),
-            "Interior max FI": _fmt_value(lv.interior_max_failure_index),
-            "Domain max FI": _fmt_value(lv.max_failure_index),
+            # Significant figures: at the app's arbitrary ILSS / flexure
+            # loads the failure indices are of order 0.01.
+            "Interior max FI": _fmt_value(lv.interior_max_failure_index, "{:.4g}"),
+            "Domain max FI": _fmt_value(lv.max_failure_index, "{:.4g}"),
             "Time (s)": f"{lv.solve_time_s:.1f}",
         })
     verdicts = []
@@ -2027,7 +2045,9 @@ def _build_convergence_expander(result: dict) -> None:
             f"knockdown's change is relative to the stiffness loss 1 − KD. "
             f"Interior quantities leave out {study.interior_margin:.3g} mm "
             + ("around the supports and the loading band and from the side "
-               "faces." if study.loading == "ilss" else "from the lateral faces."))
+               "faces." if study.loading == "ilss" else
+               "around the support and load lines and from the side faces."
+               if study.loading in _FLEXURE_MODES else "from the lateral faces."))
 
 
 def _build_short_beam_results(result: dict) -> None:

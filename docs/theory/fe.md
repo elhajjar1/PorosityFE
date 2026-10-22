@@ -271,13 +271,18 @@ element length is at most $\min(h, 20 h / n_z)$, which keeps the aspect
 ratio at or below 20 and $\Delta x / h \le 1$. $n_x$ is chosen so that the
 supports, mid-span and the four-point load lines fall on node lines. For
 the 24-ply T800 preset this gives a 140.5 mm span and $48 \times 4 \times 24$
-elements (18,375 degrees of freedom). Solving both procedures takes
+elements (18,375 degrees of freedom). `nx=` sets the element count along
+the length instead (even, so mid-span is a node line): the span keeps its
+length and gets the most elements that leave each overhang at least 10 %
+of it, two fewer when that puts the four-point load lines on node lines,
+and the overhangs take the rest. Solving both procedures takes
 about 3 to 4 s on a pristine mesh and 7 to 8 s on a porous one, which
 adds the pristine reference solves (four cores); the two procedures share
 the supports and so the factorization. On a mesh without
 `flexure_geometry` the supports are the two bottom end edges. The web
 app offers both procedures as FE-only loading modes on this specimen
-(with $n_z$ from its mesh setting).
+(with $n_z$ from its mesh setting), and its mesh-convergence check refines
+the specimen.
 
 **Supports and loads.**
 {meth}`BoundaryHandler.roller_supports <porosity_fe.BoundaryHandler.roller_supports>`
@@ -399,6 +404,31 @@ is small: the three-point first-ply-failure load of the QI preset is
 spans concentrate more of the failure index under the load; use a band
 there.
 
+**Interior region.** The interior failure quantities of the flexure modes
+leave out the contact zones and the side faces: an element is interior
+when its centroid lies between the supports, at least `interior_margin`
+(default $h/2$) from both side faces and, measured in the $x$-$z$ plane,
+at least that far from each support line on the bottom face and from each
+load band on the top face
+({func}`porosity_fe.fe.flexure.interior_element_mask`). Only a half-disc
+around each contact line goes, not the whole cross-section as in the
+short-beam region: in three-point bending the bending stress peaks at
+mid-span, so the tension face under the load must stay in. On the default
+specimen of the 24-ply T800 QI laminate ($V_p = 0.03$) the interior
+maximum failure index is 0.993 of the domain maximum in both procedures;
+dropping whole cross-sections within $h/2$ of the load would leave 0.949
+in three-point bending. The rest is the free-edge band of the QI
+laminate (about one thickness wide, see above), where the bottom-ply
+stress rises toward the side faces. The margin keeps the edge itself out;
+refining across the width resolves more of the band's tail, so the
+interior maximum creeps up by about half a percent per level: 0.1241,
+0.1257, 0.1263 and 0.1269 at $P = 100$ N, three-point, on
+$48 \times 4$, $72 \times 6$, $96 \times 8$ and $120 \times 10$ (all
+$\times 24$), and 0.0616, 0.0621, 0.0623 and 0.0625 four-point. A side
+margin of $h$ instead of $h/2$ does not converge faster (the value jumps
+whenever a column of elements crosses the margin), so the flexure default
+matches the short-beam one.
+
 ## Short-beam shear (ILSS)
 
 `loading='ilss'` is the short-beam-strength test of ASTM D2344/D2344M,
@@ -472,7 +502,7 @@ dominate.
 the domain maximum failure index and first-ply-failure load factor sit in
 the contact zones and depend on the mesh. For `ilss` the interior
 quantities use the two shear spans instead of the lateral margin of the
-other modes: elements at least `interior_margin` (default $h/2$) from both
+axial modes: elements at least `interior_margin` (default $h/2$) from both
 support lines, from the edges of the loading band and from the side faces,
 with the overhangs left out
 ({func}`porosity_fe.fe.short_beam.interior_element_mask`). On the QI
@@ -623,7 +653,12 @@ count, and `resolutions=` takes explicit levels. For `ilss` every level
 is an ASTM D2344 specimen (`CompositeMesh.for_ilss`, default base
 $24 \times 8 \times n_\text{plies}$) whose $n_x$ is a multiple of 6, so
 the supports and mid-span stay on node lines; the interior margin is the
-short-beam default $h/2$.
+short-beam default $h/2$. For `flexure_3pt` and `flexure_4pt` every level
+is an ASTM D7264 specimen (`CompositeMesh.for_flexure` with the level's
+`nx`, default base the specimen's own mesh, $48 \times 4 \times 24$ for the
+24-ply presets) whose $n_x$ is even; the span is the same on every level,
+only the unloaded overhangs can change length by part of an element, and
+the interior margin is again $h/2$.
 The interior quantities use one `interior_margin` for every level (by
 default the coarsest level's $\max(h, 2\Delta x, 2\Delta y)$); the
 solver's own default shrinks with the elements, which would let the
@@ -721,6 +756,31 @@ outside the margin changes with the mesh, so the interior values move by
 about 4 % without a trend. Read them as values to about ±5 %. (On the
 former pinned bend of the coupon the interior first-ply-failure load
 factor fell from 385 to 323 over the same kind of study, diverging.)
+
+Three- and four-point flexure at $P = -10$ N, on the D7264 specimen
+([Flexure](#flexure); default base $48 \times 4 \times 24$, interior margin
+$h/2 = 2.2$ mm around the support and load lines and from the side faces;
+about two minutes per procedure):
+
+| Quantity | $48 \times 4$ | $72 \times 6$ | $96 \times 8$ | Study |
+|---|---|---|---|---|
+| 3-point flexural modulus (MPa) | 65,157 | 65,075 | 65,042 | changes below 0.13 %: converged |
+| 3-point maximum failure index ($10^{-3}$) | 11.645 | 11.718 | 11.769 | $p \approx 0$: not converged |
+| 3-point interior maximum failure index ($10^{-3}$) | 11.564 | 11.718 | 11.769 | $p = 2.1$, extrapolate 11.831, GCI 0.7 %: converged |
+| 3-point interior first-ply-failure load factor | 58.76 | 58.32 | 58.09 | $p = 0.8$, GCI 1.9 %: not converged |
+| 4-point flexural modulus (MPa) | 65,132 | 65,055 | 65,024 | changes below 0.12 %: converged |
+| 4-point interior maximum failure index ($10^{-3}$) | 5.929 | 5.989 | 6.003 | $p = 3.2$, extrapolate 6.012, GCI 0.2 %: converged |
+| 4-point interior first-ply-failure load factor | 113.94 | 113.70 | 113.57 | $p = 0.85$, GCI 0.5 %: converged |
+
+The knockdown moves by about $2 \times 10^{-5}$ in both procedures (0.992039,
+0.992032, 0.992016 three-point), 0.2 % of the stiffness loss and below the
+tolerance; the study still reports it as not converged because its
+second change is larger than its first. Beyond the coarsest level the
+domain and interior maxima coincide: the peak is on the tension face
+near mid-span (three-point) or between the load lines (four-point),
+inside the region, and the domain maximum on the coarsest mesh is the
+element beside the side face. The three-point interior load factor still
+drifts by about 0.4 % per level; read it to about ±2 %.
 
 Thermal residual stress (AS4/3501-6 QI, $h = 3$ mm,
 $\Delta T = -157$ K, the compression meshes): the domain maximum failure index grows

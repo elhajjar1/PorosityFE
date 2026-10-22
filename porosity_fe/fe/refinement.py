@@ -37,9 +37,9 @@ from ..mesh import (
 )
 from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
-from ._load_cases import _check_delta_T, _minres_deprecation
+from ._load_cases import _FLEXURE_PROCEDURE, _check_delta_T, _minres_deprecation
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
-from .short_beam import default_interior_margin
+from .flexure import default_interior_margin
 from .solver import FESolver
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -294,7 +294,8 @@ class RefinementStudy:
     interior_margin : float
         Distance (mm) from the lateral faces that the interior quantities
         leave out, the same at every level (for ``'ilss'``, from the
-        supports, the loading band and the side faces).
+        supports, the loading band and the side faces; for the flexure
+        modes, from the support and load lines and the side faces).
     void_volume_fraction : float
         Specimen-average ``Vp`` of the porosity field (fraction).
     applied_strain, applied_load, delta_T : float or None
@@ -373,7 +374,9 @@ class RefinementStudy:
             + (f", delta_T={self.delta_T:g} K" if self.delta_T is not None else ""),
             f"interior quantities leave out {self.interior_margin:.3g} mm "
             + ("around the supports and the loading band and from the side faces"
-               if self.loading == 'ilss' else "from the lateral faces")
+               if self.loading == 'ilss' else
+               "around the support and load lines and from the side faces"
+               if self.loading in _FLEXURE_PROCEDURE else "from the lateral faces")
             + f"; tol = {self.tol:g}",
             "",
             *self._level_table(),
@@ -416,7 +419,8 @@ class RefinementStudy:
                     f"inside the interior region, a disturbance carried in "
                     f"from the free edges or the edge of the region (in "
                     f"'ilss', next to the excluded loading-nose zone, where "
-                    f"the bending moment peaks), or meshes still too coarse "
+                    f"the bending moment peaks; in three-point flexure, next "
+                    f"to the half-disc under the load), or meshes still too coarse "
                     f"for the trend. Do not read these as mesh-converged "
                     f"values.")
         kd = conv['knockdown']
@@ -789,7 +793,8 @@ def refinement_study(
     interior counterparts, which leave out a fixed margin along the lateral
     faces and converge when no singularity lies inside that region (on the
     production geometry they do in compression; in ``'ilss'`` the region is
-    the specimen's shear spans clear of the supports and the loading nose).
+    the specimen's shear spans clear of the supports and the loading nose,
+    and in flexure the span clear of the support and load lines).
     The theory page on the finite-element model ("Mesh convergence") has
     measured studies and a recommended resolution.
 
@@ -801,7 +806,7 @@ def refinement_study(
         The porosity field, or the specimen-average void volume fraction
         ``Vp`` (a fraction in ``[0, 1]``) to build one from with
         ``porosity_config``. A field must have been built for ``material``.
-    loading : {'compression', 'tension', 'shear', 'ilss', 'thermal'}
+    loading : {'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt', 'thermal'}
         Load case, as :meth:`FESolver.solve`.
     porosity_config : dict, optional
         :class:`~porosity_fe.PorosityField` keyword arguments
@@ -815,7 +820,9 @@ def refinement_study(
         the production default, ``nz`` stays at ``n_plies`` above 48 plies
         (the memory guard below applies instead). For ``'ilss'`` the
         default is the :meth:`~porosity_fe.CompositeMesh.for_ilss` specimen
-        mesh, ``(24, 8, material.n_plies)``.
+        mesh, ``(24, 8, material.n_plies)``, and for the flexure modes the
+        :meth:`~porosity_fe.CompositeMesh.for_flexure` specimen mesh
+        (``(48, 4, 24)`` for the 24-ply presets).
     factors : sequence of float, optional
         Refinement factors of the levels relative to ``base_resolution``,
         strictly increasing (default ``(1, 1.5, 2)``). Three or more levels
@@ -848,7 +855,9 @@ def refinement_study(
         solver's own default shrinks with the elements, which would let the
         interior region creep into the edge singularity.) For ``'ilss'``,
         the distance from the supports, the loading band and the side
-        faces, default ``h / 2`` (as :meth:`FESolver.solve`).
+        faces, and for the flexure modes from the support and load lines
+        and the side faces; both default to ``h / 2`` (as
+        :meth:`FESolver.solve`).
     tol : float
         Converged when the estimated relative error of the finest level is
         at most ``tol`` (default 0.01); see
@@ -898,6 +907,14 @@ def refinement_study(
     multiple of 6 so the supports and mid-span stay on node lines: generated
     levels round it up, explicit ``resolutions`` that break it raise.
 
+    For ``'flexure_3pt'`` and ``'flexure_4pt'`` every level is an ASTM D7264
+    specimen (:meth:`~porosity_fe.CompositeMesh.for_flexure` with the
+    level's ``nx``, ``ny`` and ``nz``, default proportions). ``nx`` must be
+    even so mid-span stays on a node line: generated levels round it up,
+    explicit ``resolutions`` that break it raise. The span is the same at
+    every level; the unloaded overhangs take whole elements and can differ
+    slightly in length.
+
     Examples
     --------
     >>> study = refinement_study(MATERIALS['T800_epoxy'], 0.03,
@@ -946,12 +963,23 @@ def refinement_study(
                 f"(6 h long, supports h in from the ends), so each nx must be a "
                 f"multiple of {_ILSS_NX_MULTIPLE} to keep the supports and "
                 f"mid-span on node lines; got {[r[0] for r in plan]}.")
+        if loading in _FLEXURE_PROCEDURE and any(r[0] % 2 for r in plan):
+            raise ValueError(
+                f"refinement_study: {loading!r} levels are ASTM D7264 "
+                f"specimens, so each nx must be even to keep mid-span on a "
+                f"node line; got {[r[0] for r in plan]}.")
     else:
         if refine not in ('in_plane', 'all'):
             raise ValueError(f"refine must be 'in_plane' or 'all', got {refine!r}.")
         if base_resolution is None and loading == 'ilss':
             # The CompositeMesh.for_ilss default specimen mesh.
             base = (_ILSS_BASE_NX, _ILSS_BASE_NY, material.n_plies)
+        elif base_resolution is None and loading in _FLEXURE_PROCEDURE:
+            # The CompositeMesh.for_flexure default specimen mesh.
+            specimen = CompositeMesh.for_flexure(field, material,
+                                                 ply_angles=ply_angles)
+            base = (specimen.nx, specimen.ny, specimen.nz)
+            del specimen
         elif base_resolution is None:
             # The production resolution, but nz = n_plies even above its cap:
             # a study must resolve the layup, and the memory guard applies.
@@ -968,6 +996,8 @@ def refinement_study(
         if loading == 'ilss':
             m = _ILSS_NX_MULTIPLE
             plan = [(m * math.ceil(nx / m), ny, nz) for nx, ny, nz in plan]
+        elif loading in _FLEXURE_PROCEDURE:
+            plan = [(nx + nx % 2, ny, nz) for nx, ny, nz in plan]
         refine_label = refine
     if len(plan) < 2:
         raise ValueError("A refinement study needs at least two levels.")
@@ -1020,11 +1050,14 @@ def refinement_study(
         if loading == 'ilss':
             mesh = CompositeMesh.for_ilss(field, material, nx=res[0], ny=res[1],
                                           nz=res[2], ply_angles=ply_angles)
+        elif loading in _FLEXURE_PROCEDURE:
+            mesh = CompositeMesh.for_flexure(field, material, nx=res[0], ny=res[1],
+                                             nz=res[2], ply_angles=ply_angles)
         else:
             mesh = CompositeMesh(field, material, nx=res[0], ny=res[1], nz=res[2],
                                  ply_angles=ply_angles)
         dims = (mesh.L_x, mesh.L_y, mesh.L_z)
-        if margin is None and loading == 'ilss':
+        if margin is None and (loading == 'ilss' or loading in _FLEXURE_PROCEDURE):
             margin = default_interior_margin(mesh)
         elif margin is None:
             margin = max(mesh.L_z, 2.0 * mesh.L_x / mesh.nx, 2.0 * mesh.L_y / mesh.ny)

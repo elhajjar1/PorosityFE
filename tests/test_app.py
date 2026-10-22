@@ -1064,6 +1064,11 @@ class TestConvergenceCheck:
         plan = app.convergence_plan(ilss_result, (1.0, 1.1, 1.5))
         assert [lv["resolution"] for lv in plan] == [(24, 8, 6), (30, 9, 6), (36, 12, 6)]
 
+    def test_flexure_plan_keeps_nx_even(self, flexure_result):
+        assert (flexure_result["mesh"].nx, flexure_result["mesh"].ny) == (40, 8)
+        plan = app.convergence_plan(flexure_result, (1.0, 1.025, 1.5))   # 41 -> 42
+        assert [lv["resolution"] for lv in plan] == [(40, 8, 4), (42, 8, 4), (60, 12, 4)]
+
     def test_combined_thermal_plan_counts_two_factorizations(self, combined_results):
         from porosity_fe.fe.refinement import _estimate_memory_bytes
         comb, _ = combined_results
@@ -1074,7 +1079,7 @@ class TestConvergenceCheck:
 
     def test_unavailable_reasons(self, comp_result, flexure_result):
         assert app.convergence_unavailable_reason(comp_result) is None
-        assert "flexure" in app.convergence_unavailable_reason(flexure_result)
+        assert app.convergence_unavailable_reason(flexure_result) is None
         assert "skipped" in app.convergence_unavailable_reason(
             {**comp_result, "fe_field": None})
 
@@ -1111,7 +1116,7 @@ class TestConvergenceCheck:
         assert [row["Mesh"] for row in levels] == ["6 × 2 × 4", "9 × 3 × 4"]
         assert [row["Elements"] for row in levels] == ["48", "108"]
         assert levels[1]["Knockdown"] == f"{study.levels[1].knockdown:.4f}"
-        assert levels[1]["Domain max FI"] == f"{study.levels[1].max_failure_index:.3f}"
+        assert levels[1]["Domain max FI"] == f"{study.levels[1].max_failure_index:.4g}"
         assert [row["Quantity"] for row in verdicts] == [
             "Knockdown", "Interior max FI", "Domain max FI"]
         for row, name in zip(verdicts, ("knockdown", "interior_max_failure_index",
@@ -1130,6 +1135,9 @@ class TestConvergenceCheck:
         (_thermal_cfg(thermal_mode="combined", loading_mode="tension"), "tension",
          {"delta_T": -150.0, "applied_strain": 0.01}),
         (_base_cfg(loading_mode="ilss"), "ilss", {"applied_load": -10.0}),
+        (_flexure_cfg(), "flexure_3pt", {"applied_load": -10.0}),
+        (_flexure_cfg(loading_mode="flexure_4pt"), "flexure_4pt",
+         {"applied_load": -10.0}),
         (_base_cfg(loading_mode="shear"), "shear", {"applied_strain": 0.01}),
     ])
     def test_load_case_wiring(self, monkeypatch, cfg, loading, extra):
