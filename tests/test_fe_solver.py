@@ -27,6 +27,17 @@ def _default_strain(loading):
     return _resolve_applied_strain(loading, None)
 
 
+def _ilss_mesh(pf, material, nz=2, **kw):
+    """A small ASTM D2344 short-beam specimen (12 x 4 x ``nz``) for ``'ilss'``.
+
+    ``loading='ilss'`` needs a specimen from ``CompositeMesh.for_ilss``; on
+    the coupon meshes the other modes use it raises.
+    """
+    return CompositeMesh.for_ilss(pf, material, nz=nz,
+                                  element_length=material.total_thickness / 2,
+                                  **kw)
+
+
 #: The ``solver='minres'`` deprecation warning (removal in 2.0).
 _MINRES_DEPRECATED = r"solver='minres'\) is deprecated .* 2\.0; use solver='cg'"
 
@@ -499,18 +510,20 @@ class TestBoundaryHandler:
 
     @pytest.mark.parametrize("loading", ["compression", "shear", "ilss"])
     def test_apply_elimination_matches_dense_partitioned_solve(self, loading):
-        assembler = GlobalAssembler(self.mesh, self.material, self.pf)
+        mesh = _ilss_mesh(self.pf, self.material) if loading == 'ilss' else self.mesh
+        handler = BoundaryHandler(mesh)
+        assembler = GlobalAssembler(mesh, self.material, self.pf)
         K = assembler.assemble_stiffness()
         constrained, F = {
-            'compression': lambda: self.handler.compression_bcs(-0.001),
-            'shear': lambda: self.handler.shear_bcs(0.01),
-            'ilss': lambda: self.handler.ilss_bcs(-10.0),
+            'compression': lambda: handler.compression_bcs(-0.001),
+            'shear': lambda: handler.shear_bcs(0.01),
+            'ilss': lambda: handler.ilss_bcs(-10.0),
         }[loading]()
         K_ff, rhs, free = BoundaryHandler.apply_elimination(K, F, constrained)
 
         fixed = np.array(sorted(constrained), dtype=int)
         values = np.array([constrained[d] for d in fixed])
-        expected_free = np.setdiff1d(np.arange(self.mesh.n_dof), fixed)
+        expected_free = np.setdiff1d(np.arange(mesh.n_dof), fixed)
         np.testing.assert_array_equal(free, expected_free)
         Kd = K.toarray()
         np.testing.assert_array_equal(K_ff.toarray(), Kd[np.ix_(free, free)])
@@ -518,7 +531,7 @@ class TestBoundaryHandler:
             rhs, F[free] - Kd[np.ix_(free, fixed)] @ values,
             rtol=1e-12, atol=1e-12 * max(np.abs(rhs).max(), 1.0))
 
-        u = np.zeros(self.mesh.n_dof)
+        u = np.zeros(mesh.n_dof)
         u[fixed] = values
         u[free] = np.linalg.solve(K_ff.toarray(), rhs)
         # Prescribed values hold exactly; the free rows are in equilibrium.
@@ -526,7 +539,7 @@ class TestBoundaryHandler:
         r_free = (Kd @ u - F)[free]
         assert np.abs(r_free).max() <= 1e-9 * np.abs(Kd).max() * np.abs(u).max()
         # The same displacement field the solver produces.
-        res = FESolver(self.mesh, self.material, self.pf).solve(
+        res = FESolver(mesh, self.material, self.pf).solve(
             loading, applied_strain=-0.001 if loading == 'compression' else 0.01)
         np.testing.assert_allclose(res.displacement.ravel(), u, rtol=0,
                                    atol=1e-9 * np.abs(u).max())
@@ -547,58 +560,91 @@ class TestBoundaryHandler:
         with pytest.raises(ValueError, match="finite"):
             BoundaryHandler.apply_elimination(K, np.zeros(6), {0: float('nan')})
 
+    def _ilss_handler(self):
+        mesh = _ilss_mesh(self.pf, self.material)
+        return mesh, BoundaryHandler(mesh)
+
     def test_ilss_bcs_returns_tuple(self):
-        constrained, F = self.handler.ilss_bcs(applied_load=-10.0)
+        mesh, handler = self._ilss_handler()
+        constrained, F = handler.ilss_bcs(applied_load=-10.0)
         assert isinstance(constrained, dict)
         assert isinstance(F, np.ndarray)
-        assert len(F) == self.mesh.n_dof
+        assert len(F) == mesh.n_dof
 
-    def test_ilss_bcs_pins_support_edges(self):
-        """The two bottom-face support edges should pin all three DOFs."""
-        constrained, F = self.handler.ilss_bcs(applied_load=-10.0)
-        zmin = self.mesh.nodes_on_face('z_min')
-        xmin = self.mesh.nodes_on_face('x_min')
-        xmax = self.mesh.nodes_on_face('x_max')
-        support_left = np.intersect1d(zmin, xmin)
-        support_right = np.intersect1d(zmin, xmax)
-        assert support_left.size > 0
-        assert support_right.size > 0
-        for nid in np.concatenate([support_left, support_right]):
-            nid = int(nid)
-            for k in (0, 1, 2):
-                assert 3 * nid + k in constrained
-                assert constrained[3 * nid + k] == 0.0
+    def test_ilss_bcs_are_three_point_bending_on_rollers(self):
+        """The short-beam BCs are flexure_bcs('3pt') at the specimen's
+        supports and loading band (ASTM D2344), not pinned end edges."""
+        mesh, handler = self._ilss_handler()
+        constrained, F = handler.ilss_bcs(applied_load=-10.0)
+        ref_c, ref_F = handler.flexure_bcs(-10.0, procedure='3pt',
+                                           geometry=mesh.ilss_geometry)
+        assert constrained == ref_c
+        np.testing.assert_array_equal(F, ref_F)
+        # Rollers: u_z on both support lines, plus three in-plane DOFs.
+        lines = [handler.face_line_nodes('z_min', x)
+                 for x in mesh.ilss_geometry.support_x]
+        assert all(line.size == mesh.ny + 1 for line in lines)
+        uz = {3 * int(n) + 2 for line in lines for n in line}
+        assert uz <= set(constrained)
+        assert len(set(constrained) - uz) == 3
+        assert all(v == 0.0 for v in constrained.values())
+        # The supports sit h in from the ends of the 6 h specimen.
+        h = mesh.L_z
+        np.testing.assert_allclose(mesh.ilss_geometry.support_x, (h, 5 * h),
+                                   rtol=1e-12)
 
     def test_ilss_bcs_force_vector_sums_to_applied_load(self):
+        _, handler = self._ilss_handler()
         load = -10.0
-        _constrained, F = self.handler.ilss_bcs(applied_load=load)
-        # All midspan load lives in uz DOFs (every third entry starting at 2)
-        assert abs(F.sum() - load) < 1e-12
-        # And the sum across only the uz DOFs also matches
-        uz_sum = F[2::3].sum()
-        assert abs(uz_sum - load) < 1e-12
+        _constrained, F = handler.ilss_bcs(applied_load=load)
+        assert F.sum() == pytest.approx(load, rel=1e-12)
+        assert F[2::3].sum() == pytest.approx(load, rel=1e-12)
 
-    def test_ilss_bcs_loads_only_midspan_top(self):
-        """Only nodes on the top face near x = Lx/2 should carry the load."""
-        constrained, F = self.handler.ilss_bcs(applied_load=-10.0)
-        Lx = self.mesh.L_x
-        Lz = self.mesh.L_z
+    def test_ilss_bcs_load_the_band_at_midspan_top(self):
+        """Only top-face nodes within one element of the loading band carry
+        load, symmetrically about mid-span."""
+        mesh, handler = self._ilss_handler()
+        _constrained, F = handler.ilss_bcs(applied_load=-10.0)
+        g = mesh.ilss_geometry
         loaded_dofs = np.where(F != 0.0)[0]
-        # All loaded DOFs must be uz (mod 3 == 2)
         assert np.all(loaded_dofs % 3 == 2)
         loaded_nodes = loaded_dofs // 3
-        assert loaded_nodes.size > 0
-        # Those nodes really are on the top face and close to midspan in x.
-        dx = self.mesh.L_x / max(self.mesh.nx, 1)
-        for nid in loaded_nodes:
-            assert abs(self.mesh.nodes[nid, 2] - Lz) < 1e-9
-            assert abs(self.mesh.nodes[nid, 0] - Lx / 2.0) <= dx + 1e-9
+        dx = mesh.L_x / mesh.nx
+        assert np.all(np.abs(mesh.nodes[loaded_nodes, 2] - mesh.L_z) < 1e-9)
+        assert np.all(np.abs(mesh.nodes[loaded_nodes, 0] - g.midspan)
+                      <= 0.5 * g.load_width + dx + 1e-9)
+        x = mesh.nodes[loaded_nodes, 0]
+        left = F[3 * loaded_nodes[x < g.midspan - 1e-9] + 2].sum()
+        right = F[3 * loaded_nodes[x > g.midspan + 1e-9] + 2].sum()
+        assert left == pytest.approx(right, rel=1e-12)
 
     def test_ilss_bcs_no_load_on_ux_or_uy(self):
-        _constrained, F = self.handler.ilss_bcs(applied_load=-10.0)
-        # Only z-DOFs should receive load
+        _, handler = self._ilss_handler()
+        _constrained, F = handler.ilss_bcs(applied_load=-10.0)
         assert np.all(F[0::3] == 0.0)
         assert np.all(F[1::3] == 0.0)
+
+    def test_ilss_bcs_on_a_coupon_raise_with_guidance(self):
+        """A coupon mesh is not a short-beam specimen: the supports are not
+        snapped onto it (that would change the span with the mesh)."""
+        with pytest.raises(ValueError, match=r"CompositeMesh\.for_ilss"):
+            self.handler.ilss_bcs(applied_load=-10.0)
+        with pytest.raises(ValueError, match="flexure_3pt"):
+            self.handler.ilss_geometry()
+
+    def test_ilss_bcs_take_an_explicit_geometry(self):
+        from porosity_fe import FlexureGeometry
+        mesh = CompositeMesh(self.pf, self.material, nx=6, ny=2, nz=2)
+        geometry = FlexureGeometry(support_x=(50 / 6, 250 / 6), load_span=10.0,
+                                   load_width=1.0)
+        handler = BoundaryHandler(mesh)
+        constrained, F = handler.ilss_bcs(-10.0, geometry=geometry)
+        assert constrained == handler.roller_supports(geometry.support_x)
+        assert F.sum() == pytest.approx(-10.0, rel=1e-12)
+        mesh.ilss_geometry = geometry
+        c2, F2 = handler.ilss_bcs(-10.0)
+        assert c2 == constrained
+        np.testing.assert_array_equal(F2, F)
 
 
 class TestFESolver:
@@ -727,7 +773,8 @@ class TestFESolver:
         ("compression", "cg"), ("shear", "minres"), ("ilss", "cg"),
     ])
     def test_every_constrained_dof_is_exact(self, loading, solver_name):
-        solver = FESolver(self.mesh, self.material, self.pf)
+        mesh = _ilss_mesh(self.pf, self.material) if loading == 'ilss' else self.mesh
+        solver = FESolver(mesh, self.material, self.pf)
         with _minres_warns(solver_name):
             results = solver.solve(loading=loading, solver=solver_name)
         constrained, _ = solver._apply_boundary_conditions(
@@ -738,15 +785,23 @@ class TestFESolver:
 
     def test_solve_ilss_runs(self):
         """Smoke: FESolver should accept loading='ilss' and produce a FieldResults."""
-        solver = FESolver(self.mesh, self.material, self.pf)
+        mesh = _ilss_mesh(self.pf, self.material)
+        solver = FESolver(mesh, self.material, self.pf)
         results = solver.solve(loading='ilss', applied_load=-10.0)
         assert isinstance(results, FieldResults)
-        assert results.displacement.shape == (self.mesh.n_nodes, 3)
-        assert results.stress_global.shape == (self.mesh.n_elements, 8, 6)
+        assert results.displacement.shape == (mesh.n_nodes, 3)
+        assert results.stress_global.shape == (mesh.n_elements, 8, 6)
+
+    def test_solve_ilss_on_a_coupon_raises_before_assembly(self, monkeypatch):
+        solver = FESolver(self.mesh, self.material, self.pf)
+        monkeypatch.setattr(solver.assembler, 'stiffness',
+                            lambda **kw: pytest.fail("assembled"))
+        with pytest.raises(ValueError, match=r"ASTM D2344.*for_ilss"):
+            solver.solve(loading='ilss')
 
     def test_solve_ilss_produces_shear_stress(self):
         """A 3-point short-beam load must induce non-zero tau_xz (Voigt 4)."""
-        solver = FESolver(self.mesh, self.material, self.pf)
+        solver = FESolver(_ilss_mesh(self.pf, self.material), self.material, self.pf)
         results = solver.solve(loading='ilss', applied_load=-10.0)
         max_tau_xz = float(np.max(np.abs(results.stress_global[:, :, 4])))
         max_sigma_xx = float(np.max(np.abs(results.stress_global[:, :, 0])))
@@ -989,6 +1044,14 @@ def clustered_6x3x4():
 
 
 @pytest.fixture(scope="module")
+def clustered_ilss():
+    """The same clustered Vp=0.03 QI field on a 12x4x4 D2344 specimen."""
+    mat = MATERIALS['T800_epoxy']
+    pf = PorosityField(mat, 0.03, distribution='clustered', seed=42)
+    return FESolver(_ilss_mesh(pf, mat, nz=4), mat, pf)
+
+
+@pytest.fixture(scope="module")
 def clustered_20x8x12():
     """20x8x12 clustered Vp=0.02 QI solver and its direct solutions."""
     mat = MATERIALS['T800_epoxy']
@@ -1016,10 +1079,12 @@ class TestIterativeSolversAtDefaultTolerance:
 
     @pytest.mark.parametrize("solver_name", ["cg", "minres"])
     @pytest.mark.parametrize("loading", ["compression", "tension", "shear", "ilss"])
-    def test_small_mesh_all_modes(self, clustered_6x3x4, loading, solver_name):
-        r_direct = clustered_6x3x4.solve(loading)
+    def test_small_mesh_all_modes(self, clustered_6x3x4, clustered_ilss, loading,
+                                  solver_name):
+        solver = clustered_ilss if loading == 'ilss' else clustered_6x3x4
+        r_direct = solver.solve(loading)
         with _minres_warns(solver_name):
-            r_iter = clustered_6x3x4.solve(loading, solver=solver_name)
+            r_iter = solver.solve(loading, solver=solver_name)
         du, ds, dfi = _relative_differences(r_iter, r_direct)
         assert du < 1e-7, f"max|du|/max|u| = {du:.2e}"
         assert ds < 1e-7, f"max|ds|/max|s| = {ds:.2e}"
@@ -1054,16 +1119,16 @@ class TestIterativeSolversAtDefaultTolerance:
         assert r_mr.effective_modulus == pytest.approx(
             direct[loading].effective_modulus, rel=1e-10)
 
-    def test_minres_ilss_needs_the_restart(self, clustered_6x3x4, monkeypatch):
-        """The ILSS point load puts SciPy's MINRES estimate ~1000x below the
-        true residual: one call fails the check, the warm restart passes."""
+    def test_minres_ilss_needs_the_restart(self, clustered_ilss, monkeypatch):
+        """The ILSS load puts SciPy's MINRES estimate far below the true
+        residual: one call fails the check, the warm restart passes."""
         monkeypatch.setattr(FESolver, '_MINRES_MAX_RESTARTS', 0)
         with _minres_warns('minres'), \
                 pytest.raises(RuntimeError, match="minres failed to converge"):
-            clustered_6x3x4.solve('ilss', solver='minres')
+            clustered_ilss.solve('ilss', solver='minres')
         monkeypatch.undo()
         with _minres_warns('minres'):
-            clustered_6x3x4.solve('ilss', solver='minres')
+            clustered_ilss.solve('ilss', solver='minres')
 
     def test_minres_is_deprecated_and_still_matches_cg(self, clustered_6x3x4):
         """``solver='minres'`` warns once per call, at the caller, pointing
@@ -1156,7 +1221,8 @@ class TestDirichletElimination:
         penalty rows), so no conditioning workaround is needed."""
         import logging
         import re
-        solver = FESolver(self.mesh, self.material, self.pf)
+        mesh = _ilss_mesh(self.pf, self.material) if loading == 'ilss' else self.mesh
+        solver = FESolver(mesh, self.material, self.pf)
         with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
             solver.solve(loading=loading)
         ratios = [float(m.group(1)) for rec in caplog.records
@@ -1166,12 +1232,14 @@ class TestDirichletElimination:
         assert 1.0 <= ratios[0] < bound
 
     def test_reactions_are_exactly_zero_at_free_dofs(self):
-        solver = FESolver(self.mesh, self.material, self.pf)
+        coupon = FESolver(self.mesh, self.material, self.pf)
+        specimen = FESolver(_ilss_mesh(self.pf, self.material), self.material, self.pf)
         for loading in ('compression', 'shear', 'ilss'):
+            solver = specimen if loading == 'ilss' else coupon
             r = solver.solve(loading=loading)
             constrained, _ = solver._apply_boundary_conditions(
                 loading, _default_strain(loading), -10.0)
-            free = np.ones(self.mesh.n_dof, dtype=bool)
+            free = np.ones(solver.mesh.n_dof, dtype=bool)
             free[list(constrained)] = False
             assert np.all(r.reaction_forces.ravel()[free] == 0.0)
             assert np.any(r.reaction_forces.ravel()[~free] != 0.0)
@@ -1179,7 +1247,7 @@ class TestDirichletElimination:
     def test_load_on_a_constrained_dof_is_carried_by_the_support(self):
         """The penalty method overwrote F at constrained DOFs, silently
         dropping a load applied there; elimination keeps it in R_c."""
-        solver = FESolver(self.mesh, self.material, self.pf)
+        solver = FESolver(_ilss_mesh(self.pf, self.material), self.material, self.pf)
         K = solver.assembler.stiffness()
         constrained, F = solver.bc_handler.ilss_bcs(applied_load=-10.0)
         support = next(iter(constrained))
@@ -1222,186 +1290,6 @@ class TestDirichletElimination:
         assert np.all(r.displacement == 0.0)
         assert r.knockdown == 1.0
         assert r.effective_modulus is None
-
-
-def _three_point_roller_bcs(mesh, applied_load):
-    """Simply supported 3-point bend on ``mesh`` (test-only BC builder).
-
-    Rollers (``u_z = 0``) along both bottom end edges, ``u_x`` held along the
-    left one only and ``u_y`` at one node, so the supports exert no
-    horizontal force. The load is a consistent line load along the top
-    mid-span node line (needs an even ``nx``).
-    """
-    zmin = mesh.nodes_on_face('z_min')
-    left = np.intersect1d(zmin, mesh.nodes_on_face('x_min'))
-    right = np.intersect1d(zmin, mesh.nodes_on_face('x_max'))
-    constrained = {3 * int(n) + 2: 0.0 for n in np.concatenate([left, right])}
-    constrained.update({3 * int(n): 0.0 for n in left})
-    constrained[3 * int(left[0]) + 1] = 0.0
-    top = mesh.find_nodes_near(x=mesh.L_x / 2, z=mesh.L_z, tol=1e-9)
-    top = top[np.argsort(mesh.nodes[top, 1])]
-    seg = np.diff(mesh.nodes[top, 1])
-    weights = np.zeros(len(top))
-    weights[:-1] += seg / 2
-    weights[1:] += seg / 2
-    F = np.zeros(mesh.n_dof)
-    F[3 * top + 2] = applied_load * weights / weights.sum()
-    return constrained, F
-
-
-class TestILSSBeamTheoryValidation:
-    """Beam-theory checks of the three-point-bend (``'ilss'``) FE model.
-
-    A pristine UD beam, 50 x 20 x 2 mm, on a 16 x 4 x 8 mesh, carries a
-    mid-span load ``F``. Each half-span carries the shear force
-    ``V = F / 2``, so the parabolic beam-theory profile peaks at the
-    neutral axis at::
-
-        tau* = 1.5 * V / (b * h) = 0.75 * |F| / (b * h)
-
-    which is the ASTM D2344 short-beam-strength formula. Vertical
-    equilibrium fixes ``V`` whatever the supports do horizontally, so
-    ``tau*`` also holds for the package's pinned supports.
-
-    Earlier versions of this test compared the peak against
-    ``1.5 * |F| / (b * h)``, twice ``tau*``, and passed only because the
-    standard hex8 element locks in bending: parasitic transverse shear at
-    its Gauss points, proportional to the local bending moment, roughly
-    doubles the Gauss-point ``tau_xz`` in the high-moment band near
-    mid-span. These tests compare against ``tau*``, require the
-    incompatible-mode element (``formulation='hex8i'``) to meet it, and pin
-    the hex8 overshoot as a known discretization error rather than a match.
-    """
-
-    LOAD = -10.0  # N, downward
-
-    @pytest.fixture(scope="class")
-    @classmethod
-    def beam(cls):
-        material = dataclasses.replace(
-            MATERIALS['T800_epoxy'], n_plies=4, t_ply=0.5,
-        )
-        pf = PorosityField(material, 0.0, distribution='uniform')
-        mesh = CompositeMesh(pf, material, nx=16, ny=4, nz=8,
-                             ply_angles=[0.0, 0.0, 0.0, 0.0])
-        results = {
-            form: FESolver(mesh, material, pf, formulation=form).solve(
-                loading='ilss', applied_load=cls.LOAD)
-            for form in ('hex8', 'hex8i')
-        }
-        return material, pf, mesh, results
-
-    @classmethod
-    def _tau_star(cls, mesh):
-        return 0.75 * abs(cls.LOAD) / (mesh.L_y * mesh.L_z)
-
-    @staticmethod
-    def _band(mesh, x_windows, y=(0.0, 1.0), z=(0.35, 0.65)):
-        """Elements whose centroid lies in the given fractional windows."""
-        c = np.mean(mesh.nodes[mesh.elements], axis=1)
-        xf, yf, zf = c[:, 0] / mesh.L_x, c[:, 1] / mesh.L_y, c[:, 2] / mesh.L_z
-        in_x = np.zeros(len(c), dtype=bool)
-        for lo, hi in x_windows:
-            in_x |= (xf > lo) & (xf < hi)
-        mask = in_x & (yf > y[0]) & (yf < y[1]) & (zf > z[0]) & (zf < z[1])
-        assert mask.any(), "empty element band"
-        return mask
-
-    @staticmethod
-    def _timoshenko_deflection(material, mesh, load):
-        b, h, L = mesh.L_y, mesh.L_z, mesh.L_x
-        bending = abs(load) * L ** 3 / (48.0 * material.E11 * b * h ** 3 / 12.0)
-        shear = abs(load) * L / (4.0 * (5.0 / 6.0) * material.G13 * b * h)
-        return bending + shear
-
-    @staticmethod
-    def _neutral_axis_midspan_deflection(mesh, results):
-        ids = mesh.find_nodes_near(x=mesh.L_x / 2, z=mesh.L_z / 2, tol=1e-9)
-        assert ids.size
-        return -float(np.mean(results.displacement[ids, 2]))
-
-    def test_peak_tau_xz_matches_beam_theory(self, beam):
-        # Gauss-point peak |tau_xz| at the neutral axis, mid-width, in the
-        # two shear spans (away from the load nose and the supports). The
-        # wide beam (b/h = 10) carries more shear near its free edges, so
-        # mid-width sits a few percent below the width average (measured
-        # 0.93 tau*).
-        _, _, mesh, results = beam
-        mask = self._band(mesh, [(0.15, 0.40), (0.60, 0.85)], y=(0.3, 0.7))
-        tau = np.abs(results['hex8i'].stress_global[mask, :, 4]).max()
-        tau_star = self._tau_star(mesh)
-        assert tau == pytest.approx(tau_star, rel=0.10), (
-            f"hex8i peak |tau_xz| = {tau:.4f} MPa, tau* = {tau_star:.4f} MPa")
-
-    @pytest.mark.parametrize('formulation', ['hex8', 'hex8i'])
-    def test_section_shear_matches_parabolic_profile(self, beam, formulation):
-        # Equilibrium check that holds for both elements: the element-mean
-        # tau_xz of the two neutral-axis element layers, averaged over the
-        # width in the columns next to x = L/4, equals the mean of the
-        # parabolic profile over those layers, (1 - (4/3) (dz/h)^2) tau*.
-        _, _, mesh, results = beam
-        dx = mesh.L_x / mesh.nx
-        dz_over_h = 1.0 / mesh.nz
-        lo, hi = 0.25 - dx / mesh.L_x, 0.25 + dx / mesh.L_x
-        mask = self._band(mesh, [(lo, hi)], z=(0.5 - dz_over_h, 0.5 + dz_over_h))
-        tau = abs(float(np.mean(results[formulation].stress_global[mask, :, 4])))
-        expected = (1.0 - 4.0 / 3.0 * dz_over_h ** 2) * self._tau_star(mesh)
-        assert tau == pytest.approx(expected, rel=0.05)
-
-    def test_hex8_gauss_point_shear_overshoot_is_pinned(self, beam):
-        # Known hex8 discretization error: shear locking adds parasitic
-        # tau_xz at the Gauss points in proportion to the bending moment.
-        # In the band the old test used (35-65 % of span and thickness),
-        # the hex8 peak is about 2.1 tau* (which is why the old 2 tau*
-        # reference passed); hex8i removes most of it. What remains in that
-        # band for hex8i (about 1.4 tau*) is the 3D concentration under the
-        # load line and at the free edges, not locking.
-        _, _, mesh, results = beam
-        tau_star = self._tau_star(mesh)
-        old_band = self._band(mesh, [(0.35, 0.65)])
-        peak = {form: np.abs(r.stress_global[old_band, :, 4]).max() / tau_star
-                for form, r in results.items()}
-        assert 1.8 < peak['hex8'] < 2.4, peak
-        assert peak['hex8i'] < 0.75 * peak['hex8'], peak
-        # Mid-width shear spans: hex8 still overshoots at its Gauss points
-        # (about 1.37 tau*), although its element means are right (see
-        # test_section_shear_matches_parabolic_profile).
-        span = self._band(mesh, [(0.15, 0.40), (0.60, 0.85)], y=(0.3, 0.7))
-        hex8_span = np.abs(results['hex8'].stress_global[span, :, 4]).max()
-        assert hex8_span > 1.25 * tau_star
-
-    def test_simply_supported_deflection_matches_timoshenko(self, beam):
-        # With rollers (no horizontal reaction) the beam is simply supported
-        # and the neutral-axis mid-span deflection follows Timoshenko beam
-        # theory (shear correction 5/6). hex8i meets it; hex8 is too stiff
-        # because it locks (element length / thickness = 1.56).
-        material, pf, mesh, _ = beam
-        expected = self._timoshenko_deflection(material, mesh, self.LOAD)
-        ratio = {}
-        for form in ('hex8', 'hex8i'):
-            solver = FESolver(mesh, material, pf, formulation=form)
-            solver.bc_handler.ilss_bcs = (
-                lambda applied_load: _three_point_roller_bcs(mesh, applied_load))
-            r = solver.solve(loading='ilss', applied_load=self.LOAD)
-            np.testing.assert_allclose(
-                r.reaction_forces[:, 0].sum(), 0.0, atol=1e-6 * abs(self.LOAD))
-            ratio[form] = self._neutral_axis_midspan_deflection(mesh, r) / expected
-        assert ratio['hex8i'] == pytest.approx(1.0, abs=0.02), ratio
-        assert ratio['hex8'] < 0.95, ratio
-
-    def test_pinned_supports_act_as_tied_arch(self, beam):
-        # The package's ILSS supports pin u_x at both bottom edges, so the
-        # supports exert a large horizontal reaction and the beam deflects
-        # far less than a simply supported one (docs/theory/fe.md).
-        material, _, mesh, results = beam
-        r = results['hex8i']
-        expected = self._timoshenko_deflection(material, mesh, self.LOAD)
-        ratio = self._neutral_axis_midspan_deflection(mesh, r) / expected
-        assert 0.40 < ratio < 0.65, ratio
-        left = np.intersect1d(mesh.nodes_on_face('z_min'),
-                              mesh.nodes_on_face('x_min'))
-        horizontal = abs(float(r.reaction_forces[left, 0].sum()))
-        assert horizontal > 3.0 * abs(self.LOAD)
 
 
 class TestKeCacheKeyGeometry:
@@ -2007,8 +1895,20 @@ class TestKnockdownFromPristineReference:
             r.effective_modulus / r0.effective_modulus, rel=1e-9)
         assert 0.0 < r.knockdown < 1.0
 
+    @staticmethod
+    def _ilss_pair(Vp=0.04):
+        mat = MATERIALS['T800_epoxy']
+        angles = [0, 45, -45, 90, 90, -45, 45, 0]
+        pf = PorosityField(mat, Vp, distribution='clustered')
+        pf0 = PorosityField(mat, 0.0)
+        porous = FESolver(_ilss_mesh(pf, mat, nz=6, ply_angles=angles), mat, pf,
+                          ply_angles=angles)
+        pristine = FESolver(_ilss_mesh(pf0, mat, nz=6, ply_angles=angles), mat, pf0,
+                            ply_angles=angles)
+        return porous, pristine
+
     def test_ilss_equals_beam_stiffness_ratio(self):
-        porous, pristine = self._pair()
+        porous, pristine = self._ilss_pair()
         r, r0 = porous.solve('ilss'), pristine.solve('ilss')
         # Inverse compliance: pristine deflection energy / porous.
         b, b0 = porous.assembler.element_batch(), pristine.assembler.element_batch()
@@ -2022,12 +1922,13 @@ class TestKnockdownFromPristineReference:
     def test_shear_and_ilss_are_no_longer_pinned_at_one(self):
         porous, _ = self._pair()
         assert porous.solve('shear').knockdown < 0.999
-        assert porous.solve('ilss').knockdown < 0.999
+        assert self._ilss_pair()[0].solve('ilss').knockdown < 0.999
 
     def test_pristine_mesh_gives_exactly_one(self):
         _, pristine = self._pair()
-        for loading in ('compression', 'shear', 'ilss'):
+        for loading in ('compression', 'shear'):
             assert pristine.solve(loading).knockdown == 1.0
+        assert self._ilss_pair()[1].solve('ilss').knockdown == 1.0
 
     def test_geometric_voids_alone_reduce_stiffness(self):
         mat = MATERIALS['T800_epoxy']
@@ -2045,8 +1946,11 @@ class TestKnockdownFromPristineReference:
             pytest.approx(ref, rel=1e-9)
         assert porous.solve('tension', applied_strain=0.003).knockdown == \
             pytest.approx(ref, rel=1e-9)
-        ilss = porous.solve('ilss').knockdown
-        assert porous.solve('ilss', applied_load=-250.0).knockdown == \
+        specimen, _ = self._ilss_pair()
+        ilss = specimen.solve('ilss').knockdown
+        assert specimen.solve('ilss', applied_load=-250.0).knockdown == \
+            pytest.approx(ilss, rel=1e-9)
+        assert specimen.solve('ilss', applied_load=+3.0).knockdown == \
             pytest.approx(ilss, rel=1e-9)
 
     def test_pristine_reference_is_cached_across_solvers(self, monkeypatch):
@@ -2075,7 +1979,7 @@ class TestKnockdownFromPristineReference:
 
         def kd(mat):
             pf = PorosityField(mat, 0.03)
-            mesh = CompositeMesh(pf, mat, nx=8, ny=3, nz=6)
+            mesh = _ilss_mesh(pf, mat, nz=6)
             return FESolver(mesh, mat, pf).solve('ilss').knockdown
 
         solver_mod._PRISTINE_MEASURE_CACHE.clear()
@@ -2188,18 +2092,20 @@ class TestStiffnessAndFactorizationReuse:
         assert counters == {'batch': 1, 'splu': 1}
 
     def test_alternating_two_constraint_sets_factorizes_each_once(self, counters):
-        """Shear and ILSS have different supports; the two-entry cache keeps
-        both factorizations (a one-entry cache refactorized on every switch)."""
+        """Shear and three-point bending have different supports; the
+        two-entry cache keeps both factorizations (a one-entry cache
+        refactorized on every switch)."""
         mat, pf, mesh = self._problem()
         solver = FESolver(mesh, mat, pf)
-        first = {loading: solver.solve(loading) for loading in ('shear', 'ilss')}
+        bend = 'flexure_3pt'
+        first = {loading: solver.solve(loading) for loading in ('shear', bend)}
         for _ in range(2):
-            for loading in ('shear', 'ilss'):
+            for loading in ('shear', bend):
                 self._assert_same(solver.solve(loading), first[loading])
         assert counters == {'batch': 1, 'splu': 2}
         assert list(solver._lu_cache) == [self._key(solver, 'shear'),
-                                          self._key(solver, 'ilss')]
-        self._assert_same(first['ilss'], FESolver(mesh, mat, pf).solve('ilss'))
+                                          self._key(solver, bend)]
+        self._assert_same(first[bend], FESolver(mesh, mat, pf).solve(bend))
 
     def test_third_constraint_set_evicts_the_least_recently_used(self, counters,
                                                                  monkeypatch):
@@ -2218,7 +2124,7 @@ class TestStiffnessAndFactorizationReuse:
             return counting_splu(*a, **k)
 
         monkeypatch.setattr(sla, 'splu', splu)
-        A, B, C = 'tension', 'shear', 'ilss'
+        A, B, C = 'tension', 'shear', 'flexure_3pt'
         key = {name: self._key(solver, name) for name in (A, B, C)}
         for loading, n_lu, cached in [
                 (A, 1, [A]), (B, 2, [A, B]),
@@ -2238,14 +2144,14 @@ class TestStiffnessAndFactorizationReuse:
         mat, pf, mesh = self._problem()
         solver = FESolver(mesh, mat, pf)
         solver.solve('shear')
-        solver.solve('ilss')
+        solver.solve('flexure_3pt')
         K_old = solver.assembler.stiffness()
         mesh.porosity *= 2.0   # in place, same array object
         after = solver.solve('shear')
         assert counters == {'batch': 2, 'splu': 3}
         assert list(solver._lu_cache) == [self._key(solver, 'shear')]
         assert all(K is not K_old for K, _, _ in solver._lu_cache.values())
-        solver.solve('ilss')
+        solver.solve('flexure_3pt')
         assert counters == {'batch': 2, 'splu': 4}
         self._assert_same(after, FESolver(mesh, mat, pf).solve('shear'))
 
@@ -2333,7 +2239,9 @@ class TestReactionsAndEffectiveModulus:
                 pristine.solve(loading, applied_strain=0.01).effective_modulus
 
     def test_ilss_reactions_balance_applied_load_and_no_modulus(self):
-        _, _, solver = self._solver(0.02, 'QI')
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.02)
+        solver = FESolver(_ilss_mesh(pf, mat, nz=8), mat, pf)
         r = solver.solve('ilss', applied_load=-10.0)
         assert r.effective_modulus is None
         np.testing.assert_allclose(r.reaction_forces.sum(axis=0), [0.0, 0.0, 10.0],
@@ -2360,6 +2268,13 @@ class TestFirstPlyFailureLoadFactor:
         mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=8)
         return FESolver(mesh, mat, pf)
 
+    @pytest.fixture(scope="class")
+    @classmethod
+    def ilss_solver(cls):
+        mat = MATERIALS['T800_epoxy']
+        pf = PorosityField(mat, 0.03, distribution='clustered')
+        return FESolver(_ilss_mesh(pf, mat, nz=8), mat, pf)
+
     @pytest.mark.parametrize("criterion", ["tsai_wu", "hashin", "max_stress"])
     @pytest.mark.parametrize("loading, kwarg, value", [
         ("tension", "applied_strain", 0.002),
@@ -2367,10 +2282,13 @@ class TestFirstPlyFailureLoadFactor:
         ("shear", "applied_strain", 0.002),
         ("ilss", "applied_load", -10.0),
     ])
-    def test_rescaled_load_reaches_unit_failure_index(self, solver, criterion,
-                                                      loading, kwarg, value):
+    def test_rescaled_load_reaches_unit_failure_index(self, solver, ilss_solver,
+                                                      criterion, loading, kwarg,
+                                                      value):
         """Linear analysis: re-solving at lam times the load must put the
         governing point exactly on the failure surface."""
+        if loading == 'ilss':
+            solver = ilss_solver
         r = solver.solve(loading, failure_criterion=criterion, **{kwarg: value})
         lam = r.first_ply_failure_load_factor
         assert np.isfinite(lam) and lam > 0
@@ -2439,14 +2357,13 @@ class TestHashinDelaminationMode:
         assert modes['delamination'][1] == 0.0
 
     def test_ilss_hashin_is_governed_by_delamination(self):
-        # Ply-resolving mesh (nz = n_plies = 24). On the earlier 10x3x8 mesh
-        # the element layers merge plies, the outer element layer is a 90
-        # deg ply, and with the lock-free default element its transverse
-        # tension (matrix_t 2.3e-5) overtakes delamination (6.2e-6); the
-        # locking hex8 element hid that by over-predicting tau_13.
+        # The default D2344 specimen mesh (24 x 8 x 24, one element layer
+        # per ply). On a coarser 12 x 4 in-plane mesh fibre compression
+        # under the loading nose governs instead (7.1e-6 against 3.2e-6):
+        # the band is then narrower than an element.
         mat = MATERIALS['T800_epoxy']
         pf = PorosityField(mat, 0.03)
-        mesh = CompositeMesh(pf, mat, nx=20, ny=4, nz=24)
+        mesh = CompositeMesh.for_ilss(pf, mat)
         r = FESolver(mesh, mat, pf).solve('ilss', failure_criterion='hashin')
         modes = r.failure_mode_indices
         assert r.max_failure_index == pytest.approx(modes['delamination'], rel=1e-12)
@@ -2695,7 +2612,7 @@ class TestIncompatibleModes:
 
     @pytest.mark.parametrize('res, hex8_ratio', [
         ((4, 2, 2), 2.265),    # element length / thickness = 6.25
-        ((16, 4, 8), 1.084),   # 1.56, the ILSS test mesh
+        ((16, 4, 8), 1.084),   # 1.56, the former ILSS beam-test mesh
     ])
     def test_pure_bending_is_lock_free(self, res, hex8_ratio):
         # Standard hex8 locks: its bending stiffness error grows as about
@@ -2730,7 +2647,7 @@ class TestIncompatibleModes:
             nu_m=mat.matrix_poisson,
             C_m=mat.get_isotropic_matrix_stiffness(), material=mat)
         assert element.formulation == 'hex8i'
-        for mode in ('compression', 'ilss'):
+        for mode in ('compression', 'flexure_3pt'):
             a, b = default.solve(mode), explicit.solve(mode)
             assert a.formulation == b.formulation == 'hex8i'
             np.testing.assert_array_equal(a.displacement, b.displacement)
@@ -2761,17 +2678,20 @@ class TestIncompatibleModes:
             0.921116511303338, rel=1e-9)
         assert compression.effective_modulus == pytest.approx(
             60929.32751734179, rel=1e-9)
-        ilss = solver.solve('ilss')
-        assert ilss.knockdown == pytest.approx(0.9728817280551666, rel=1e-9)
-        assert ilss.max_failure_index == pytest.approx(
-            0.0028887241598076143, rel=1e-9)
-        assert ilss.first_ply_failure_load_factor == pytest.approx(
-            79.72537609003167, rel=1e-9)
-        assert np.abs(ilss.displacement).max() == pytest.approx(
-            0.014769825523884748, rel=1e-9)
+        # A bending case. The ILSS pins of the old default went with the
+        # pinned 50 mm bend (ASTM D2344 rework); these three-point-bend
+        # values on the same coupon were recorded from 'hex8' then.
+        bend = solver.solve('flexure_3pt')
+        assert bend.knockdown == pytest.approx(0.9679310026219353, rel=1e-9)
+        assert bend.max_failure_index == pytest.approx(
+            0.00464883742189238, rel=1e-9)
+        assert bend.first_ply_failure_load_factor == pytest.approx(
+            74.83799283850402, rel=1e-9)
+        assert np.abs(bend.displacement).max() == pytest.approx(
+            0.02101703166400384, rel=1e-9)
         # ... and the new default really is a different element.
-        default_ilss = FESolver(mesh, mat, pf).solve('ilss')
-        assert abs(default_ilss.knockdown - ilss.knockdown) > 5e-3
+        default_bend = FESolver(mesh, mat, pf).solve('flexure_3pt')
+        assert abs(default_bend.knockdown - bend.knockdown) > 5e-3
 
     def test_membrane_response_nearly_unchanged(self):
         # hex8i passes the patch test, so a homogeneous in-plane state is
@@ -2779,13 +2699,14 @@ class TestIncompatibleModes:
         # angle plies of this QI laminate develop free-edge interlaminar
         # gradients that hex8 resolves slightly too stiffly (about 0.2 % on
         # E_x at this coarse mesh); the knockdown, a ratio of two solves
-        # with the same element, moves by about 1e-4. The bending (ILSS)
-        # response is where the formulations really differ.
+        # with the same element, moves by about 1e-4. The bending response
+        # (three-point bend of this coupon, element length 5.7 h) is where
+        # the formulations really differ.
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
         pf = PorosityField(mat, 0.03, distribution='clustered')
         mesh = CompositeMesh(pf, mat, nx=6, ny=3, nz=8)
         r = {f: {m: FESolver(mesh, mat, pf, formulation=f).solve(m)
-                 for m in ('compression', 'shear', 'ilss')}
+                 for m in ('compression', 'shear', 'flexure_3pt')}
              for f in ('hex8', 'hex8i')}
         assert r['hex8i']['shear'].effective_modulus == pytest.approx(
             r['hex8']['shear'].effective_modulus, rel=1e-6)
@@ -2794,11 +2715,11 @@ class TestIncompatibleModes:
         for mode in ('compression', 'shear'):
             assert r['hex8i'][mode].knockdown == pytest.approx(
                 r['hex8'][mode].knockdown, abs=5e-4)
-        assert abs(r['hex8i']['ilss'].knockdown
-                   - r['hex8']['ilss'].knockdown) > 5e-3
-        ilss_tau = {f: np.abs(r[f]['ilss'].stress_global[..., 4]).max()
+        assert abs(r['hex8i']['flexure_3pt'].knockdown
+                   - r['hex8']['flexure_3pt'].knockdown) > 5e-3
+        bend_tau = {f: np.abs(r[f]['flexure_3pt'].stress_global[..., 4]).max()
                     for f in r}
-        assert ilss_tau['hex8i'] < 0.9 * ilss_tau['hex8']
+        assert bend_tau['hex8i'] < 0.9 * bend_tau['hex8']
 
     def test_formulation_recorded_in_results_and_export(self, tmp_path):
         import json
@@ -2850,7 +2771,7 @@ class TestIncompatibleModes:
         from porosity_fe.fe import solver as solver_mod
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
         pf = PorosityField(mat, 0.03)
-        mesh = CompositeMesh(pf, mat, nx=8, ny=3, nz=8)
+        mesh = _ilss_mesh(pf, mat, nz=8)
 
         def kd(formulation):
             return FESolver(mesh, mat, pf, formulation=formulation).solve(

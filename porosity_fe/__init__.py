@@ -88,8 +88,10 @@ from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
 from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
 from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
 from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
+from .fe import ShortBeamShear as ShortBeamShear  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
+from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
@@ -205,6 +207,8 @@ __all__ = [
     "RefinementLevel",
     "RefinementStudy",
     "refinement_study",
+    "ShortBeamShear",
+    "short_beam_shear",
     # Visualization
     "FEVisualizer",
     # IO

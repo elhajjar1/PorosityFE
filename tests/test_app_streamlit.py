@@ -80,6 +80,23 @@ class TestAppRender:
         assert "Download FE results (VTU)" in labels
         assert len(labels) == 7
 
+    def test_ilss_run_shows_the_d2344_specimen(self):
+        """ILSS solves the ASTM D2344 short-beam specimen: the sidebar says
+        so before the run, the Results tab shows the short-beam metrics."""
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode") \
+            .set_value("ilss").run()
+        assert any("ASTM D2344 short-beam specimen" in c.value for c in at.caption)
+        at = _run_small_analysis(at)
+        assert not at.exception
+        result = at.session_state["result"]
+        assert result["fe_loading"] == "ilss"
+        assert result["mesh"].ilss_geometry is not None
+        assert any(h.value == "FE short-beam shear (ASTM D2344)" for h in at.subheader)
+        assert {m.label for m in at.metric} >= {
+            "Mid-plane shear / 0.75P/(bh)", "Apparent ILSS at FPF"}
+        assert any("short-beam specimen" in s.value for s in at.success)
+
     def test_ncr_form_submit_generates_summary(self):
         """Submitting the NCR form with a blank parent reference must not
         crash. Regression for a StreamlitDuplicateElementId raised when the

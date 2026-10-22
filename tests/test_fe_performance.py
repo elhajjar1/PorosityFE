@@ -45,8 +45,13 @@ def test_solve_uses_batched_path_not_per_element_objects(monkeypatch):
 
     monkeypatch.setattr(element_mod.Hex8Element, '__init__', counting_init)
     solver = _solver(6, 3, 4)
-    for loading in ('tension', 'compression', 'shear', 'ilss'):
+    for loading in ('tension', 'compression', 'shear'):
         solver.solve(loading)
+    mat24 = MATERIALS['T800_epoxy']
+    pf24 = PorosityField(mat24, 0.03, distribution='clustered')
+    specimen = CompositeMesh.for_ilss(pf24, mat24, nz=4,
+                                      element_length=mat24.total_thickness / 2)
+    FESolver(specimen, mat24, pf24).solve('ilss')
     # Thermal and combined solves (IMPROVEMENT_PLAN 3.5) on a ply-resolving
     # mesh of a material with CTEs.
     mat = dataclasses.replace(MATERIALS['AS4_3501_6_epoxy'], n_plies=4)
@@ -130,3 +135,39 @@ def test_production_mesh_thermal_solve_time():
     assert repeat < repeat_budget, (
         f"repeat thermal solve took {repeat:.2f} s (budget {repeat_budget} s; "
         f"~0.5 s expected when the unit-delta_T solution is reused)")
+
+
+@pytest.mark.skipif(
+    os.environ.get("POROSITY_FE_BENCHMARK") != "1",
+    reason="set POROSITY_FE_BENCHMARK=1 to run the production-mesh timing check",
+)
+def test_ilss_specimen_solve_time():
+    """An ILSS solve on the default ASTM D2344 specimen (24 x 8 x 24 for the
+    24-ply presets), pristine reference included, then a repeat."""
+    from porosity_fe.fe import solver as solver_mod
+    solver_mod._PRISTINE_MEASURE_CACHE.clear()
+    first_budget = float(os.environ.get("POROSITY_FE_BENCH_ILSS_S", "25"))
+    repeat_budget = float(os.environ.get("POROSITY_FE_BENCH_REPEAT_S", "3"))
+    logging.disable(logging.CRITICAL)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            mat = MATERIALS['T800_epoxy']
+            pf = PorosityField(mat, 0.03, distribution='clustered')
+            mesh = CompositeMesh.for_ilss(pf, mat)
+            assert (mesh.nx, mesh.ny, mesh.nz) == (24, 8, 24)
+            solver = FESolver(mesh, mat, pf)
+            t0 = time.perf_counter()
+            solver.solve('ilss')
+            first = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            solver.solve('ilss', applied_load=-20.0)
+            repeat = time.perf_counter() - t0
+    finally:
+        logging.disable(logging.NOTSET)
+    assert first < first_budget, (
+        f"first ILSS specimen solve took {first:.2f} s (budget {first_budget} s; "
+        f"~8.5 s expected on 24 x 8 x 24, pristine reference included)")
+    assert repeat < repeat_budget, (
+        f"repeat ILSS solve took {repeat:.2f} s (budget {repeat_budget} s; "
+        f"~0.6 s expected when K and its LU factorization are reused)")

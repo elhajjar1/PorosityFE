@@ -23,7 +23,7 @@ from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
 from ..results import FailureResult
 from ..transforms import strain_transformation_3d, stress_transformation_3d
-from . import failure
+from . import failure, short_beam
 from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
 from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
@@ -101,8 +101,12 @@ class FieldResults:
         (``(5/6) G_13 h`` for a UD beam); see the finite-element theory
         page. Comparable with the classical-lamination-theory ``E_f``
         (:func:`~porosity_fe.compute_degraded_clt_flexural_modulus`).
-        ``None`` for the ``'ilss'`` bend (its pinned supports make it no
-        simple beam) and ``'thermal'``.
+        ``None`` for ``'ilss'``: at the short-beam span of four
+        thicknesses about half the deflection is shear and the contact
+        indentation is not negligible, so a flexural modulus would mostly
+        measure the shear correction (use ``'flexure_3pt'`` on a
+        :meth:`~porosity_fe.CompositeMesh.for_flexure` specimen for
+        ``E_f``). ``None`` for ``'thermal'`` too.
     first_ply_failure_load_factor : float or None
         Multiplier on the applied load at which ``failure_criterion`` first
         reaches 1 at any Gauss point of a non-void element (linear
@@ -131,6 +135,12 @@ class FieldResults:
         (``x``/``y``; by default ``max(h, 2 element widths)`` with ``h``
         the laminate thickness). It leaves out the free-edge singularity
         that makes the domain maximum mesh-dependent under thermal load.
+        For ``'ilss'`` the interior is the two shear spans of the
+        short-beam specimen instead: at least ``interior_margin`` (default
+        ``h / 2``) from both support lines, the edges of the loading band
+        and the side faces, so the contact stresses under the nose and at
+        the supports are left out
+        (:func:`porosity_fe.fe.short_beam.interior_element_mask`).
         ``None`` when no element is that far from the edges.
     interior_first_ply_failure_load_factor : float or None
         :attr:`first_ply_failure_load_factor` over the interior elements
@@ -825,6 +835,15 @@ class FESolver:
         loading : str
             'compression', 'tension', 'shear', 'ilss', 'flexure_3pt',
             'flexure_4pt' or 'thermal'.
+            ``'ilss'`` is the ASTM D2344 short-beam-shear test on the
+            specimen of :meth:`CompositeMesh.for_ilss` (supports ``4 h``
+            apart under a ``6 h x 2 h`` beam, on rollers, the load spread
+            over the loading-nose contact band at mid-span;
+            :meth:`BoundaryHandler.ilss_bcs`). A mesh without
+            :attr:`CompositeMesh.ilss_geometry` raises :class:`ValueError`
+            before anything is assembled. :func:`~porosity_fe.short_beam_shear`
+            reports the D2344 apparent shear ``0.75 P / (b h)`` next to the
+            FE stresses and failure loads.
             ``'flexure_3pt'`` and ``'flexure_4pt'`` are three- and
             four-point bending on roller supports (ASTM D790 / D7264
             procedures A and B, :meth:`BoundaryHandler.flexure_bcs`) at the
@@ -932,7 +951,10 @@ class FESolver:
             that :attr:`FieldResults.interior_max_failure_index` and
             :attr:`FieldResults.interior_first_ply_failure_load_factor`
             leave out. Defaults to ``max(h, 2 element widths)`` per
-            direction, with ``h`` the laminate thickness.
+            direction, with ``h`` the laminate thickness. For ``'ilss'``
+            it is the distance from the support lines, the edges of the
+            loading band and the side faces, default ``h / 2`` (see
+            :attr:`FieldResults.interior_max_failure_index`).
 
         Returns
         -------
@@ -949,7 +971,8 @@ class FESolver:
             if ``loading='thermal'`` has no ``delta_T``, ``delta_T`` is not
             a finite number, the material has no CTEs, or the mesh does not
             resolve the layup (unless ``allow_unresolved_layup``). If
-            ``interior_margin`` is negative or not finite.
+            ``interior_margin`` is negative or not finite. For ``'ilss'``,
+            if the mesh has no :attr:`CompositeMesh.ilss_geometry`.
         RuntimeError
             If the iterative solver fails to converge to ``rtol``, if the
             direct solve produces non-finite values / a residual above
@@ -988,7 +1011,14 @@ class FESolver:
         dT = _check_delta_T(loading, delta_T, self.material)
         if dT is not None:
             self._check_layup_for_thermal(allow_unresolved_layup)
-        interior = _interior_element_mask(self.mesh, interior_margin)
+        if loading == 'ilss':
+            # ASTM D2344 short beam: the interior is the shear spans, clear
+            # of the contact zones (supports, loading band) and the side
+            # faces. Raises here, before assembly, without a specimen mesh.
+            interior = short_beam.interior_element_mask(
+                self.mesh, self.bc_handler.ilss_geometry(), interior_margin)
+        else:
+            interior = _interior_element_mask(self.mesh, interior_margin)
         if not thermal_only:
             applied_strain = _resolve_applied_strain(loading, applied_strain)
 
@@ -1149,7 +1179,9 @@ class FESolver:
         requested ``loading`` ('compression', 'tension', 'shear', 'ilss',
         'flexure_3pt', 'flexure_4pt', 'thermal'). The displacement-controlled
         modes use ``applied_strain``; the force-controlled ILSS short-beam-
-        shear and flexure modes use ``applied_load``; ``'thermal'`` returns
+        shear (:meth:`BoundaryHandler.ilss_bcs`, on the mesh's
+        :attr:`CompositeMesh.ilss_geometry`) and flexure modes use
+        ``applied_load``; ``'thermal'`` returns
         the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs` with a zero
         force vector (the thermal load is built by
         :meth:`_thermal_unit_solution`).
@@ -1379,7 +1411,8 @@ class FESolver:
         homogeneous pure-shear BCs. For the flexure modes it is the
         shear-corrected flexural modulus from the mid-span deflection under
         ``applied_load`` (:func:`~porosity_fe.fe.flexure.flexural_modulus`);
-        ``None`` for ILSS.
+        ``None`` for ILSS, whose short span makes the deflection about half
+        shear (see :attr:`FieldResults.effective_modulus`).
         """
         Ku = K @ u
         residual = Ku - F
@@ -1563,8 +1596,8 @@ class FESolver:
         :meth:`_pristine_stiffness_measure`). For compression, tension and
         shear the ratio is ``E_x`` or ``G_xy`` porous / pristine; for the
         ILSS and flexure bends it is the ratio of the beam stiffnesses
-        (inverse compliances; the flexure reference also keys on the
-        support and load lines). IMPROVEMENT_PLAN 2.4 replaced the earlier
+        (inverse compliances; the flexure and ILSS references also key on
+        the support and load lines). IMPROVEMENT_PLAN 2.4 replaced the earlier
         ratio of signed domain-mean stresses, which read ``sigma_xx`` for
         shear, went unstable for the sign-changing ILSS ``tau_xz`` field,
         and was silently clamped to 1.
@@ -1602,6 +1635,10 @@ class FESolver:
         if key_loading in _FLEXURE_PROCEDURE:
             # Supports and load lines are not part of the node arrays.
             key += (self.bc_handler.flexure_geometry(),)
+        elif key_loading == 'ilss':
+            # Nor are the short-beam supports and loading band. The shallow
+            # pristine mesh copy below carries the same ilss_geometry.
+            key += (self.bc_handler.ilss_geometry(),)
         cached = _PRISTINE_MEASURE_CACHE.get(key)
         if cached is not None:
             _PRISTINE_MEASURE_CACHE.move_to_end(key)

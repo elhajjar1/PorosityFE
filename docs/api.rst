@@ -76,6 +76,8 @@ Finite-element solver
    BoundaryHandler
    extrapolate_to_nodes
    write_pvd
+   short_beam_shear
+   ShortBeamShear
    refinement_study
    RefinementStudy
    RefinementLevel
@@ -199,7 +201,9 @@ type checkers use them; at run time each function validates its own input.
 
    ``'compression' | 'tension' | 'shear' | 'ilss' | 'flexure_3pt' |
    'flexure_4pt' | 'thermal'``, the loading modes :meth:`FESolver.solve`
-   has boundary conditions for. ``'flexure_3pt'`` and ``'flexure_4pt'``
+   has boundary conditions for. ``'ilss'`` is the ASTM D2344 short-beam
+   test and needs a specimen mesh from :meth:`CompositeMesh.for_ilss`.
+   ``'flexure_3pt'`` and ``'flexure_4pt'``
    are three- and four-point bending on roller supports (ASTM D790 /
    D7264), best on a mesh from :meth:`CompositeMesh.for_flexure`.
    ``'thermal'`` is the free-standing cure residual-stress solve; it needs

@@ -651,6 +651,103 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The FE `'ilss'` mode is the ASTM D2344 short-beam test (IMPROVEMENT_PLAN
+  3.6, C2).** It was a three-point bend of whatever coupon the mesh was,
+  with both bottom end edges pinned in x, y and z and the load split
+  equally over the mid-span top nodes: on the 50 mm production coupon a
+  span of 11.4 thicknesses (mostly flexure; shear was 12 % of the
+  deflection) and a tied arch (horizontal reaction about 4 P, deflection
+  about half the simply supported one). Now it runs on a D2344 specimen.
+  - `CompositeMesh.for_ilss(field, material, ...)` (new) builds it: support
+    span 4 h, length 6 h, width 2 h (`span_to_thickness`,
+    `length_to_thickness`, `width_to_thickness`; ISO 14130 is 5 / 10 / 5),
+    one element layer per ply, in-plane element length h / 4
+    (24 x 8 x `n_plies`; `nx`, `ny`, `nz`, `element_length` override it),
+    built on `for_flexure` so the supports and mid-span are node lines. It
+    records them as `mesh.ilss_geometry` (new attribute, a
+    `FlexureGeometry`; also `mesh.flexure_geometry`, so `'flexure_3pt'` on
+    the specimen runs the same test).
+  - Supports: the `flexure_3pt` rollers, no horizontal reaction (below
+    1e-11 N at 10 N). Loading nose: a uniform pressure over a band at
+    mid-span with consistent nodal forces, by default the Hertz contact
+    width of the 6 mm D2344 nose at the pristine short-beam strength
+    (`2 sqrt(4 q R / (pi E*))`, `q = (4/3) tau_ilss h`,
+    `E* = E33 / (1 - nu23^2)`: 0.77 mm, 0.18 h, for the T800 preset);
+    `load_width=` and `nose_radius=` set it. A line load would be
+    singular and keep the compliance from converging.
+  - `BoundaryHandler.ilss_bcs(applied_load, *, geometry=None)` keeps its
+    positional signature and delegates to `flexure_bcs(procedure='3pt')` at
+    the mesh's `ilss_geometry` (or `geometry=`); `BoundaryHandler.
+    ilss_geometry()` is new. **Behaviour change:** on a mesh without an ILSS
+    geometry, `ilss_bcs` and `FESolver.solve('ilss')` raise a `ValueError`
+    saying how to build the specimen (before anything is assembled), instead
+    of bending the coupon. Snapping the supports onto the coupon's node
+    lines was rejected: on the 30 x 10 production coupon the nearest lines
+    give a span of 4.17 h and a knockdown 0.0044 above the specimen's at
+    uniform 6 % (6 % of the stiffness loss), and the span would change with
+    the mesh. Setting `mesh.ilss_geometry` by hand opts a mesh in. The old
+    bend is closest to `'flexure_3pt'` on
+    `CompositeMesh.for_flexure(field, material, span=50.0, width=20.0,
+    overhang=0.0)`, on rollers instead of pinned edges.
+  - The interior failure quantities of an `'ilss'` solve use the specimen's
+    shear spans: at least `interior_margin` (default h / 2) from both
+    support lines, the band edges and the side faces, overhangs excluded,
+    so the contact stresses under the nose and at the supports are left
+    out. `effective_modulus` stays `None` (about half the deflection is
+    shear at this span).
+  - `short_beam_shear(results, mesh)` / `ShortBeamShear` (new, public):
+    the D2344 formula `0.75 P / (b h)` at the applied load, the FE
+    width-averaged mid-plane `tau_xz` at the quarter-span points and its
+    interior peak, the first-ply-failure loads (domain, interior) and the
+    short-beam strengths D2344 would report at them. At a span of four
+    thicknesses the profile is flatter than the parabola behind the
+    formula: the mid-plane shear is 0.908 (UD) and 0.915 (QI) of it on the
+    pristine T800 specimen, converged to 0.2 % between element lengths h / 4
+    and h / 8, against 0.997 (UD) at 16 thicknesses.
+  - The app solves ILSS on the specimen (`nz` from the mesh setting; the
+    result's `mesh` is the specimen, with new `fe_specimen` and
+    `fe_short_beam` entries), says so in the sidebar and the overview, and
+    shows the short-beam metrics in the Results tab. `refinement_study`
+    refines specimens (default base 24 x 8 x `n_plies`, `nx` a multiple of
+    6; explicit levels that break that raise). The distribution example
+    solves ILSS on the specimen.
+  - **Result change** for every FE `'ilss'` solve. T800 QI, from the pinned
+    bend of the 30 x 10 x 24 coupon to the default specimen
+    (24 x 8 x 24), `P = -10 N`:
+
+    | case | knockdown | first-ply-failure load factor (interior) | apparent `F_sbs` at interior first-ply failure | peak `abs(tau_13)` |
+    |---|---|---|---|---|
+    | uniform 3 % | 0.9812 -> 0.9654 (-0.0158) | 174 (383) -> 248 (373) | 32.7 -> 72.6 MPa | 0.502 -> 0.298 MPa |
+    | uniform 6 % | 0.9625 -> 0.9314 (-0.0311) | 169 (376) -> 243 (370) | 32.1 -> 72.0 MPa | 0.495 -> 0.300 MPa |
+    | midplane-clustered 3 % | 0.9829 -> 0.9666 (-0.0163) | 178 (386) -> 252 (371) | 32.9 -> 72.2 MPa | 0.507 -> 0.299 MPa |
+    | interface penny 3 % | 0.9573 -> 0.9202 (-0.0371) | 173 (374) -> 249 (378) | 31.9 -> 73.5 MPa | 0.498 -> 0.311 MPa |
+
+    The short beam is shear dominated and porosity degrades the transverse
+    shear stiffness faster than the bending stiffness, so the knockdown
+    drops (the planning estimate was about -0.04). The load factors belong
+    to different specimens (8.8 mm instead of 20 mm wide), so compare the
+    apparent strength `0.75 x load / (b h)`: the old bend failed first at
+    its pinned edges and load line, far below the shear the specimen now
+    carries. The domain maximum failure index at 10 N rises 78-93 %
+    (narrower specimen); the peak `abs(tau_13)` drops from 5.9 to 1.5 times
+    `0.75 P / (b h)`.
+  - Cost: a first ILSS solve with the pristine reference takes 8.5 s
+    instead of 17 s (16,875 instead of 25,575 degrees of freedom), a repeat
+    0.6 s instead of 0.9 s. A timing guard for it joins
+    `tests/test_fe_performance.py` (budget 25 s / 3 s).
+  - Unchanged: every other FE mode, bit for bit (displacement, stress,
+    strain, reactions and failure fields hashed before and after for
+    compression, tension, shear, flexure on coupon and `for_flexure`
+    meshes, thermal and combined, both elements); the empirical path and
+    the validation MAE (4.49 % / 3.89 %); the README distribution table
+    (compression).
+  - Tests: `TestILSSBeamTheoryValidation` is replaced by
+    `tests/test_fe_ilss.py` (specimen geometry, rollers, symmetry, the
+    quarter-span shear against `0.75 P / (b h)` with a tolerance from the
+    mesh study, the long-span limit, the interior region, the outputs, the
+    pristine-reference key, coupon meshes raising); generic solver tests
+    that used `'ilss'` as a second load case on a coupon run it on a small
+    specimen or use `'flexure_3pt'`.
 - **The production FE mesh resolves every ply: 30 x 10 x `n_plies`.**
   `_DEFAULT_MESH_RES` is now `(30, 10, None)`; `nz = None` means one element
   layer per ply, resolved by `_default_mesh_resolution(n_plies)` and capped

@@ -29,10 +29,16 @@ from scipy.optimize import brentq
 
 from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
-from ..mesh import CompositeMesh
+from ..mesh import (
+    _D2344_ELEMENTS_PER_THICKNESS,
+    _D2344_LENGTH_TO_THICKNESS,
+    _D2344_WIDTH_TO_THICKNESS,
+    CompositeMesh,
+)
 from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
+from .short_beam import default_interior_margin
 from .solver import FESolver, _check_delta_T, _minres_deprecation
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -89,6 +95,15 @@ _LU_NNZ_EXPONENT = 1.5
 _LU_BYTES_PER_NNZ = 12.0
 #: Fraction of physical memory a study may plan to use by default.
 _DEFAULT_MEMORY_FRACTION = 0.8
+
+#: ``'ilss'`` levels are ASTM D2344 specimens (``CompositeMesh.for_ilss``):
+#: 6 h long with the supports h in from the ends, so ``nx`` must be a
+#: multiple of 6 for the supports and mid-span to stay on node lines.
+_ILSS_NX_MULTIPLE = 6
+#: Default coarsest ``'ilss'`` level in plane: the ``for_ilss`` default
+#: (element length h / 4), 24 x 8 elements.
+_ILSS_BASE_NX = int(_D2344_LENGTH_TO_THICKNESS * _D2344_ELEMENTS_PER_THICKNESS)
+_ILSS_BASE_NY = int(_D2344_WIDTH_TO_THICKNESS * _D2344_ELEMENTS_PER_THICKNESS)
 
 
 # ----------------------------------------------------------------------
@@ -277,7 +292,8 @@ class RefinementStudy:
         Convergence tolerance of :attr:`QuantityConvergence.converged`.
     interior_margin : float
         Distance (mm) from the lateral faces that the interior quantities
-        leave out, the same at every level.
+        leave out, the same at every level (for ``'ilss'``, from the
+        supports, the loading band and the side faces).
     void_volume_fraction : float
         Specimen-average ``Vp`` of the porosity field (fraction).
     applied_strain, applied_load, delta_T : float or None
@@ -354,8 +370,10 @@ class RefinementStudy:
             f"{refine.get(self.refine, self.refine)} (refined axes: "
             f"{', '.join(self.refined_axes)}), Vp={self.void_volume_fraction:g}"
             + (f", delta_T={self.delta_T:g} K" if self.delta_T is not None else ""),
-            f"interior quantities leave out {self.interior_margin:.3g} mm from the "
-            f"lateral faces; tol = {self.tol:g}",
+            f"interior quantities leave out {self.interior_margin:.3g} mm "
+            + ("around the supports and the loading band and from the side faces"
+               if self.loading == 'ilss' else "from the lateral faces")
+            + f"; tol = {self.tol:g}",
             "",
             *self._level_table(),
             "",
@@ -394,10 +412,12 @@ class RefinementStudy:
             elif d.converged is False and i.converged is False:
                 notes.append(
                     f"Neither {dom} nor {inner} converges: a singularity "
-                    f"inside the interior region (e.g. the 'ilss' mid-span "
-                    f"load line), a disturbance carried in from the free "
-                    f"edges, or meshes still too coarse for the trend. Do not "
-                    f"read these as mesh-converged values.")
+                    f"inside the interior region, a disturbance carried in "
+                    f"from the free edges or the edge of the region (in "
+                    f"'ilss', next to the excluded loading-nose zone, where "
+                    f"the bending moment peaks), or meshes still too coarse "
+                    f"for the trend. Do not read these as mesh-converged "
+                    f"values.")
         kd = conv['knockdown']
         if kd.behavior != 'unavailable':
             loss = 1.0 - float(kd.values[-1] or 0.0)
@@ -768,9 +788,10 @@ def refinement_study(
     ``'mesh-dependent'`` instead of extrapolating them, next to their
     interior counterparts, which leave out a fixed margin along the lateral
     faces and converge when no singularity lies inside that region (on the
-    production geometry they do in compression; in ``'ilss'`` the load line
-    is inside it). The theory page on the finite-element model ("Mesh
-    convergence") has measured studies and a recommended resolution.
+    production geometry they do in compression; in ``'ilss'`` the region is
+    the specimen's shear spans clear of the supports and the loading nose).
+    The theory page on the finite-element model ("Mesh convergence") has
+    measured studies and a recommended resolution.
 
     Parameters
     ----------
@@ -792,7 +813,9 @@ def refinement_study(
         Coarsest ``(nx, ny, nz)``. Default: the production resolution,
         one element layer per ply, ``(30, 10, material.n_plies)``; unlike
         the production default, ``nz`` stays at ``n_plies`` above 48 plies
-        (the memory guard below applies instead).
+        (the memory guard below applies instead). For ``'ilss'`` the
+        default is the :meth:`~porosity_fe.CompositeMesh.for_ilss` specimen
+        mesh, ``(24, 8, material.n_plies)``.
     factors : sequence of float, optional
         Refinement factors of the levels relative to ``base_resolution``,
         strictly increasing (default ``(1, 1.5, 2)``). Three or more levels
@@ -823,7 +846,9 @@ def refinement_study(
         Default: the solver's default on the coarsest level,
         ``max(h, 2 dx, 2 dy)`` with ``h`` the laminate thickness. (The
         solver's own default shrinks with the elements, which would let the
-        interior region creep into the edge singularity.)
+        interior region creep into the edge singularity.) For ``'ilss'``,
+        the distance from the supports, the loading band and the side
+        faces, default ``h / 2`` (as :meth:`FESolver.solve`).
     tol : float
         Converged when the estimated relative error of the finest level is
         at most ``tol`` (default 0.01); see
@@ -867,8 +892,11 @@ def refinement_study(
 
     Notes
     -----
-    For ``loading='ilss'`` the generated levels use an even ``nx`` (rounded
-    up), so the mid-span load line falls on one node column at every level.
+    For ``loading='ilss'`` every level is an ASTM D2344 specimen
+    (:meth:`~porosity_fe.CompositeMesh.for_ilss`, default proportions and
+    loading band) with the level's ``(nx, ny, nz)``. ``nx`` must be a
+    multiple of 6 so the supports and mid-span stay on node lines: generated
+    levels round it up, explicit ``resolutions`` that break it raise.
 
     Examples
     --------
@@ -912,14 +940,19 @@ def refinement_study(
                              "factors=, not both.")
         plan = [_check_resolution(r, 'each of resolutions') for r in resolutions]
         refine_label = 'explicit'
-        if loading == 'ilss' and any(r[0] % 2 for r in plan):
-            logger.warning(
-                "refinement_study: an odd nx puts the 'ilss' mid-span load on "
-                "two node columns, a different load case from an even nx.")
+        if loading == 'ilss' and any(r[0] % _ILSS_NX_MULTIPLE for r in plan):
+            raise ValueError(
+                f"refinement_study: 'ilss' levels are ASTM D2344 specimens "
+                f"(6 h long, supports h in from the ends), so each nx must be a "
+                f"multiple of {_ILSS_NX_MULTIPLE} to keep the supports and "
+                f"mid-span on node lines; got {[r[0] for r in plan]}.")
     else:
         if refine not in ('in_plane', 'all'):
             raise ValueError(f"refine must be 'in_plane' or 'all', got {refine!r}.")
-        if base_resolution is None:
+        if base_resolution is None and loading == 'ilss':
+            # The CompositeMesh.for_ilss default specimen mesh.
+            base = (_ILSS_BASE_NX, _ILSS_BASE_NY, material.n_plies)
+        elif base_resolution is None:
             # The production resolution, but nz = n_plies even above its cap:
             # a study must resolve the layup, and the memory guard applies.
             nx0, ny0, _ = _default_mesh_resolution(material.n_plies)
@@ -933,7 +966,8 @@ def refinement_study(
                              f"got {factors!r}.")
         plan = _plan_resolutions(base, fac, refine, material.n_plies)
         if loading == 'ilss':
-            plan = [(nx + nx % 2, ny, nz) for nx, ny, nz in plan]
+            m = _ILSS_NX_MULTIPLE
+            plan = [(m * math.ceil(nx / m), ny, nz) for nx, ny, nz in plan]
         refine_label = refine
     if len(plan) < 2:
         raise ValueError("A refinement study needs at least two levels.")
@@ -983,10 +1017,16 @@ def refinement_study(
     levels: list[RefinementLevel] = []
     for i, (res, est_bytes) in enumerate(zip(plan, est, strict=True)):
         t0 = time.perf_counter()
-        mesh = CompositeMesh(field, material, nx=res[0], ny=res[1], nz=res[2],
-                             ply_angles=ply_angles)
+        if loading == 'ilss':
+            mesh = CompositeMesh.for_ilss(field, material, nx=res[0], ny=res[1],
+                                          nz=res[2], ply_angles=ply_angles)
+        else:
+            mesh = CompositeMesh(field, material, nx=res[0], ny=res[1], nz=res[2],
+                                 ply_angles=ply_angles)
         dims = (mesh.L_x, mesh.L_y, mesh.L_z)
-        if margin is None:
+        if margin is None and loading == 'ilss':
+            margin = default_interior_margin(mesh)
+        elif margin is None:
             margin = max(mesh.L_z, 2.0 * mesh.L_x / mesh.nx, 2.0 * mesh.L_y / mesh.ny)
         size = float(np.prod([dims[a] / res[a] for a in axes]) ** (1.0 / len(axes)))
         fe = FESolver(mesh, material, field, ply_angles=ply_angles,

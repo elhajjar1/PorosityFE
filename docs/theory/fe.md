@@ -82,10 +82,11 @@ T800 beam ($50 \times 20 \times 2$ mm, uniform moment) gives:
 
 The production mesh has $\Delta x / h = 0.38$ on the default 24-ply
 laminate, so the bending stiffness error is only about 0.5 %. The
-Gauss-point transverse shear stress is affected far more: in the ILSS
-three-point bend at $\Delta x / h = 1.56$, `hex8` reports about twice the
-beam-theory peak $0.75\,|P| / (b h)$ at the Gauss points near mid-span,
-while its element-mean shear is correct.
+Gauss-point transverse shear stress is affected far more: in a
+three-point bend of a UD beam ($50 \times 20 \times 2$ mm) at
+$\Delta x / h = 1.56$, `hex8` reports about twice the beam-theory peak
+$0.75\,|P| / (b h)$ at the Gauss points near mid-span, while its
+element-mean shear is correct.
 
 **Incompatible modes (`'hex8i'`).** Each displacement component is
 enriched with the three bubble functions
@@ -133,12 +134,17 @@ clustered and interface penny voids at 3 %) from `'hex8'` to `'hex8i'`:
 | Quantity | $30 \times 10 \times 12$ | $30 \times 10 \times 24$ |
 |---|---|---|
 | compression, tension, shear knockdown | within $10^{-4}$ | within $10^{-4}$ |
-| ILSS knockdown | $+0.0006$ to $+0.0034$ | $+0.0007$ to $+0.0019$ |
-| ILSS peak $\lvert\tau_{13}\rvert$ | $-45$ to $-47$ % | $-34$ to $-36$ % |
-| ILSS first-ply-failure load factor | $+17$ to $+25$ % | $+13$ to $+15$ % |
 | compression maximum failure index | $-13$ to $-14$ % | $-8$ to $-12$ % |
 
-The compression maximum failure index sits at the constrained corners.
+The compression maximum failure index sits at the constrained corners. On
+the default ASTM D2344 specimen of the same cases ($24 \times 8 \times 24$,
+element length $h/4$; see [Short-beam shear](#short-beam-shear-ilss)) the
+ILSS knockdown moves by $-0.0001$ to $+0.0003$, the peak
+$\lvert\tau_{13}\rvert$ drops by 32 to 35 % (the parasitic Gauss-point
+shear of `'hex8'`), the domain first-ply-failure load factor falls by 6 to
+7 % and the interior one rises by 1.4 to 1.6 %; the mid-plane shear at the
+quarter span changes by 0.2 %. The elements are short there, so locking
+costs little stiffness.
 Assembly costs more, because the condensation runs once per assembly (cached with
 $\mathbf K$): about $+0.1$ s at 3,600 elements and $+0.2$ s at 7,200. A
 first solve on a new mesh assembles twice (the porous model and the
@@ -155,7 +161,7 @@ results from before the change bit for bit.
 |---|---|---|
 | `compression`, `tension` | displacement | $u_x = 0$ on $x_\text{min}$, $u_x = \varepsilon L_x$ on $x_\text{max}$, $u_y = 0$ on $y_\text{min}$, one corner fixed in $z$ |
 | `shear` | displacement | $u_x = \tfrac{\gamma}{2} y$, $u_y = \tfrac{\gamma}{2} x$ on the four $x$ and $y$ faces; one corner fixed in $z$ |
-| `ilss` | force | bottom-face nodes along both end edges pinned in $x, y, z$; total `applied_load` along $-z$ shared equally by the top-face nodes at mid-span |
+| `ilss` | force | ASTM D2344 short beam on the {meth}`CompositeMesh.for_ilss <porosity_fe.CompositeMesh.for_ilss>` specimen: the `flexure_3pt` rollers $4h$ apart, `applied_load` as a uniform pressure over the loading-nose contact band at mid-span; see [Short-beam shear](#short-beam-shear-ilss) |
 | `flexure_3pt` | force | roller supports: $u_z = 0$ on the bottom-face node lines at the two supports, plus $u_x$ at one node and $u_y$ at two (no horizontal reaction); `applied_load` as a consistent line load across the top face at mid-span; see [Flexure](#flexure) |
 | `flexure_4pt` | force | the same rollers; half of `applied_load` on each of two top-face lines `load_span` apart, centred on mid-span |
 | `thermal` | temperature change `delta_T` | statically determinate 3-2-1 supports on $z_\text{min}$ only, so the laminate is free; see {doc}`thermal` |
@@ -205,12 +211,13 @@ $5 \times 10^{-9}$ to $10^{-8}$). Until then it still works, warm-restarted
 until its true residual meets `rtol`.
 
 ```{note}
-The ILSS supports pin all three translations, so the model is a beam
-pinned at both ends, not one with a sliding roller as in ASTM D2344, and
-the absolute bending stiffness is higher than the test's. The knockdown
-below compares two solves with the same supports. The flexure modes use
-rollers, which exert no horizontal force: on the default coupon
-`'flexure_3pt'` is the ILSS geometry with rollers and a consistent load.
+Before the ASTM D2344 rework, `ilss` was a three-point bend of whatever
+coupon the mesh was, with both bottom end edges pinned in $x, y, z$: on
+the 50 mm coupon a span of 11.4 thicknesses, mostly flexure, and a tied
+arch (horizontal reaction about $4P$, deflection about half the simply
+supported one). The closest model now is `'flexure_3pt'` on
+`CompositeMesh.for_flexure(field, material, span=50.0, width=20.0,
+overhang=0.0)`, on rollers instead of pinned edges.
 ```
 
 ## Stiffness knockdown
@@ -233,12 +240,13 @@ For the displacement-controlled modes $\mathcal S$ is the effective
 modulus times the volume, so $KD_\text{FE}$ is the ratio of $E_x$ (or
 $G_{xy}$ for shear). For ILSS and flexure it is the ratio of beam
 stiffnesses (inverse compliances). The pristine solve is cached by mesh
-geometry (for flexure also by the support and load lines), so a
+geometry (for flexure and ILSS also by the support and load lines), so a
 porosity sweep on one mesh pays for it once. A ratio above 1 is not
 clipped; a warning is logged. `effective_modulus` reports
 $\mathbf u^\mathsf T \mathbf K \mathbf u / (\varepsilon^2 V)$ for the
 displacement-controlled modes and the flexural modulus for the flexure
-modes (below).
+modes (below); for ILSS it is `None` (see
+[Short-beam shear](#short-beam-shear-ilss)).
 
 $KD_\text{FE}$ is a *stiffness* knockdown. Strength enters through the
 failure criteria on {doc}`failure`.
@@ -389,6 +397,130 @@ is small: the three-point first-ply-failure load of the QI preset is
 spans concentrate more of the failure index under the load; use a band
 there.
 
+## Short-beam shear (ILSS)
+
+`loading='ilss'` is the short-beam-strength test of ASTM D2344/D2344M,
+force controlled by `applied_load`. Its outputs are the stiffness
+knockdown, the failure quantities and, from
+{func}`~porosity_fe.short_beam_shear`, the D2344 apparent interlaminar
+shear next to the FE stresses.
+
+**Specimen.** {meth}`CompositeMesh.for_ilss <porosity_fe.CompositeMesh.for_ilss>`
+builds it with the D2344 proportions in laminate thicknesses $h$: support
+span $4h$, length $6h$, width $2h$ (`span_to_thickness`,
+`length_to_thickness`, `width_to_thickness`; ISO 14130 uses 5, 10 and 5).
+It is built on `for_flexure`, so the supports and mid-span are node lines,
+and it records them as {attr}`~porosity_fe.CompositeMesh.ilss_geometry`.
+Every ply gets its own element layer and the in-plane element length is
+$h/4$ by default: $24 \times 8 \times n_\text{plies}$ elements, for the
+24-ply T800 preset a $26.4 \times 8.8 \times 4.39$ mm specimen on a 17.6 mm
+span (16,875 degrees of freedom; a first solve with the pristine reference
+takes about 8.5 s, a repeat 0.6 s, against 17 s and 0.9 s for the former
+bend of the $30 \times 10 \times 24$ coupon).
+
+**Supports and loading nose.** The supports (3 mm cylinders in D2344) are
+the rollers of `flexure_3pt` ([Flexure](#flexure)): no horizontal reaction
+(below $10^{-11}$ N at $P = 10$ N). The loading nose (a 6 mm cylinder) is a
+uniform pressure over a band across the top face at mid-span, with
+consistent nodal forces. A line load would be singular, with a
+logarithmically divergent compliance, so refinement would not converge.
+The default band is the Hertz contact width of the nose at the pristine
+short-beam strength, the load per unit width
+$q = P/b = \tfrac43 \tau_\text{ilss} h$ that D2344 relates to the
+strength:
+
+$$
+w = 2a = 2\sqrt{\frac{4 q R}{\pi E^*}},
+\qquad E^* = \frac{E_{33}}{1 - \nu_{23}^2},
+$$
+
+with $R$ the nose radius (`nose_radius`, 3 mm) and a rigid nose. That is
+0.77 mm ($0.18h$) for the T800 preset and 0.42 to 0.70 mm for the other
+presets. It is an estimate (the laminate is stiffer in plane than
+$E_{33}$, which narrows the contact; damage under the nose near failure
+widens it); `load_width` sets it explicitly. On the default mesh the band
+is narrower than an element, so it loads the nearest node lines. Its width
+matters little: $w = 0$, 0.77 and 2.2 mm give knockdowns of 0.9295, 0.9314
+and 0.9339 at uniform $V_p = 0.06$.
+
+**Beam theory is approximate at four thicknesses.** D2344 reports the
+short-beam strength $F_\text{sbs} = 0.75\,P_\text{max}/(b h)$, the peak of
+the parabolic beam-theory shear profile for the shear force $P/2$. The FE
+section shear force is $P/2$ (to $10^{-5}$), but the profile has not settled
+into the parabola: the width-averaged mid-plane $\tau_{xz}$ half-way
+between a support and the nose is below the formula, and approaches it as
+the span grows (pristine 24-ply T800, `short_beam_shear(...).midplane_shear`
+over `apparent_shear`):
+
+| span / $h$ | UD | QI |
+|---|---|---|
+| 4 (D2344) | 0.908 | 0.915 |
+| 8 | 0.980 | 0.961 |
+| 16 | 0.997 | 0.968 |
+
+The QI limit is its lamination-theory profile; the measurement reads the
+element means next to the mid-plane, $1 - \tfrac43 (\Delta z/h)^2 = 0.998$
+of an exact parabola here. At 4:1 the value is mesh-converged: element
+lengths $h/4$, $h/6$ and $h/8$ give 0.908, 0.909 and 0.910 for UD. Porosity
+moves it a little (0.908 at uniform $V_p = 0.06$, 0.898 for midplane
+clustering, QI). Next to the nose and the supports the contact stresses
+dominate.
+
+**Interior region.** The line supports and the nose concentrate stress, so
+the domain maximum failure index and first-ply-failure load factor sit in
+the contact zones and depend on the mesh. For `ilss` the interior
+quantities use the two shear spans instead of the lateral margin of the
+other modes: elements at least `interior_margin` (default $h/2$) from both
+support lines, from the edges of the loading band and from the side faces,
+with the overhangs left out
+({func}`porosity_fe.fe.short_beam.interior_element_mask`). On the QI
+preset the interior first ply to fail is a 90° ply near the bottom face
+under transverse tension, at the edge of the region nearest the nose, where
+the bending moment peaks; the interior load factor moves by a few percent
+with the mesh (373, 403 and 389 at uniform $V_p = 0.03$ for element
+lengths $h/4$, $h/6$ and $h/8$; see also "Mesh convergence") because the
+region's edge falls on different element centroids. With Hashin,
+delamination governs on the default mesh.
+
+**Outputs.** {func}`~porosity_fe.short_beam_shear` returns a
+{class}`~porosity_fe.ShortBeamShear`: the D2344 formula at the applied load
+(`apparent_shear`), the FE mid-plane shear at the quarter-span points
+(`midplane_shear`) and its interior Gauss-point peak, the first-ply-failure
+loads (domain and interior) and the short-beam strengths D2344 would report
+at them ($0.75 \times$ load $/ (b h)$). `effective_modulus` is `None`: at
+this span about half the deflection is shear and the contact indentation
+is not negligible, so a flexural modulus would mostly measure the shear
+correction (use `flexure_3pt` on a `for_flexure` specimen).
+
+**Other meshes raise.** `'ilss'` on a mesh without `ilss_geometry` (the
+production coupon, a `for_flexure` specimen) raises a `ValueError` that
+says how to build the specimen, before anything is assembled. Snapping the
+supports to node lines of the coupon would give a different test: on the
+$30 \times 10$ production coupon the nearest node lines make the span
+$4.17h$ and the knockdown at uniform $V_p = 0.06$ 0.9359 instead of 0.9314
+(6 % of the stiffness loss), and the snapped span would change with the
+mesh. To run the test on another mesh, set `mesh.ilss_geometry` to a
+{class}`~porosity_fe.FlexureGeometry` with the supports on node lines. The
+app, the examples and {func}`~porosity_fe.refinement_study` build the
+specimen themselves.
+
+**Result change.** T800 QI, the four production cases, from the former
+pinned bend of the $30 \times 10 \times 24$ coupon to the D2344 specimen:
+
+| Case | knockdown | first-ply-failure load factor (interior), $P = 10$ N | apparent $F_\text{sbs}$ at interior first-ply failure (MPa) |
+|---|---|---|---|
+| uniform $V_p = 0.03$ | 0.9812 → 0.9654 | 174 (383) → 248 (373) | 32.7 → 72.6 |
+| uniform $V_p = 0.06$ | 0.9625 → 0.9314 | 169 (376) → 243 (370) | 32.1 → 72.0 |
+| midplane clustered 0.03 | 0.9829 → 0.9666 | 178 (386) → 252 (371) | 32.9 → 72.2 |
+| interface penny 0.03 | 0.9573 → 0.9202 | 173 (374) → 249 (378) | 31.9 → 73.5 |
+
+The short beam is shear dominated, and porosity degrades the transverse
+shear stiffness faster than the fibre-dominated bending stiffness, so the
+knockdown drops by 0.016 to 0.037. The old bend failed first at its pinned
+edges and load line, far below the shear the specimen carries now; the
+peak $\lvert\tau_{13}\rvert$ goes from about $5.9$ to $1.5$ times
+$0.75 P / (b h)$.
+
 ## Stress recovery and export
 
 {class}`~porosity_fe.FieldResults` stores stress and strain at the eight
@@ -482,8 +614,11 @@ held at one element layer per ply. Three reasons:
   every refined axis is expensive.
 
 `refine='all'` also scales $n_z$, rounded to whole multiples of the ply
-count, and `resolutions=` takes explicit levels. For `ilss` the generated
-levels use an even $n_x$, so the load line falls on one node column.
+count, and `resolutions=` takes explicit levels. For `ilss` every level
+is an ASTM D2344 specimen (`CompositeMesh.for_ilss`, default base
+$24 \times 8 \times n_\text{plies}$) whose $n_x$ is a multiple of 6, so
+the supports and mid-span stay on node lines; the interior margin is the
+short-beam default $h/2$.
 The interior quantities use one `interior_margin` for every level (by
 default the coarsest level's $\max(h, 2\Delta x, 2\Delta y)$); the
 solver's own default shrinks with the elements, which would let the
@@ -555,26 +690,35 @@ value. The interior values converge from above, so a coarse mesh is
 conservative for them here. The knockdown and modulus barely move: they are
 integrals of the field.
 
-ILSS at $P = -10$ N (the middle level is $46 \times 15$ for an even
-$n_x$):
+ILSS at $P = -10$ N, on the D2344 specimen
+([Short-beam shear](#short-beam-shear-ilss); default base
+$24 \times 8 \times 24$, interior margin $h/2 = 2.2$ mm around the supports
+and the loading band and from the side faces):
 
-| Quantity | $30 \times 10$ | $46 \times 15$ | $60 \times 20$ | Study |
+| Quantity | $24 \times 8$ | $36 \times 12$ | $48 \times 16$ | Study |
 |---|---|---|---|---|
-| knockdown | 0.98286 | 0.98299 | 0.98308 | changes −0.75 %, −0.55 % of $1 - KD$: diverging slowly, not converged |
-| maximum failure index ($10^{-3}$) | 1.450 | 1.458 | 1.646 | diverging, mesh-dependent |
-| interior maximum failure index ($10^{-3}$) | 1.438 | 1.406 | 1.417 | non-monotone, 2.3 %: not converged |
-| first-ply-failure load factor | 178.5 | 143.5 | 126.8 | $p = 0.95$, GCI 55 %: not converged |
-| interior first-ply-failure load factor | 385.5 | 362.2 | 323.2 | diverging, mesh-dependent |
+| knockdown | 0.96657 | 0.96720 | 0.96750 | changes −1.9 %, −0.92 % of $1 - KD$, $p = 1.1$, extrapolate 0.96828, GCI 3 %: not converged at 1 % ($KD \pm 0.001$) |
+| maximum failure index ($10^{-3}$) | 2.588 | 2.450 | 2.885 | non-monotone, not converged |
+| interior maximum failure index ($10^{-3}$) | 1.652 | 1.486 | 1.551 | non-monotone, 4.2 %: not converged |
+| first-ply-failure load factor | 251.8 | 272.6 | 229.5 | non-monotone, not converged |
+| interior first-ply-failure load factor | 371.2 | 401.8 | 387.3 | non-monotone, 3.7 %: not converged |
+| wall time (s) | 8.6 | 41 | 123 | |
 
-Here the interior region contains the mid-span load line. A line load is
-singular: the stress under it grows without bound, and the compliance
-has a logarithmically divergent indentation term, so even the knockdown
-drifts (by $10^{-4}$ per level). ILSS failure indices and load factors
-are mesh-dependent at any resolution; a distributed load would be needed
-to change that.
+The loading band takes the load-line singularity out of the problem, but
+the supports stay line supports, whose indentation compliance converges
+slowly, so the knockdown still moves by about $3 \times 10^{-4}$ per level
+(0.0017 between the default mesh and the extrapolate, 5 % of the stiffness
+loss). The domain extremes sit under the nose and at the supports. The
+interior region no longer contains a singularity, but its governing
+element is a 90° ply near the bottom face at the edge of the region next
+to the nose, where the bending moment peaks; which centroid falls just
+outside the margin changes with the mesh, so the interior values move by
+about 4 % without a trend. Read them as values to about ±5 %. (On the
+former pinned bend of the coupon the interior first-ply-failure load
+factor fell from 385 to 323 over the same kind of study, diverging.)
 
 Thermal residual stress (AS4/3501-6 QI, $h = 3$ mm,
-$\Delta T = -157$ K, same meshes): the domain maximum failure index grows
+$\Delta T = -157$ K, the compression meshes): the domain maximum failure index grows
 at the free edges (0.735, 0.776, 0.801: mesh-dependent), and the interior
 one is non-monotone (0.685, 0.706, 0.669: not converged). These meshes
 have elements 13 to 7 ply thicknesses long, where `'hex8i'` carries an
@@ -601,15 +745,16 @@ different laminate:
 | compression knockdown | 0.99218 | 0.99244 | 0.99239 |
 | compression interior maximum failure index | 1.477 | 1.195 | 1.133 (1.126) |
 | compression maximum failure index | 2.13 | 1.23 | 1.74 (mesh-dependent) |
-| ILSS knockdown | 0.98397 | 0.98286 | 0.98308 |
 | first compression solve, incl. pristine reference | 4.7 s | 14.5 s | 252 s |
 
 One element layer per ply at the production in-plane size puts the
-knockdowns within $2 \times 10^{-4}$ of the finest mesh and the interior
+knockdown within $2 \times 10^{-4}$ of the finest mesh and the interior
 failure index 6 % above its extrapolate, at three times the cost of
 $n_z = 12$; $45 \times 15 \times n_\text{plies}$ brings the interior index
 within 2 % (one minute, 1.5 GB). Read failure from the interior
 quantities: the domain maximum is mesh-dependent at every resolution.
+(`ilss` does not use this mesh: it solves the short-beam specimen, whose
+default resolution is discussed above.)
 
 **Cost and guards.** Levels are solved coarse to fine and each is released
 before the next is built. Each level's pristine reference is solved before
