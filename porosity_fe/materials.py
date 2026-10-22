@@ -109,6 +109,25 @@ class MaterialProperties:
         T_stress_free``. The solver does not read it: ``delta_T`` is always
         passed explicitly. ``None`` (default) means unspecified. Must be
         finite and above absolute zero.
+    G_Ic, G_IIc : float, optional
+        Interlaminar fracture toughness (critical energy release rate) in
+        mode I (opening) and mode II (sliding shear), in **N/mm** (1 N/mm =
+        1 kJ/m^2). ``None`` (default) means no fracture data. Read by the
+        mixed-mode growth criterion of an FE solve on a mesh with an
+        explicit :class:`~porosity_fe.Delamination`
+        (:func:`~porosity_fe.critical_energy_release_rate`); without them
+        the energy release rates are still computed, and the critical load
+        factor is ``None``. No preset sets them: pass measured values (the
+        theory page "Delamination" lists sourced ones). Positive and
+        finite.
+    G_IIIc : float, optional
+        Mode III (tearing shear) toughness in N/mm; ``None`` (default)
+        uses ``G_IIc``. Positive and finite.
+    bk_eta : float, optional
+        Exponent ``eta`` of the Benzeggagh-Kenane mixed-mode criterion
+        ``G_c = G_Ic + (G_IIc - G_Ic) psi^eta`` (dimensionless), fitted to
+        mixed-mode bending data. ``None`` (default) means not supplied.
+        Positive and finite.
 
     Attributes
     ----------
@@ -135,6 +154,9 @@ class MaterialProperties:
         Lamina CTEs (1/K); ``None`` when not supplied.
     T_stress_free : float or None
         Stress-free temperature (deg C); ``None`` when not supplied.
+    G_Ic, G_IIc, G_IIIc, bk_eta : float or None
+        Interlaminar toughness (N/mm) and the B-K exponent; ``None`` when
+        not supplied (see :attr:`has_toughness`).
     total_thickness : float
         Read-only property: ``t_ply * n_plies`` (mm). Used as ``L_z`` by
         :class:`CompositeMesh`.
@@ -223,6 +245,15 @@ class MaterialProperties:
     alpha_3: float | None = None        # Through-thickness CTE (1/K)
     T_stress_free: float | None = None  # Stress-free temperature (deg C)
 
+    # Interlaminar fracture toughness (N/mm = kJ/m^2) and the
+    # Benzeggagh-Kenane exponent for the mixed-mode growth criterion of an
+    # explicit delamination (delamination plan, phase 2.6). Optional, no
+    # preset values; G_IIIc = None means G_IIIc = G_IIc.
+    G_Ic: float | None = None           # Mode I toughness (N/mm)
+    G_IIc: float | None = None          # Mode II toughness (N/mm)
+    G_IIIc: float | None = None         # Mode III toughness (N/mm)
+    bk_eta: float | None = None         # B-K exponent (dimensionless)
+
     # A CTE magnitude at or above this (1/K) is taken to be ppm/K passed by
     # mistake: polymer-matrix plies sit roughly between -5e-6 and 6e-5 /K.
     _CTE_MAX = 1e-3
@@ -241,6 +272,20 @@ class MaterialProperties:
         if self.alpha_3 is not None:
             return float(self.alpha_3)
         return None if self.alpha_2 is None else float(self.alpha_2)
+
+    @property
+    def has_toughness(self) -> bool:
+        """``True`` when the mixed-mode criterion has its inputs: ``G_Ic``,
+        ``G_IIc`` and ``bk_eta`` (``G_IIIc`` defaults to ``G_IIc``)."""
+        return (self.G_Ic is not None and self.G_IIc is not None
+                and self.bk_eta is not None)
+
+    @property
+    def G_IIIc_eff(self) -> float | None:
+        """``G_IIIc``, or ``G_IIc`` when ``G_IIIc`` is ``None`` (N/mm)."""
+        if self.G_IIIc is not None:
+            return float(self.G_IIIc)
+        return None if self.G_IIc is None else float(self.G_IIc)
 
     @property
     def has_cte(self) -> bool:
@@ -379,6 +424,7 @@ class MaterialProperties:
                 )
 
         self._validate_thermal_fields()
+        self._validate_toughness_fields()
 
     @staticmethod
     def _is_real_number(value) -> bool:
@@ -438,6 +484,19 @@ class MaterialProperties:
                 f"temperature in deg C above absolute zero, got "
                 f"{self.T_stress_free!r}."
             )
+
+    def _validate_toughness_fields(self) -> None:
+        """Check the optional interlaminar toughness (N/mm) and B-K exponent."""
+        for name, unit in (('G_Ic', 'N/mm'), ('G_IIc', 'N/mm'),
+                           ('G_IIIc', 'N/mm'), ('bk_eta', 'dimensionless')):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not self._is_real_number(value) or float(value) <= 0.0:
+                raise ValueError(
+                    f"MaterialProperties.{name} must be None or a positive "
+                    f"finite number ({unit}), got {value!r}."
+                )
 
     @property
     def total_thickness(self) -> float:
@@ -608,10 +667,16 @@ class MaterialProperties:
     # and the positive floor in _clip_perturbed do not handle; and alpha_3 is
     # tied to alpha_2 when unset, so perturbing one alone would break
     # transverse isotropy. Revisit with the thermal solve.
+    #
+    # The interlaminar toughness fields (G_Ic, G_IIc, G_IIIc, bk_eta) are
+    # perturbable: they are positive, and the FE fracture criterion reads
+    # them. A draw needs a set value (a None field cannot be perturbed;
+    # _normalize_uq_spec rejects it), and a None G_IIIc follows G_IIc.
     PERTURBABLE_FIELDS = (
         'E11', 'E22', 'E33', 'G12', 'G13', 'G23',
         'sigma_1c', 'sigma_1t', 'sigma_2t', 'sigma_2c', 'tau_12', 'tau_ilss',
         'matrix_modulus', 'fiber_modulus', 'fiber_volume_fraction',
+        'G_Ic', 'G_IIc', 'G_IIIc', 'bk_eta',
     )
 
     def _perturbed_value(self, name: str, unit_draw: float,
