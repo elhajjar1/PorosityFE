@@ -75,6 +75,7 @@ from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401,
 from .cli import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401, E402
 from .cli import _vp_label as _vp_label  # noqa: F401, E402
 from .cli import main as main  # noqa: F401, E402
+from .delamination import Delamination as Delamination  # noqa: F401, E402
 from .empirical import Calibration as Calibration  # noqa: F401, E402
 from .empirical import EmpiricalSolver as EmpiricalSolver  # noqa: F401, E402
 from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
@@ -163,9 +164,10 @@ __all__ = [
     # Materials
     "MATERIALS",
     "MaterialProperties",
-    # Void geometry
+    # Void geometry and delamination
     "VOID_SHAPES",
     "VoidGeometry",
+    "Delamination",
     # Porosity field
     "POROSITY_CONFIGS",
     "PorosityField",

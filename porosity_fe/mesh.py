@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,6 +13,7 @@ import numpy as np
 
 from ._ply_angles import _resolve_ply_angles
 from ._types import MeshFace
+from .delamination import Delamination
 from .gauss import gauss_points_hex
 from .materials import MaterialProperties
 from .porosity_field import PorosityField
@@ -166,6 +168,24 @@ def _ply_at(num: np.ndarray, den: int, n_plies: int) -> np.ndarray:
     return np.clip(np.asarray(num) // den, 0, n_plies - 1)
 
 
+def _as_delaminations(value: object) -> tuple[Delamination, ...]:
+    """``delaminations=`` as a tuple of :class:`Delamination` (``None``: empty)."""
+    if value is None:
+        return ()
+    if isinstance(value, Delamination):
+        return (value,)
+    try:
+        items = tuple(value)  # type: ignore[call-overload]
+    except TypeError:
+        raise ValueError(
+            f"delaminations must be a sequence of Delamination, got {value!r}.") from None
+    bad = [d for d in items if not isinstance(d, Delamination)]
+    if bad:
+        raise ValueError(
+            f"delaminations must be Delamination instances, got {bad[0]!r}.")
+    return items
+
+
 def _normalize_angles(angles: np.ndarray) -> np.ndarray:
     """Map ply angles (degrees) into ``(-90, 90]``, so 90 and -90 compare equal."""
     a = 90.0 - np.mod(90.0 - np.asarray(angles, dtype=float), 180.0)
@@ -228,6 +248,18 @@ class CompositeMesh:
         plies (the historical default) with a
         :class:`DeprecationWarning` (#44 item 2); this back-compat path
         will be removed in a future major version.
+    delaminations : sequence of Delamination, optional
+        Keyword-only explicit delaminations (interlaminar cracks), default
+        none. For every ply interface that has at least one, the node plane
+        of the interface is duplicated once: the copies are appended after
+        the structured nodes (so the structured node ids do not change) and
+        the element layer above the interface is rewired to them. The
+        solver ties each copy to its original outside the delaminations
+        (:meth:`bonded_ties`); inside, the two crack faces are free. Needs
+        ``nz`` a multiple of ``n_plies``, so that every interface is a node
+        layer. Checked against the plate in :meth:`generate_mesh`, so a
+        builder that resizes the plate (:meth:`for_flexure`) checks the
+        final size.
 
     Attributes
     ----------
@@ -242,18 +274,27 @@ class CompositeMesh:
         defaults; ``L_z = material.total_thickness``.
     nodes : np.ndarray
         Shape ``(n_nodes, 3)`` float array of node coordinates (mm),
-        populated by :meth:`generate_mesh`.
+        populated by :meth:`generate_mesh`. The first
+        :attr:`n_structured_nodes` form the structured grid (node id
+        ``k (ny+1)(nx+1) + j (nx+1) + i``); the duplicated interface nodes
+        of the delaminations follow.
     elements : np.ndarray
         Shape ``(n_elem, 8)`` int array of node indices per element
         (VTK hexahedron ordering).
     porosity : np.ndarray
-        Shape ``(n_nodes,)`` nodal porosity values in ``[0, 1]``.
+        Shape ``(n_nodes,)`` nodal porosity values in ``[0, 1]``; a
+        duplicated node carries its original's value.
     stiffness_reduction : np.ndarray
         Shape ``(n_nodes,)`` complementary ``1 - Vp`` field.
     ply_ids : np.ndarray
         Shape ``(n_nodes,)`` per-node ply id (``0`` to ``n_plies - 1``).
         A node on a ply interface takes the ply above it; the top-surface
         nodes take the last ply.
+    delaminations : tuple of Delamination
+        The delaminations. Replacing them with others at the same
+        interfaces changes only the bonded ties, not the mesh, so a crack
+        can grow without reassembly; an interface without a duplicated
+        node plane needs :meth:`generate_mesh` again.
     elem_ply_ids : np.ndarray
         Shape ``(n_elem,)`` id of the ply containing each element
         centroid. A centroid exactly on a ply interface takes the ply
@@ -278,8 +319,9 @@ class CompositeMesh:
         :class:`~porosity_fe.FESolver` needs it and raises without it. Set
         it by hand (supports on node lines) to run the short-beam test on
         another mesh.
-    n_nodes, n_elements, n_dof : int
-        Read-only sizes.
+    n_nodes, n_elements, n_dof, n_structured_nodes : int
+        Read-only sizes, duplicated interface nodes included in the first
+        three; :attr:`n_structured_nodes` is ``(nx+1)(ny+1)(nz+1)``.
 
     Examples
     --------
@@ -336,7 +378,8 @@ class CompositeMesh:
 
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
                  nx: int = 50, ny: int = 20, nz: int = 24,
-                 ply_angles: list[float] | str | None = 'QI'):
+                 ply_angles: list[float] | str | None = 'QI', *,
+                 delaminations: Iterable[Delamination] | Delamination | None = None):
         for axis_name, value in (('nx', nx), ('ny', ny), ('nz', nz)):
             if not isinstance(value, (int, np.integer)) or value <= 0:
                 raise ValueError(
@@ -379,6 +422,13 @@ class CompositeMesh:
         self.void_elements: np.ndarray | None = None
         self.flexure_geometry: FlexureGeometry | None = None
         self.ilss_geometry: FlexureGeometry | None = None
+        self.delaminations: tuple[Delamination, ...] = _as_delaminations(delaminations)
+        # Duplicated interface node pairs (see _duplicate_interfaces): the
+        # original node of pair p is _pair_original[p], its duplicate is
+        # node n_structured_nodes + p, at interface _pair_interface[p].
+        self._n_structured_nodes = 0
+        self._pair_original = np.zeros(0, dtype=np.intp)
+        self._pair_interface = np.zeros(0, dtype=np.intp)
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -401,6 +451,7 @@ class CompositeMesh:
                     element_length: float | None = None,
                     nx: int | None = None,
                     ply_angles: list[float] | str | None = 'QI',
+                    delaminations: Iterable[Delamination] | Delamination | None = None,
                     ) -> CompositeMesh:
         """Mesh of a flexure specimen (ASTM D7264 / D790 proportions).
 
@@ -472,6 +523,10 @@ class CompositeMesh:
             what :func:`~porosity_fe.refinement_study` refines.
         ply_angles : list of float or {'QI', 'UD'}, optional
             Layup, as for :class:`CompositeMesh`.
+        delaminations : sequence of Delamination, optional
+            Delaminations, as for :class:`CompositeMesh`, in the specimen's
+            coordinates (``x = 0`` at its left end); checked against the
+            final specimen size.
 
         Returns
         -------
@@ -584,6 +639,9 @@ class CompositeMesh:
                    ply_angles=ply_angles)
         mesh.L_x = nx_total * dx
         mesh.L_y = width_f
+        # Set after the default-size build, so they are checked against the
+        # specimen; generate_mesh() duplicates their interfaces last.
+        mesh.delaminations = _as_delaminations(delaminations)
         mesh.generate_mesh()
         x = np.linspace(0.0, mesh.L_x, nx_total + 1)
         mesh.flexure_geometry = FlexureGeometry(
@@ -604,6 +662,7 @@ class CompositeMesh:
                  nz: int | None = None,
                  element_length: float | None = None,
                  ply_angles: list[float] | str | None = 'QI',
+                 delaminations: Iterable[Delamination] | Delamination | None = None,
                  ) -> CompositeMesh:
         """Mesh of an ASTM D2344 short-beam-shear (ILSS) specimen.
 
@@ -666,6 +725,8 @@ class CompositeMesh:
             ``nx`` is given.
         ply_angles : list of float or {'QI', 'UD'}, optional
             Layup, as for :class:`CompositeMesh`.
+        delaminations : sequence of Delamination, optional
+            Delaminations, as for :meth:`for_flexure`.
 
         Returns
         -------
@@ -753,7 +814,7 @@ class CompositeMesh:
         mesh = cls.for_flexure(
             porosity_field, material, span=span, width=width, overhang=overhang,
             load_width=band, nz=nz, ny=ny, element_length=dx_max,
-            ply_angles=ply_angles)
+            ply_angles=ply_angles, delaminations=delaminations)
         if nx is not None and mesh.nx != nx:   # pragma: no cover - guarded above
             raise RuntimeError(
                 f"CompositeMesh.for_ilss: built nx={mesh.nx}, requested {nx}.")
@@ -837,11 +898,255 @@ class CompositeMesh:
         self.ply_angles = self._ply_layup[self.elem_ply_ids]
         self._layup_warning_logged = False
 
+        # Explicit delaminations: duplicate their interfaces' node planes
+        # last, after every per-node array exists (and after a builder such
+        # as for_flexure has set the final plate size).
+        self._duplicate_interfaces()
+
         logger.info("Mesh generated: %d nodes, %d elements",
                     len(self.nodes), len(self.elements))
         logger.info("  Domain: %.1f x %.1f x %.2f mm",
                     self.L_x, self.L_y, self.L_z)
         logger.info("  Void elements: %d", len(self.void_elements))
+
+    # ------------------------------------------------------------------
+    # Explicit delaminations: duplicated interface nodes and bonded ties
+    # ------------------------------------------------------------------
+
+    def _plate(self) -> tuple[float, float, float, float]:
+        """``(x_min, x_max, y_min, y_max)`` of the structured grid (mm)."""
+        xy = np.asarray(self.nodes, dtype=float)[:self.n_structured_nodes, :2]
+        return (float(xy[:, 0].min()), float(xy[:, 0].max()),
+                float(xy[:, 1].min()), float(xy[:, 1].max()))
+
+    def _tolerance(self) -> float:
+        """Distance (mm) within which a node lies on a delamination boundary."""
+        return 1e-9 * max(float(self.L_x), float(self.L_y), 1.0)
+
+    def _checked_delaminations(self) -> tuple[Delamination, ...]:
+        """:attr:`delaminations`, checked against the laminate and the plate."""
+        delams = _as_delaminations(self.delaminations)
+        if not delams:
+            return ()
+        n_plies = int(self.material.n_plies)
+        if self.nz % n_plies:
+            raise ValueError(
+                f"A delamination needs every ply interface on a node layer: "
+                f"nz must be a multiple of n_plies = {n_plies} (interface k "
+                f"at node layer (k + 1) * nz / n_plies), got nz = {self.nz}.")
+        plate, tol = self._plate(), self._tolerance()
+        for d in delams:
+            if d.interface > n_plies - 2:
+                raise ValueError(
+                    f"Delamination interface {d.interface} does not exist: a "
+                    f"{n_plies}-ply laminate has interfaces 0 to {n_plies - 2} "
+                    f"(interface k lies between ply k and ply k + 1, from the "
+                    f"bottom).")
+            if not d.overlaps_plate(plate, tol=tol):
+                raise ValueError(
+                    f"{d!r} does not overlap the {plate[1] - plate[0]:g} x "
+                    f"{plate[3] - plate[2]:g} mm plate (x in [{plate[0]:g}, "
+                    f"{plate[1]:g}], y in [{plate[2]:g}, {plate[3]:g}] mm).")
+        return delams
+
+    def _duplicate_interfaces(self):
+        """Duplicate the node plane of every delaminated interface.
+
+        The copies of interface ``k`` (node layer ``(k + 1) nz / n_plies``)
+        are appended after the structured nodes, interfaces in increasing
+        order, each plane in structured order; the bottom face of the
+        element layer above the interface is rewired to them. Every
+        per-node array (``porosity``, ``stiffness_reduction``,
+        ``ply_ids``) is extended with the original's values. Element arrays
+        are unchanged: rewiring moves no element centroid.
+        """
+        # Unannotated, like generate_mesh(), its caller: mypy reads the
+        # lazily initialised node arrays as None.
+        self._n_structured_nodes = len(self.nodes)
+        self._pair_original = np.zeros(0, dtype=np.intp)
+        self._pair_interface = np.zeros(0, dtype=np.intp)
+        delams = self._checked_delaminations()
+        if not delams:
+            return
+        n0 = self._n_structured_nodes
+        layer = (self.nx + 1) * (self.ny + 1)
+        elements_per_layer = self.nx * self.ny
+        n_plies = int(self.material.n_plies)
+        elements = np.array(self.elements, copy=True)
+        originals, interfaces = [], []
+        for q, k in enumerate(sorted({d.interface for d in delams})):
+            node_layer = (k + 1) * self.nz // n_plies
+            first = node_layer * layer
+            above = slice(node_layer * elements_per_layer,
+                          (node_layer + 1) * elements_per_layer)
+            # Corners 0-3 are the bottom face of a hexahedron, here node
+            # layer ``node_layer``: shift them onto plane q of the copies.
+            elements[above, :4] += n0 + q * layer - first
+            originals.append(first + np.arange(layer, dtype=np.intp))
+            interfaces.append(np.full(layer, k, dtype=np.intp))
+        orig = np.concatenate(originals)
+        self.nodes = np.vstack([self.nodes, self.nodes[orig]])
+        self.porosity = np.concatenate([self.porosity, self.porosity[orig]])
+        self.stiffness_reduction = np.concatenate(
+            [self.stiffness_reduction, self.stiffness_reduction[orig]])
+        self.ply_ids = np.concatenate([self.ply_ids, self.ply_ids[orig]])
+        self.elements = elements
+        self._pair_original = orig
+        self._pair_interface = np.concatenate(interfaces)
+        self.bonded_pairs()   # fails early if an interface is cut through
+
+    @property
+    def n_structured_nodes(self) -> int:
+        """Nodes of the structured grid, ``(nx+1)(ny+1)(nz+1)``.
+
+        They are the first nodes of :attr:`nodes`, in structured order (node
+        id ``k (ny+1)(nx+1) + j (nx+1) + i``); the duplicated interface
+        nodes of the delaminations follow. Equal to :attr:`n_nodes` without
+        delaminations.
+        """
+        return self._n_structured_nodes
+
+    @property
+    def delaminated_interfaces(self) -> tuple[int, ...]:
+        """Interfaces whose node plane is duplicated, in increasing order."""
+        return tuple(int(k) for k in np.unique(self._pair_interface))
+
+    def interface_node_pairs(self, interface: int | None = None
+                             ) -> tuple[np.ndarray, np.ndarray]:
+        """Original and duplicate node of every duplicated interface node.
+
+        Parameters
+        ----------
+        interface : int, optional
+            Only the pairs of this interface; default all, interfaces in
+            increasing order, each in structured order (``x`` fastest).
+
+        Returns
+        -------
+        originals, duplicates : np.ndarray
+            Aligned node indices. The original belongs to the elements
+            below the interface, the duplicate to the elements above.
+            Empty without delaminations.
+        """
+        n = self._pair_original.size
+        duplicates = self._n_structured_nodes + np.arange(n, dtype=np.intp)
+        if interface is None:
+            return self._pair_original.copy(), duplicates
+        sel = self._pair_interface == int(interface)
+        return self._pair_original[sel], duplicates[sel]
+
+    def bonded_pairs(self, interface: int | None = None) -> np.ndarray:
+        """Which duplicated node pairs are bonded (tied), from :attr:`delaminations`.
+
+        A pair is delaminated when its node lies strictly inside one of the
+        delaminations of its interface, and bonded otherwise; a node on the
+        boundary of a delamination stays bonded (the crack front). An edge
+        of a ``'strip'`` or ``'rectangle'`` on or beyond the plate edge is
+        open (see :class:`Delamination`).
+
+        Parameters
+        ----------
+        interface : int, optional
+            Only the pairs of this interface; default all.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask aligned with :meth:`interface_node_pairs`.
+
+        Raises
+        ------
+        ValueError
+            If a delamination lies at an interface without duplicated nodes
+            (call :meth:`generate_mesh` after adding it), or a duplicated
+            interface has no bonded pair left: the laminate would separate
+            into two unconnected parts.
+        """
+        delams = self._checked_delaminations()
+        orig = self._pair_original
+        iface = self._pair_interface
+        bonded = np.ones(orig.size, dtype=bool)
+        if orig.size:
+            xy = np.asarray(self.nodes, dtype=float)[orig, :2]
+            plate, tol = self._plate(), self._tolerance()
+            for d in delams:
+                sel = iface == d.interface
+                if not sel.any():
+                    raise ValueError(
+                        f"{d!r} lies at interface {d.interface}, which has no "
+                        f"duplicated nodes; call generate_mesh() after adding "
+                        f"a delamination at a new interface.")
+                bonded[sel] &= ~d.contains(xy[sel, 0], xy[sel, 1],
+                                           plate=plate, tol=tol)
+            for k in self.delaminated_interfaces:
+                if not bonded[iface == k].any():
+                    raise ValueError(
+                        f"The delaminations at interface {k} cover every node "
+                        f"of it: the laminate would separate into two "
+                        f"unconnected parts.")
+        elif delams:
+            raise ValueError(
+                "The mesh has delaminations but no duplicated interface "
+                "nodes; call generate_mesh().")
+        if interface is None:
+            return bonded
+        return bonded[iface == int(interface)]
+
+    def bonded_ties(self) -> tuple[np.ndarray, np.ndarray]:
+        """Degrees of freedom of the bonded interface: ``u[slave] = u[master]``.
+
+        Returns
+        -------
+        slave_dofs, master_dofs : np.ndarray
+            Aligned DOF indices (three per node, ``x`` / ``y`` / ``z``) of
+            the duplicate (slave) and original (master) node of every
+            bonded pair (:meth:`bonded_pairs`). Empty without
+            delaminations. :class:`~porosity_fe.FESolver` imposes them as
+            master-slave ties.
+        """
+        orig, dup = self.interface_node_pairs()
+        bonded = self.bonded_pairs()
+        comp = np.arange(3, dtype=np.intp)
+        slaves = (3 * dup[bonded][:, None] + comp).ravel()
+        masters = (3 * orig[bonded][:, None] + comp).ravel()
+        return slaves, masters
+
+    def crack_front_pairs(self, interface: int | None = None
+                          ) -> tuple[np.ndarray, np.ndarray]:
+        """Bonded node pairs on the crack front.
+
+        A bonded pair is on the front when one of its eight in-plane
+        neighbours in the interface (the nodes it shares an element face
+        with) is delaminated; it is where the virtual crack closure
+        technique reads the tie forces.
+
+        Parameters
+        ----------
+        interface : int, optional
+            Only the front of this interface; default all.
+
+        Returns
+        -------
+        originals, duplicates : np.ndarray
+            Aligned node indices, a subset of :meth:`interface_node_pairs`
+            in the same order. Empty without delaminations.
+        """
+        orig, dup = self.interface_node_pairs()
+        bonded = self.bonded_pairs()
+        front = np.zeros(orig.size, dtype=bool)
+        nx1, ny1 = self.nx + 1, self.ny + 1
+        for k in self.delaminated_interfaces:
+            sel = np.flatnonzero(self._pair_interface == k)
+            b = bonded[sel].reshape(ny1, nx1)
+            open_ = np.pad(~b, 1)
+            near = np.zeros_like(b)
+            for dj in range(3):
+                for di in range(3):
+                    near |= open_[dj:dj + ny1, di:di + nx1]
+            front[sel] = (b & near).ravel()
+        keep = front if interface is None else \
+            front & (self._pair_interface == int(interface))
+        return orig[keep], dup[keep]
 
     @property
     def element_layup(self) -> np.ndarray:
@@ -946,7 +1251,9 @@ class CompositeMesh:
         """Node indices of the mid-y (``j = ny // 2``) cross-section.
 
         Shape ``(nz + 1, nx + 1)``: row ``k`` is one through-thickness node
-        layer, column ``i`` one x position.
+        layer, column ``i`` one x position. Structured nodes only: on a
+        delaminated interface they are the original nodes, which belong to
+        the elements below it.
         """
         nx1, ny1 = self.nx + 1, self.ny + 1
         k = np.arange(self.nz + 1)[:, None]
@@ -1053,10 +1360,12 @@ class CompositeMesh:
         return np.where(dist <= tol)[0]
 
     def __repr__(self) -> str:
+        delams = (f", delaminations={len(self.delaminations)}"
+                  if self.delaminations else "")
         return (f"CompositeMesh(nx={self.nx}, ny={self.ny}, nz={self.nz}, "
                 f"n_nodes={self.n_nodes}, n_elements={self.n_elements}, "
                 f"domain={self.L_x:.1f}x{self.L_y:.1f}x{self.L_z:.2f}mm, "
-                f"void_elements={len(self.void_elements)})")
+                f"void_elements={len(self.void_elements)}{delams})")
 
 
 def check_mesh_quality(mesh: CompositeMesh, verbose: bool = False) -> dict:

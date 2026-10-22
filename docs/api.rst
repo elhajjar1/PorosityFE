@@ -22,6 +22,7 @@ Materials and porosity
 
    MaterialProperties
    VoidGeometry
+   Delamination
    PorosityField
    CompositeMesh
    FlexureGeometry

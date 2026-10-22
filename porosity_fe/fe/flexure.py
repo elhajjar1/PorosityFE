@@ -45,14 +45,28 @@ _GAUSS3_X = np.array([-np.sqrt(0.6), 0.0, np.sqrt(0.6)])
 _GAUSS3_W = np.array([5.0, 8.0, 5.0]) / 9.0
 
 
-def _structured_grid(mesh: CompositeMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Node coordinates along ``x``, ``y`` and ``z`` of the structured mesh."""
+def _n_structured(mesh: CompositeMesh) -> int:
+    """Nodes of the structured grid, the first ones of ``mesh.nodes``.
+
+    ``mesh.n_structured_nodes`` (duplicated interface nodes of a
+    delaminated mesh follow them), or every node for a mesh-like object
+    without it.
+    """
     nx1, ny1, nz1 = mesh.nx + 1, mesh.ny + 1, mesh.nz + 1
-    nodes = np.asarray(mesh.nodes, dtype=float)
-    if nodes.shape[0] != nx1 * ny1 * nz1:
+    n_nodes = int(np.asarray(mesh.nodes).shape[0])
+    n = int(getattr(mesh, 'n_structured_nodes', n_nodes))
+    if n != nx1 * ny1 * nz1 or n > n_nodes:
         raise ValueError(
             "The flexural modulus needs the structured CompositeMesh node "
-            f"layout ({nx1} x {ny1} x {nz1} nodes), got {nodes.shape[0]} nodes.")
+            f"layout ({nx1} x {ny1} x {nz1} nodes), got {n} structured "
+            f"nodes of {n_nodes}.")
+    return n
+
+
+def _structured_grid(mesh: CompositeMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Node coordinates along ``x``, ``y`` and ``z`` of the structured mesh."""
+    nx1, ny1 = mesh.nx + 1, mesh.ny + 1
+    nodes = np.asarray(mesh.nodes, dtype=float)[:_n_structured(mesh)]
     return (nodes[:nx1, 0], nodes[:ny1 * nx1:nx1, 1], nodes[::ny1 * nx1, 2])
 
 
@@ -61,10 +75,12 @@ def section_deflection(mesh: CompositeMesh, u: np.ndarray, x: float) -> float:
 
     Averages ``u_z`` across the width with trapezoidal weights (the exact
     mean of the bilinear interpolant), then interpolates linearly to
-    mid-thickness and to ``x``.
+    mid-thickness and to ``x``. Reads the structured nodes only: on a
+    delaminated interface, the face below the crack.
     """
     xg, yg, zg = _structured_grid(mesh)
-    uz = np.asarray(u, dtype=float)[2::3].reshape(zg.size, yg.size, xg.size)
+    n = xg.size * yg.size * zg.size
+    uz = np.asarray(u, dtype=float)[2:3 * n:3].reshape(zg.size, yg.size, xg.size)
     wy = np.zeros(yg.size)
     if yg.size == 1:
         wy[0] = 1.0
