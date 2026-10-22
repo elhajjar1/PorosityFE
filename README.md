@@ -74,8 +74,31 @@ streamlit run app.py
 ```
 Opens a browser UI at http://localhost:8501 with sidebar inputs (material, layup,
 porosity, loading mode, FE thermal load, mesh) and tabs for the porosity profile, mesh,
-knockdown bar chart, FE stress contours, and result downloads (including the FE
-field as a `.vtu` file for ParaView). The thermal option appears for materials
+knockdown bar chart, FE stress maps, and result downloads (including the FE
+field as a `.vtu` file for ParaView).
+
+The empirical knockdowns of compression, tension, shear and ILSS are always
+all computed; the loading mode selects the FE solve. ILSS runs on the ASTM
+D2344 short-beam specimen. `flexure_3pt` and `flexure_4pt` are FE only
+(ASTM D7264 procedures A and B on the `CompositeMesh.for_flexure`
+specimen, span 32 thicknesses, 13 mm wide). They report the FE flexural
+modulus next to the lamination-theory (D-matrix) one, which always assumes
+spherical voids spread uniformly through the thickness. There is no
+empirical flexure knockdown (see [Limitations](#limitations)).
+
+The Mesh and Stress tabs draw the mid-width section of the laminate with
+the thickness exaggerated (the z axis label gives the factor). The stress
+map uses a diverging scale centred on zero only when the stress changes
+sign, and the Stress tab opens on the component that governs the load
+case (τ13 for ILSS, σ22 for thermal only, τ12 for shear, σ11 otherwise).
+The Results tab has an optional **Mesh convergence check**: it solves the
+analysis again on two or three in-plane refinements of its mesh
+(`refinement_study`), lists the element counts, estimated memory and a
+rough time before running, and then gives each quantity's verdict. The
+domain-maximum failure index sits at free edges and corners and is
+mesh-dependent; read the interior values.
+
+The thermal option appears for materials
 with lamina CTEs (today `AS4_3501_6_epoxy`). It solves the cure residual
 stress alone, or adds it to the mechanical FE case. ΔT is entered in K,
 negative for a cool-down, and has no default. The mesh must give every ply

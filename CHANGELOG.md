@@ -5,11 +5,37 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Flexure modes and a mesh-convergence check in the app.** Empirical
+  results and the existing loading modes are unchanged.
+  - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled
+    FE only (ASTM D7264 procedures A and B). The FE solve runs on the
+    `CompositeMesh.for_flexure` specimen (span 32 thicknesses, 13 mm
+    wide, `nz` from the mesh setting, as for ILSS); the sidebar describes
+    it before the run. The Results tab shows the FE knockdown, the FE
+    flexural modulus (`effective_modulus`, shear corrected) next to the
+    lamination-theory one (`compute_degraded_clt_flexural_modulus`, same
+    layup and `Vp`) and their ratio. The caption says when the porosity
+    models differ: the CLT value always uses spherical voids spread
+    uniformly through the thickness. The knockdown chart draws the FE
+    bar in its own "FLEXURE (FE)" group; the empirical bars are as
+    before, since there is no empirical flexure model.
+  - The Results tab has a "Mesh convergence check" expander. It runs
+    `refinement_study` on the analysis' material, porosity, layup and
+    load case, refining its mesh in plane (2 levels, x1 and x1.5, or 3
+    levels up to x2; `nz` fixed). Before the run it lists each level's
+    element count, estimated peak memory and a rough time (the
+    analysis' FE solve time scaled by the DOF ratio to the power 1.5).
+    After the run it shows the level table (elements, knockdown, interior
+    and domain maximum failure index) and each quantity's verdict and
+    behaviour, and says that the domain maximum at free edges and corners
+    is mesh-dependent and the interior values are the ones to read.
+    Results are cached (`max_entries=8`). It is not offered for the
+    flexure modes, whose D7264 specimen `refinement_study` does not build.
 - **Three- and four-point flexure on roller supports (IMPROVEMENT_PLAN
-  3.6, C1).** Library only; the app, CLI and pipeline do not expose it
-  yet, and the `'ilss'` mode is unchanged. Existing loading modes are
-  bit-identical (checked on the production mesh, both element
-  formulations, all five modes).
+  3.6, C1).** The CLI and pipeline do not expose it yet (the app does,
+  see the previous entry), and the `'ilss'` mode is unchanged. Existing
+  loading modes are bit-identical (checked on the production mesh, both
+  element formulations, all five modes).
   - `FESolver.solve(loading='flexure_3pt' | 'flexure_4pt',
     applied_load=...)` (new `FELoadingMode` members): ASTM D790 / D7264
     procedure A (mid-span load) and D7264 procedure B (two loads, the load
@@ -44,7 +70,8 @@ All notable changes to PorosityFE will be documented in this file.
     `BoundaryHandler.flexure_bcs`, `BoundaryHandler.flexure_geometry` and
     `BoundaryHandler.face_line_nodes` (new).
 - **Mesh-convergence study `refinement_study` (IMPROVEMENT_PLAN 3.6, B1).**
-  Library only; no existing result changes. `refinement_study(material,
+  No existing result changes; the app runs it from the Results tab (see
+  the first entry). `refinement_study(material,
   Vp_or_field, loading, ...)` solves one FE load case (any mode, with or
   without `delta_T`) on a sequence of refined meshes, coarse to fine, and
   returns a `RefinementStudy`: per level the resolution, element and DOF
@@ -379,6 +406,40 @@ All notable changes to PorosityFE will be documented in this file.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **App figures were hard to read.** No result changes.
+  - Mesh and Stress tabs: a laminate section about 50 x 4.4 mm was drawn
+    to scale, a sliver under a colorbar about ten times its height that
+    ran over the title. The z axis is now exaggerated by the smallest
+    factor of 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, ... that draws the
+    section at least 0.3 times as high as it is long (x4 for the default
+    coupon); the z axis label gives the factor, the ticks stay in mm.
+    The colorbar is horizontal under the section and as wide as it, and
+    the title is a short line with a subtitle, clear of both.
+  - A constant field (uniform porosity: stiffness retention 97 %
+    everywhere) got a colorbar over its round-off, with an offset
+    `1e-12+9.7e1` and ticks 0.995 / 0.000 / -1.009. Colorbars now have
+    plain tick labels (no offset or scientific notation), and a constant
+    field gets its value +-1 % (at least +-1 unit), a mark at the value
+    and "uniform: 97.0 %" in the label.
+  - The stress map was always the diverging `RdBu_r` centred on zero, so
+    a field of one sign (the thermal σ11, -33 to -38 MPa) was one flat
+    blue. The diverging map is now used only when the field crosses zero;
+    a field of one sign gets the matching half (blue for compression, red
+    for tension) as a sequential map over its own 2nd to 98th percentile,
+    von Mises gets cividis, and the colorbar marks clipped ends. Each
+    element is drawn as one cell with continuous colours instead of a
+    20-level contour of the element centroids, which smeared the jumps
+    between plies.
+  - The Results chart's legend sat on the compression bars; it is now
+    right of the axes. Each group centres the bars it has. The
+    uncertainty histogram's legend moved outside as well.
+  - The Stress tab opens on the component that governs the load case:
+    τ13 for ILSS, σ22 for thermal only (transverse stress, where residual
+    cracking starts), τ12 for shear, σ11 otherwise. A component the user
+    picks stays picked.
+  - Streamlit warned that the layup input was "created with a default
+    value but also had its value set via Session State"; its default now
+    comes from session state only.
 - **The FE JSON export wrote invalid JSON.** Tsai-Wu does not separate
   failure modes, so `FieldResults.failure_mode_indices` holds `NaN` for
   every mode except `max_fi`, and `FESolver.export_results` wrote them

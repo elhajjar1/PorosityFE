@@ -20,7 +20,9 @@ import math
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
+from matplotlib.collections import QuadMesh
 
 # app.py imports streamlit at module scope; the CI `test` matrix installs
 # only the core deps (streamlit lives in the `web` extra), so skip the whole
@@ -75,6 +77,21 @@ def _thermal_cfg(**overrides) -> dict:
 @pytest.fixture(scope="module")
 def thermal_result():
     return app.run_analysis(_thermal_cfg())
+
+
+def _flexure_cfg(**overrides) -> dict:
+    """``_base_cfg`` for three-point flexure. The D7264 specimen is 13 mm
+    wide with elements no longer than the laminate thickness, so 0.5 mm
+    plies keep it small (40 x 8 x 4 elements)."""
+    cfg = _base_cfg(loading_mode="flexure_3pt", t_ply=0.5, nz=4)
+    cfg.update(overrides)
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def flexure_result():
+    """One three-point flexure analysis (the D7264 specimen FE solve)."""
+    return app.run_analysis(_flexure_cfg())
 
 
 @pytest.fixture(scope="module")
@@ -554,3 +571,585 @@ class TestVTUDownload:
     def test_no_fe_field_raises(self):
         with pytest.raises(ValueError, match="no FE field"):
             app.fe_vtu_bytes({"fe_field": None})
+
+
+# ----------------------------------------------------------------------
+# Plot polish: legible sections, colour scales, legend placement
+# ----------------------------------------------------------------------
+
+def _renderer(fig):
+    fig.canvas.draw()
+    return fig.canvas.get_renderer()
+
+
+def _overlap(a, b) -> bool:
+    """Whether two display-space bounding boxes intersect."""
+    return a.x0 < b.x1 and b.x0 < a.x1 and a.y0 < b.y1 and b.y0 < a.y1
+
+
+def _assert_plain_ticks(cax):
+    """A drawn horizontal colorbar: no offset text, and every visible tick
+    label reads its own location (no offset or scientific notation)."""
+    assert cax.xaxis.get_offset_text().get_text() == ""
+    lo, hi = cax.get_xlim()
+    shown = [(loc, label.get_text()) for loc, label in
+             zip(cax.get_xticks(), cax.get_xticklabels(), strict=True)
+             if lo - 1e-9 * abs(lo) <= loc <= hi + 1e-9 * abs(hi)]
+    assert len(shown) >= 3
+    for loc, text in shown:
+        assert "e" not in text.lower()
+        assert float(text.replace("−", "-")) == pytest.approx(loc, abs=1e-6)
+
+
+def _title_text(ax):
+    """The (left-aligned) title artist of ``ax``."""
+    from matplotlib.text import Text
+    title = ax.get_title(loc="left")
+    assert title
+    return next(t for t in ax.get_children()
+                if isinstance(t, Text) and t.get_text() == title)
+
+
+def _section_parts(fig):
+    """The section axes, the colorbar axes and the section's QuadMesh."""
+    ax, cax = fig.axes[0], fig.axes[1]
+    mesh_artist = next(c for c in ax.collections if isinstance(c, QuadMesh))
+    return ax, cax, mesh_artist
+
+
+class TestSectionPlots:
+    """Mesh and Stress tabs: thin sections stay legible (z exaggerated, a
+    colorbar sized to the section, titles clear of everything)."""
+
+    @pytest.mark.parametrize("length, thickness, factor", [
+        (50.0, 4.392, 4),        # default coupon, 24 x 0.183 mm plies
+        (26.352, 4.392, 2),      # ASTM D2344 specimen (6h long)
+        (168.6528, 4.392, 12),   # ASTM D7264 specimen (span 32h + overhang)
+        (50.0, 0.732, 25),       # 4-ply coupon
+        (10.0, 5.0, 1),          # deep enough already
+        (0.0, 1.0, 1), (10.0, float("nan"), 1), (-1.0, 1.0, 1),
+    ])
+    def test_section_exaggeration(self, length, thickness, factor):
+        assert app.section_exaggeration(length, thickness) == factor
+
+    def test_exaggerated_factor_reaches_the_target_aspect(self):
+        for ratio in (0.3, 0.2, 0.1, 0.05, 0.02, 0.004, 1e-4):
+            f = app.section_exaggeration(1.0, ratio)
+            assert ratio * f >= app._SECTION_TARGET_ASPECT
+            # ... with the smallest factor of the series that does.
+            assert f == 1 or ratio * f <= 2.0 * app._SECTION_TARGET_ASPECT
+
+    @pytest.mark.parametrize("which", ["mesh", "stress"])
+    def test_section_layout(self, comp_result, which):
+        fig = (app.plot_mesh(comp_result) if which == "mesh"
+               else app.plot_stress(comp_result, "σ₁₁ (fiber)"))
+        renderer = _renderer(fig)
+        ax, cax, _ = _section_parts(fig)
+        mesh = comp_result["mesh"]
+        xmin, xmax = ax.get_xlim()
+        zmin, zmax = ax.get_ylim()
+        factor = app.section_exaggeration(xmax - xmin, zmax - zmin)
+        assert factor > 1                       # the 4-ply coupon is a sliver
+        assert ax.get_aspect() == factor
+        assert f"z exaggerated ×{factor}" in ax.get_ylabel()
+        assert zmax - zmin == pytest.approx(mesh.L_z, rel=1e-9)
+        # Horizontal colorbar exactly under the section, as wide as it.
+        assert cax.get_position().width == pytest.approx(
+            ax.get_position().width, rel=1e-6)
+        assert cax.get_position().x0 == pytest.approx(ax.get_position().x0, rel=1e-6)
+        assert cax.get_position().y1 < ax.get_position().y0
+        # The title clears the subtitle, the section and the colorbar.
+        title = _title_text(ax).get_window_extent(renderer)
+        subtitle = ax.texts[0].get_window_extent(renderer)
+        assert title.width > 0 and subtitle.width > 0
+        assert title.y0 >= subtitle.y1 - 1e-6
+        for other in (subtitle, ax.get_window_extent(renderer),
+                      cax.get_tightbbox(renderer)):
+            assert not _overlap(title, other)
+        assert not _overlap(subtitle, ax.get_window_extent(renderer))
+        # The x-axis label and tick labels sit above the colorbar.
+        assert ax.get_tightbbox(renderer).y0 > cax.get_window_extent(renderer).y1
+        plt.close(fig)
+
+    def test_uniform_retention_has_a_sane_colour_scale(self, comp_result):
+        """Uniform porosity gives one stiffness retention everywhere: the
+        scale spans the value +-1 point with plain ticks, not round-off
+        with an offset (the old plot showed 1e-12+9.7e1)."""
+        fig = app.plot_mesh(comp_result)
+        _renderer(fig)
+        _, cax, im = _section_parts(fig)
+        value = 100.0 * float(np.mean(comp_result["mesh"].stiffness_reduction))
+        vmin, vmax = im.get_clim()
+        assert vmin < value < vmax
+        assert vmax - vmin == pytest.approx(2.0, rel=1e-9)
+        _assert_plain_ticks(cax)
+        assert f"uniform: {value:.1f} %" in cax.get_xlabel()
+        plt.close(fig)
+
+    def test_varying_retention_keeps_100_percent_at_the_top(self):
+        r = app.run_analysis(_base_cfg(distribution="clustered", void_shape="penny"))
+        fig = app.plot_mesh(r)
+        _, cax, im = _section_parts(fig)
+        sr = 100.0 * r["mesh"].stiffness_reduction
+        vmin, vmax = im.get_clim()
+        assert vmax == 100.0 and vmin < float(sr.min())
+        assert "uniform" not in cax.get_xlabel()
+        plt.close(fig)
+
+    def test_constant_stress_field_has_a_sane_colour_scale(self, comp_result):
+        fe = comp_result["fe_field"]
+        rng = np.random.default_rng(0)
+        flat = np.full_like(fe.stress_local, -35.0)
+        flat += 1e-13 * rng.standard_normal(flat.shape)    # round-off
+        r = {**comp_result, "fe_field": dataclasses.replace(fe, stress_local=flat)}
+        fig = app.plot_stress(r, "σ₁₁ (fiber)")
+        _renderer(fig)
+        _, cax, qm = _section_parts(fig)
+        vmin, vmax = qm.get_clim()
+        assert vmin < -35.0 < vmax
+        assert vmax - vmin == pytest.approx(2.0, rel=1e-6)
+        _assert_plain_ticks(cax)
+        assert "uniform: -35 MPa" in cax.get_xlabel()
+        # Compression only: the sequential blue map, not the diverging one.
+        assert qm.get_cmap() is app._STRESS_CMAP_NEGATIVE
+        plt.close(fig)
+
+    @pytest.mark.parametrize("values, kind, clipped", [
+        # Symmetric about zero: only the larger (positive) end is clipped.
+        (np.linspace(-10.0, 30.0, 50), "diverging", "max"),
+        (np.linspace(-38.0, -33.0, 50), "negative", "both"),
+        (np.linspace(33.0, 38.0, 50), "positive", "both"),
+        (np.linspace(0.0, 38.0, 50), "positive", "both"),
+    ])
+    def test_stress_colour_scale_choice(self, values, kind, clipped):
+        cmap, norm, extend, constant = app._stress_colour_scale(values)
+        assert not constant
+        if kind == "diverging":
+            assert cmap == app._STRESS_CMAP_DIVERGING
+            assert norm.vmin == -norm.vmax          # white = true zero (#51)
+        else:
+            assert cmap is (app._STRESS_CMAP_NEGATIVE if kind == "negative"
+                            else app._STRESS_CMAP_POSITIVE)
+            # Sequential over the field's own range, not anchored at zero.
+            assert values.min() <= norm.vmin < norm.vmax <= values.max()
+        # The 2nd-98th percentile range clips the ends: the colorbar says so.
+        assert extend == clipped
+
+    def test_unclipped_field_has_no_extend_arrows(self):
+        values = np.r_[np.full(10, -5.0), np.full(10, 5.0)]
+        _, norm, extend, _ = app._stress_colour_scale(values)
+        assert (norm.vmin, norm.vmax, extend) == (-5.0, 5.0, "neither")
+
+    @pytest.mark.parametrize("lo, hi, nearly_uniform", [
+        (35.0, 36.0, True), (10.0, 40.0, False), (-36.0, -35.0, True)])
+    def test_narrow_single_signed_range_is_called_nearly_uniform(
+            self, comp_result, lo, hi, nearly_uniform):
+        """A sequential scale over a narrow range would make 1 % look like
+        a strong gradient; the label says how small the spread is."""
+        fe = comp_result["fe_field"]
+        n_elem = fe.stress_local.shape[0]
+        ramp = np.linspace(lo, hi, n_elem)[:, None, None]
+        field = np.broadcast_to(ramp, fe.stress_local.shape).copy()
+        r = {**comp_result, "fe_field": dataclasses.replace(fe, stress_local=field)}
+        fig = app.plot_stress(r, "σ₁₁ (fiber)")
+        _, cax, qm = _section_parts(fig)
+        assert ("nearly uniform" in cax.get_xlabel()) is nearly_uniform
+        if nearly_uniform:
+            vmin, vmax = qm.get_clim()
+            mid, spread = 0.5 * (vmin + vmax), 0.5 * (vmax - vmin) / abs(0.5 * (vmin + vmax))
+            assert f"nearly uniform: {mid:.4g} MPa ± {100 * spread:.2g} %" in cax.get_xlabel()
+        plt.close(fig)
+
+    def test_von_mises_uses_the_magnitude_map(self, comp_result):
+        fig = app.plot_stress(comp_result, "Von Mises")
+        _, _, qm = _section_parts(fig)
+        assert qm.get_cmap().name == app._STRESS_CMAP_MAGNITUDE
+        plt.close(fig)
+
+    def test_single_signed_thermal_stress_is_not_flat(self, thermal_result):
+        """Cool-down puts the plies in transverse tension: a positive
+        field gets a sequential map over its own range with continuous
+        colours, instead of one flat shade of a zero-centred map."""
+        fig = app.plot_stress(thermal_result, "σ₂₂ (transverse)")
+        _, _, qm = _section_parts(fig)
+        data = qm.get_array().compressed()
+        lo, hi = np.percentile(data, [2.0, 98.0])
+        assert lo > 0.0
+        assert qm.get_cmap() is app._STRESS_CMAP_POSITIVE
+        assert qm.get_cmap().N >= 256
+        vmin, vmax = qm.get_clim()
+        assert vmin == pytest.approx(lo, rel=1e-12)
+        assert vmax == pytest.approx(hi, rel=1e-12)
+        plt.close(fig)
+
+    def test_stress_plot_draws_the_interior_elements(self, comp_result):
+        fig = app.plot_stress(comp_result, "τ₁₂ (in-plane shear)")
+        ax, _, qm = _section_parts(fig)
+        mesh = comp_result["mesh"]
+        n_rows, n_cols = qm.get_array().shape
+        assert n_rows == mesh.nz
+        assert 0 < n_cols < mesh.nx                  # the 10 % ends left out
+        xmin, xmax = ax.get_xlim()
+        assert xmin > 0.0 and xmax < mesh.L_x
+        plt.close(fig)
+
+    def test_results_legend_sits_outside_the_axes(self, comp_result):
+        fig = app.plot_results(comp_result, "0/90/90/0")
+        renderer = _renderer(fig)
+        ax = fig.axes[0]
+        legend = ax.get_legend().get_window_extent(renderer)
+        axes_box = ax.get_window_extent(renderer)
+        assert not _overlap(legend, axes_box)
+        assert legend.x0 >= axes_box.x1
+        assert legend.x1 <= fig.bbox.x1 + 1.0       # and inside the figure
+        title = _title_text(ax).get_window_extent(renderer)
+        assert not _overlap(title, legend)
+        plt.close(fig)
+
+    def test_uq_legend_outside_and_plain_ticks(self):
+        kd = np.full(200, 0.8123)                      # all CoVs zero
+        uq = {"samples": {"knockdown": kd}, "mode": "compression",
+              "n_samples": 200, "nominal": {"knockdown": 0.8123},
+              "knockdown": {"percentiles": {"p5": 0.8123, "p50": 0.8123,
+                                            "p95": 0.8123}}}
+        fig = app.plot_uq(uq)
+        renderer = _renderer(fig)
+        ax = fig.axes[0]
+        assert not _overlap(ax.get_legend().get_window_extent(renderer),
+                            ax.get_window_extent(renderer))
+        assert ax.xaxis.get_offset_text().get_text() == ""
+        plt.close(fig)
+
+
+class TestDefaultStressComponent:
+    @pytest.mark.parametrize("fe_loading, expected", [
+        ("ilss", "τ₁₃ (interlaminar)"),
+        ("thermal", "σ₂₂ (transverse)"),
+        ("shear", "τ₁₂ (in-plane shear)"),
+        ("compression", "σ₁₁ (fiber)"),
+        ("tension", "σ₁₁ (fiber)"),
+        ("flexure_3pt", "σ₁₁ (fiber)"),
+        ("flexure_4pt", "σ₁₁ (fiber)"),
+    ])
+    def test_default_per_mode(self, fe_loading, expected):
+        assert app.default_stress_component({"fe_loading": fe_loading}) == expected
+        assert expected in app._STRESS_COMPONENTS
+
+    def test_results_map_to_their_default(self, ilss_result, thermal_result,
+                                          comp_result):
+        assert app.default_stress_component(ilss_result) == "τ₁₃ (interlaminar)"
+        assert app.default_stress_component(thermal_result) == "σ₂₂ (transverse)"
+        assert app.default_stress_component(comp_result) == "σ₁₁ (fiber)"
+
+    def test_selection_follows_the_default_until_the_user_picks(self, monkeypatch):
+        state: dict = {}
+        monkeypatch.setattr(app.st, "session_state", state)
+        app._sync_stress_component("σ₁₁ (fiber)")
+        assert state["stress_component"] == "σ₁₁ (fiber)"
+        app._sync_stress_component("τ₁₃ (interlaminar)")   # new load case
+        assert state["stress_component"] == "τ₁₃ (interlaminar)"
+        state["stress_component"] = "Von Mises"             # the user's pick
+        app._sync_stress_component("σ₂₂ (transverse)")
+        assert state["stress_component"] == "Von Mises"
+        state["stress_component"] = "no such component"
+        app._sync_stress_component("σ₁₁ (fiber)")
+        assert state["stress_component"] == "σ₁₁ (fiber)"
+
+    def test_every_component_has_a_file_slug(self):
+        assert {idx for idx, _ in app._STRESS_COMPONENTS.values()} == \
+            set(app._STRESS_SLUGS)
+
+
+# ----------------------------------------------------------------------
+# FE-only flexure (ASTM D7264)
+# ----------------------------------------------------------------------
+
+class TestFlexure:
+    def test_solves_the_d7264_specimen(self, flexure_result):
+        r = flexure_result
+        mesh = r["mesh"]
+        fe = r["fe_field"]
+        assert fe is not None, r["fe_skipped_reason"]
+        assert r["fe_loading"] == "flexure_3pt"
+        assert mesh.flexure_geometry is not None and mesh.ilss_geometry is None
+        assert mesh.nz == 4
+        assert fe.displacement.shape == (mesh.n_nodes, 3)
+        h = 4 * 0.5
+        spec = r["fe_specimen"]
+        assert spec["standard"] == "ASTM D7264 procedure A"
+        assert spec["specimen"] == "three-point flexure specimen"
+        assert spec["span_mm"] == pytest.approx(32 * h, rel=1e-9)
+        assert spec["span_to_thickness"] == pytest.approx(32.0, rel=1e-9)
+        assert spec["width_mm"] == pytest.approx(13.0, rel=1e-12)
+        assert spec["thickness_mm"] == pytest.approx(h, rel=1e-12)
+        assert spec["load_span_mm"] is None
+        assert spec["mesh"] == f"{mesh.nx}x{mesh.ny}x{mesh.nz}"
+        assert r["fe_short_beam"] is None
+
+    def test_fe_and_clt_flexural_moduli(self, flexure_result):
+        from porosity_fe import MATERIALS, compute_degraded_clt_flexural_modulus
+        r = flexure_result
+        flex = r["fe_flexure"]
+        material = dataclasses.replace(MATERIALS["T800_epoxy"], t_ply=0.5, n_plies=4)
+        angles = [0.0, 90.0, 90.0, 0.0]
+        clt = compute_degraded_clt_flexural_modulus(material, angles, 0.03)["Ef_x"]
+        clt0 = compute_degraded_clt_flexural_modulus(material, angles, 0.0)["Ef_x"]
+        assert flex["procedure"] == "3pt"
+        assert flex["clt_E_f"] == pytest.approx(clt, rel=1e-12)
+        assert flex["clt_E_f_pristine"] == pytest.approx(clt0, rel=1e-12)
+        assert flex["clt_knockdown"] == pytest.approx(clt / clt0, rel=1e-12)
+        assert flex["clt_void_shape"] == "spherical"
+        fe = r["fe_field"]
+        # Same porosity model (spherical, uniform), cross-ply: FE and CLT
+        # agree closely (the shear-corrected FE modulus).
+        assert fe.effective_modulus == pytest.approx(clt, rel=0.02)
+        assert 0.0 < fe.knockdown < 1.0
+
+    def test_summary(self, flexure_result):
+        rows, caption = app.fe_flexure_summary(flexure_result)
+        values = {label: value for label, value, _ in rows}
+        assert list(values) == ["FE knockdown", "FE flexural modulus E_f",
+                                "CLT E_f (D matrix)", "FE / CLT E_f"]
+        fe, flex = flexure_result["fe_field"], flexure_result["fe_flexure"]
+        assert values["FE knockdown"] == f"{fe.knockdown:.3f}"
+        assert values["FE flexural modulus E_f"] == f"{fe.effective_modulus / 1000:.1f} GPa"
+        assert values["CLT E_f (D matrix)"] == f"{flex['clt_E_f'] / 1000:.1f} GPa"
+        assert values["FE / CLT E_f"] == f"{fe.effective_modulus / flex['clt_E_f']:.3f}"
+        assert "ASTM D7264 procedure A three-point flexure specimen" in caption
+        assert "(32:1)" in caption and "loaded at mid-span" in caption
+        assert f"CLT knockdown of E_f: {flex['clt_knockdown']:.3f}" in caption
+        assert "no empirical flexure knockdown" in caption
+        assert "porosity models differ" not in caption      # same model here
+
+    def test_summary_names_the_porosity_model_differences(self, flexure_result):
+        cfg = {**flexure_result["config"], "void_shape": "penny",
+               "distribution": "clustered", "cluster_location": "surface"}
+        _, caption = app.fe_flexure_summary({**flexure_result, "config": cfg})
+        assert "spherical voids in CLT, penny voids in FE" in caption
+        assert "the clustered (surface) distribution in FE" in caption
+
+    def test_summary_without_fe_field(self, flexure_result):
+        rows, _ = app.fe_flexure_summary({**flexure_result, "fe_field": None})
+        values = {label: value for label, value, _ in rows}
+        assert values["FE knockdown"] == "n/a"
+        assert values["FE flexural modulus E_f"] == "n/a"
+        assert values["FE / CLT E_f"] == "n/a"
+        assert values["CLT E_f (D matrix)"].endswith(" GPa")
+
+    def test_other_modes_have_no_flexure_summary(self, comp_result, ilss_result):
+        for r in (comp_result, ilss_result):
+            assert r["fe_flexure"] is None
+            assert app.fe_flexure_summary(r) is None
+
+    def test_empirical_results_do_not_depend_on_the_mode(self, flexure_result):
+        plain = app.run_analysis(_flexure_cfg(loading_mode="compression"))
+        assert flexure_result["empirical"] == plain["empirical"]
+
+    def test_four_point(self):
+        r = app.run_analysis(_flexure_cfg(loading_mode="flexure_4pt"))
+        spec = r["fe_specimen"]
+        assert r["fe_field"] is not None and r["fe_field"].effective_modulus > 0
+        assert spec["standard"] == "ASTM D7264 procedure B"
+        assert spec["load_span_mm"] == pytest.approx(0.5 * spec["span_mm"], rel=1e-9)
+        assert r["fe_flexure"]["procedure"] == "4pt"
+        _, caption = app.fe_flexure_summary(r)
+        assert "four-point flexure specimen" in caption
+        assert "two lines" in caption
+
+    def test_thermal_only_with_flexure_selected_stays_on_the_coupon(self):
+        r = app.run_analysis(_thermal_cfg(loading_mode="flexure_3pt"))
+        assert r["fe_loading"] == "thermal"
+        assert r["fe_specimen"] is None and r["fe_flexure"] is None
+        assert r["mesh"].flexure_geometry is None
+
+    def test_specimen_mesh_failure_keeps_empirical_results(self, monkeypatch):
+        def _raise(*args, **kwargs):
+            raise ValueError("too many elements")
+
+        monkeypatch.setattr(app.CompositeMesh, "for_flexure", _raise)
+        r = app.run_analysis(_flexure_cfg())
+        assert r["fe_field"] is None
+        assert "specimen mesh could not be built" in r["fe_skipped_reason"]
+        assert r["fe_specimen"] is None
+        assert r["fe_flexure"] is not None           # the CLT value still shows
+        assert set(r["empirical"]) >= {"compression", "tension", "shear", "ilss"}
+
+    def test_plots(self, flexure_result):
+        fig = app.plot_results(flexure_result, "0/90/90/0")
+        ax = fig.axes[0]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            "COMPRESSION", "TENSION", "SHEAR", "ILSS", "FLEXURE (FE)"]
+        assert ax.get_legend_handles_labels()[1] == [
+            "Judd-Wright", "Power Law", "Linear", "FE Stiffness (flexure_3pt)"]
+        fe_bars = [p for p in ax.patches if p.get_hatch() == "//"]
+        assert len(fe_bars) == 1
+        bar = fe_bars[0]
+        # Alone in its own group, centred on it.
+        assert bar.get_x() + bar.get_width() / 2 == pytest.approx(4.0, abs=1e-12)
+        assert bar.get_height() == flexure_result["fe_field"].knockdown
+        note = "\n".join(t.get_text() for t in ax.texts)
+        assert "no empirical flexure model" in note
+        plt.close(fig)
+        for fig in (app.plot_mesh(flexure_result),
+                    app.plot_stress(flexure_result, "σ₁₁ (fiber)")):
+            ax, _, _ = _section_parts(fig)
+            xmin, xmax = ax.get_xlim()
+            zmin, zmax = ax.get_ylim()
+            assert ax.get_aspect() == app.section_exaggeration(xmax - xmin, zmax - zmin)
+            plt.close(fig)
+
+    def test_bars_centred_in_each_group(self, comp_result):
+        """Groups without the FE bar centre their three bars too."""
+        fig = app.plot_results(comp_result, "0/90/90/0")
+        ax = fig.axes[0]
+        for j in range(1, 4):                       # tension, shear, ilss
+            centres = sorted(p.get_x() + p.get_width() / 2 for p in ax.patches
+                             if abs(p.get_x() + p.get_width() / 2 - j) < 0.5)
+            assert len(centres) == 3
+            assert np.mean(centres) == pytest.approx(j, abs=1e-12)
+        plt.close(fig)
+
+    @pytest.mark.parametrize("mode, text", [
+        ("flexure_3pt", "20 N midspan load"),
+        ("flexure_4pt", "20 N total load on the two load lines"),
+        ("ilss", "20 N midspan load"),
+        ("compression", "-2 % strain"),
+        ("shear", "2 % shear strain"),
+    ])
+    def test_applied_load_text(self, mode, text):
+        assert app._applied_load_text(mode, 2.0) == text
+
+    def test_sidebar_caption(self):
+        caption = app._flexure_specimen_caption("flexure_3pt", 24, 0.183, 24)
+        h = 24 * 0.183
+        assert "ASTM D7264" in caption and "procedure A" in caption
+        assert f"{32 * h:.1f} mm span (32:1)" in caption
+        assert "24 element layers" in caption
+        assert "no empirical flexure knockdown" in caption
+        assert "procedure B" in app._flexure_specimen_caption("flexure_4pt", 0, 0.183, 4)
+
+    def test_loading_choices(self):
+        assert list(app._LOADING_LABELS) == [
+            "compression", "tension", "shear", "ilss", "flexure_3pt", "flexure_4pt"]
+        for mode in app._FLEXURE_MODES:
+            assert "FE only" in app._LOADING_LABELS[mode]
+            assert "D7264" in app._LOADING_LABELS[mode]
+
+
+# ----------------------------------------------------------------------
+# Mesh-convergence check
+# ----------------------------------------------------------------------
+
+class TestConvergenceCheck:
+    def test_plan_refines_the_analysis_mesh_in_plane(self, comp_result):
+        from porosity_fe.fe.refinement import _estimate_memory_bytes
+        plan = app.convergence_plan(comp_result, (1.0, 1.5))
+        assert [lv["resolution"] for lv in plan] == [(10, 4, 6), (15, 6, 6)]
+        assert [lv["n_elements"] for lv in plan] == [240, 540]
+        assert plan[1]["n_dof"] == 3 * 16 * 7 * 7
+        for lv in plan:
+            assert lv["memory_gb"] == pytest.approx(
+                _estimate_memory_bytes(lv["resolution"]) / 1e9, rel=1e-12)
+        t0 = comp_result["fe_solve_time_s"]
+        assert t0 > 0.0
+        assert plan[0]["time_s"] == pytest.approx(t0, rel=1e-12)
+        assert plan[1]["time_s"] == pytest.approx(
+            t0 * (plan[1]["n_dof"] / plan[0]["n_dof"]) ** 1.5, rel=1e-12)
+
+    def test_plan_without_a_recorded_time(self, comp_result):
+        plan = app.convergence_plan({**comp_result, "fe_solve_time_s": None}, (1.0, 2.0))
+        assert all(lv["time_s"] is None for lv in plan)
+
+    def test_ilss_plan_keeps_nx_a_multiple_of_six(self, ilss_result):
+        plan = app.convergence_plan(ilss_result, (1.0, 1.1, 1.5))
+        assert [lv["resolution"] for lv in plan] == [(24, 8, 6), (30, 9, 6), (36, 12, 6)]
+
+    def test_combined_thermal_plan_counts_two_factorizations(self, combined_results):
+        from porosity_fe.fe.refinement import _estimate_memory_bytes
+        comb, _ = combined_results
+        lv = app.convergence_plan(comb, (1.0,))[0]
+        assert lv["memory_gb"] == pytest.approx(
+            _estimate_memory_bytes(lv["resolution"], n_factorizations=2) / 1e9,
+            rel=1e-12)
+
+    def test_unavailable_reasons(self, comp_result, flexure_result):
+        assert app.convergence_unavailable_reason(comp_result) is None
+        assert "flexure" in app.convergence_unavailable_reason(flexure_result)
+        assert "skipped" in app.convergence_unavailable_reason(
+            {**comp_result, "fe_field": None})
+
+    def test_runs_refinement_study_on_the_analysis_case(self, monkeypatch):
+        """Wiring on a tiny mesh: the study gets the analysis' material,
+        layup, porosity, load and the planned levels; the tables read it."""
+        calls = []
+        real = app.refinement_study
+
+        def spy(material, porosity, loading, **kwargs):
+            calls.append((material, porosity, loading, kwargs))
+            return real(material, porosity, loading, **kwargs)
+
+        monkeypatch.setattr(app, "refinement_study", spy)
+        cfg = _base_cfg(nx=6, ny=2, nz=4, distribution="clustered",
+                        cluster_location="surface")
+        study = app.run_convergence_check(cfg, [(6, 2, 4), (9, 3, 4)])
+        (material, porosity, loading, kwargs), = calls
+        assert (material.t_ply, material.n_plies) == (0.183, 4)
+        assert porosity == pytest.approx(0.03)
+        assert loading == "compression"
+        assert kwargs["applied_strain"] == -0.01
+        assert kwargs["resolutions"] == [(6, 2, 4), (9, 3, 4)]
+        assert kwargs["ply_angles"] == cfg["angles"]
+        assert kwargs["porosity_config"] == {
+            "distribution": "clustered", "void_shape": "spherical",
+            "cluster_location": "surface"}
+        assert kwargs["delta_T"] is None
+        assert kwargs["allow_unresolved_layup"] is True
+        assert study.resolutions == ((6, 2, 4), (9, 3, 4))
+
+        levels, verdicts = app.convergence_tables(study)
+        assert [row["Level"] for row in levels] == [1, 2]
+        assert [row["Mesh"] for row in levels] == ["6 × 2 × 4", "9 × 3 × 4"]
+        assert [row["Elements"] for row in levels] == ["48", "108"]
+        assert levels[1]["Knockdown"] == f"{study.levels[1].knockdown:.4f}"
+        assert levels[1]["Domain max FI"] == f"{study.levels[1].max_failure_index:.3f}"
+        assert [row["Quantity"] for row in verdicts] == [
+            "Knockdown", "Interior max FI", "Domain max FI"]
+        for row, name in zip(verdicts, ("knockdown", "interior_max_failure_index",
+                                        "max_failure_index"), strict=True):
+            c = study.convergence[name]
+            assert row["Verdict"] == c.verdict
+            assert row["Behaviour"] == c.behavior
+            assert row["Verdict"] in {"converged", "not converged",
+                                      "mesh-dependent", "n/a"}
+        change = study.convergence["max_failure_index"].relative_changes[-1]
+        assert verdicts[2]["Last change"] == f"{100 * change:+.2f} %"
+
+    @pytest.mark.parametrize("cfg, loading, extra", [
+        (_thermal_cfg(), "thermal", {"delta_T": -150.0,
+                                     "allow_unresolved_layup": False}),
+        (_thermal_cfg(thermal_mode="combined", loading_mode="tension"), "tension",
+         {"delta_T": -150.0, "applied_strain": 0.01}),
+        (_base_cfg(loading_mode="ilss"), "ilss", {"applied_load": -10.0}),
+        (_base_cfg(loading_mode="shear"), "shear", {"applied_strain": 0.01}),
+    ])
+    def test_load_case_wiring(self, monkeypatch, cfg, loading, extra):
+        calls = []
+        monkeypatch.setattr(app, "refinement_study",
+                            lambda m, p, ld, **kw: calls.append((ld, kw)) or "study")
+        assert app.run_convergence_check(cfg, [(4, 2, 4), (6, 3, 4)]) == "study"
+        (got_loading, kwargs), = calls
+        assert got_loading == loading
+        for key, value in extra.items():
+            assert kwargs[key] == value
+        if loading == "thermal":
+            assert "applied_strain" not in kwargs and "applied_load" not in kwargs
+
+    def test_cached_wrapper(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(app, "run_convergence_check",
+                            lambda cfg, res: seen.append((cfg, res)) or "study")
+        key = app._config_to_key(_base_cfg(nx=7))
+        assert app.run_convergence_cached(key, ((7, 4, 6), (11, 6, 6))) == "study"
+        cfg, res = seen[0]
+        assert cfg["angles"] == [0.0, 90.0, 90.0, 0.0] and cfg["nx"] == 7
+        assert res == ((7, 4, 6), (11, 6, 6))
