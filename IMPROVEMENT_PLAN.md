@@ -50,12 +50,8 @@ point at that tree). What has landed since, by pull request:
 | #204 | 3.5 in the app; 3.6 flexure modes and `refinement_study`; strict JSON export |
 | #205 | Production mesh resolves every ply; MINRES deprecated; 2-entry LU cache; 3.6 periodic unit-cell check of Mori-Tanaka; 6.2 (generated validation reports untracked) |
 | #206 | 3.6 ILSS as a true ASTM D2344 short beam (`CompositeMesh.for_ilss`, `short_beam_shear`) |
-| #207 (open) | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
-
-Open follow-ups: a flexure branch in `refinement_study` (the D7264 specimen
-is sized by element length, not `nx`) and an interior region for the flexure
-specimen clear of the supports and load lines (the side-face margin leaves
-no interior elements on the default 13 mm wide, 4-element specimen).
+| #207 | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
+| #208 (open) | 3.6 flexure interior region; `for_flexure(nx=)`; `refinement_study` and the app's convergence check on the D7264 specimen |
 
 ---
 
