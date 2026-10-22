@@ -18,7 +18,6 @@ import scipy.sparse
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
-from .assembler import BoundaryHandler
 from .batch import ElementBatch, assemble_load_vector, thermal_stress_moduli
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -83,7 +82,7 @@ def check_layup_for_thermal(mesh: CompositeMesh, material: MaterialProperties,
 
 def unit_solution(
     K: scipy.sparse.spmatrix, batch: ElementBatch, mesh: CompositeMesh,
-    bc_handler: BoundaryHandler, alpha_local: np.ndarray, *,
+    supports: tuple[dict[int, float], np.ndarray], alpha_local: np.ndarray, *,
     solve: Callable[[scipy.sparse.spmatrix, np.ndarray, dict[int, float]],
                     tuple[np.ndarray, float]],
     verbose: bool = False,
@@ -92,8 +91,9 @@ def unit_solution(
 
     Builds the thermal load ``F = sum B^T C alpha det(J) w`` from the
     element batch (:func:`~porosity_fe.fe.batch.thermal_stress_moduli`),
-    solves with the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs`
-    (``solve(K, F, constrained)``, the solver's constrained solve) and
+    solves with ``supports``, the 3-2-1 supports and zero force vector of
+    :meth:`BoundaryHandler.free_bcs` (``solve(K, F, constrained)``, the
+    solver's constrained solve) and
     recovers ``sigma = C (B u - alpha)``, with the hex8i internal-mode
     strain included. The analysis is linear, so every field at ``delta_T``
     is ``delta_T`` times this one.
@@ -104,7 +104,7 @@ def unit_solution(
     """
     beta = thermal_stress_moduli(batch, mesh, alpha_local)
     F_th = assemble_load_vector(batch, batch.thermal_loads(beta), mesh.n_dof)
-    constrained, F0 = bc_handler.free_bcs()
+    constrained, F0 = supports
     F = F0 + F_th
     if verbose:
         logger.info("Solving the free-standing thermal problem "

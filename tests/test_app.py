@@ -220,11 +220,13 @@ class TestRunAnalysis:
     @pytest.mark.parametrize("cfg, n_lu", [
         (_base_cfg(loading_mode="ilss"), 2),
         (_thermal_cfg(loading_mode="ilss"), 1),
-    ], ids=["ilss", "thermal_only"])
+        (_thermal_cfg(thermal_mode="combined", loading_mode="ilss"), 3),
+    ], ids=["ilss", "thermal_only", "combined"])
     def test_fe_solve_holds_one_factorization_at_a_time(
             self, monkeypatch, lu_alive_at_build, cfg, n_lu):
         """The solver frees the knockdown's pristine reference before it
-        factorizes the porous model, so the app holds one factorization at
+        factorizes the porous model, and the thermal factorization once
+        its unit solution is cached, so the app holds one factorization at
         a time without solving the reference itself first; a thermal-only
         solve needs no reference."""
         from collections import OrderedDict

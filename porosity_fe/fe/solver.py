@@ -403,14 +403,22 @@ class FESolver:
             t1 = time.perf_counter()
             logger.info("  Assembly time: %.2f s", t1 - t0)
 
+        # 2. Build BCs and the force vector for the requested loading mode.
+        constrained: dict[int, float] | None = None
+        if not thermal_only:
+            constrained, F = self._apply_boundary_conditions(
+                loading, applied_strain, applied_load, verbose=verbose)
+
         # Free-standing thermal (residual) state, scaled from the cached
-        # unit-delta_T solution.
+        # unit-delta_T solution; its factorization is freed before the
+        # mechanical one is built.
         thermal: _ThermalUnitSolution | None = None
         residual_global: np.ndarray | None = None
         residual_local: np.ndarray | None = None
         if dT is not None:
             thermal = self._thermal_unit_solution(
-                K, solver=solver, rtol=rtol, verbose=verbose)
+                K, solver=solver, rtol=rtol, verbose=verbose,
+                next_constrained=constrained)
             residual_global = dT * thermal.stress_global
             residual_local = self._rotate_to_local(residual_global)
 
@@ -428,10 +436,7 @@ class FESolver:
             effective_modulus: float | None = None
             basis = 'delta_T'
         else:
-            # 2. Build BCs and the force vector for the requested loading mode.
-            constrained, F = self._apply_boundary_conditions(
-                loading, applied_strain, applied_load, verbose=verbose)
-
+            assert constrained is not None
             # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
             u, _rel_res = self._solve_constrained(
                 K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
@@ -563,10 +568,10 @@ class FESolver:
         first, so load cases that share supports, or two that alternate,
         factorize once; another set evicts the least recently used before
         its own factorization is built, and a new ``K`` clears them all
-        (``_constrained_solve.free_dof_system``). (The thermal 3-2-1
-        supports are one more set; the thermal solution itself is cached
-        per unit ``delta_T``, see :meth:`_thermal_unit_solution`.) About
-        320 MB per factorization on the 30 x 10 x 24 production mesh.
+        (``_constrained_solve.free_dof_system``). The thermal 3-2-1 set
+        takes a slot only while the unit-``delta_T`` thermal solution is
+        computed (:meth:`_thermal_unit_solution`). About 320 MB per
+        factorization on the 30 x 10 x 24 production mesh.
         """
         return _constrained_solve.free_dof_system(
             self._lu_cache, K, part, factorize=factorize,
@@ -595,23 +600,36 @@ class FESolver:
         self, K: scipy.sparse.spmatrix, *,
         solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, verbose: bool = False,
+        next_constrained: dict[int, float] | None = None,
     ) -> _ThermalUnitSolution:
-        """Free-standing thermal solve for ``delta_T = 1`` K
-        (``_thermal.unit_solution``), cached on ``K`` (which changes with
-        the mesh, porosity, material and formulation), the CTEs and the
-        linear solver."""
+        """Free-standing thermal solve for ``delta_T = 1`` K, cached.
+
+        ``_thermal.unit_solution``, cached on ``K`` (which changes with the
+        mesh, porosity, material and formulation), the CTEs and the linear
+        solver. Every ``delta_T`` rescales the cached solution, so the 3-2-1
+        system leaves the LU cache as soon as it is solved instead of being
+        held next to the mechanical factorization, unless
+        ``next_constrained``, the constrained set of the solve that follows,
+        is the same set.
+        """
         alpha_local = self.material.cte_vector()
         key = (tuple(alpha_local.tolist()), solver, float(rtol))
         cached = self._thermal_cache
         if cached is not None and cached[0] is K and cached[1] == key:
             return cached[2]
 
+        supports = self.bc_handler.free_bcs()
         sol = _thermal.unit_solution(
-            K, self.assembler.element_batch(), self.mesh, self.bc_handler,
+            K, self.assembler.element_batch(), self.mesh, supports,
             alpha_local, verbose=verbose,
             solve=functools.partial(self._solve_constrained, solver=solver,
                                     rtol=rtol, verbose=verbose))
         self._thermal_cache = (K, key, sol)
+        thermal_key = _ConstraintReduction.from_constraints(
+            K.shape[0], supports[0]).key
+        if next_constrained is None or thermal_key != \
+                _ConstraintReduction.from_constraints(K.shape[0], next_constrained).key:
+            self._lu_cache.pop(thermal_key, None)
         return sol
 
     def _pristine_stiffness_measure(self, loading: str) -> float:

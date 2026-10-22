@@ -674,20 +674,19 @@ def _estimate_memory_bytes(res: tuple[int, int, int], *, n_factorizations: int =
     return _BASE_BYTES + n_el * CompositeMesh._FE_BYTES_PER_ELEMENT + n_factorizations * lu
 
 
-def _peak_factorizations(loading: str, solver: str, delta_T: float | None,
-                         field: PorosityField) -> int:
+def _peak_factorizations(loading: str, solver: str, field: PorosityField) -> int:
     """Sparse LU factors alive at once during a level's solve.
 
-    The pristine reference of the knockdown is always factorized directly
-    (but freed before the porous model is built, see
-    :meth:`FESolver.solve`); a direct solve factorizes the porous model,
-    and a mechanical solve with ``delta_T`` also the free-standing thermal
-    problem, both held at the moment the second is built.
+    :meth:`FESolver.solve` holds one at a time: the pristine reference of
+    the knockdown (always factorized directly) is freed before the porous
+    model is built, and the free-standing thermal problem of a solve with
+    ``delta_T`` before the mechanical one. So a direct solve peaks at one,
+    and an iterative one at the pristine reference's, if it needs one.
     """
+    if solver == 'direct':
+        return 1
     porous = field.Vp > 0.0 or bool(field.discrete_voids)
-    if solver != 'direct':
-        return 1 if (porous and loading != 'thermal') else 0
-    return 2 if (delta_T is not None and loading != 'thermal') else 1
+    return 1 if (porous and loading != 'thermal') else 0
 
 
 def _physical_memory_bytes() -> int | None:
@@ -985,7 +984,7 @@ def refinement_study(
 
     # --- guards, before any solve ----------------------------------------
     cap = CompositeMesh._MAX_TOTAL_ELEMENTS if max_elements is None else int(max_elements)
-    n_lu = _peak_factorizations(loading, solver, delta_T, field)
+    n_lu = _peak_factorizations(loading, solver, field)
     est = [_estimate_memory_bytes(r, n_factorizations=n_lu) for r in plan]
     table = "; ".join(f"{r[0]}x{r[1]}x{r[2]}: {r[0] * r[1] * r[2]:,} elements, "
                       f"~{e / 1e9:.2g} GB" for r, e in zip(plan, est, strict=True))
