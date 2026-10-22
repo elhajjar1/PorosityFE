@@ -41,7 +41,7 @@ from ..mesh import CompositeMesh, FlexureGeometry
 from .flexure import _structured_grid
 
 if TYPE_CHECKING:
-    from .solver import FieldResults
+    from .results import FieldResults
 
 
 def require_ilss_geometry(mesh: CompositeMesh) -> FlexureGeometry:

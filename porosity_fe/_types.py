@@ -31,8 +31,8 @@ LoadingMode = Literal[
 #: three- and four-point bending on roller supports (ASTM D790 / D7264);
 #: ``'thermal'`` is the free-standing thermal / cure residual-stress solve
 #: (needs ``delta_T=`` and lamina CTEs). Source of truth:
-#: ``porosity_fe.fe.solver._FE_LOADINGS`` (the ``loading`` dispatch in
-#: ``FESolver.solve``).
+#: ``porosity_fe.fe._load_cases._FE_LOADINGS`` (the ``loading`` dispatch
+#: of ``FESolver.solve``).
 FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss',
                         'flexure_3pt', 'flexure_4pt', 'thermal']
 

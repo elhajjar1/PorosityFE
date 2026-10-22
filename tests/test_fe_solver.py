@@ -1954,11 +1954,12 @@ class TestKnockdownFromPristineReference:
             pytest.approx(ilss, rel=1e-9)
 
     def test_pristine_reference_is_cached_across_solvers(self, monkeypatch):
-        from porosity_fe.fe import solver as solver_mod
-        solver_mod._PRISTINE_MEASURE_CACHE.clear()
+        # The reference solve lives in fe/_knockdown.py (IMPROVEMENT_PLAN 5.1).
+        from porosity_fe.fe import _knockdown
+        _knockdown._PRISTINE_MEASURE_CACHE.clear()
         calls = []
-        real = solver_mod._pristine_mesh
-        monkeypatch.setattr(solver_mod, '_pristine_mesh',
+        real = _knockdown._pristine_mesh
+        monkeypatch.setattr(_knockdown, '_pristine_mesh',
                             lambda mesh: calls.append(1) or real(mesh))
         a, _ = self._pair(Vp=0.02)
         b, _ = self._pair(Vp=0.05)

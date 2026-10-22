@@ -37,9 +37,10 @@ from ..mesh import (
 )
 from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
+from ._load_cases import _check_delta_T, _minres_deprecation
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
 from .short_beam import default_interior_margin
-from .solver import FESolver, _check_delta_T, _minres_deprecation
+from .solver import FESolver
 
 logger = logging.getLogger("porosity_fe_analysis")
 
