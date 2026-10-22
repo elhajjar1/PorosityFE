@@ -262,9 +262,18 @@ $$
 $G_T = G_\text{I} + G_\text{II} + G_\text{III}$ and $\psi = (G_\text{II} +
 G_\text{III}) / G_T$. In an opening double-cantilever beam the tie holds the
 upper face down ($F'_y < 0$) while the faces behind open ($\Delta'_y > 0$),
-so $G_\text{I} > 0$. A negative product is set to zero: the faces behind are
-closed (a pair in contact has $\Delta'_y = 0$) or the mode vanishes and only
-round-off is left. $G_T$ does not depend on the frame (it is the dot
+so $G_\text{I} > 0$. A negative mode I product is set to zero: the faces
+behind are closed, and a pair in contact has $\Delta'_y = 0$. The shear
+products keep their sign. At a single node they can be negative where the
+local field is not self-similar: across the width of a multidirectional
+laminate the mode III product changes sign, for instance. Only signed values
+make $\sum G_T\, b\, \Delta a$ the energy the extension releases. Zeroing
+the negative ones over-predicted $G$ on a QI short-beam specimen with a
+mid-plane crack in the shear span: the ratio to the centred compliance
+derivative was 1.041 and 1.070 at 0.55 and 0.37 mm elements, against 0.989
+and 0.995 signed. The growth criterion takes $\psi$ and the mode III share
+clipped to $[0, 1]$, so a negative shear product lowers the node's $G_T$
+without inverting its mode mix. $G_T$ does not depend on the frame (it is the dot
 product $-\mathbf F' \cdot \boldsymbol\Delta' / (2 \Delta a\, b)$); on a
 staircase front only the choice of $q$ matters for it, while the split
 between $G_\text{II}$ and $G_\text{III}$ follows the quantized $x'$. At an
@@ -392,6 +401,7 @@ difference is centred half an element ahead):
 | ENF without contact | same, `crack_contact=False` | | the faces overlap by up to 0.86 mm (deflection 0.63 mm); compliance 1.49 times | a visible overlap |
 | Load scaling | ENF at twice the load | $\lambda_c / 2$ | ratio 0.5 to $10^{-9}$, the same 15 pairs, 1 solve (warm start) | $10^{-9}$ |
 | Thermal $\lambda_c$ | cross-ply $[0/90/0/90]_s$ AS4/3501-6, 0/90 interface, $\Delta T = -100$ K, no contact | root of $G_T(\lambda) = G_c(\psi(\lambda))$ from the separate thermal and mechanical solves | identical; 0.2148 against 0.2771 without the residual state | $10^{-10}$ |
+| QI shear front | QI short-beam specimen, mid-plane crack in the shear span, $48 \times 4 \times 24$, no contact | centred compliance derivative | 0.989 (0.995 at $72 \times 4$); the mode III product changes sign across the width (1.041 / 1.070 if negative products are zeroed) | 2 % |
 | Penny crack | isotropic block, quarter model, $4a \times 4a \times 8a$, $h = a/8$, remote tension | $G = (1 - \nu^2) K_I^2 / E$, $K_I = 2\sigma\sqrt{a/\pi}$ | front mean 1.061 at the nominal $a$, 1.003 at the mean front radius (1.058 $a$); 0.785 to 1.434 around the front | 10 % / 5 % |
 
 The penny crack's front nodes lie between $a$ and $a + \sqrt 2\, h$ from

@@ -427,6 +427,42 @@ class TestEndNotchedFlexure:
         np.testing.assert_array_equal(again.displacement, r.displacement)
 
 
+class TestMultidirectionalShearFront:
+    """A mid-plane crack in the shear span of the QI short-beam specimen,
+    where the mode III product changes sign across the width. The shear
+    products keep their sign, so the front still sums to the energy
+    release: the width average is within 2 % of the centred compliance
+    derivative (0.989 at 0.55 mm elements). Zeroing the negative products
+    gave 1.041 here, and 1.070 at 0.37 mm."""
+
+    def test_signed_shear_products_sum_to_the_energy(self):
+        mat = dataclasses.replace(MATERIALS['T800_epoxy'], **TOUGHNESS)
+        pf = PorosityField(mat, 0.0)
+        kw = dict(nx=48, ny=4, ply_angles='QI')
+        base = CompositeMesh.for_ilss(pf, mat, **kw)
+        width, dx = base.L_y, base.L_x / base.nx
+        geometry = base.ilss_geometry
+        x0, xm = geometry.support_x[0], geometry.midspan
+        x_left, x_right = x0 + 0.25 * (xm - x0), x0 + 0.6 * (xm - x0)
+        load = -10.0
+        out = {}
+        for k in (-1, 0, 1):
+            mesh = CompositeMesh.for_ilss(
+                pf, mat, delaminations=[Delamination.strip(11, x_left, x_right + k * dx)],
+                **kw)
+            r = FESolver(mesh, mat, pf).solve('ilss', applied_load=load,
+                                              crack_contact=False)
+            _, F = BoundaryHandler(mesh).ilss_bcs(load)
+            out[k] = (r, float(F @ r.displacement.ravel()) / load ** 2)
+        front = out[0][0].crack_front
+        right = front.x > 0.5 * (x_left + x_right)
+        G = float(np.sum(front.G_T[right] * front.width[right]) / width)
+        G_central = load ** 2 / 2 * (out[1][1] - out[-1][1]) / (2 * dx * width)
+        assert G == pytest.approx(G_central, rel=0.02)
+        assert np.min(front.G_III[right]) < 0.0 < np.max(front.G_III[right])
+        assert np.all(front.G_I >= 0.0)
+
+
 class TestLoadFactor:
     def test_by_hand(self, enf):
         front, r = enf[0].crack_front, enf[0]

@@ -105,6 +105,12 @@ All notable changes to PorosityFE will be documented in this file.
     formulas). The growth direction is exactly `+-x` on a straight front
     and one of eight grid directions on a staircase; the tributary width
     is half at a plate edge.
+    - A negative mode I product (closed faces) counts as zero.
+    - The shear products keep their sign, so the front sums to the
+      energy the extension releases. On a QI short-beam specimen the
+      mode III product changes sign across the width: zeroing the
+      negative ones over-predicted `G` by 4–7 % against the compliance
+      derivative, while the signed sum is within 1.1 %.
   - Growth criterion (public `critical_energy_release_rate`,
     `fracture_load_factors`): Benzeggagh-Kenane, with Reeder's term for a
     separate mode III toughness; critical load factor
