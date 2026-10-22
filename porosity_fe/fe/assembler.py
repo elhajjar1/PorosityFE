@@ -461,6 +461,10 @@ class _ConstraintReduction:
 #: :meth:`_ConstraintReduction.from_constraints`.
 Ties = tuple[np.ndarray, np.ndarray, np.ndarray]
 
+#: Default of a ``ties=`` argument that means "the mesh's bonded ties"
+#: (:func:`_mesh_ties`), so ``None`` can mean "no ties".
+_MESH_TIES = object()
+
 
 def _mesh_ties(mesh: CompositeMesh) -> Ties | None:
     """Ties of the bonded part of a mesh's delaminated interfaces.

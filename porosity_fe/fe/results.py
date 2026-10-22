@@ -19,6 +19,7 @@ from ..results import FailureResult
 from .element import _DEFAULT_FORMULATION
 from .export import write_vtk, write_vtu
 from .recovery import NodalAverage, extrapolate_to_nodes
+from .vcct import CrackFront, vcct_energy_release_rates
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +160,47 @@ class FieldResults:
         ``(n_elem,)`` array per key of :attr:`failure_mode_maxima`
         (written to the VTK/VTU exports as ``failure_index_<mode>``);
         ``None`` for Tsai-Wu.
+    crack_front : CrackFront or None
+        Virtual-crack-closure table of the delamination front of a mesh
+        with an explicit :class:`~porosity_fe.Delamination`: per front node
+        its coordinates, frame, ``Delta_a`` and tributary width, ``G_I``,
+        ``G_II``, ``G_III``, ``G_T`` (N/mm), the mode mixity ``psi`` and,
+        when the material has toughness data, the mixed-mode toughness
+        ``G_c`` and the critical load factor ``lambda_c``
+        (:func:`~porosity_fe.vcct_energy_release_rates`). At the applied
+        state, thermal residual included. ``None`` without a delaminated
+        node pair.
+    fracture_load_factor : float or None
+        Smallest ``lambda_c`` over the front: the multiplier on the load
+        named by :attr:`load_factor_basis` at which the delamination starts
+        to grow (Benzeggagh-Kenane criterion,
+        :func:`~porosity_fe.fracture_load_factors`); ``inf`` when the load
+        releases no energy at the front. ``None`` without a front or
+        without toughness data (``MaterialProperties.G_Ic``, ``G_IIc``,
+        ``bk_eta``).
+    fracture_governing_node : int or None
+        Original node id of the front node with the smallest ``lambda_c``
+        (``None`` when :attr:`fracture_load_factor` is ``None`` or
+        infinite).
+    interface_forces : np.ndarray or None
+        ``(n_pairs, 3)`` force (N, global axes) the lower crack face exerts
+        on the upper one at every duplicated interface node pair
+        (:meth:`CompositeMesh.interface_node_pairs` order): the tie force of
+        a bonded pair, the normal contact force of a pair in contact, zero
+        for an open pair. ``None`` without duplicated interface nodes.
+    crack_contact : bool or None
+        Whether crack-face contact was enforced (``FESolver.solve(...,
+        crack_contact=...)``); ``None`` without a delaminated node pair.
+    contact_iterations : int or None
+        Linear solves of the contact active-set loop (1 when no crack-face
+        pair came into contact); ``None`` when contact was not enforced.
+    contact_pairs : int or None
+        Delaminated node pairs in contact at the solution; ``None`` when
+        contact was not enforced.
+    contact_converged : bool or None
+        Whether the contact active set settled within the iteration cap
+        (a warning is logged when it did not); ``None`` when contact was
+        not enforced.
 
     Notes
     -----
@@ -204,6 +246,14 @@ class FieldResults:
     cte_local: tuple[float, float, float] | None = None
     failure_mode_maxima: dict[str, float] | None = None
     per_element_mode_failure_index: dict[str, np.ndarray] | None = None
+    crack_front: CrackFront | None = None
+    fracture_load_factor: float | None = None
+    fracture_governing_node: int | None = None
+    interface_forces: np.ndarray | None = None
+    crack_contact: bool | None = None
+    contact_iterations: int | None = None
+    contact_pairs: int | None = None
+    contact_converged: bool | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -242,7 +292,12 @@ class FieldResults:
             ``failure_stress``, FE-criterion-tagged ``model`` and a
             ``details`` dict carrying ``max_failure_index``,
             ``failure_criterion`` and ``failure_mode_indices`` for
-            downstream consumers that need the richer field-result data.
+            downstream consumers that need the richer field-result data,
+            and the delamination keys (``fracture_load_factor``,
+            ``fracture_governing_node``, ``fracture_governing_psi``,
+            ``fracture_governing_G_T``, ``crack_front_max_G_T``,
+            ``crack_contact``, ``contact_iterations``, ``contact_pairs``,
+            ``contact_converged``), ``None`` without a delamination.
         """
         kd = float(self.knockdown)
         sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
@@ -271,8 +326,55 @@ class FieldResults:
                     self.interior_first_ply_failure_load_factor,
                 'delta_T': self.delta_T,
                 'residual_max_failure_index': self.residual_max_failure_index,
+                **self._fracture_details(),
             },
         )
+
+    def _fracture_details(self) -> dict:
+        """Delamination keys of :meth:`summary` (``None`` values without one)."""
+        front = self.crack_front
+        row = None if front is None else front.governing
+        return {
+            'fracture_load_factor': self.fracture_load_factor,
+            'fracture_governing_node': self.fracture_governing_node,
+            'fracture_governing_psi': (
+                None if row is None else float(front.psi[row])),  # type: ignore[union-attr]
+            'fracture_governing_G_T': (
+                None if row is None else float(front.G_T[row])),  # type: ignore[union-attr]
+            'crack_front_max_G_T': (
+                None if front is None or len(front) == 0
+                else float(np.max(front.G_T))),
+            'crack_contact': self.crack_contact,
+            'contact_iterations': self.contact_iterations,
+            'contact_pairs': self.contact_pairs,
+            'contact_converged': self.contact_converged,
+        }
+
+    def energy_release_rates(self, mesh: CompositeMesh) -> CrackFront | None:
+        """Recompute the virtual-crack-closure table from these results.
+
+        :func:`~porosity_fe.vcct_energy_release_rates` on
+        :attr:`displacement` and :attr:`interface_forces`, without toughness
+        (``G_c`` and ``lambda_c`` are ``None``; see
+        :func:`~porosity_fe.fracture_load_factors`). Equal to
+        :attr:`crack_front` without them.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results, with its delaminations as
+            solved.
+
+        Returns
+        -------
+        CrackFront or None
+            ``None`` when the results have no interface forces (no
+            duplicated interface nodes) or the mesh has no front.
+        """
+        if self.interface_forces is None:
+            return None
+        return vcct_energy_release_rates(mesh, self.displacement,
+                                         self.interface_forces)
 
     def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:

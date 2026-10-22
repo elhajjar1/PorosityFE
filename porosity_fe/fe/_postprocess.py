@@ -22,7 +22,7 @@ from ..mesh import CompositeMesh
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from ._load_cases import _FLEXURE_PROCEDURE
-from .assembler import BoundaryHandler, GlobalAssembler, _fold_tied, _mesh_ties
+from .assembler import _MESH_TIES, BoundaryHandler, GlobalAssembler, Ties, _fold_tied, _mesh_ties
 from .batch import ElementBatch
 from .flexure import flexural_modulus
 
@@ -80,7 +80,7 @@ def reactions_and_modulus(
     loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
     F: np.ndarray, applied_strain: float, constrained: dict[int, float],
     *, applied_load: float, mesh: CompositeMesh, assembler: GlobalAssembler,
-    bc_handler: BoundaryHandler,
+    bc_handler: BoundaryHandler, ties: Ties | None | object = _MESH_TIES,
 ) -> tuple[np.ndarray, float | None]:
     """Nodal reactions and the effective modulus.
 
@@ -90,7 +90,9 @@ def reactions_and_modulus(
     delaminated mesh the residual of each tied duplicate (the force its
     tie carries) is first folded onto its original node, so a supported
     original reports the reaction of the whole bonded node and the
-    duplicates none.
+    duplicates none. ``ties`` are those of the solve (by default the
+    mesh's bonded ties; a pair in crack-face contact adds a normal tie, whose
+    force is folded the same way).
 
     For the displacement-controlled modes only the prescribed boundary
     moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
@@ -103,7 +105,9 @@ def reactions_and_modulus(
     shear (see :attr:`FieldResults.effective_modulus`).
     """
     Ku = K @ u
-    residual = _fold_tied(Ku - F, _mesh_ties(mesh))
+    tie_set = _mesh_ties(mesh) if ties is _MESH_TIES else ties
+    assert tie_set is None or isinstance(tie_set, tuple)
+    residual = _fold_tied(Ku - F, tie_set)
     is_fixed = np.zeros(residual.size, dtype=bool)
     is_fixed[np.fromiter(constrained.keys(), dtype=np.intp,
                          count=len(constrained))] = True
