@@ -49,7 +49,7 @@ from ._load_cases import _minres_deprecation as _minres_deprecation
 from ._load_cases import _resolve_applied_strain as _resolve_applied_strain
 from ._load_cases import apply_boundary_conditions, check_solve_arguments, interior_mask
 from ._thermal import _ThermalUnitSolution
-from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
+from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction, _mesh_ties, _ties_token
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
@@ -145,6 +145,13 @@ class FESolver:
     not a multiple of ``n_plies``) analyzes a different laminate. The
     constructor logs a warning, once per mesh, naming the element layup
     and what it loses (see :meth:`CompositeMesh.layup_discrepancies`).
+
+    On a mesh with explicit delaminations (``CompositeMesh(...,
+    delaminations=...)``) every loading mode ties the bonded part of each
+    duplicated interface (:meth:`CompositeMesh.bonded_ties`), prescribes
+    no tied duplicate on a face, and measures the knockdown against the
+    laminate with no porosity, voids or delamination; see the theory page
+    "Delamination".
     """
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime
@@ -557,9 +564,12 @@ class FESolver:
         """Impose the Dirichlet BCs exactly and solve ``K u = F``: the full
         ``u`` and the relative residual of the reduced system
         (``_constrained_solve.solve_constrained``), direct solves with this
-        solver's cached factorizations (:meth:`_free_dof_system`)."""
+        solver's cached factorizations (:meth:`_free_dof_system`). The
+        bonded interface of a delaminated mesh is tied
+        (:meth:`CompositeMesh.bonded_ties`)."""
         return _constrained_solve.solve_constrained(
-            K, F, constrained, system=self._free_dof_system, solver=solver,
+            K, F, constrained, system=self._free_dof_system,
+            ties=_mesh_ties(self.mesh), solver=solver,
             rtol=rtol, verbose=verbose, max_restarts=self._MINRES_MAX_RESTARTS)
 
     def _free_dof_system(
@@ -610,15 +620,17 @@ class FESolver:
         """Free-standing thermal solve for ``delta_T = 1`` K, cached.
 
         ``_thermal.unit_solution``, cached on ``K`` (which changes with the
-        mesh, porosity, material and formulation), the CTEs and the linear
-        solver. Every ``delta_T`` rescales the cached solution, so the 3-2-1
-        system leaves the LU cache as soon as it is solved instead of being
-        held next to the mechanical factorization, unless
-        ``next_constrained``, the constrained set of the solve that follows,
-        is the same set.
+        mesh, porosity, material and formulation), the CTEs, the linear
+        solver and the bonded ties of a delaminated mesh (which change with
+        :attr:`CompositeMesh.delaminations` while ``K`` does not). Every
+        ``delta_T`` rescales the cached solution, so the 3-2-1 system leaves
+        the LU cache as soon as it is solved instead of being held next to
+        the mechanical factorization, unless ``next_constrained``, the
+        constrained set of the solve that follows, is the same set.
         """
         alpha_local = self.material.cte_vector()
-        key = (tuple(alpha_local.tolist()), solver, float(rtol))
+        ties = _mesh_ties(self.mesh)
+        key = (tuple(alpha_local.tolist()), solver, float(rtol), _ties_token(ties))
         cached = self._thermal_cache
         if cached is not None and cached[0] is K and cached[1] == key:
             return cached[2]
@@ -631,9 +643,9 @@ class FESolver:
                                     rtol=rtol, verbose=verbose))
         self._thermal_cache = (K, key, sol)
         thermal_key = _ConstraintReduction.from_constraints(
-            K.shape[0], supports[0]).key
-        if next_constrained is None or thermal_key != \
-                _ConstraintReduction.from_constraints(K.shape[0], next_constrained).key:
+            K.shape[0], supports[0], ties=ties).key
+        if next_constrained is None or thermal_key != _ConstraintReduction.from_constraints(
+                K.shape[0], next_constrained, ties=ties).key:
             self._lu_cache.pop(thermal_key, None)
         return sol
 

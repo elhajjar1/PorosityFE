@@ -20,7 +20,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
-from .assembler import _ConstraintReduction
+from .assembler import Ties, _ConstraintReduction
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -104,17 +104,19 @@ def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
 
 def solve_constrained(
     K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
-    *, system: FreeDofSystem,
+    *, system: FreeDofSystem, ties: Ties | None = None,
     solver: Literal['direct', 'cg', 'minres'] = 'direct',
     rtol: float = 1e-9, verbose: bool = False, max_restarts: int = 3,
 ) -> tuple[np.ndarray, float]:
-    """Impose the Dirichlet BCs exactly and solve ``K u = F``.
+    """Impose the Dirichlet BCs (and ties) exactly and solve ``K u = F``.
 
     Partitions the DOFs into free (``f``) and constrained (``c``) sets
     (``_ConstraintReduction`` in :mod:`porosity_fe.fe.assembler`), solves
     ``K_ff u_f = F_f - K_fc u_c`` with the requested linear solver and
     returns the full vector with ``u_c`` equal to the prescribed values
-    bit for bit.
+    bit for bit. With ``ties`` (the bonded interface of a delaminated
+    mesh) the reduced system is ``T^T K T u_r = T^T (F - K g)`` and every
+    tied DOF equals its master plus the offset.
 
     Parameters
     ----------
@@ -126,7 +128,13 @@ def solve_constrained(
         Constrained-DOF map (constrained DOF index -> prescribed value).
     system : callable
         ``system(K, part, factorize=...)`` returning ``K_ff`` and, when
-        ``factorize``, its sparse LU (see :func:`free_dof_system`).
+        ``factorize``, its sparse LU (see :func:`free_dof_system`). The
+        reduction's ``key`` includes the tie topology, so a cache keyed on
+        it never mixes two tie sets.
+    ties : (tied, master, offset), optional
+        Master-slave ties ``u[tied] = u[master] + offset`` (see
+        :meth:`_ConstraintReduction.from_constraints`); ``None`` (default)
+        for prescribed values only.
     solver : {'direct', 'cg', 'minres'}
         Linear solver to use. See :meth:`FESolver.solve` for details
         (``'minres'`` is deprecated; :meth:`FESolver.solve` warns).
@@ -159,7 +167,7 @@ def solve_constrained(
             f"Unknown solver '{solver}'. "
             "Use 'direct', 'cg', or 'minres'."
         )
-    part = _ConstraintReduction.from_constraints(K.shape[0], constrained)
+    part = _ConstraintReduction.from_constraints(K.shape[0], constrained, ties=ties)
     if part.free.size == 0:
         return part.lift(), 0.0
 

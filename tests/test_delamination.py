@@ -1,13 +1,19 @@
 """Explicit delaminations: the defect, the crack mesh and the bonded ties.
 
-Delamination plan, phase 2.1-2.2. A :class:`Delamination` duplicates the node
-plane of its interface (:class:`CompositeMesh`). Checked here:
+Delamination plan, phase 2.1-2.3. A :class:`Delamination` duplicates the node
+plane of its interface (:class:`CompositeMesh`), and :class:`FESolver` ties
+each duplicate to its original outside the delamination. Checked here:
 
 - the defect's validation and its open-region / plate-edge semantics;
 - the mesh requirements, node and element counts, unchanged structured ids,
   the appended duplicates and the rewiring;
-- the bonded pairs, ties and crack front;
-- the structured helpers on a delaminated mesh.
+- a duplicated interface with every pair tied reproduces the undelaminated
+  solution in every loading mode, for both element formulations;
+- the physics on the double-cantilever-beam feasibility probe: compliance
+  against corrected beam theory and the energy release rate from the
+  compliance derivative;
+- the boundary-condition rule, the knockdown reference, the thermal cache,
+  and the structured helpers on a delaminated mesh.
 """
 
 from __future__ import annotations
@@ -15,6 +21,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
+from collections import OrderedDict
+from functools import partial
 
 import matplotlib
 
@@ -28,15 +36,23 @@ from porosity_fe import (  # noqa: E402
     CompositeMesh,
     Delamination,
     EmpiricalSolver,
+    FESolver,
     FEVisualizer,
+    GlobalAssembler,
     PorosityField,
     VoidGeometry,
     check_mesh_quality,
     extrapolate_to_nodes,
+    short_beam_shear,
 )
+from porosity_fe.fe import _knockdown  # noqa: E402
+from porosity_fe.fe._constrained_solve import free_dof_system, solve_constrained  # noqa: E402
+from porosity_fe.fe.assembler import BoundaryHandler, _mesh_ties  # noqa: E402
 
 #: 8-ply AS4/3501-6 (it has CTEs): a 1 mm laminate, interfaces 0 to 6.
 MAT8 = dataclasses.replace(MATERIALS['AS4_3501_6_epoxy'], n_plies=8)
+FORMULATIONS = ('hex8i', 'hex8')
+DT = -100.0
 MID = 3   # mid-plane interface of MAT8
 
 
@@ -62,8 +78,20 @@ def _coupon(pf: PorosityField, delaminations=None, *, nx=8, ny=4, nz=8,
     return mesh
 
 
+def _no_node_strip(k: int, dx: float) -> Delamination:
+    """A strip between the first two node lines: no node inside it, so every
+    duplicated pair of interface ``k`` stays bonded."""
+    return Delamination.strip(k, 0.3 * dx, 0.6 * dx)
 
 
+def _rel(a, b) -> float:
+    """Relative difference of two scalars (0 when equal, including NaN / None)."""
+    if a is None or b is None:
+        return 0.0 if a is b else math.inf
+    a, b = float(a), float(b)
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return 0.0 if (a == b or (math.isnan(a) and math.isnan(b))) else math.inf
+    return abs(a - b) / max(abs(b), 1e-300)
 
 
 # --------------------------------------------------------------------------
@@ -398,3 +426,346 @@ class TestStructuredMeshHelpers:
         np.testing.assert_allclose(nodal[originals[~bonded]], 3.0)
         np.testing.assert_allclose(nodal[duplicates[~bonded]], 4.0)
         assert corner.shape == (mesh.n_elements, 8)
+
+
+
+# --------------------------------------------------------------------------
+# A fully bonded duplicated interface is the undelaminated laminate
+# --------------------------------------------------------------------------
+
+def _bonded_builders():
+    """``name -> (build(delaminations) -> mesh, element length along x)``."""
+    return {
+        'coupon': (lambda pf, dl: _coupon(pf, dl), 1.0),
+        'flexure': (lambda pf, dl: CompositeMesh.for_flexure(
+            pf, MAT8, width=4.0, ny=2, element_length=2.0, delaminations=dl), 2.0),
+        'ilss': (lambda pf, dl: CompositeMesh.for_ilss(pf, MAT8, ny=2, delaminations=dl), 0.25),
+    }
+
+
+EQUIVALENCE_CASES = [
+    ('coupon', 'compression', None),
+    ('coupon', 'tension', None),
+    ('coupon', 'shear', None),
+    ('coupon', 'thermal', DT),
+    ('coupon', 'tension', DT),
+    ('flexure', 'flexure_3pt', None),
+    ('ilss', 'ilss', None),
+]
+
+
+@pytest.fixture(scope='module')
+def meshes():
+    """``name -> (porosity field, undelaminated mesh, the same mesh with two
+    duplicated interfaces and every pair bonded)``."""
+    pf = _pf()
+    out = {}
+    for name, (build, dx) in _bonded_builders().items():
+        ref = build(pf, None)
+        mesh = build(pf, [_no_node_strip(MID, dx), _no_node_strip(1, dx)])
+        assert mesh.bonded_pairs().all() and mesh.n_nodes > ref.n_nodes
+        out[name] = (pf, ref, mesh)
+    return out
+
+
+class TestFullyBondedEquivalence:
+    @pytest.mark.parametrize('formulation', FORMULATIONS)
+    @pytest.mark.parametrize('name, loading, delta_T', EQUIVALENCE_CASES)
+    def test_same_solution(self, meshes, formulation, name, loading, delta_T):
+        pf, ref, mesh = meshes[name]
+        a = FESolver(ref, MAT8, pf, formulation=formulation).solve(loading, delta_T=delta_T)
+        b = FESolver(mesh, MAT8, pf, formulation=formulation).solve(loading, delta_T=delta_T)
+        n0 = ref.n_nodes
+        originals, duplicates = mesh.interface_node_pairs()
+        u_scale = np.abs(a.displacement).max()
+        np.testing.assert_allclose(b.displacement[:n0], a.displacement, rtol=0, atol=1e-9 * u_scale)
+        np.testing.assert_array_equal(b.displacement[duplicates], b.displacement[originals])
+        s_scale = np.abs(a.stress_global).max()
+        np.testing.assert_allclose(b.stress_global, a.stress_global, rtol=0, atol=1e-9 * s_scale)
+        assert _rel(b.knockdown, a.knockdown) < 1e-10
+        assert _rel(b.effective_modulus, a.effective_modulus) < 1e-10
+        assert _rel(b.max_failure_index, a.max_failure_index) < 1e-10
+        assert _rel(b.first_ply_failure_load_factor, a.first_ply_failure_load_factor) < 1e-10
+        assert _rel(b.interior_max_failure_index, a.interior_max_failure_index) < 1e-10
+        # Reactions: the duplicates' are folded onto their originals.
+        assert not np.any(b.reaction_forces[n0:])
+        if loading == 'thermal':     # statically determinate: zero up to noise
+            assert np.abs(b.reaction_forces).max() < 1e-8
+        else:
+            r_scale = np.abs(a.reaction_forces).max()
+            np.testing.assert_allclose(b.reaction_forces[:n0], a.reaction_forces,
+                                       rtol=0, atol=1e-9 * r_scale)
+
+    def test_cleared_delaminations_and_cg(self, meshes):
+        pf, ref, mesh = meshes['coupon']
+        cleared = _coupon(pf, [Delamination.strip(MID, 2.0, 5.0)])
+        cleared.delaminations = ()
+        a = FESolver(ref, MAT8, pf).solve('compression')
+        for solver in ('direct', 'cg'):
+            b = FESolver(cleared, MAT8, pf).solve('compression', solver=solver)
+            assert _rel(b.knockdown, a.knockdown) < 1e-8
+            np.testing.assert_allclose(b.displacement[:ref.n_nodes], a.displacement,
+                                       rtol=0, atol=1e-8 * np.abs(a.displacement).max())
+
+    @pytest.mark.parametrize('average', ['ply', 'all'])
+    def test_nodal_recovery(self, meshes, average):
+        pf, ref, mesh = meshes['coupon']
+        a = FESolver(ref, MAT8, pf).solve('compression')
+        b = FESolver(mesh, MAT8, pf).solve('compression')
+        na, ca = a.nodal_stress(ref, average=average)
+        nb, cb = b.nodal_stress(mesh, average=average)
+        scale = np.abs(na).max()
+        np.testing.assert_allclose(nb[:ref.n_nodes], na, rtol=0, atol=1e-9 * scale)
+        np.testing.assert_allclose(cb, ca, rtol=0, atol=1e-9 * scale)
+        originals, duplicates = mesh.interface_node_pairs()
+        np.testing.assert_array_equal(nb[duplicates], nb[originals])
+
+
+# --------------------------------------------------------------------------
+# Physics: the double-cantilever-beam feasibility probe
+# --------------------------------------------------------------------------
+
+DCB_MAT = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=16)
+DCB_WIDTH, DCB_LENGTH = 4.0, 60.0
+DCB_K = 7          # mid-plane of 16 plies
+
+
+def _dcb_mesh(a: float | None) -> CompositeMesh:
+    """The probe's 16-ply UD beam, 60 x 4 mm, 1 mm elements, a mid-plane
+    insert from the loaded end (x = 0) to ``a``."""
+    pf = PorosityField(DCB_MAT, 0.0)
+    dl = None if a is None else [Delamination.strip(DCB_K, 0.0, a)]
+    mesh = CompositeMesh(pf, DCB_MAT, nx=60, ny=2, nz=16, ply_angles='UD', delaminations=dl)
+    mesh.L_x, mesh.L_y = DCB_LENGTH, DCB_WIDTH
+    mesh.generate_mesh()
+    return mesh
+
+
+def _dcb_compliance(mesh: CompositeMesh, K, delta: float = 0.5) -> tuple[float, float]:
+    """Opening compliance ``2 delta / P`` and load ``P`` (N): the hinge lines
+    of the two arms (x = 0, top and bottom faces) opened by ``+-delta``,
+    the far end clamped (its original nodes; bonded duplicates follow)."""
+    x, z = mesh.nodes[:, 0], mesh.nodes[:, 2]
+    top = np.flatnonzero((np.abs(x) < 1e-9) & (np.abs(z - mesh.L_z) < 1e-9))
+    bottom = np.flatnonzero((np.abs(x) < 1e-9) & (np.abs(z) < 1e-9))
+    handler = BoundaryHandler(mesh)
+    far = handler._face_nodes('x_max')
+    constrained = {3 * int(n) + 2: delta for n in top}
+    constrained.update({3 * int(n) + 2: -delta for n in bottom})
+    constrained.update({3 * int(n) + c: 0.0 for n in far for c in range(3)})
+    system = partial(free_dof_system, OrderedDict(), max_entries=1)
+    u, _ = solve_constrained(K, np.zeros(K.shape[0]), constrained, system=system,
+                             ties=_mesh_ties(mesh))
+    P = float((K @ u)[3 * top + 2].sum())
+    return 2.0 * delta / P, P
+
+
+@pytest.fixture(scope='module')
+def dcb():
+    """Compliances of the probe's beam: bonded, an insert to 21 mm, and the
+    same mesh with the insert grown to 22 mm (only the ties change)."""
+    bonded = _dcb_mesh(None)
+    mesh = _dcb_mesh(21.0)
+    assembler = GlobalAssembler(mesh, DCB_MAT, mesh.porosity_field)
+    K = assembler.stiffness()
+    C21, P21 = _dcb_compliance(mesh, K)
+    front = mesh.crack_front_pairs()
+    mesh.delaminations = (Delamination.strip(DCB_K, 0.0, 22.0),)   # grow by one element
+    assert assembler.stiffness() is K                              # no reassembly
+    C22, _ = _dcb_compliance(mesh, K)
+    C0, _ = _dcb_compliance(bonded, GlobalAssembler(bonded, DCB_MAT, bonded.porosity_field).stiffness())
+    return dict(C0=C0, C21=C21, P21=P21, C22=C22, mesh=mesh, front=front)
+
+
+class TestDoubleCantileverBeam:
+    """Corrected beam theory (root rotation, Hashemi, Kinloch and Williams):
+    ``C = 8 (a + chi h)^3 / (E11 b h^3)`` and
+    ``G = 12 P^2 (a + chi h)^2 / (E11 b^2 h^3)`` with ``h`` the arm
+    thickness and ``chi = sqrt(E11 / (11 G13) (3 - 2 (Gamma / (1 + Gamma))^2))``,
+    ``Gamma = 1.18 sqrt(E11 E22) / G13``."""
+
+    @staticmethod
+    def _chi_h() -> float:
+        E11, E22, G13 = DCB_MAT.E11, DCB_MAT.E22, DCB_MAT.G13
+        gamma = 1.18 * math.sqrt(E11 * E22) / G13
+        chi = math.sqrt(E11 / (11.0 * G13) * (3.0 - 2.0 * (gamma / (1.0 + gamma)) ** 2))
+        return chi * 0.5 * DCB_MAT.total_thickness
+
+    def test_front_is_the_row_at_the_crack_tip(self, dcb):
+        mesh = dcb['mesh']
+        originals, _ = dcb['front']
+        assert originals.size == mesh.ny + 1
+        np.testing.assert_allclose(mesh.nodes[originals, 0], 21.0)
+        np.testing.assert_allclose(mesh.nodes[originals, 2], 0.5 * mesh.L_z)
+
+    def test_more_compliant_than_the_bonded_beam(self, dcb):
+        assert dcb['C21'] > 100.0 * dcb['C0']
+        assert dcb['C22'] > dcb['C21']
+
+    def test_compliance_against_corrected_beam_theory(self, dcb):
+        h = 0.5 * DCB_MAT.total_thickness
+        C_beam = 8.0 * (21.0 + self._chi_h()) ** 3 / (DCB_MAT.E11 * DCB_WIDTH * h ** 3)
+        assert dcb['C21'] == pytest.approx(C_beam, rel=0.03)       # 0.983
+
+    def test_energy_release_rate_from_the_compliance_derivative(self, dcb):
+        G = dcb['P21'] ** 2 / (2.0 * DCB_WIDTH) * (dcb['C22'] - dcb['C21']) / 1.0
+        assert G == pytest.approx(0.31148, rel=2e-3)    # N/mm: the probe's 311.5 J/m2
+        h = 0.5 * DCB_MAT.total_thickness
+        a_mid = 21.5     # the one-element difference is centred between the fronts
+        G_beam = 12.0 * dcb['P21'] ** 2 * (a_mid + self._chi_h()) ** 2 / (
+            DCB_MAT.E11 * DCB_WIDTH ** 2 * h ** 3)
+        assert G == pytest.approx(G_beam, rel=0.03)                # 0.989
+
+    def test_regenerated_mesh_agrees_with_the_grown_crack(self, dcb):
+        mesh = _dcb_mesh(22.0)
+        C, _ = _dcb_compliance(mesh, GlobalAssembler(mesh, DCB_MAT, mesh.porosity_field).stiffness())
+        assert C == pytest.approx(dcb['C22'], rel=1e-10)
+
+
+# --------------------------------------------------------------------------
+# Solver integration: boundary conditions, knockdown reference, caches
+# --------------------------------------------------------------------------
+
+class TestBoundaryConditionRule:
+    def test_no_delamination_no_ties(self):
+        mesh = _coupon(_pf())
+        assert _mesh_ties(mesh) is None
+        handler = BoundaryHandler(mesh)
+        nodes = mesh.nodes_on_face('x_min')
+        assert handler._prescribable(nodes) is nodes
+
+    def test_untied_duplicates_on_a_face_are_prescribed(self):
+        # Open at x = 0 (plate edge), bonded at x = 8.
+        mesh = _coupon(_pf(), [Delamination.strip(MID, 0.0, 3.0)])
+        originals, duplicates = mesh.interface_node_pairs()
+        bonded = mesh.bonded_pairs()
+        constrained, _ = BoundaryHandler(mesh).compression_bcs(-0.01)
+        x = mesh.nodes[duplicates, 0]
+        at_xmin, at_xmax = np.isclose(x, 0.0), np.isclose(x, 8.0)
+        assert all(3 * int(n) in constrained for n in duplicates[at_xmin])
+        assert not bonded[at_xmin].any() and bonded[at_xmax].all()
+        tied_dofs = set(mesh.bonded_ties()[0].tolist())
+        assert not tied_dofs & set(constrained)
+        assert all(3 * int(n) in constrained for n in originals[at_xmin | at_xmax])
+
+    @pytest.mark.parametrize('loading', ['compression', 'shear', 'thermal', 'flexure_3pt'])
+    def test_no_dof_is_both_tied_and_prescribed(self, loading):
+        pf = _pf()
+        delams = [Delamination.rectangle(MID, (6.0, 0.0), (1.5, 1.5)),
+                  Delamination.strip(1, 3.0, 9.0)]
+        mesh = _coupon(pf, delams)
+        r = FESolver(mesh, MAT8, pf).solve(loading, delta_T=DT if loading == 'thermal' else None)
+        assert np.isfinite(r.max_failure_index)
+        assert not np.any(r.reaction_forces[mesh.n_structured_nodes:][
+            mesh.bonded_pairs()])
+
+    def test_face_line_nodes_stays_geometric(self):
+        mesh = _coupon(_pf(), [Delamination.strip(MID, 0.0, 3.0)])
+        handler = BoundaryHandler(mesh)
+        _, duplicates = mesh.interface_node_pairs()
+        x_max = handler.nodes_on_face('x_max')
+        assert np.isin(duplicates, x_max).sum() == mesh.ny + 1        # geometric
+        assert not np.isin(duplicates, handler._face_nodes('x_max')).any()
+
+
+class TestKnockdownWithDelamination:
+    @staticmethod
+    def _ilss(vp: float, a: float | None):
+        pf = PorosityField(MAT8, vp, distribution='uniform')
+        dl = None if a is None else [Delamination.strip(MID, 1.0, a)]
+        mesh = CompositeMesh.for_ilss(pf, MAT8, ny=2, delaminations=dl)
+        return FESolver(mesh, MAT8, pf)
+
+    def test_delamination_alone_reduces_the_stiffness(self):
+        assert self._ilss(0.0, None).solve('ilss').knockdown == 1.0
+        kd = self._ilss(0.0, 4.0).solve('ilss').knockdown
+        assert 0.0 < kd < 0.99
+
+    def test_reference_is_the_undamaged_laminate(self, monkeypatch):
+        monkeypatch.setattr(_knockdown, '_PRISTINE_MEASURE_CACHE', OrderedDict())
+        calls = []
+        real = _knockdown._pristine_mesh
+        monkeypatch.setattr(_knockdown, '_pristine_mesh', lambda mesh: calls.append(1) or real(mesh))
+        porous = self._ilss(0.03, None).solve('ilss').knockdown
+        short = self._ilss(0.03, 3.0)
+        both = short.solve('ilss').knockdown
+        assert both < porous < 1.0
+        # A longer crack at the same interface shares the reference.
+        longer = self._ilss(0.03, 4.0)
+        assert longer.solve('ilss').knockdown < both
+        assert len(calls) == 2              # undelaminated mesh, duplicated mesh
+        # The reference of the duplicated mesh equals the undelaminated one.
+        values = list(_knockdown._PRISTINE_MEASURE_CACHE.values())
+        assert values[1] == pytest.approx(values[0], rel=1e-10)
+
+    def test_reference_key_holds_the_tie_set(self):
+        _knockdown._PRISTINE_MEASURE_CACHE.clear()
+        self._ilss(0.03, None).solve('ilss')
+        self._ilss(0.03, 3.0).solve('ilss')
+        keys = list(_knockdown._PRISTINE_MEASURE_CACHE)
+        assert len(keys) == 2
+
+        def ties(key):
+            return [c for c in key if isinstance(c, tuple) and c[:1] == ('ties',)]
+
+        assert ties(keys[0]) == [] and len(ties(keys[1])) == 1
+
+
+class TestCachesFollowTheTies:
+    def test_thermal_solution_is_rebuilt_when_the_crack_grows(self):
+        pf = _pf(0.0)
+        mesh = _coupon(pf, [Delamination.strip(MID, 0.0, 2.0)])
+        solver = FESolver(mesh, MAT8, pf)
+        r1 = solver.solve('thermal', delta_T=DT)
+        K, cached = solver.assembler.stiffness(), solver._thermal_cache
+        solver.solve('thermal', delta_T=2 * DT)
+        assert solver._thermal_cache is cached
+        mesh.delaminations = (Delamination.strip(MID, 0.0, 6.0),)
+        r2 = solver.solve('thermal', delta_T=DT)
+        assert solver.assembler.stiffness() is K
+        assert solver._thermal_cache is not cached
+        assert not np.allclose(r1.displacement, r2.displacement)
+
+    def test_factorizations_are_keyed_on_the_ties(self):
+        pf = _pf()
+        mesh = _coupon(pf, [Delamination.strip(MID, 0.0, 2.0)])
+        solver = FESolver(mesh, MAT8, pf)
+        solver.solve('compression')
+        keys = set(solver._lu_cache)
+        mesh.delaminations = (Delamination.strip(MID, 0.0, 6.0),)
+        solver.solve('compression')
+        assert len(solver._lu_cache) == 2 and set(solver._lu_cache) > keys
+
+
+# --------------------------------------------------------------------------
+# Structured helpers on a delaminated mesh
+# --------------------------------------------------------------------------
+
+class TestStructuredSolverHelpers:
+    def test_flexural_modulus(self):
+        pf = _pf()
+        build, _ = _bonded_builders()['flexure']
+        bonded = FESolver(build(pf, None), MAT8, pf).solve('flexure_3pt')
+        mesh = build(pf, [Delamination.strip(MID, 4.0, 14.0)])
+        cracked = FESolver(mesh, MAT8, pf).solve('flexure_3pt')
+        assert cracked.effective_modulus is not None
+        assert 0.0 < cracked.effective_modulus < bonded.effective_modulus
+
+    def test_short_beam_shear(self):
+        pf = _pf()
+        mesh = CompositeMesh.for_ilss(pf, MAT8, ny=2, delaminations=[Delamination.strip(MID, 1.0, 2.5)])
+        r = FESolver(mesh, MAT8, pf).solve('ilss')
+        sbs = short_beam_shear(r, mesh)
+        assert sbs.applied_load == pytest.approx(-10.0)
+        assert sbs.midplane_shear > 0.0 and math.isfinite(sbs.first_ply_failure_load)
+
+    def test_exports(self, tmp_path):
+        pf = _pf()
+        mesh = _coupon(pf, [Delamination.strip(MID, 2.0, 5.0)])
+        r = FESolver(mesh, MAT8, pf).solve('compression')
+        r.to_vtu(mesh, tmp_path / 'r.vtu')
+        r.to_vtk(mesh, tmp_path / 'r.vtk')
+        FESolver.export_results(r, tmp_path / 'r.json')
+        assert (tmp_path / 'r.vtu').stat().st_size > 0
+        text = (tmp_path / 'r.vtk').read_text(encoding='utf-8')
+        assert f"POINTS {mesh.n_nodes} float" in text and 'SCALARS ply_id' in text

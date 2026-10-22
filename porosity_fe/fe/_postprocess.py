@@ -22,7 +22,7 @@ from ..mesh import CompositeMesh
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from ._load_cases import _FLEXURE_PROCEDURE
-from .assembler import BoundaryHandler, GlobalAssembler
+from .assembler import BoundaryHandler, GlobalAssembler, _fold_tied, _mesh_ties
 from .batch import ElementBatch
 from .flexure import flexural_modulus
 
@@ -86,7 +86,11 @@ def reactions_and_modulus(
 
     Reactions are ``K u - F`` at the constrained DOFs (including any
     load applied there, which the support carries) and exactly zero at
-    the free DOFs, where ``K u - F`` is only the solver residual.
+    the free DOFs, where ``K u - F`` is only the solver residual. On a
+    delaminated mesh the residual of each tied duplicate (the force its
+    tie carries) is first folded onto its original node, so a supported
+    original reports the reaction of the whole bonded node and the
+    duplicates none.
 
     For the displacement-controlled modes only the prescribed boundary
     moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
@@ -99,7 +103,7 @@ def reactions_and_modulus(
     shear (see :attr:`FieldResults.effective_modulus`).
     """
     Ku = K @ u
-    residual = Ku - F
+    residual = _fold_tied(Ku - F, _mesh_ties(mesh))
     is_fixed = np.zeros(residual.size, dtype=bool)
     is_fixed[np.fromiter(constrained.keys(), dtype=np.intp,
                          count=len(constrained))] = True

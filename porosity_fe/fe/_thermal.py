@@ -18,6 +18,7 @@ import scipy.sparse
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from .assembler import _fold_tied, _mesh_ties
 from .batch import ElementBatch, assemble_load_vector, thermal_stress_moduli
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -101,6 +102,9 @@ def unit_solution(
     The supports are statically determinate, so the reactions must
     vanish; a reaction above ``1e-6`` of the largest nodal thermal
     force is logged as a warning (it would point to a support bug).
+    On a delaminated mesh ``solve`` ties the bonded interface, and the
+    residual of each tied duplicate is folded onto its original before the
+    reactions are read.
     """
     beta = thermal_stress_moduli(batch, mesh, alpha_local)
     F_th = assemble_load_vector(batch, batch.thermal_loads(beta), mesh.n_dof)
@@ -113,7 +117,7 @@ def unit_solution(
     strain = batch.strains(u) + batch.incompatible_mode_strains(beta)
     stress = batch.stresses(strain) - beta
 
-    residual = K @ u - F
+    residual = _fold_tied(K @ u - F, _mesh_ties(mesh))
     fixed = np.fromiter(constrained.keys(), dtype=np.intp,
                         count=len(constrained))
     reactions = np.zeros_like(residual)
