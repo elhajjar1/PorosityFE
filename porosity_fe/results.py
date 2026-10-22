@@ -1,7 +1,7 @@
 """Shared result dataclasses (FailureResult / ConfigResult / ConfigArtifacts).
 
 Lives in its own module so :mod:`porosity_fe.empirical`,
-:mod:`porosity_fe.fe.solver` and :mod:`porosity_fe.pipeline` can all
+:mod:`porosity_fe.fe.results` and :mod:`porosity_fe.pipeline` can all
 consume them without importing each other (#119).
 """
 
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .empirical import EmpiricalSolver
-    from .fe.solver import FieldResults
+    from .fe.results import FieldResults
     from .mesh import CompositeMesh
     from .porosity_field import PorosityField
 

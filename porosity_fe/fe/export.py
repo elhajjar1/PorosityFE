@@ -2,8 +2,8 @@
 
 Split out of ``fe/solver.py`` (IMPROVEMENT_PLAN 5.1). The public entry
 points are :meth:`FieldResults.to_vtk
-<porosity_fe.fe.solver.FieldResults.to_vtk>`, :meth:`FieldResults.to_vtu
-<porosity_fe.fe.solver.FieldResults.to_vtu>` and
+<porosity_fe.fe.results.FieldResults.to_vtk>`, :meth:`FieldResults.to_vtu
+<porosity_fe.fe.results.FieldResults.to_vtu>` and
 :meth:`FESolver.export_results
 <porosity_fe.fe.solver.FESolver.export_results>`, which delegate here, and
 :func:`write_pvd` for a series of VTU files. All writers are
@@ -28,7 +28,7 @@ from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 if TYPE_CHECKING:
-    from .solver import FieldResults
+    from .results import FieldResults
 
 logger = logging.getLogger("porosity_fe_analysis")
 

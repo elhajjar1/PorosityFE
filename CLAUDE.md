@@ -81,8 +81,14 @@ different numerical answers for the same inputs**, not the same answer:
   factorization are cached on the assembler / solver and reused across
   solves until the mesh, material or porosity change. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
-  `_degraded_strengths`). The FE path **does** pick up distribution-shape
-  differences.
+  `degraded_strengths` in `fe/failure.py`). The FE path **does** pick up
+  distribution-shape differences. `solver.py` holds only the
+  orchestration; the steps live in private `fe/` modules: `_load_cases`
+  (loading modes, checks, BC dispatch), `_constrained_solve` (elimination,
+  LU cache, CG), `_knockdown` (pristine reference, solved before the
+  porous model so one factorization is alive at a time), `_thermal`
+  (unit-`delta_T` solve, factorization freed once cached), `_postprocess`
+  (recovery, failure metrics); `FieldResults` is in `fe/results.py`.
 
 When changing one solver, check whether the matching behavior in the
 other is intentional or needs to move in lockstep — they're independent

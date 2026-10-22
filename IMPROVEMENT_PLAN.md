@@ -32,7 +32,7 @@ polish, (5) architecture cleanups, and (6) CI/packaging/docs/hygiene. Items are
 tagged **[S]**mall (≤ half day), **[M]**edium (1–3 days), **[L]**arge (multi-day
 / design needed).
 
-## Status (2026-10-14)
+## Status (2026-10-22)
 
 The sections below are kept as written on 2026-07-16 (file:line references
 point at that tree). What has landed since, by pull request:
@@ -48,12 +48,14 @@ point at that tree). What has landed since, by pull request:
 | #202 | 2.7 (layup scaling, design R1) |
 | #203 | 3.6 incompatible-mode element as default; 3.5 thermal / residual-stress load case |
 | #204 | 3.5 in the app; 3.6 flexure modes and `refinement_study`; strict JSON export |
-| #205 (open) | Production mesh resolves every ply; MINRES deprecated; 2-entry LU cache; 3.6 periodic unit-cell check of Mori-Tanaka |
+| #205 | Production mesh resolves every ply; MINRES deprecated; 2-entry LU cache; 3.6 periodic unit-cell check of Mori-Tanaka; 6.2 (generated validation reports untracked) |
+| #206 | 3.6 ILSS as a true ASTM D2344 short beam (`CompositeMesh.for_ilss`, `short_beam_shear`) |
+| #207 (open) | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
 
-In progress: 3.6 ILSS as a true ASTM D2344 short beam; a second `fe/solver.py`
-split (thermal, constraint handling and knockdown have grown it back to about
-1,600 lines). The generated validation reports are no longer tracked (the
-rest of 6.2).
+Open follow-ups: a flexure branch in `refinement_study` (the D7264 specimen
+is sized by element length, not `nx`) and an interior region for the flexure
+specimen clear of the supports and load lines (the side-face margin leaves
+no interior elements on the default 13 mm wide, 4-element specimen).
 
 ---
 

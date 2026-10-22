@@ -8,6 +8,7 @@ parts that need a live script-run context and so can't be unit-tested
 directly (see tests/test_app.py for the headless helpers).
 """
 
+import logging
 from pathlib import Path
 
 import matplotlib
@@ -247,3 +248,107 @@ def test_uq_expander_reports_percentiles():
     assert labels == ["Knockdown p5", "Knockdown p50", "Knockdown p95"]
     p5, p50, p95 = (float(m.value) for m in at.metric)
     assert p5 < p50 < p95
+
+
+def test_layup_default_comes_from_session_state_only():
+    """The layup input takes its default from st.session_state alone, so
+    Streamlit no longer warns that it was "created with a default value but
+    also had its value set via the Session State API"."""
+    messages = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+
+    policy_logger = logging.getLogger("streamlit.elements.lib.policies")
+    handler = _Collect()
+    policy_logger.addHandler(handler)
+    try:
+        at = _fresh_app()
+        assert at.text_input(key="layup_input").value == "[0/45/-45/90]_3s"
+        at.text_input(key="layup_input").set_value("[0/90]_2s").run()
+        at.run()                                    # the typed value stays
+    finally:
+        policy_logger.removeHandler(handler)
+    assert not at.exception
+    assert at.text_input(key="layup_input").value == "[0/90]_2s"
+    assert not any("layup_input" in m for m in messages), messages
+
+
+class TestStressComponentDefault:
+    def test_opens_on_the_load_case_and_keeps_the_users_pick(self):
+        """ILSS opens on τ₁₃; a component the user picks survives a new
+        run with another default (following the default between runs is
+        covered headlessly in test_app.py)."""
+        at = _select(_fresh_app(), "Loading mode", "ilss")
+        at = _run_small_analysis(at)
+        assert not at.exception
+        assert at.selectbox(key="stress_component").value == "τ₁₃ (interlaminar)"
+        at.selectbox(key="stress_component").set_value("Von Mises").run()
+        _select(at, "Loading mode", "shear")
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        assert at.session_state["result"]["fe_loading"] == "shear"
+        assert at.selectbox(key="stress_component").value == "Von Mises"
+
+
+def _small_flexure_run(at: AppTest, mode: str = "flexure_3pt") -> AppTest:
+    """Flexure on 0.5 mm plies, so the 13 mm wide D7264 specimen mesh stays
+    small (its nx and ny follow the span; nz comes from the slider)."""
+    _select(at, "Loading mode", mode)
+    next(n for n in at.number_input if n.label == "Ply thickness (mm)") \
+        .set_value(0.5).run()
+    return _run_small_analysis(at)
+
+
+class TestFlexureFlow:
+    def test_flexure_3pt_run_shows_fe_and_clt_moduli(self):
+        at = _select(_fresh_app(), "Loading mode", "flexure_3pt")
+        captions = " ".join(c.value for c in at.caption)
+        assert "ASTM D7264 specimen" in captions and "FE only" in captions
+        at = _small_flexure_run(at)
+        assert not at.exception
+        result = at.session_state["result"]
+        assert result["fe_loading"] == "flexure_3pt"
+        assert result["mesh"].flexure_geometry is not None
+        assert result["mesh"].nz == 4
+        fe, flex = result["fe_field"], result["fe_flexure"]
+        assert fe is not None and fe.effective_modulus > 0
+        assert any(h.value == "FE flexure (ASTM D7264 procedure A, three-point)"
+                   for h in at.subheader)
+        metrics = {m.label: m.value for m in at.metric}
+        assert metrics["FE flexural modulus E_f"] == f"{fe.effective_modulus / 1000:.1f} GPa"
+        assert metrics["CLT E_f (D matrix)"] == f"{flex['clt_E_f'] / 1000:.1f} GPa"
+        assert metrics["FE knockdown"] == f"{fe.knockdown:.3f}"
+        assert any("three-point flexure specimen" in s.value for s in at.success)
+        assert at.selectbox(key="stress_component").value == "σ₁₁ (fiber)"
+        # The convergence check does not refine the D7264 specimen (yet).
+        assert any("Not available for the flexure modes" in i.value for i in at.info)
+        labels = [b.proto.label for b in at.get("download_button")]
+        assert "Download FE results (VTU)" in labels
+
+
+def test_convergence_expander_runs_the_study():
+    """The Results tab plans the levels before running, then shows the
+    level and verdict tables (tiny meshes keep it fast)."""
+    at = _run_small_analysis(_fresh_app())
+    assert not at.exception
+    plan = at.dataframe[0].value
+    assert list(plan["Mesh"]) == ["8 × 4 × 4", "12 × 6 × 4"]
+    assert list(plan["Elements"]) == ["128", "288"]
+    assert all(v.endswith(" GB") for v in plan["Est. peak memory"])
+    at.radio(key="conv_levels").set_value("3 levels (×1, ×1.5, ×2)").run()
+    meshes = ["8 × 4 × 4", "12 × 6 × 4", "16 × 8 × 4"]
+    assert list(at.dataframe[0].value["Mesh"]) == meshes
+    assert len(at.dataframe) == 1                  # nothing solved yet
+    _button(at, "Check mesh convergence").click().run()
+    assert not at.exception
+    assert len(at.dataframe) == 3
+    levels, verdicts = at.dataframe[1].value, at.dataframe[2].value
+    assert list(levels["Mesh"]) == meshes
+    assert list(verdicts["Quantity"]) == ["Knockdown", "Interior max FI",
+                                          "Domain max FI"]
+    assert set(verdicts["Verdict"]) <= {"converged", "not converged",
+                                        "mesh-dependent", "n/a"}
+    assert any("mesh-dependent" in c.value and "1 − KD" in c.value
+               for c in at.caption)

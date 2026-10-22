@@ -455,6 +455,55 @@ class TestThermalOnlyMode:
         solver.solve('thermal', delta_T=-50.0, solver='cg')
         assert solver._thermal_cache is not cached
 
+    @staticmethod
+    def _thermal_key(solver):
+        from porosity_fe.fe.assembler import _ConstraintReduction
+        return _ConstraintReduction.from_constraints(
+            solver.mesh.n_dof, solver.bc_handler.free_bcs()[0]).key
+
+    def test_factorization_is_released_once_the_solution_is_cached(
+            self, lu_alive_at_build):
+        """The unit solution is rescaled for every delta_T, so the 3-2-1
+        system leaves the LU cache as soon as it is solved: a combined solve
+        holds the thermal and mechanical factorizations one at a time."""
+        solver = _solver(CROSS_PLY, 6, 2, formulation='hex8')
+        solver.solve('thermal', delta_T=DT)
+        assert solver._thermal_cache is not None
+        assert self._thermal_key(solver) not in solver._lu_cache
+        assert lu_alive_at_build == [1]
+        # Rescaled from the cache, not solved again.
+        solver.solve('thermal', delta_T=-50.0)
+        solver.solve('tension', delta_T=-50.0)
+        assert lu_alive_at_build == [1, 1]
+        assert self._thermal_key(solver) not in solver._lu_cache
+        assert len(solver._lu_cache) == 1
+
+    def test_combined_solve_holds_one_factorization_at_a_time(
+            self, monkeypatch, lu_alive_at_build):
+        """Pristine reference, thermal and mechanical systems are each freed
+        (or, for the mechanical one, the only one kept) before the next is
+        factorized."""
+        from collections import OrderedDict
+
+        from porosity_fe.fe import _knockdown
+        monkeypatch.setattr(_knockdown, '_PRISTINE_MEASURE_CACHE', OrderedDict())
+        solver = _solver(CROSS_PLY, 6, 2, formulation='hex8i', vp=0.02)
+        solver.solve('compression', delta_T=DT)
+        assert lu_alive_at_build == [1, 1, 1]
+        assert list(solver._lu_cache) != [self._thermal_key(solver)]
+        assert len(solver._lu_cache) == 1
+
+    def test_factorization_is_kept_for_a_next_solve_on_the_same_set(self):
+        """No loading mode shares the 3-2-1 supports, but if the solve that
+        follows does, its system stays cached."""
+        solver = _solver(CROSS_PLY, 6, 2, formulation='hex8')
+        K = solver.assembler.stiffness()
+        free = solver.bc_handler.free_bcs()[0]
+        solver._thermal_unit_solution(K, next_constrained=free)
+        [(K_cached, _, lu)] = solver._lu_cache.values()
+        assert K_cached is K and lu is not None
+        assert list(solver._lu_cache) == [self._thermal_key(solver)]
+
 
 # --------------------------------------------------------------------------
 # Combined thermal + mechanical

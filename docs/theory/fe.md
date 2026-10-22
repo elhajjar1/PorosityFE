@@ -275,7 +275,9 @@ elements (18,375 degrees of freedom). Solving both procedures takes
 about 3 to 4 s on a pristine mesh and 7 to 8 s on a porous one, which
 adds the pristine reference solves (four cores); the two procedures share
 the supports and so the factorization. On a mesh without
-`flexure_geometry` the supports are the two bottom end edges.
+`flexure_geometry` the supports are the two bottom end edges. The web
+app offers both procedures as FE-only loading modes on this specimen
+(with $n_z$ from its mesh setting).
 
 **Supports and loads.**
 {meth}`BoundaryHandler.roller_supports <porosity_fe.BoundaryHandler.roller_supports>`
@@ -596,6 +598,9 @@ study = refinement_study(MATERIALS["T800_epoxy"], 0.03, "compression",
                          porosity_config={"distribution": "clustered"})
 print(study.summary())          # tables and notes; study.to_dict() for JSON
 ```
+
+The web app's Results tab runs the same study on the analysis mesh
+("Mesh convergence check": two or three in-plane levels, $n_z$ fixed).
 
 **What is refined.** By default the levels are $30 \times 10 \times
 n_\text{plies}$ refined in plane by the factors 1, 1.5 and 2, with $n_z$

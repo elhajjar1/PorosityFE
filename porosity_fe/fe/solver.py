@@ -1,15 +1,35 @@
-"""FE solver and FieldResults dataclass."""
+"""FE solver: :class:`FESolver`, the orchestrator of a linear static solve.
+
+:meth:`FESolver.solve` validates the load case, assembles ``K``
+(:class:`~porosity_fe.fe.assembler.GlobalAssembler`), solves the
+constrained system and post-processes the field into a
+:class:`~porosity_fe.fe.results.FieldResults`. The steps live in focused
+modules (IMPROVEMENT_PLAN 5.1):
+
+* :mod:`porosity_fe.fe.results`: :class:`FieldResults`;
+* ``_load_cases``: loading modes, input checks, boundary-condition
+  dispatch, interior region;
+* ``_constrained_solve``: exact elimination of the Dirichlet BCs, sparse
+  LU with its per-constrained-set cache, CG / MINRES;
+* ``_knockdown``: stiffness measure, pristine reference and its cache;
+* ``_thermal``: free-standing unit-``delta_T`` thermal solve;
+* ``_postprocess``: stress / strain recovery, reactions and modulus,
+  failure metrics;
+* :mod:`porosity_fe.fe.failure` and :mod:`porosity_fe.fe.export`:
+  failure criteria and result export.
+
+The pre-split names other modules and the tests import from here
+(``FieldResults``, ``_PRISTINE_MEASURE_CACHE``, ``_check_delta_T``,
+``_minres_deprecation``, ``_resolve_applied_strain``) are re-exported.
+"""
 
 from __future__ import annotations
 
-import copy
-import hashlib
+import functools
 import logging
 import os
 import time
-import warnings
 from collections import OrderedDict
-from dataclasses import astuple, dataclass
 from typing import Literal
 
 import numpy as np
@@ -21,655 +41,20 @@ from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
-from ..results import FailureResult
-from ..transforms import strain_transformation_3d, stress_transformation_3d
-from . import failure, short_beam
+from . import _constrained_solve, _knockdown, _postprocess, _thermal, failure
+from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
+from ._knockdown import _stiffness_measure
+from ._load_cases import _check_delta_T as _check_delta_T
+from ._load_cases import _minres_deprecation as _minres_deprecation
+from ._load_cases import _resolve_applied_strain as _resolve_applied_strain
+from ._load_cases import apply_boundary_conditions, check_solve_arguments, interior_mask
+from ._thermal import _ThermalUnitSolution
 from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
-from .batch import assemble_load_vector, thermal_stress_moduli
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
-from .export import write_vtk, write_vtu
-from .flexure import flexural_modulus
-from .recovery import NodalAverage, extrapolate_to_nodes
+from .results import FieldResults as FieldResults
 
 logger = logging.getLogger("porosity_fe_analysis")
-
-# ============================================================
-# SECTION 7g: FE SOLVER AND FIELD RESULTS
-# ============================================================
-
-@dataclass(frozen=True, slots=True)
-class FieldResults:
-    """Results from a finite element solve.
-
-    Attributes
-    ----------
-    displacement : np.ndarray
-        Shape (n_nodes, 3) nodal displacements.
-    stress_global : np.ndarray
-        Shape (n_elem, n_gp, 6) stress in global coordinates.
-    stress_local : np.ndarray
-        Shape (n_elem, n_gp, 6) stress in local (material) coordinates.
-    strain_global : np.ndarray
-        Shape (n_elem, n_gp, 6) strain in global coordinates.
-    strain_local : np.ndarray
-        Shape (n_elem, n_gp, 6) strain in local coordinates.
-    max_failure_index : float
-        Maximum failure index across all Gauss points (criterion-dependent).
-    knockdown : float
-        Stiffness knockdown factor: porous over pristine structural
-        stiffness from a pristine reference solve of the same mesh (``E_x``
-        or ``G_xy`` ratio; beam-stiffness ratio for ILSS and flexure).
-    per_element_failure_index : np.ndarray or None
-        Shape (n_elem,) max-over-Gauss-point failure index per element.
-        Optional (defaults to ``None`` for back-compatibility with callers
-        that construct ``FieldResults`` directly); populated by
-        ``FESolver.solve`` and consumed by the VTK export so failure
-        hot-spots can be sliced in ParaView.
-    failure_criterion : str
-        Which failure criterion was used to produce ``max_failure_index`` and
-        ``per_element_failure_index``. One of ``'tsai_wu'`` (default for
-        back-compat), ``'hashin'``, or ``'max_stress'``.
-    failure_mode_indices : dict or None
-        Per-mode breakdown of the maximum failure index across the model with
-        keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
-        ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
-        ``NaN`` (the polynomial does not separate modes; ``null`` in the
-        JSON export); for ``max_stress`` the unused entries are zero. Lets
-        the GUI and JSON exporter report the dominant failure mode, not
-        just severity.
-    reaction_forces : np.ndarray or None
-        Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
-        constrained DOFs and exactly zero at the free DOFs. A load applied
-        at a constrained DOF is carried by the support and enters its
-        reaction with the opposite sign. Summed over a loaded face they
-        give the resultant the boundary conditions apply.
-    effective_modulus : float or None
-        Homogenized modulus of the specimen (MPa). For the displacement-
-        controlled modes, ``E_x`` for ``'compression'`` / ``'tension'``
-        and ``G_xy`` for ``'shear'``, from the strain energy
-        ``u^T K u / (strain^2 * V)``. For ``'flexure_3pt'`` /
-        ``'flexure_4pt'``, the flexural modulus ``E_f`` from the mid-span
-        deflection ``delta`` with the transverse shear deflection taken
-        out (Timoshenko beam theory)::
-
-            delta / P = a (3 L^2 - 4 a^2) / (48 E_f I) + a / (2 b K_s)
-
-        with ``I = b h^3 / 12``, support span ``L``, shear span ``a``
-        (``L / 2`` three-point, ``(L - load_span) / 2`` four-point) and
-        ``K_s`` the laminate transverse shear stiffness per unit width
-        (``(5/6) G_13 h`` for a UD beam); see the finite-element theory
-        page. Comparable with the classical-lamination-theory ``E_f``
-        (:func:`~porosity_fe.compute_degraded_clt_flexural_modulus`).
-        ``None`` for ``'ilss'``: at the short-beam span of four
-        thicknesses about half the deflection is shear and the contact
-        indentation is not negligible, so a flexural modulus would mostly
-        measure the shear correction (use ``'flexure_3pt'`` on a
-        :meth:`~porosity_fe.CompositeMesh.for_flexure` specimen for
-        ``E_f``). ``None`` for ``'thermal'`` too.
-    first_ply_failure_load_factor : float or None
-        Multiplier on the applied load at which ``failure_criterion`` first
-        reaches 1 at any Gauss point of a non-void element (linear
-        scaling); the margin of safety is this value minus 1. ``inf`` if no
-        point is stressed.
-    formulation : str
-        Element formulation of the solve, ``'hex8i'`` (default, also for
-        callers that construct ``FieldResults`` directly) or ``'hex8'``;
-        see :class:`FESolver`.
-    delta_T : float or None
-        Temperature change from the stress-free state (K) of a thermal
-        (``loading='thermal'``) or combined (mechanical with ``delta_T=``)
-        solve; ``None`` for a purely mechanical solve.
-    residual_stress_local : np.ndarray or None
-        Shape (n_elem, n_gp, 6) ply-local thermal residual stress of the
-        free-standing laminate at ``delta_T``, the part of
-        :attr:`stress_local` that does not scale with the mechanical load.
-        ``None`` without ``delta_T``.
-    residual_max_failure_index : float or None
-        Maximum failure index of the residual stress alone (``None``
-        without ``delta_T``). At or above 1 the laminate fails on cool-down
-        and :attr:`first_ply_failure_load_factor` is 0.
-    interior_max_failure_index : float or None
-        Maximum failure index over the interior elements, whose centroids
-        lie at least ``interior_margin`` from every lateral face
-        (``x``/``y``; by default ``max(h, 2 element widths)`` with ``h``
-        the laminate thickness). It leaves out the free-edge singularity
-        that makes the domain maximum mesh-dependent under thermal load.
-        For ``'ilss'`` the interior is the two shear spans of the
-        short-beam specimen instead: at least ``interior_margin`` (default
-        ``h / 2``) from both support lines, the edges of the loading band
-        and the side faces, so the contact stresses under the nose and at
-        the supports are left out
-        (:func:`porosity_fe.fe.short_beam.interior_element_mask`).
-        ``None`` when no element is that far from the edges.
-    interior_first_ply_failure_load_factor : float or None
-        :attr:`first_ply_failure_load_factor` over the interior elements
-        only; ``None`` when there are none.
-    load_factor_basis : str
-        What :attr:`first_ply_failure_load_factor` multiplies:
-        ``'mechanical'`` (default; the applied load), ``'delta_T'``
-        (``loading='thermal'``: the temperature change, so the critical
-        change is ``factor * delta_T``) or ``'mechanical_with_residual'``
-        (the applied load, with the residual stress held fixed).
-    cte_local : tuple of float or None
-        Lamina CTEs ``(alpha_1, alpha_2, alpha_3)`` (1/K) used with
-        ``delta_T``; ``None`` without it.
-
-    Notes
-    -----
-    Voigt order for both stress and strain: ``[11, 22, 33, 23, 13, 12]``
-    (normals first, then 23 / 13 / 12 shears). The last three strain
-    components are **engineering** strain (``gamma_ij = 2 * eps_ij``); the
-    last three stress components are the matching shear stresses
-    ``[tau_23, tau_13, tau_12]``. Sign convention: tensile normals are
-    positive, compressive normals are negative — these arrays are signed
-    (unlike the empirical ``failure_stress_MPa`` returned by
-    :meth:`EmpiricalSolver.apply_loading`, which is a positive magnitude).
-    Use :func:`strain_transformation_3d` / :func:`stress_transformation_3d`
-    to rotate these arrays between frames.
-
-    With a thermal load (``delta_T`` set) the stress and displacement
-    arrays hold totals, residual plus mechanical (superposed solves, see
-    :meth:`FESolver.solve`), and the strains are total strains, what a
-    gauge bonded in the stress-free state would read: mechanical strain
-    plus the free thermal strain ``alpha delta_T``. ``knockdown`` is
-    ``nan`` for ``loading='thermal'``, which has no structural stiffness
-    measure.
-    """
-    displacement: np.ndarray
-    stress_global: np.ndarray
-    stress_local: np.ndarray
-    strain_global: np.ndarray
-    strain_local: np.ndarray
-    max_failure_index: float
-    knockdown: float
-    per_element_failure_index: np.ndarray | None = None
-    failure_criterion: str = 'tsai_wu'
-    failure_mode_indices: dict[str, float] | None = None
-    reaction_forces: np.ndarray | None = None
-    effective_modulus: float | None = None
-    first_ply_failure_load_factor: float | None = None
-    formulation: str = _DEFAULT_FORMULATION
-    delta_T: float | None = None
-    residual_stress_local: np.ndarray | None = None
-    residual_max_failure_index: float | None = None
-    interior_max_failure_index: float | None = None
-    interior_first_ply_failure_load_factor: float | None = None
-    load_factor_basis: str = 'mechanical'
-    cte_local: tuple[float, float, float] | None = None
-
-    def __repr__(self) -> str:
-        n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
-        n_elem = self.stress_global.shape[0] if self.stress_global is not None else 0
-        return (f"FieldResults(n_nodes={n_nodes}, n_elements={n_elem}, "
-                f"max_FI={self.max_failure_index:.4f}, "
-                f"knockdown={self.knockdown:.4f})")
-
-    def summary(self, sigma_pristine: float | None = None,
-                model_label: str | None = None) -> FailureResult:
-        """Distill the field result into a :class:`FailureResult`.
-
-        Unifies the FE return shape with the empirical solver (#44 item 1)
-        so callers can treat the two solver outputs polymorphically.
-
-        Parameters
-        ----------
-        sigma_pristine : float, optional
-            Pristine reference stress (MPa) used to compute
-            ``failure_stress = knockdown * sigma_pristine``. If ``None``
-            (default), the ``failure_stress`` field is set to
-            ``knockdown`` itself (unit knockdown — the bare ratio); pass
-            the loading-mode-specific pristine strength
-            (``material.sigma_1c`` for compression, ``material.tau_ilss``
-            for ILSS, etc.) to get a meaningful magnitude.
-        model_label : str, optional
-            Label used for the ``model`` field. Defaults to
-            ``f"fe_{self.failure_criterion}"`` so the FE summary is
-            self-describing and distinguishable from the empirical labels.
-
-        Returns
-        -------
-        FailureResult
-            Unified summary with the FE ``knockdown`` (``nan`` for
-            ``loading='thermal'``, passed through), derived
-            ``failure_stress``, FE-criterion-tagged ``model`` and a
-            ``details`` dict carrying ``max_failure_index``,
-            ``failure_criterion`` and ``failure_mode_indices`` for
-            downstream consumers that need the richer field-result data.
-        """
-        kd = float(self.knockdown)
-        sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
-        return FailureResult(
-            failure_stress=kd * sigma_ref,
-            knockdown=kd,
-            model=str(model_label) if model_label is not None
-            else f"fe_{self.failure_criterion}",
-            details={
-                'max_failure_index': float(self.max_failure_index),
-                'failure_criterion': self.failure_criterion,
-                'failure_mode_indices': (
-                    dict(self.failure_mode_indices)
-                    if self.failure_mode_indices is not None else None
-                ),
-                'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
-                'effective_modulus': self.effective_modulus,
-                'formulation': self.formulation,
-                'load_factor_basis': self.load_factor_basis,
-                'interior_max_failure_index': self.interior_max_failure_index,
-                'interior_first_ply_failure_load_factor':
-                    self.interior_first_ply_failure_load_factor,
-                'delta_T': self.delta_T,
-                'residual_max_failure_index': self.residual_max_failure_index,
-            },
-        )
-
-    def to_vtk(self, mesh: CompositeMesh,
-               filename: str | os.PathLike) -> None:
-        """Write the hex mesh and per-element FE fields to a legacy ASCII VTK
-        file (``UNSTRUCTURED_GRID``) for inspection in ParaView / VisIt / PyVista.
-
-        The writer is dependency-free: it emits the legacy VTK 3.0 ASCII
-        format by hand. The 8-node hex connectivity already stored in
-        ``mesh.elements`` follows the standard VTK hexahedron ordering
-        (bottom face CCW then top face CCW, see ``_NODE_COORDS_REF``), so the
-        cells are written verbatim with cell type 12 (``VTK_HEXAHEDRON``).
-
-        Point data
-        -----------
-        - ``displacement`` (3-vector), and the scalars ``porosity``,
-          ``stiffness_reduction``, ``ply_id`` if present on the mesh.
-
-        Cell data
-        ---------
-        - element-averaged ``von_mises`` and the six global stress
-          (``sigma_xx`` .. ``tau_xy``) and strain (``eps_xx`` .. ``gamma_xy``)
-          components (Gauss points reduced by mean),
-        - ``tsai_wu_index`` (max-over-GP per element, if available),
-        - ``Vp_elem`` (mean nodal porosity over the 8 corners),
-        - ``ply_id``, ``ply_angle_deg``, ``is_void`` and ``knockdown`` where
-          available (``knockdown`` only when finite: it is ``nan`` for
-          ``loading='thermal'``),
-        - with a thermal load, the element-mean ply-local residual stress
-          ``residual_sigma_11_local``, ``residual_sigma_22_local`` and
-          ``residual_tau_12_local``.
-
-        Parameters
-        ----------
-        mesh : CompositeMesh
-            The mesh that produced these results (supplies geometry,
-            connectivity, porosity and ply metadata).
-        filename : str or os.PathLike
-            Output ``.vtk`` file path. ``pathlib.Path`` objects are accepted.
-
-        See Also
-        --------
-        to_vtu : Binary VTK XML, smaller and faster, with recovered nodal
-            stress and strain.
-        """
-        write_vtk(self, mesh, filename)
-
-    def to_vtu(self, mesh: CompositeMesh, filename: str | os.PathLike, *,
-               precision: Literal['float64', 'float32'] = 'float64',
-               encoding: Literal['raw', 'base64'] = 'raw',
-               nodal: bool = True,
-               exploded: bool = False,
-               average: NodalAverage = 'ply') -> None:
-        """Write the hex mesh and FE fields to a binary VTK XML file (``.vtu``).
-
-        Opens in ParaView, VisIt, PyVista and meshio. The writer is
-        dependency-free. The file holds everything :meth:`to_vtk` writes
-        (same names) plus nodal stress and strain recovered from the Gauss
-        points (:func:`~porosity_fe.extrapolate_to_nodes`). Binary storage
-        is lossless and compact: on the production mesh the
-        :meth:`to_vtk` fields take 1.1 MB instead of 2.0 MB, 1.6 MB with
-        the nodal fields added, and ``precision='float32'`` brings that to
-        0.9 MB. It is also several times faster to write.
-
-        Point data
-        ----------
-        - ``displacement`` (3-vector), ``porosity``, ``stiffness_reduction``
-          and ``ply_id`` as in :meth:`to_vtk`;
-        - with ``nodal=True``: ``sigma_xx_nodal`` .. ``tau_xy_nodal``,
-          ``eps_xx_nodal`` .. ``gamma_xy_nodal`` (global frame, engineering
-          shear strain) and ``von_mises_nodal``;
-        - with ``exploded=True``: ``node_id``, the original node of each
-          point.
-
-        Cell data
-        ---------
-        The :meth:`to_vtk` cell fields: element-mean ``von_mises``,
-        ``sigma_xx`` .. ``tau_xy``, ``eps_xx`` .. ``gamma_xy``,
-        ``tsai_wu_index``, ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
-        ``is_void`` and ``knockdown`` where available, and the
-        ``residual_*_local`` fields of a thermal load.
-
-        Parameters
-        ----------
-        mesh : CompositeMesh
-            The mesh that produced these results.
-        filename : str or os.PathLike
-            Output ``.vtu`` file path.
-        precision : {'float64', 'float32'}
-            Floating-point type of coordinates and fields. ``'float64'``
-            (default) is lossless.
-        encoding : {'raw', 'base64'}
-            ``'raw'`` (default) appends the binary blocks after the XML
-            header (VTK's appended format: smallest and fastest). ``'base64'``
-            writes them inline as base64 text, which keeps the file
-            well-formed XML for tools that require it, at about 4/3 the
-            size.
-        nodal : bool
-            Add the recovered nodal stress and strain (default ``True``).
-        exploded : bool
-            Give every cell its own eight points (``8 * n_elem`` points),
-            so the recovered fields can jump between elements and show the
-            stress discontinuity at ply interfaces exactly. With the
-            default ``False`` the nodes are shared and each node carries
-            one value: at a ply interface, the average over the ply above.
-        average : {'ply', 'all', 'none'}
-            Averaging of the recovered fields between elements; see
-            :func:`~porosity_fe.extrapolate_to_nodes`. ``'none'`` matters
-            only with ``exploded=True``.
-
-        Raises
-        ------
-        ValueError
-            For an unknown option, a non-hex mesh, or results that do not
-            match the mesh.
-
-        See Also
-        --------
-        porosity_fe.write_pvd : Group several VTU files into a series.
-        """
-        write_vtu(self, mesh, filename, precision=precision,
-                  encoding=encoding, nodal=nodal, exploded=exploded,
-                  average=average)
-
-    def _nodal(self, field_gp: np.ndarray, mesh: CompositeMesh,
-               frame: str, average: NodalAverage,
-               ) -> tuple[np.ndarray, np.ndarray]:
-        if frame not in ('global', 'local'):
-            raise ValueError(f"frame must be 'global' or 'local', got {frame!r}.")
-        if frame == 'local' and average == 'all' and \
-                np.unique(np.asarray(mesh.ply_angles, dtype=float)).size > 1:
-            raise ValueError(
-                "average='all' would mix ply-local components of plies with "
-                "different orientations; use average='ply' or frame='global'."
-            )
-        return extrapolate_to_nodes(field_gp, mesh, average=average)
-
-    def nodal_stress(self, mesh: CompositeMesh, *,
-                     frame: Literal['global', 'local'] = 'global',
-                     average: NodalAverage = 'ply',
-                     ) -> tuple[np.ndarray, np.ndarray]:
-        """Stress recovered at the nodes from the Gauss points.
-
-        Extrapolates each element's eight Gauss-point stresses to its
-        corners and averages them between elements of the same ply (by
-        default), so a surface or interface peak is not under-read the way
-        the element mean or the Gauss-point values are. See
-        :func:`~porosity_fe.extrapolate_to_nodes` for the method and the
-        ``average`` options.
-
-        Parameters
-        ----------
-        mesh : CompositeMesh
-            The mesh that produced these results.
-        frame : {'global', 'local'}
-            Recover :attr:`stress_global` (default) or :attr:`stress_local`
-            (ply material axes). ``'local'`` cannot be combined with
-            ``average='all'`` on a multi-angle laminate.
-        average : {'ply', 'all', 'none'}
-            Which elements a node averages over (default ``'ply'``).
-
-        Returns
-        -------
-        nodal : np.ndarray
-            ``(n_nodes, 6)`` stress (MPa), Voigt order
-            ``[11, 22, 33, 23, 13, 12]``; at a ply interface, the ply above.
-        corner : np.ndarray
-            ``(n_elem, 8, 6)`` per-element corner stress (discontinuous
-            across plies).
-        """
-        field = self.stress_global if frame == 'global' else self.stress_local
-        return self._nodal(field, mesh, frame, average)
-
-    def nodal_strain(self, mesh: CompositeMesh, *,
-                     frame: Literal['global', 'local'] = 'global',
-                     average: NodalAverage = 'ply',
-                     ) -> tuple[np.ndarray, np.ndarray]:
-        """Strain recovered at the nodes from the Gauss points.
-
-        Same method and options as :meth:`nodal_stress`, applied to
-        :attr:`strain_global` or :attr:`strain_local` (engineering shear
-        strain in the last three Voigt slots).
-
-        Returns
-        -------
-        nodal : np.ndarray
-            ``(n_nodes, 6)`` strain.
-        corner : np.ndarray
-            ``(n_elem, 8, 6)`` per-element corner strain.
-        """
-        field = self.strain_global if frame == 'global' else self.strain_local
-        return self._nodal(field, mesh, frame, average)
-
-
-_DEFAULT_APPLIED_STRAIN = {'compression': -0.01, 'tension': 0.01, 'shear': 0.01}
-
-#: Loading modes :meth:`FESolver.solve` accepts (see :data:`FELoadingMode`).
-_FE_LOADINGS: tuple[str, ...] = (
-    'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt',
-    'thermal')
-
-#: Flexure loading modes and their :class:`FlexureGeometry` procedure.
-_FLEXURE_PROCEDURE: dict[str, Literal['3pt', '4pt']] = {
-    'flexure_3pt': '3pt', 'flexure_4pt': '4pt'}
-
-#: Force-controlled modes: loaded by ``applied_load``, stiffness measured as
-#: inverse compliance.
-_FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE})
-
-
-def _minres_deprecation(caller: str) -> str:
-    """Message of the ``solver='minres'`` :class:`DeprecationWarning`."""
-    return (f"{caller}(solver='minres') is deprecated and will be removed in "
-            "2.0; use solver='cg'. The reduced stiffness K_ff is symmetric "
-            "positive definite, so conjugate gradients cover every case and "
-            "give more accurate displacements at the same rtol.")
-
-
-def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float:
-    """Mode-dependent default strain; warn when the sign contradicts the mode."""
-    if applied_strain is None:
-        return _DEFAULT_APPLIED_STRAIN.get(loading, -0.01)
-    if (loading == 'compression' and applied_strain > 0) or \
-            (loading == 'tension' and applied_strain < 0):
-        logger.warning(
-            "loading=%r with applied_strain=%g: the strain sign contradicts "
-            "the loading mode, so the solve is really in %s.",
-            loading, applied_strain,
-            'tension' if applied_strain > 0 else 'compression')
-    return float(applied_strain)
-
-
-def _check_delta_T(loading: str, delta_T: float | None,
-                   material: MaterialProperties) -> float | None:
-    """Validate ``delta_T`` for ``loading``; ``None`` for a mechanical-only solve.
-
-    The library never infers the temperature change (not even from
-    ``material.T_stress_free``): ``loading='thermal'`` without an explicit
-    ``delta_T`` raises, and any ``delta_T`` needs the lamina CTEs.
-    """
-    if delta_T is None:
-        if loading == 'thermal':
-            raise ValueError(
-                "loading='thermal' needs an explicit delta_T: the temperature "
-                "change from the stress-free state in K (or deg C, the same "
-                "for a difference), negative for a cool-down, e.g. "
-                "delta_T = T_service - T_stress_free = 20 - 177 = -157. It "
-                "is not inferred from MaterialProperties.T_stress_free.")
-        return None
-    if isinstance(delta_T, bool) or not isinstance(delta_T, (int, float, np.number)) \
-            or not np.isfinite(float(delta_T)):
-        raise ValueError(
-            f"delta_T must be a finite number of kelvin (a temperature "
-            f"difference), got {delta_T!r}.")
-    if not material.has_cte:
-        from ..materials import MATERIALS
-        with_cte = sorted(k for k, m in MATERIALS.items() if m.has_cte)
-        raise ValueError(
-            "delta_T needs the lamina thermal expansion coefficients, but "
-            "this MaterialProperties has none: set alpha_1 and alpha_2 in "
-            "1/K (e.g. dataclasses.replace(material, alpha_1=-1.0e-6, "
-            f"alpha_2=26e-6)). Presets with CTEs: {with_cte}.")
-    return float(delta_T)
-
-
-def _interior_element_mask(mesh: CompositeMesh,
-                           margin: float | None = None) -> np.ndarray:
-    """Elements whose centroid lies at least ``margin`` from every lateral face.
-
-    The lateral faces are ``x_min``, ``x_max``, ``y_min`` and ``y_max``.
-    The default margin is ``max(h, 2 element widths)`` in each in-plane
-    direction, with ``h`` the laminate thickness: wide enough to leave out
-    the free-edge interlaminar singularity of a thermal solve.
-    """
-    if margin is not None and (
-            isinstance(margin, bool)
-            or not isinstance(margin, (int, float, np.number))
-            or not np.isfinite(float(margin)) or float(margin) < 0.0):
-        raise ValueError(
-            f"interior_margin must be a finite length >= 0 in mm, got {margin!r}.")
-    nodes = np.asarray(mesh.nodes, dtype=float)
-    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
-    if margin is None:
-        h = hi[2] - lo[2]
-        mx = max(h, 2.0 * (hi[0] - lo[0]) / max(mesh.nx, 1))
-        my = max(h, 2.0 * (hi[1] - lo[1]) / max(mesh.ny, 1))
-    else:
-        mx = my = float(margin)
-    cent = nodes[mesh.elements].mean(axis=1)
-    return ((cent[:, 0] >= lo[0] + mx) & (cent[:, 0] <= hi[0] - mx)
-            & (cent[:, 1] >= lo[1] + my) & (cent[:, 1] <= hi[1] - my))
-
-
-@dataclass(frozen=True)
-class _ThermalUnitSolution:
-    """Free-standing thermal solve for ``delta_T = 1`` K (scale by ``delta_T``).
-
-    ``strain_global`` is the total strain ``B u`` (plus the hex8i
-    internal-mode part) and ``stress_global = C strain - beta``.
-    """
-
-    u: np.ndarray
-    strain_global: np.ndarray
-    stress_global: np.ndarray
-    reactions: np.ndarray
-    alpha_local: np.ndarray
-
-
-#: Pristine stiffness measures (see :func:`_stiffness_measure`) keyed by
-#: loading, mesh geometry and material. Shared across solvers so a porosity
-#: sweep on one mesh solves each pristine reference once.
-_PRISTINE_MEASURE_CACHE: OrderedDict[tuple, float] = OrderedDict()
-_PRISTINE_MEASURE_CACHE_MAXSIZE = 64
-
-
-def _stiffness_measure(loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
-                       applied_strain: float, applied_load: float) -> float:
-    """Structural stiffness of a linear solve, independent of load magnitude.
-
-    ``u^T K u / strain^2`` for the displacement-controlled modes (the
-    effective modulus times the volume) and ``load^2 / u^T K u`` (inverse
-    compliance) for the force-controlled ILSS and flexure bends.
-    """
-    energy = float(u @ (K @ u))
-    if loading in _FORCE_CONTROLLED:
-        return applied_load ** 2 / energy
-    return energy / applied_strain ** 2
-
-
-def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
-    """Shallow copy of ``mesh`` with zero porosity and no void elements."""
-    pristine = copy.copy(mesh)
-    pristine.porosity = np.zeros_like(mesh.porosity)
-    pristine.void_elements = np.zeros(0, dtype=np.intp)
-    pristine.void_element_set = set()
-    return pristine
-
-
-def _relative_residual(A: scipy.sparse.spmatrix, x: np.ndarray,
-                       b: np.ndarray) -> float:
-    """``||A x - b|| / ||b||``; the absolute residual when ``b = 0``."""
-    r = float(np.linalg.norm(A @ x - b))
-    norm_b = float(np.linalg.norm(b))
-    return r / norm_b if norm_b > 0.0 else r
-
-
-def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
-                     diag: np.ndarray, *, solver: str, rtol: float,
-                     max_restarts: int = 3) -> tuple[np.ndarray, float]:
-    """Jacobi-preconditioned CG or (deprecated) MINRES on the reduced SPD system.
-
-    A result is accepted when the true relative residual
-    ``||K_ff u - rhs|| / ||rhs||`` is at most ``10 * rtol`` (the slack
-    absorbs the floating-point floor). SciPy's CG stops on its recurrence
-    residual, which tracks the true one, so one call lands at about
-    ``rtol``. SciPy's MINRES stops on ``||r||_M / (||A|| ||x||)``, an
-    estimate in the preconditioner norm that sits a roughly constant factor
-    (10x to 1000x on these meshes) below the true relative residual. So
-    while the true residual is above ``rtol``, MINRES is warm-started from
-    its last iterate with the internal tolerance scaled by
-    ``rtol / achieved``, at most ``max_restarts`` times (one restart
-    suffices on the shipped load cases). MINRES minimizes the residual,
-    not the energy-norm error, so at the same residual its displacement
-    error is larger than CG's; it is deprecated (:meth:`FESolver.solve`
-    warns) and stays here until its removal in 2.0.
-
-    Raises
-    ------
-    RuntimeError
-        On a non-positive diagonal (no Jacobi preconditioner), or when the
-        solver stops without meeting the tolerance.
-    """
-    if not np.all(diag > 0.0):
-        raise RuntimeError(
-            "Cannot build Jacobi preconditioner: the free-DOF stiffness has "
-            "a non-positive diagonal entry. Check the assembly.")
-    M = scipy.sparse.diags(1.0 / diag)
-    maxiter = max(10 * rhs.size, 100)
-    accept = 10.0 * rtol
-    restarts = 0
-    if solver == 'cg':
-        u_f, info = scipy.sparse.linalg.cg(
-            K_ff, rhs, M=M, rtol=rtol, maxiter=maxiter)
-        rel_res = _relative_residual(K_ff, u_f, rhs)
-    else:  # solver == 'minres'
-        eps = float(np.finfo(float).eps)
-        inner = rtol
-        x0: np.ndarray | None = None
-        while True:
-            u_f, info = scipy.sparse.linalg.minres(
-                K_ff, rhs, x0=x0, M=M, rtol=inner, maxiter=maxiter)
-            rel_res = _relative_residual(K_ff, u_f, rhs)
-            if info != 0 or rel_res <= rtol or restarts >= max_restarts:
-                break
-            # Below eps the estimate cannot tighten further, but a warm
-            # restart from the better iterate can still make progress.
-            inner = max(inner * rtol / rel_res, eps)
-            x0 = u_f
-            restarts += 1
-    if not (info == 0 and rel_res <= accept):
-        raise RuntimeError(
-            f"{solver} failed to converge: info={info}, achieved relative "
-            f"residual {rel_res:.4e} (requested rtol={rtol:.4e}"
-            + (f", after {restarts} warm restarts" if restarts else "")
-            + ").")
-    logger.info(
-        "%s converged: relative residual %.4e (rtol=%.4e, restarts=%d)",
-        solver, rel_res, rtol, restarts)
-    return u_f, rel_res
 
 
 class FESolver:
@@ -979,51 +364,34 @@ class FESolver:
             ``1e-6``, or if the free-DOF stiffness is singular (boundary
             conditions that leave a rigid-body mode free).
         """
-        for name, value in (('penalty_factor', penalty_factor),
-                            ('diag_scale', diag_scale)):
-            if value is not None:
-                warnings.warn(
-                    f"FESolver.solve({name}=...) is deprecated and has no "
-                    "effect: prescribed displacements are now imposed "
-                    "exactly by eliminating the constrained DOFs. It will "
-                    "be removed in 2.0.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-        if solver == 'minres':
-            warnings.warn(_minres_deprecation('FESolver.solve'),
-                          DeprecationWarning, stacklevel=2)
         t0 = time.perf_counter()
         criterion = failure_criterion if failure_criterion is not None \
             else self.failure_criterion
-        if criterion not in self.SUPPORTED_FAILURE_CRITERIA:
-            raise ValueError(
-                f"Unknown failure_criterion {criterion!r}. "
-                f"Use one of {list(self.SUPPORTED_FAILURE_CRITERIA)}."
-            )
-
-        if loading not in _FE_LOADINGS:
-            raise ValueError(
-                f"Unknown loading '{loading}'. "
-                f"Use one of {'/'.join(_FE_LOADINGS)}."
-            )
+        check_solve_arguments(loading, criterion, solver,
+                              supported_criteria=self.SUPPORTED_FAILURE_CRITERIA,
+                              penalty_factor=penalty_factor, diag_scale=diag_scale)
         thermal_only = loading == 'thermal'
         dT = _check_delta_T(loading, delta_T, self.material)
         if dT is not None:
-            self._check_layup_for_thermal(allow_unresolved_layup)
-        if loading == 'ilss':
-            # ASTM D2344 short beam: the interior is the shear spans, clear
-            # of the contact zones (supports, loading band) and the side
-            # faces. Raises here, before assembly, without a specimen mesh.
-            interior = short_beam.interior_element_mask(
-                self.mesh, self.bc_handler.ilss_geometry(), interior_margin)
-        else:
-            interior = _interior_element_mask(self.mesh, interior_margin)
+            _thermal.check_layup_for_thermal(self.mesh, self.material,
+                                             self.formulation, allow_unresolved_layup)
+        # For 'ilss' (the ASTM D2344 shear spans) this raises here, before
+        # assembly, without a specimen mesh.
+        interior = interior_mask(loading, self.mesh, self.bc_handler,
+                                 interior_margin)
         if not thermal_only:
             applied_strain = _resolve_applied_strain(loading, applied_strain)
 
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
+
+        # The knockdown's pristine reference (a cached value, or a direct
+        # solve whose factorization is freed on return) comes before the
+        # porous model is assembled and factorized, so one factorization is
+        # alive at a time, not two.
+        pristine = self._pristine_stiffness_measure(loading) \
+            if _knockdown.needs_pristine_reference(
+                self.mesh, loading, applied_strain, applied_load) else None
 
         # 1. Global stiffness (re-assembled only if the mesh, material or
         #    porosity changed since the last solve on this solver).
@@ -1035,14 +403,22 @@ class FESolver:
             t1 = time.perf_counter()
             logger.info("  Assembly time: %.2f s", t1 - t0)
 
+        # 2. Build BCs and the force vector for the requested loading mode.
+        constrained: dict[int, float] | None = None
+        if not thermal_only:
+            constrained, F = self._apply_boundary_conditions(
+                loading, applied_strain, applied_load, verbose=verbose)
+
         # Free-standing thermal (residual) state, scaled from the cached
-        # unit-delta_T solution.
+        # unit-delta_T solution; its factorization is freed before the
+        # mechanical one is built.
         thermal: _ThermalUnitSolution | None = None
         residual_global: np.ndarray | None = None
         residual_local: np.ndarray | None = None
         if dT is not None:
             thermal = self._thermal_unit_solution(
-                K, solver=solver, rtol=rtol, verbose=verbose)
+                K, solver=solver, rtol=rtol, verbose=verbose,
+                next_constrained=constrained)
             residual_global = dT * thermal.stress_global
             residual_local = self._rotate_to_local(residual_global)
 
@@ -1053,17 +429,14 @@ class FESolver:
             stress_global, stress_local = residual_global, residual_local
             strain_global = dT * thermal.strain_global
             strain_local = self._rotate_to_local(strain_global, strain=True)
-            fpf_stress = stress_local
+            load_stress = stress_local
             prestress_local = None
             reactions: np.ndarray = dT * thermal.reactions
             knockdown = float('nan')
             effective_modulus: float | None = None
             basis = 'delta_T'
         else:
-            # 2. Build BCs and the force vector for the requested loading mode.
-            constrained, F = self._apply_boundary_conditions(
-                loading, applied_strain, applied_load, verbose=verbose)
-
+            assert constrained is not None
             # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
             u, _rel_res = self._solve_constrained(
                 K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
@@ -1077,17 +450,20 @@ class FESolver:
             # 5. Recover stresses and strains (global + local frames).
             if verbose:
                 logger.info("Recovering element stresses and strains...")
-            (stress_global, stress_local,
-             strain_global, strain_local) = self._recover_stresses(u, verbose=verbose)
+            (stress_global, stress_local, strain_global,
+             strain_local) = _postprocess.recover_stresses(
+                self.assembler.element_batch(), self.mesh, u, verbose=verbose)
 
-            # 7. Knockdown: porous / pristine structural stiffness, and the
-            #    reactions and modulus, all from the mechanical solve.
-            knockdown = self._compute_knockdown(
-                loading, K, u, applied_strain, applied_load)
+            # 7. Knockdown: porous / pristine structural stiffness (1.0 for
+            #    a pristine mesh or a zero load), and the reactions and
+            #    modulus, all from the mechanical solve.
+            knockdown = 1.0 if pristine is None else _knockdown.knockdown(
+                loading, _stiffness_measure(loading, K, u, applied_strain,
+                                            applied_load), pristine)
             reactions, effective_modulus = self._reactions_and_modulus(
                 loading, K, u, F, applied_strain, constrained,
                 applied_load=applied_load)
-            fpf_stress = stress_local
+            load_stress = stress_local
             prestress_local = residual_local
             basis = 'mechanical'
             if thermal is not None:
@@ -1102,37 +478,13 @@ class FESolver:
                 strain_local = self._rotate_to_local(strain_global, strain=True)
                 basis = 'mechanical_with_residual'
 
-        # 6. Evaluate the selected failure criterion at each GP.
-        #    per_elem_fi[e] is the max-over-GP failure index for element e
-        #    (0.0 for skipped void elements); the scalar max_fi is its
-        #    overall maximum. mode_indices captures the per-mode breakdown
-        #    (NaN entries for Tsai-Wu, which does not separate modes).
-        max_fi, per_elem_fi, mode_indices = self._evaluate_failure(
-            stress_local, criterion=criterion)
-        lam_elem = failure._element_load_factors(
-            fpf_stress, self.mesh.porosity, self.mesh.elements,
-            self.material, self.porosity_field.void_shape_radii, criterion,
-            void_elements=self.mesh.void_elements,
-            prestress_local=prestress_local)
-        fpf_load_factor = float(lam_elem.min()) if lam_elem.size else float('inf')
-
-        residual_max_fi: float | None = None
-        if thermal_only:
-            residual_max_fi = max_fi
-        elif residual_local is not None:
-            residual_max_fi = self._evaluate_failure(
-                residual_local, criterion=criterion)[0]
-        if residual_max_fi is not None and residual_max_fi >= 1.0:
-            logger.warning(
-                "The thermal residual stress alone reaches the %s criterion "
-                "(max failure index %.3f at delta_T=%g K): the laminate "
-                "fails on cool-down before any load, so the first-ply-"
-                "failure load factor is %s.", criterion, residual_max_fi, dT,
-                '<= 1' if thermal_only else '0')
-
-        has_interior = bool(interior.any())
-        interior_fi = float(per_elem_fi[interior].max()) if has_interior else None
-        interior_lam = float(lam_elem[interior].min()) if has_interior else None
+        # 6. Failure criterion at each GP, first-ply-failure load factors,
+        #    and their residual-stress and interior values.
+        fm = _postprocess.failure_metrics(
+            self.mesh, self.material, self.porosity_field.void_shape_radii,
+            criterion, stress_local=stress_local, load_stress_local=load_stress,
+            prestress_local=prestress_local, residual_local=residual_local,
+            interior=interior, thermal_only=thermal_only, delta_T=dT)
 
         displacement = u.reshape(-1, 3)
 
@@ -1140,7 +492,7 @@ class FESolver:
             t3 = time.perf_counter()
             logger.info("  Post-processing time: %.2f s", t3 - t1)
             logger.info("Total solve time: %.2f s", t3 - t0)
-            logger.info("  Max %s FI: %.4f", criterion, max_fi)
+            logger.info("  Max %s FI: %.4f", criterion, fm.max_fi)
             logger.info("  Knockdown factor: %.4f", knockdown)
 
         return FieldResults(
@@ -1149,96 +501,43 @@ class FESolver:
             stress_local=stress_local,
             strain_global=strain_global,
             strain_local=strain_local,
-            max_failure_index=max_fi,
+            max_failure_index=fm.max_fi,
             knockdown=knockdown,
-            per_element_failure_index=per_elem_fi,
+            per_element_failure_index=fm.per_element_fi,
             failure_criterion=criterion,
-            failure_mode_indices=mode_indices,
+            failure_mode_indices=fm.mode_indices,
             reaction_forces=reactions,
             effective_modulus=effective_modulus,
-            first_ply_failure_load_factor=fpf_load_factor,
+            first_ply_failure_load_factor=fm.load_factor,
             formulation=self.formulation,
             delta_T=dT,
             residual_stress_local=residual_local,
-            residual_max_failure_index=residual_max_fi,
-            interior_max_failure_index=interior_fi,
-            interior_first_ply_failure_load_factor=interior_lam,
+            residual_max_failure_index=fm.residual_max_fi,
+            interior_max_failure_index=fm.interior_max_fi,
+            interior_first_ply_failure_load_factor=fm.interior_load_factor,
             load_factor_basis=basis,
             cte_local=(None if thermal is None else
                        (float(thermal.alpha_local[0]), float(thermal.alpha_local[1]),
                         float(thermal.alpha_local[2]))),
         )
 
+    # Steps of solve(). The work is done in the private step modules; tests
+    # and callers use several of these methods, so they stay.
+
     def _apply_boundary_conditions(
         self, loading: str, applied_strain: float, applied_load: float,
         *, verbose: bool = False,
     ) -> tuple[dict[int, float], np.ndarray]:
-        """Build the Dirichlet BCs and force vector for a loading mode.
-
-        Dispatches to the matching :class:`BoundaryHandler` builder for the
-        requested ``loading`` ('compression', 'tension', 'shear', 'ilss',
-        'flexure_3pt', 'flexure_4pt', 'thermal'). The displacement-controlled
-        modes use ``applied_strain``; the force-controlled ILSS short-beam-
-        shear (:meth:`BoundaryHandler.ilss_bcs`, on the mesh's
-        :attr:`CompositeMesh.ilss_geometry`) and flexure modes use
-        ``applied_load``; ``'thermal'`` returns
-        the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs` with a zero
-        force vector (the thermal load is built by
-        :meth:`_thermal_unit_solution`).
-
-        Parameters
-        ----------
-        loading : str
-            'compression', 'tension', 'shear', 'ilss', 'flexure_3pt',
-            'flexure_4pt' or 'thermal'.
-        applied_strain : float
-            Applied nominal strain (used by the displacement-controlled
-            modes).
-        applied_load : float
-            Total load of the force-controlled modes (ILSS and flexure;
-            ignored otherwise).
-        verbose : bool
-            Log the number of applied BCs.
-
-        Returns
-        -------
-        constrained : dict[int, float]
-            Map of constrained DOF index -> prescribed value, as returned
-            by the :class:`BoundaryHandler` builders.
-        F : np.ndarray
-            Global force vector.
-
-        Raises
-        ------
-        ValueError
-            If ``loading`` is not one of the supported modes.
-        """
-        if loading == 'thermal':
-            constrained, F = self.bc_handler.free_bcs()
-        elif loading == 'compression':
-            constrained, F = self.bc_handler.compression_bcs(applied_strain)
-        elif loading == 'tension':
-            constrained, F = self.bc_handler.tension_bcs(applied_strain)
-        elif loading == 'shear':
-            constrained, F = self.bc_handler.shear_bcs(applied_strain)
-        elif loading == 'ilss':
-            constrained, F = self.bc_handler.ilss_bcs(applied_load)
-        elif loading in _FLEXURE_PROCEDURE:
-            constrained, F = self.bc_handler.flexure_bcs(
-                applied_load, procedure=_FLEXURE_PROCEDURE[loading])
-        else:
-            raise ValueError(
-                f"Unknown loading '{loading}'. "
-                f"Use one of {'/'.join(_FE_LOADINGS)}."
-            )
-
+        """Dirichlet BCs ``{dof: value}`` and force vector of ``loading``
+        (``_load_cases.apply_boundary_conditions``)."""
+        constrained, F = apply_boundary_conditions(
+            self.bc_handler, loading, applied_strain, applied_load)
         if verbose:
             logger.info("  Applied %d displacement BCs", len(constrained))
-
         return constrained, F
 
     #: Warm restarts allowed after the first MINRES call (see
-    #: :func:`_iterative_solve`).
+    #: ``_constrained_solve._iterative_solve``).
     _MINRES_MAX_RESTARTS = 3
 
     #: Constrained-DOF sets whose free-DOF system (``K_ff`` and its LU) a
@@ -1250,94 +549,13 @@ class FESolver:
         *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, verbose: bool = False,
     ) -> tuple[np.ndarray, float]:
-        """Impose the Dirichlet BCs exactly and solve ``K u = F``.
-
-        Partitions the DOFs into free (``f``) and constrained (``c``) sets
-        (``_ConstraintReduction`` in :mod:`porosity_fe.fe.assembler`), solves
-        ``K_ff u_f = F_f - K_fc u_c`` with the requested linear solver and
-        returns the full vector with ``u_c`` equal to the prescribed values
-        bit for bit.
-
-        Parameters
-        ----------
-        K : scipy.sparse matrix
-            Assembled global stiffness matrix (not modified).
-        F : np.ndarray
-            Global force vector.
-        constrained : dict[int, float]
-            Constrained-DOF map from :meth:`_apply_boundary_conditions`.
-        solver : {'direct', 'cg', 'minres'}
-            Linear solver to use. See :meth:`solve` for details
-            (``'minres'`` is deprecated; :meth:`solve` warns).
-        rtol : float
-            Relative-residual tolerance for the iterative solvers.
-        verbose : bool
-            Log progress information.
-
-        Returns
-        -------
-        u : np.ndarray
-            Full displacement vector.
-        rel_res : float
-            Achieved relative residual ``||K_ff u_f - rhs|| / ||rhs||``
-            of the reduced system (absolute residual when ``rhs = 0``).
-
-        Raises
-        ------
-        ValueError
-            If ``solver`` is not one of 'direct', 'cg', 'minres'.
-        RuntimeError
-            On a singular free-DOF stiffness, a non-positive diagonal for
-            the preconditioner, a non-finite or non-converged solution, or
-            a residual above tolerance.
-        """
-        if solver not in ('direct', 'cg', 'minres'):
-            raise ValueError(
-                f"Unknown solver '{solver}'. "
-                "Use 'direct', 'cg', or 'minres'."
-            )
-        part = _ConstraintReduction.from_constraints(K.shape[0], constrained)
-        if part.free.size == 0:
-            return part.lift(), 0.0
-
-        K_ff, lu = self._free_dof_system(K, part, factorize=solver == 'direct')
-        rhs = part.reduce_rhs(K, F)
-
-        # Cheap conditioning diagnostic: with exact elimination the ratio
-        # reflects the physical stiffness contrast (ply anisotropy, void
-        # elements), not a boundary-condition artefact.
-        diag = K_ff.diagonal()
-        positive = diag[diag > 0.0]
-        diag_ratio = float(positive.max() / positive.min()) \
-            if positive.size == diag.size else float('inf')
-        logger.info(
-            "Free-DOF stiffness: diag ratio=%.3e (n_free=%d, n_fixed=%d)",
-            diag_ratio, part.free.size, part.fixed.size)
-        if verbose:
-            logger.info(
-                "Solving system (%d free of %d DOFs) with solver='%s'...",
-                part.free.size, part.n_dof, solver)
-
-        if solver == 'direct':
-            assert lu is not None
-            u_f = lu.solve(rhs)
-            if not np.isfinite(u_f).all():
-                raise RuntimeError(
-                    "The sparse LU solve produced non-finite values (NaN or "
-                    "Inf). Check the material stiffness and the boundary "
-                    "conditions.")
-            rel_res = _relative_residual(K_ff, u_f, rhs)
-            if rel_res >= 1e-6:
-                raise RuntimeError(
-                    f"Sparse LU residual {rel_res:.4e} exceeds tolerance "
-                    "1e-6. Check the material stiffness and the boundary "
-                    "conditions.")
-        else:
-            u_f, rel_res = _iterative_solve(
-                K_ff, rhs, diag, solver=solver, rtol=rtol,
-                max_restarts=self._MINRES_MAX_RESTARTS)
-
-        return part.expand(u_f), rel_res
+        """Impose the Dirichlet BCs exactly and solve ``K u = F``: the full
+        ``u`` and the relative residual of the reduced system
+        (``_constrained_solve.solve_constrained``), direct solves with this
+        solver's cached factorizations (:meth:`_free_dof_system`)."""
+        return _constrained_solve.solve_constrained(
+            K, F, constrained, system=self._free_dof_system, solver=solver,
+            rtol=rtol, verbose=verbose, max_restarts=self._MINRES_MAX_RESTARTS)
 
     def _free_dof_system(
         self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
@@ -1345,206 +563,54 @@ class FESolver:
     ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
         """``K_ff`` and (when ``factorize``) its sparse LU, cached.
 
-        ``K_ff`` depends only on the assembled ``K`` and the *set* of
-        constrained DOFs, not their prescribed values, so e.g. compression
-        and tension on the same mesh, or repeat solves of one load case,
-        share it and its factorization. The systems of the last
-        :attr:`_LU_CACHE_SIZE` (2) constrained sets are kept, keyed on the
-        set, so alternating two load cases with different supports (e.g.
-        shear and ILSS, or compression and ILSS) factorizes each once; a
-        third set evicts the least recently used before its own
-        factorization is built, so at most two are alive at once. (The
-        thermal 3-2-1 supports are one more set; the thermal solution itself
-        is cached per unit ``delta_T``, see :meth:`_thermal_unit_solution`.)
-        Every entry belongs to the assembled ``K`` it was built from: a new
-        ``K`` (the mesh, material, porosity or formulation changed) clears
-        them all. The LU is built only for direct solves; iterative solves
-        cache ``K_ff`` alone.
-
-        Memory: one factorization of the production mesh of a 24-ply
-        laminate (30 x 10 x 24) takes about 320 MB (120 MB on 30 x 10 x 12),
-        so a solver that alternates two sets holds about 650 MB.
+        ``self._lu_cache`` keeps the systems of the last
+        :attr:`_LU_CACHE_SIZE` (2) constrained-DOF sets, least recently used
+        first, so load cases that share supports, or two that alternate,
+        factorize once; another set evicts the least recently used before
+        its own factorization is built, and a new ``K`` clears them all
+        (``_constrained_solve.free_dof_system``). The thermal 3-2-1 set
+        takes a slot only while the unit-``delta_T`` thermal solution is
+        computed (:meth:`_thermal_unit_solution`). About 320 MB per
+        factorization on the 30 x 10 x 24 production mesh.
         """
-        cache = self._lu_cache
-        if cache and next(iter(cache.values()))[0] is not K:
-            cache.clear()
-        entry = cache.get(part.key)
-        if entry is None:
-            while len(cache) >= self._LU_CACHE_SIZE:
-                cache.popitem(last=False)
-            K_ff, lu = part.reduce_matrix(K), None
-        else:
-            _, K_ff, lu = entry
-        if factorize and lu is None:
-            # K_ff is symmetric: a symmetric fill-reducing ordering with
-            # diagonal pivoting factors ~20% faster than SuperLU's default
-            # COLAMD here.
-            try:
-                lu = scipy.sparse.linalg.splu(
-                    K_ff, permc_spec='MMD_AT_PLUS_A',
-                    options={'SymmetricMode': True})
-            except RuntimeError as exc:
-                raise RuntimeError(
-                    f"Sparse LU factorization of the free-DOF stiffness "
-                    f"failed ({exc}). A singular matrix usually means the "
-                    "boundary conditions leave a rigid-body mode "
-                    "unrestrained.") from exc
-        cache[part.key] = (K, K_ff, lu)
-        cache.move_to_end(part.key)
-        return K_ff, lu
+        return _constrained_solve.free_dof_system(
+            self._lu_cache, K, part, factorize=factorize,
+            max_entries=self._LU_CACHE_SIZE)
 
     def _reactions_and_modulus(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
         F: np.ndarray, applied_strain: float, constrained: dict[int, float],
         *, applied_load: float = -10.0,
     ) -> tuple[np.ndarray, float | None]:
-        """Nodal reactions and the effective modulus.
-
-        Reactions are ``K u - F`` at the constrained DOFs (including any
-        load applied there, which the support carries) and exactly zero at
-        the free DOFs, where ``K u - F`` is only the solver residual.
-
-        For the displacement-controlled modes only the prescribed boundary
-        moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
-        twice the strain energy ``0.5 M strain^2 V``, giving ``M``: axial
-        ``E_x = P / (A strain)`` for compression/tension, ``G_xy`` for the
-        homogeneous pure-shear BCs. For the flexure modes it is the
-        shear-corrected flexural modulus from the mid-span deflection under
-        ``applied_load`` (:func:`~porosity_fe.fe.flexure.flexural_modulus`);
-        ``None`` for ILSS, whose short span makes the deflection about half
-        shear (see :attr:`FieldResults.effective_modulus`).
-        """
-        Ku = K @ u
-        residual = Ku - F
-        is_fixed = np.zeros(residual.size, dtype=bool)
-        is_fixed[np.fromiter(constrained.keys(), dtype=np.intp,
-                             count=len(constrained))] = True
-        if logger.isEnabledFor(logging.DEBUG) and not is_fixed.all():
-            logger.debug(
-                "Equilibrium residual at free DOFs: max|K u - F| = %.3e",
-                float(np.abs(residual[~is_fixed]).max()))
-        residual[~is_fixed] = 0.0
-        reactions = residual.reshape(-1, 3)
-        if loading in _FLEXURE_PROCEDURE:
-            return reactions, flexural_modulus(
-                self.mesh, self.assembler.element_batch(), u, applied_load,
-                self.bc_handler.flexure_geometry(), _FLEXURE_PROCEDURE[loading])
-        if loading == 'ilss' or applied_strain == 0.0:
-            return reactions, None
-        volume = self.mesh.L_x * self.mesh.L_y * self.mesh.L_z
-        modulus = float(u @ Ku) / (applied_strain ** 2 * volume)
-        return reactions, modulus
-
-    def _recover_stresses(
-        self, u: np.ndarray, *, verbose: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Recover element stresses and strains in global and local frames.
-
-        Evaluates stress/strain at the 8 Gauss points of every element from
-        the recovered displacement field, reusing the ``B`` and ``C`` arrays
-        the assembler already computed, and rotates each into the ply-local
-        frame (stress via ``T_sigma``, engineering strain via
-        ``T_epsilon``).
-
-        Parameters
-        ----------
-        u : np.ndarray
-            Flat global displacement vector.
-        verbose : bool
-            Log per-element post-processing progress.
-
-        Returns
-        -------
-        (stress_global, stress_local, strain_global, strain_local) :
-            tuple of np.ndarray
-            Each shape ``(n_elem, n_gp, 6)`` in Voigt order
-            ``[11, 22, 33, 23, 13, 12]``.
-        """
-        batch = self.assembler.element_batch()
-        strain_global = batch.strains(u)
-        stress_global = batch.stresses(strain_global)
-        if verbose:
-            logger.info("  Post-processed %d elements", self.mesh.n_elements)
-
-        stress_local = self._rotate_to_local(stress_global)
-        strain_local = self._rotate_to_local(strain_global, strain=True)
-        return stress_global, stress_local, strain_global, strain_local
+        """Nodal reactions and the effective modulus
+        (``_postprocess.reactions_and_modulus``)."""
+        return _postprocess.reactions_and_modulus(
+            loading, K, u, F, applied_strain, constrained,
+            applied_load=applied_load, mesh=self.mesh,
+            assembler=self.assembler, bc_handler=self.bc_handler)
 
     def _rotate_to_local(self, field_global: np.ndarray, *,
                          strain: bool = False) -> np.ndarray:
-        """Rotate a ``(n_elem, n_gp, 6)`` global field into the ply axes.
-
-        One matrix per distinct ply angle. Stress uses ``T_sigma``;
-        engineering strain (``strain=True``, with ``gamma_ij = 2 eps_ij``
-        in slots 3-5) uses ``T_epsilon``: ``T_sigma`` applied to
-        engineering strain leaves the shear components off by 2x.
-        """
-        transform = strain_transformation_3d if strain else stress_transformation_3d
-        angles, angle_idx = np.unique(
-            np.asarray(self.mesh.ply_angles, dtype=float), return_inverse=True)
-        T = np.stack([transform(np.radians(a), axis='z')
-                      for a in angles])[angle_idx]
-        return np.einsum('eij,egj->egi', T, field_global)
-
-    def _check_layup_for_thermal(self, allow_unresolved_layup: bool) -> None:
-        """Refuse (or warn about) a thermal solve on an unresolved layup.
-
-        Residual stresses come from the ply-to-ply mismatch, so an element
-        layup that merges plies (``nz`` not a multiple of ``n_plies``)
-        gives wrong stresses and spurious warping, not just a less
-        accurate answer. Also warns when the resolved element layup is
-        unsymmetric: the free laminate then warps, which linear theory
-        captures only while the deflection is small next to the thickness.
-        """
-        mesh = self.mesh
-        issues = mesh.layup_discrepancies()
-        layup = ", ".join(f"{a:g}" for a in mesh.element_layup)
-        n_plies = self.material.n_plies
-        if issues:
-            msg = (f"Thermal residual stresses depend on the stacking "
-                   f"sequence, and the FE mesh does not resolve the requested "
-                   f"{n_plies}-ply layup: {'. '.join(issues)}. The element "
-                   f"layup is [{layup}] (bottom to top).")
-            if not allow_unresolved_layup:
-                raise ValueError(
-                    f"{msg} Use nz = k * n_plies (e.g. nz={n_plies}) so every "
-                    f"ply has its own element layer, or pass "
-                    f"allow_unresolved_layup=True to analyze the element "
-                    f"layup anyway.")
-            logger.warning("%s Analyzing it anyway "
-                           "(allow_unresolved_layup=True).", msg)
-        angles = np.asarray(mesh.element_layup, dtype=float)
-        angles = (angles + 90.0) % 180.0 - 90.0   # fold to [-90, 90)
-        if not np.allclose(angles, angles[::-1], atol=1e-6):
-            logger.warning(
-                "The element layup [%s] is unsymmetric, so the free laminate "
-                "warps under delta_T. The solve is linear: it is valid only "
-                "while the warping deflection stays small next to the "
-                "laminate thickness (larger shapes, e.g. bistable ones, need "
-                "geometric nonlinearity)%s.", layup,
-                "" if self.formulation == 'hex8i' else
-                ", and the 'hex8' element locks in bending and underpredicts "
-                "the curvature (formulation='hex8i' does not)")
+        """A ``(n_elem, n_gp, 6)`` global field in the ply axes
+        (``_postprocess.rotate_to_local``)."""
+        return _postprocess.rotate_to_local(self.mesh.ply_angles, field_global,
+                                            strain=strain)
 
     def _thermal_unit_solution(
         self, K: scipy.sparse.spmatrix, *,
         solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, verbose: bool = False,
+        next_constrained: dict[int, float] | None = None,
     ) -> _ThermalUnitSolution:
         """Free-standing thermal solve for ``delta_T = 1`` K, cached.
 
-        Builds the thermal load ``F = sum B^T C alpha det(J) w`` from the
-        element batch (:func:`~porosity_fe.fe.batch.thermal_stress_moduli`),
-        solves with the 3-2-1 supports of :meth:`BoundaryHandler.free_bcs`
-        and recovers ``sigma = C (B u - alpha)``, with the hex8i
-        internal-mode strain included. The analysis is linear, so every
-        field at ``delta_T`` is ``delta_T`` times this one. The cache key is
-        ``K`` (which changes with the mesh, porosity, material and
-        formulation), the CTEs and the linear solver.
-
-        The supports are statically determinate, so the reactions must
-        vanish; a reaction above ``1e-6`` of the largest nodal thermal
-        force is logged as a warning (it would point to a support bug).
+        ``_thermal.unit_solution``, cached on ``K`` (which changes with the
+        mesh, porosity, material and formulation), the CTEs and the linear
+        solver. Every ``delta_T`` rescales the cached solution, so the 3-2-1
+        system leaves the LU cache as soon as it is solved instead of being
+        held next to the mechanical factorization, unless
+        ``next_constrained``, the constrained set of the solve that follows,
+        is the same set.
         """
         alpha_local = self.material.cte_vector()
         key = (tuple(alpha_local.tolist()), solver, float(rtol))
@@ -1552,113 +618,28 @@ class FESolver:
         if cached is not None and cached[0] is K and cached[1] == key:
             return cached[2]
 
-        batch = self.assembler.element_batch()
-        beta = thermal_stress_moduli(batch, self.mesh, alpha_local)
-        F_th = assemble_load_vector(batch, batch.thermal_loads(beta),
-                                    self.mesh.n_dof)
-        constrained, F0 = self.bc_handler.free_bcs()
-        F = F0 + F_th
-        if verbose:
-            logger.info("Solving the free-standing thermal problem "
-                        "(3-2-1 supports, unit delta_T)...")
-        u, _ = self._solve_constrained(K, F, constrained, solver=solver,
-                                       rtol=rtol, verbose=verbose)
-        strain = batch.strains(u) + batch.incompatible_mode_strains(beta)
-        stress = batch.stresses(strain) - beta
-
-        residual = K @ u - F
-        fixed = np.fromiter(constrained.keys(), dtype=np.intp,
-                            count=len(constrained))
-        reactions = np.zeros_like(residual)
-        reactions[fixed] = residual[fixed]
-        f_max = float(np.abs(F_th).max()) if F_th.size else 0.0
-        r_max = float(np.abs(reactions).max())
-        if r_max > 1e-6 * f_max + 1e-12:
-            logger.warning(
-                "Thermal solve: support reactions %.3e N against nodal thermal "
-                "forces up to %.3e N (per K). The 3-2-1 supports should carry "
-                "no load; check the boundary conditions.", r_max, f_max)
-        sol = _ThermalUnitSolution(
-            u=u, strain_global=strain, stress_global=stress,
-            reactions=reactions.reshape(-1, 3), alpha_local=alpha_local)
+        supports = self.bc_handler.free_bcs()
+        sol = _thermal.unit_solution(
+            K, self.assembler.element_batch(), self.mesh, supports,
+            alpha_local, verbose=verbose,
+            solve=functools.partial(self._solve_constrained, solver=solver,
+                                    rtol=rtol, verbose=verbose))
         self._thermal_cache = (K, key, sol)
+        thermal_key = _ConstraintReduction.from_constraints(
+            K.shape[0], supports[0]).key
+        if next_constrained is None or thermal_key != \
+                _ConstraintReduction.from_constraints(K.shape[0], next_constrained).key:
+            self._lu_cache.pop(thermal_key, None)
         return sol
 
-    def _compute_knockdown(
-        self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
-        applied_strain: float, applied_load: float,
-    ) -> float:
-        """Stiffness knockdown: porous over pristine structural stiffness.
-
-        The pristine reference is a second solve of the same mesh, loading
-        and boundary conditions with zero porosity and no void elements
-        (cached across solvers by mesh geometry, see
-        :meth:`_pristine_stiffness_measure`). For compression, tension and
-        shear the ratio is ``E_x`` or ``G_xy`` porous / pristine; for the
-        ILSS and flexure bends it is the ratio of the beam stiffnesses
-        (inverse compliances; the flexure and ILSS references also key on
-        the support and load lines). IMPROVEMENT_PLAN 2.4 replaced the earlier
-        ratio of signed domain-mean stresses, which read ``sigma_xx`` for
-        shear, went unstable for the sign-changing ILSS ``tau_xz`` field,
-        and was silently clamped to 1.
-
-        Returns 1.0 for a pristine mesh or a zero load. A ratio above 1 is
-        not clamped; it is logged as a warning.
-        """
-        porosity = np.asarray(self.mesh.porosity, dtype=float)
-        if not np.any(porosity > 0.0) and np.size(self.mesh.void_elements) == 0:
-            return 1.0
-        if (applied_load if loading in _FORCE_CONTROLLED
-                else applied_strain) == 0.0:
-            return 1.0
-        porous = _stiffness_measure(loading, K, u, applied_strain, applied_load)
-        pristine = self._pristine_stiffness_measure(loading)
-        knockdown = porous / pristine
-        if knockdown > 1.0 + 1e-6:
-            logger.warning(
-                "FE knockdown %.6f exceeds 1 for loading=%r: the porous model "
-                "came out stiffer than the pristine one.", knockdown, loading)
-        return float(knockdown)
-
     def _pristine_stiffness_measure(self, loading: str) -> float:
-        """:func:`_stiffness_measure` of this mesh with no porosity or voids."""
-        # Tension and compression share one linear pristine problem.
-        key_loading = 'compression' if loading == 'tension' else loading
-        h = hashlib.blake2b(digest_size=16)
-        for arr in (self.mesh.nodes, self.mesh.elements, self.mesh.ply_angles):
-            a = np.ascontiguousarray(arr)
-            h.update(f"{a.dtype}{a.shape}".encode())
-            h.update(a.tobytes())
-        # Key on every material field: repr() omits E33, G13, G23, ... .
-        key: tuple = (key_loading, h.hexdigest(), astuple(self.material),
-                      self.formulation)
-        if key_loading in _FLEXURE_PROCEDURE:
-            # Supports and load lines are not part of the node arrays.
-            key += (self.bc_handler.flexure_geometry(),)
-        elif key_loading == 'ilss':
-            # Nor are the short-beam supports and loading band. The shallow
-            # pristine mesh copy below carries the same ilss_geometry.
-            key += (self.bc_handler.ilss_geometry(),)
-        cached = _PRISTINE_MEASURE_CACHE.get(key)
-        if cached is not None:
-            _PRISTINE_MEASURE_CACHE.move_to_end(key)
-            return cached
-
-        pristine = FESolver(_pristine_mesh(self.mesh), self.material,
-                            self.porosity_field, ply_angles=self.ply_angles,
-                            formulation=self.formulation)
-        strain = _DEFAULT_APPLIED_STRAIN.get(key_loading, -0.01)
-        load = -10.0
-        constrained, F = pristine._apply_boundary_conditions(
-            key_loading, strain, load)
-        K0 = pristine.assembler.stiffness()
-        u0, _ = pristine._solve_constrained(K0, F, constrained)
-        measure = _stiffness_measure(key_loading, K0, u0, strain, load)
-
-        _PRISTINE_MEASURE_CACHE[key] = measure
-        if len(_PRISTINE_MEASURE_CACHE) > _PRISTINE_MEASURE_CACHE_MAXSIZE:
-            _PRISTINE_MEASURE_CACHE.popitem(last=False)
-        return measure
+        """Stiffness measure of this mesh with no porosity or voids, the
+        knockdown's reference, cached across solvers
+        (``_knockdown.pristine_stiffness_measure``). :meth:`solve` calls it
+        before it assembles the porous model."""
+        return _knockdown.pristine_stiffness_measure(
+            loading, self.mesh, self.material, self.porosity_field,
+            self.formulation, self.bc_handler)
 
     #: Empty per-mode failure-index dict (see :mod:`porosity_fe.fe.failure`).
     _EMPTY_MODE_FI: dict[str, float] = failure.EMPTY_MODE_FI

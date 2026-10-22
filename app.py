@@ -17,6 +17,7 @@ import logging
 import math
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
 
@@ -27,6 +28,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
+from matplotlib.colors import ListedColormap, Normalize
+from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +49,16 @@ from porosity_fe import (
     CompositeMesh,
     EmpiricalSolver,
     FESolver,
+    RefinementStudy,
     _configure_matplotlib_style,
     build_empirical_pipeline,
+    compute_degraded_clt_flexural_modulus,
     propagate_uncertainty,
+    refinement_study,
     short_beam_shear,
 )
 from porosity_fe.fe.failure import first_ply_failure_load_factor
+from porosity_fe.fe.refinement import _estimate_memory_bytes
 from porosity_fe.pipeline import _default_mesh_resolution
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -122,11 +129,29 @@ def _config_to_key(cfg: dict) -> tuple:
 # ----------------------------------------------------------------------
 
 #: Applied load of the app's FE solves: nominal strain magnitude of the
-#: displacement-controlled modes (negative for compression) and the ILSS
-#: midspan force (N). Knockdown and field shapes are scale-invariant; the
-#: first-ply-failure factor multiplies these loads.
+#: displacement-controlled modes (negative for compression), the ILSS
+#: midspan force and the total flexure load (N). Knockdown and field shapes
+#: are scale-invariant; the first-ply-failure factor multiplies these loads.
 _FE_APPLIED_STRAIN = 0.01
 _FE_ILSS_LOAD_N = -10.0
+_FE_FLEXURE_LOAD_N = -10.0
+
+#: The FE-only flexure modes (ASTM D7264 procedures A and B on the
+#: :meth:`CompositeMesh.for_flexure` specimen) and their procedure keys.
+_FLEXURE_MODES = {"flexure_3pt": "3pt", "flexure_4pt": "4pt"}
+
+#: Sidebar loading choices: ``cfg["loading_mode"]`` -> label. The four
+#: empirical modes are computed whichever is selected; the selection picks
+#: the FE solve. The flexure modes have no empirical counterpart.
+_LOADING_LABELS = {
+    "compression": "compression",
+    "tension": "tension",
+    "shear": "shear",
+    "ilss": "ilss",
+    # Short enough to fit the sidebar box; the help text spells them out.
+    "flexure_3pt": "flexure_3pt (FE only, D7264 A)",
+    "flexure_4pt": "flexure_4pt (FE only, D7264 B)",
+}
 
 #: Sidebar label -> ``cfg["thermal_mode"]``. ``"combined"`` superposes the
 #: free-standing residual stress on the mechanical solve of the selected
@@ -204,6 +229,15 @@ def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
     return res, sorted({str(w.message) for w in caught})
 
 
+# A study keeps only scalars per level (a few kB), but each entry stands
+# for minutes of solving; a handful covers going back and forth.
+@st.cache_data(show_spinner=False, max_entries=8)
+def run_convergence_cached(cfg_key: tuple, resolutions: tuple) -> RefinementStudy:
+    """Cached :func:`run_convergence_check` of the analysis config ``cfg_key``."""
+    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
+    return run_convergence_check(cfg, resolutions)
+
+
 # A VTU file of the default mesh is a few MB, so keep only a few.
 @st.cache_data(show_spinner=False, max_entries=4)
 def fe_vtu_bytes_cached(cfg_key: tuple, _result: dict) -> bytes:
@@ -221,7 +255,7 @@ def run_analysis(cfg: dict) -> dict:
     Returns a dict with keys: config, material, porosity_field, mesh,
     empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale,
     fe_thermal, fe_mechanical_fpf, fe_nz_suggestion, fe_specimen,
-    fe_short_beam.
+    fe_short_beam, fe_flexure, fe_solve_time_s.
 
     ``mesh`` is the mesh of the FE solve. For ``loading_mode="ilss"`` (with
     a mechanical load) that is the ASTM D2344 short-beam specimen of
@@ -230,6 +264,17 @@ def run_analysis(cfg: dict) -> dict:
     (dimensions, span, loading band, mesh) and ``fe_short_beam`` holds the
     :func:`short_beam_shear` outputs of the solve (``None`` when it was
     skipped). Both are ``None`` for the other modes.
+
+    The FE-only modes ``"flexure_3pt"`` / ``"flexure_4pt"`` (ASTM D7264
+    procedures A / B) solve the :meth:`CompositeMesh.for_flexure` specimen
+    (span 32 h, 13 mm wide) with ``cfg["nz"]`` element layers, described by
+    ``fe_specimen``; ``fe_flexure`` holds the classical-lamination-theory
+    flexural modulus to compare the FE ``effective_modulus`` with (see
+    :func:`_clt_flexure_reference`), ``None`` for the other modes. The
+    empirical results cover the four empirical modes whatever is selected.
+
+    ``fe_solve_time_s`` is the wall time of the FE solve (s), which the
+    mesh-convergence check scales for its time estimate.
 
     The empirical results are always returned. If the FE solve fails,
     ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
@@ -293,20 +338,40 @@ def run_analysis(cfg: dict) -> dict:
 
     fe_loading = "thermal" if thermal_mode == "thermal_only" else cfg["loading_mode"]
     fe_specimen = None
-    if fe_loading == "ilss":
-        # ILSS is the ASTM D2344 short-beam test: solve it on the standard
-        # specimen (span 4h, 6h x 2h), not on the coupon. The empirical
-        # results do not depend on the mesh.
-        mesh = CompositeMesh.for_ilss(porosity_field, material, nz=cfg["nz"],
-                                      ply_angles=cfg["angles"])
-        fe_specimen = _specimen_info(mesh)
-    fe_field, fe_skipped_reason = _run_fe_solve(
-        mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
-        thermal_mode=thermal_mode, delta_T=delta_T,
-    )
+    specimen_error = None
+    try:
+        if fe_loading == "ilss":
+            # ILSS is the ASTM D2344 short-beam test: solve it on the
+            # standard specimen (span 4h, 6h x 2h), not on the coupon. The
+            # empirical results do not depend on the mesh.
+            mesh = CompositeMesh.for_ilss(porosity_field, material, nz=cfg["nz"],
+                                          ply_angles=cfg["angles"])
+            fe_specimen = _specimen_info(mesh)
+        elif fe_loading in _FLEXURE_MODES:
+            # Flexure is FE only: the ASTM D7264 specimen (span 32h, 13 mm
+            # wide), one mesh for both procedures.
+            mesh = CompositeMesh.for_flexure(porosity_field, material, nz=cfg["nz"],
+                                             ply_angles=cfg["angles"])
+            fe_specimen = _flexure_specimen_info(mesh, fe_loading)
+    except ValueError as exc:
+        logger.exception("Specimen mesh failed for loading=%s", fe_loading)
+        specimen_error = f"the {fe_loading} specimen mesh could not be built: {exc}"
+    t_solve = time.perf_counter()
+    if specimen_error is None:
+        fe_field, fe_skipped_reason = _run_fe_solve(
+            mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
+            thermal_mode=thermal_mode, delta_T=delta_T,
+        )
+    else:
+        fe_field, fe_skipped_reason = None, specimen_error
+    fe_solve_time_s = time.perf_counter() - t_solve
     fe_short_beam = None
-    if fe_specimen is not None and fe_field is not None:
+    if fe_loading == "ilss" and fe_specimen is not None and fe_field is not None:
         fe_short_beam = short_beam_shear(fe_field, mesh)
+    fe_flexure = None
+    if fe_loading in _FLEXURE_MODES:
+        fe_flexure = _clt_flexure_reference(material, cfg["angles"], cfg["Vp"] / 100.0,
+                                            fe_loading)
 
     fe_thermal = None
     fe_mechanical_fpf = None
@@ -341,6 +406,8 @@ def run_analysis(cfg: dict) -> dict:
         "fe_nz_suggestion": fe_nz_suggestion,
         "fe_specimen": fe_specimen,
         "fe_short_beam": fe_short_beam,
+        "fe_flexure": fe_flexure,
+        "fe_solve_time_s": fe_solve_time_s,
     }
 
 
@@ -349,12 +416,49 @@ def _specimen_info(mesh) -> dict:
     geometry = mesh.ilss_geometry
     return {
         "standard": "ASTM D2344",
+        "specimen": "short-beam specimen",
         "length_mm": float(mesh.L_x),
         "width_mm": float(mesh.L_y),
         "thickness_mm": float(mesh.L_z),
         "span_mm": float(geometry.span),
         "load_width_mm": float(geometry.load_width),
         "mesh": f"{mesh.nx}x{mesh.ny}x{mesh.nz}",
+    }
+
+
+def _flexure_specimen_info(mesh, loading: str) -> dict:
+    """Dimensions (mm) and mesh of a :meth:`CompositeMesh.for_flexure` specimen."""
+    geometry = mesh.flexure_geometry
+    four_point = _FLEXURE_MODES[loading] == "4pt"
+    return {
+        "standard": f"ASTM D7264 procedure {'B' if four_point else 'A'}",
+        "specimen": f"{'four' if four_point else 'three'}-point flexure specimen",
+        "length_mm": float(mesh.L_x),
+        "width_mm": float(mesh.L_y),
+        "thickness_mm": float(mesh.L_z),
+        "span_mm": float(geometry.span),
+        "span_to_thickness": float(geometry.span / mesh.L_z),
+        "load_span_mm": float(geometry.load_span) if four_point else None,
+        "mesh": f"{mesh.nx}x{mesh.ny}x{mesh.nz}",
+    }
+
+
+def _clt_flexure_reference(material, angles, vp: float, loading: str) -> dict:
+    """Classical-lamination-theory flexural modulus to compare a flexure FE solve with.
+
+    :func:`compute_degraded_clt_flexural_modulus` (``E_f = 12 / (h^3 d_11)``
+    from the D matrix, every ply degraded by Mori-Tanaka spherical voids at
+    the specimen-average ``vp``, a fraction) at ``vp`` and at zero porosity.
+    It knows neither the void shape nor the through-thickness distribution.
+    """
+    porous = compute_degraded_clt_flexural_modulus(material, angles, vp)["Ef_x"]
+    pristine = compute_degraded_clt_flexural_modulus(material, angles, 0.0)["Ef_x"]
+    return {
+        "procedure": _FLEXURE_MODES[loading],
+        "clt_E_f": float(porous),
+        "clt_E_f_pristine": float(pristine),
+        "clt_knockdown": float(porous / pristine),
+        "clt_void_shape": "spherical",
     }
 
 
@@ -374,12 +478,6 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles)
-        if thermal_mode != "thermal_only":
-            # The knockdown needs the pristine reference solve (Vp >= 0.1 %
-            # here). Solving it before the porous model is factorized keeps
-            # one factorization alive instead of two: on the default
-            # 30 x 10 x 24 mesh the peak drops from 1.2 GB to 0.74 GB.
-            fe_solver._pristine_stiffness_measure(loading_mode)
         if thermal_mode == "thermal_only":
             # Free-standing laminate under delta_T (3-2-1 supports): the
             # cure residual stress, with no mechanical load.
@@ -392,6 +490,14 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
             field = fe_solver.solve(
                 loading="ilss", applied_load=_FE_ILSS_LOAD_N, verbose=False,
                 **thermal,
+            )
+        elif loading_mode in _FLEXURE_MODES:
+            # ASTM D7264 three- or four-point bending on the flexure
+            # specimen mesh: roller supports, force controlled; the solve
+            # reports the shear-corrected flexural modulus.
+            field = fe_solver.solve(
+                loading=loading_mode, applied_load=_FE_FLEXURE_LOAD_N,
+                verbose=False, **thermal,
             )
         else:
             applied_strain = (-_FE_APPLIED_STRAIN if loading_mode == "compression"
@@ -446,6 +552,10 @@ def _applied_load_text(loading_mode: str, factor: float) -> str:
     """``factor`` times the app's FE load for ``loading_mode``, in words."""
     if loading_mode == "ilss":
         return f"{factor * abs(_FE_ILSS_LOAD_N):.3g} N midspan load"
+    if loading_mode in _FLEXURE_MODES:
+        where = ("midspan load" if _FLEXURE_MODES[loading_mode] == "3pt"
+                 else "total load on the two load lines")
+        return f"{factor * abs(_FE_FLEXURE_LOAD_N):.3g} N {where}"
     sign = "-" if loading_mode == "compression" else ""
     name = "shear strain" if loading_mode == "shear" else "strain"
     return f"{sign}{factor * _FE_APPLIED_STRAIN * 100:.3g} % {name}"
@@ -501,6 +611,81 @@ def fe_short_beam_summary(result: dict) -> tuple[list[tuple[str, str, str]], str
         f"at {_fmt_value(sb.first_ply_failure_load, '{:,.0f}')} N (contact "
         f"zone, mesh-dependent).")
     return rows, caption
+
+
+def _distribution_text(cfg: dict) -> str:
+    """The porosity distribution of ``cfg`` as the sidebar names it."""
+    if cfg["distribution"] == "clustered":
+        return f"clustered ({cfg.get('cluster_location', 'midplane')})"
+    return str(cfg["distribution"])
+
+
+def fe_flexure_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows ``(label, value, help)`` and a caption for a flexure FE result.
+
+    ``None`` unless the analysis ran a flexure mode (``result["fe_flexure"]``).
+    The rows give the FE knockdown, the FE flexural modulus (the shear-
+    corrected ``effective_modulus``) next to the classical-lamination-theory
+    one, and their ratio; FE values read ``n/a`` when the FE solve was
+    skipped. The caption describes the specimen, gives the CLT knockdown
+    and says when the CLT and FE porosity models differ (the CLT value
+    always uses spherical voids spread uniformly through the thickness).
+    """
+    flex = result.get("fe_flexure")
+    if flex is None:
+        return None
+    cfg = result["config"]
+    fe = result.get("fe_field")
+    spec = result.get("fe_specimen")
+    E_f = None if fe is None else fe.effective_modulus
+    clt = flex["clt_E_f"]
+    ratio = None if E_f is None else E_f / clt
+    rows = [
+        ("FE knockdown", _fmt_value(None if fe is None else fe.knockdown),
+         "Porous over pristine beam stiffness of the D7264 specimen "
+         "(P² / uᵀKu), from two solves with the same supports and load."),
+        ("FE flexural modulus E_f",
+         _fmt_value(None if E_f is None else E_f / 1000.0, "{:.1f} GPa"),
+         "The modulus beam theory needs to reproduce the FE mid-span "
+         "deflection once the transverse-shear deflection is taken out "
+         "(Timoshenko). Uses the selected void shape and distribution."),
+        ("CLT E_f (D matrix)", f"{clt / 1000.0:.1f} GPa",
+         "Classical lamination theory, E_f = 12 / (h³ d₁₁) with d = D⁻¹, "
+         "every ply degraded by Mori-Tanaka spherical voids at the "
+         "specimen-average Vp, uniform through the thickness. The D-matrix "
+         "flexural modulus is part of the validation set (README, "
+         "Validation)."),
+        ("FE / CLT E_f", _fmt_value(ratio),
+         "Ratio of the two flexural moduli. With the same porosity model "
+         "they agree within about 0.2 % for UD and cross-ply laminates; a "
+         "quasi-isotropic one reads about 1 % low in FE at the 13 mm D7264 "
+         "width (free-edge effect of the ±45° plies)."),
+    ]
+    parts = []
+    if spec is not None:
+        load = ("loaded at mid-span" if flex["procedure"] == "3pt" else
+                f"loaded on two lines {spec['load_span_mm']:.1f} mm apart (half "
+                f"the span)")
+        parts.append(
+            f"{spec['standard']} {spec['specimen']}: {spec['length_mm']:.1f} × "
+            f"{spec['width_mm']:.1f} × {spec['thickness_mm']:.2f} mm on a "
+            f"{spec['span_mm']:.1f} mm span ({spec['span_to_thickness']:.0f}:1), "
+            f"roller supports, {load}; mesh "
+            f"{spec['mesh'].replace('x', ' × ')}.")
+    parts.append(f"CLT knockdown of E_f: {flex['clt_knockdown']:.3f}.")
+    differ = []
+    if cfg["void_shape"] != flex["clt_void_shape"]:
+        differ.append(f"{flex['clt_void_shape']} voids in CLT, {cfg['void_shape']} "
+                      f"voids in FE")
+    if cfg["distribution"] != "uniform":
+        differ.append(f"uniform porosity in CLT, the {_distribution_text(cfg)} "
+                      f"distribution in FE (in bending, voids near the surfaces "
+                      f"cost more stiffness than voids near the mid-plane)")
+    if differ:
+        parts.append("The porosity models differ: " + "; ".join(differ) + ".")
+    parts.append("There is no empirical flexure knockdown: flexural strength is "
+                 "outside the empirical validation (README, Limitations).")
+    return rows, " ".join(parts)
 
 
 def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
@@ -595,9 +780,359 @@ def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] |
     return rows, "".join(parts)
 
 
+# ----------------------------------------------------------------------
+# Mesh-convergence check (headless; the Results tab expander drives it)
+# ----------------------------------------------------------------------
+
+#: Level sets the convergence check offers: refinement factors of ``nx``
+#: and ``ny`` relative to the analysis mesh, ``nz`` fixed. Three levels
+#: are needed for an observed order and an extrapolated value.
+_CONVERGENCE_LEVELS = {
+    "2 levels (×1, ×1.5)": (1.0, 1.5),
+    "3 levels (×1, ×1.5, ×2)": (1.0, 1.5, 2.0),
+}
+
+#: ``refinement_study`` keeps ``nx`` of an ``'ilss'`` level a multiple of 6
+#: so the supports and mid-span of the D2344 specimen stay on node lines.
+_ILSS_NX_MULTIPLE = 6
+
+#: Quantities of the convergence tables: (RefinementLevel attribute, label).
+_CONVERGENCE_QUANTITIES = (
+    ("knockdown", "Knockdown"),
+    ("interior_max_failure_index", "Interior max FI"),
+    ("max_failure_index", "Domain max FI"),
+)
+
+
+def convergence_unavailable_reason(result: dict) -> str | None:
+    """Why the convergence check cannot run on ``result``; ``None`` when it can."""
+    if result.get("fe_field") is None:
+        return ("The FE solve of this analysis was skipped, so there is no FE "
+                "mesh to refine.")
+    if result.get("fe_loading") in _FLEXURE_MODES:
+        return ("Not available for the flexure modes yet: refinement_study "
+                "refines the plain coupon, not the ASTM D7264 specimen.")
+    return None
+
+
+def convergence_plan(result: dict, factors) -> list[dict]:
+    """The levels a convergence check of ``result`` solves, with estimates.
+
+    The levels refine the analysis mesh (the coupon, or the D2344 specimen
+    for ``'ilss'``) in plane, as :func:`refinement_study` with
+    ``refine='in_plane'`` does: ``nx`` and ``ny`` times each factor,
+    rounded half up (for ``'ilss'``, ``nx`` then up to a multiple of 6),
+    ``nz`` fixed. Each entry holds ``resolution``, ``n_elements``,
+    ``n_dof``, ``memory_gb`` (the study's own peak-memory estimate, on the
+    generous side) and ``time_s``: the analysis FE solve time scaled by the
+    DOF ratio to the power 1.5, roughly how the sparse factorization grows
+    (``None`` when the result recorded no time). A rough guide only.
+    """
+    mesh = result["mesh"]
+    nx0, ny0, nz0 = int(mesh.nx), int(mesh.ny), int(mesh.nz)
+    combined = (result.get("fe_thermal") or {}).get("mode") == "combined"
+    t0 = result.get("fe_solve_time_s")
+    dof0 = 3 * (nx0 + 1) * (ny0 + 1) * (nz0 + 1)
+    plan = []
+    for f in factors:
+        nx = max(1, math.floor(nx0 * f + 0.5))
+        ny = max(1, math.floor(ny0 * f + 0.5))
+        if result.get("fe_loading") == "ilss":
+            nx = _ILSS_NX_MULTIPLE * math.ceil(nx / _ILSS_NX_MULTIPLE)
+        res = (nx, ny, nz0)
+        n_dof = 3 * (nx + 1) * (ny + 1) * (nz0 + 1)
+        plan.append({
+            "resolution": res,
+            "n_elements": nx * ny * nz0,
+            "n_dof": n_dof,
+            # A combined thermal solve holds two factorizations at its peak.
+            "memory_gb": _estimate_memory_bytes(
+                res, n_factorizations=2 if combined else 1) / 1e9,
+            "time_s": None if not t0 else float(t0) * (n_dof / dof0) ** 1.5,
+        })
+    return plan
+
+
+def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
+    """:func:`refinement_study` of the analysis ``cfg`` on ``resolutions``.
+
+    Same material, layup, porosity field and load case as
+    :func:`run_analysis` (thermal-only solves ``'thermal'`` at
+    ``cfg["delta_T"]``; ``"combined"`` adds the residual stress), on the
+    explicit ``(nx, ny, nz)`` levels of :func:`convergence_plan`. A
+    mechanical study accepts an ``nz`` that does not resolve the layup, as
+    the analysis does; the thermal solve needs it resolved.
+
+    Raises
+    ------
+    ValueError
+        From :func:`refinement_study`, before any solve: a level above the
+        element cap or the memory budget (the message lists every level's
+        estimate), or a thermal level whose ``nz`` does not resolve the layup.
+    """
+    material = dataclasses.replace(
+        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+    pf_kwargs = {"distribution": cfg["distribution"], "void_shape": cfg["void_shape"]}
+    if cfg["distribution"] == "clustered":
+        pf_kwargs["cluster_location"] = cfg["cluster_location"]
+    thermal_mode = cfg.get("thermal_mode", "off")
+    loading = "thermal" if thermal_mode == "thermal_only" else cfg["loading_mode"]
+    kwargs = {}
+    if loading == "ilss":
+        kwargs["applied_load"] = _FE_ILSS_LOAD_N
+    elif loading != "thermal":
+        kwargs["applied_strain"] = (-_FE_APPLIED_STRAIN if loading == "compression"
+                                    else _FE_APPLIED_STRAIN)
+    return refinement_study(
+        material, cfg["Vp"] / 100.0, loading,
+        porosity_config=pf_kwargs, ply_angles=cfg["angles"],
+        resolutions=[tuple(r) for r in resolutions],
+        delta_T=None if thermal_mode == "off" else cfg["delta_T"],
+        allow_unresolved_layup=thermal_mode == "off",
+        **kwargs,
+    )
+
+
+def convergence_tables(study: RefinementStudy) -> tuple[list[dict], list[dict]]:
+    """Rows of the level table and of the per-quantity verdict table.
+
+    Level rows: level, mesh, elements, knockdown, interior and domain
+    maximum failure index, solve time. Verdict rows: the quantity, the
+    study's verdict (``converged`` / ``mesh-dependent`` / ``not converged``
+    / ``n/a``), the behaviour of the levels (``monotone``,
+    ``non-monotone``, ``diverging``, ``two levels``, ...) and the last
+    relative change (for the knockdown relative to ``1 - KD``).
+    """
+    levels = []
+    for i, lv in enumerate(study.levels, start=1):
+        levels.append({
+            "Level": i,
+            "Mesh": lv.mesh.replace("x", " × "),
+            "Elements": f"{lv.n_elements:,}",
+            "Knockdown": _fmt_value(lv.knockdown, "{:.4f}"),
+            "Interior max FI": _fmt_value(lv.interior_max_failure_index),
+            "Domain max FI": _fmt_value(lv.max_failure_index),
+            "Time (s)": f"{lv.solve_time_s:.1f}",
+        })
+    verdicts = []
+    for name, label in _CONVERGENCE_QUANTITIES:
+        c = study.convergence[name]
+        last = c.relative_changes[-1] if c.relative_changes else None
+        verdicts.append({
+            "Quantity": label,
+            "Verdict": c.verdict,
+            "Behaviour": c.behavior,
+            "Last change": _fmt_value(None if last is None else 100.0 * last,
+                                      "{:+.2f} %"),
+        })
+    return levels, verdicts
+
+
 # ======================================================================
 # Plot routines (return a matplotlib Figure for st.pyplot)
 # ======================================================================
+
+#: Drawn height over drawn length that the cross-section plots aim for. A
+#: coupon is 10 to 40 times longer than it is thick, so at true scale its
+#: section is a sliver: the z axis is stretched by the smallest factor of
+#: :func:`_exaggeration_factors` that reaches this ratio, and the z axis
+#: label says so.
+_SECTION_TARGET_ASPECT = 0.3
+#: Width of the cross-section figures and the cap on the section's drawn
+#: height (inches).
+_SECTION_FIG_WIDTH_IN = 9.0
+_SECTION_MAX_AXES_HEIGHT_IN = 3.6
+#: Margins around the section axes (inches): the title and subtitle above,
+#: the x tick labels and axis label between the section and the horizontal
+#: colorbar, the colorbar's ticks and label below.
+_SECTION_MARGINS_IN = {"left": 1.3, "right": 0.4, "top": 0.95,
+                       "gap": 0.75, "cbar": 0.18, "bottom": 0.75}
+#: Spread, relative to the magnitude, below which a field is drawn as
+#: constant (its colour scale would otherwise span round-off).
+_CONSTANT_FIELD_RTOL = 1e-6
+#: Half-range of a single-signed stress scale, relative to the mean, below
+#: which the colorbar label calls the field nearly uniform.
+_NEARLY_UNIFORM_SPREAD = 0.05
+
+
+def _exaggeration_factors():
+    """1, 2, 3, 4, 5, 6, 8, then 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100, ..."""
+    yield from (1, 2, 3, 4, 5, 6, 8)
+    scale = 10
+    while True:
+        for m in (1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0):
+            yield int(round(m * scale))
+        scale *= 10
+
+
+def section_exaggeration(length: float, thickness: float,
+                         target: float = _SECTION_TARGET_ASPECT) -> int:
+    """Vertical exaggeration of a ``length`` x ``thickness`` section plot.
+
+    The smallest factor of :func:`_exaggeration_factors` that draws the
+    section at least ``target`` times as high as it is long; 1 for a
+    section that deep already, or when a length is not positive and finite.
+    """
+    if not (math.isfinite(length) and math.isfinite(thickness)) \
+            or length <= 0 or thickness <= 0:
+        return 1
+    ratio = thickness / length
+    for factor in _exaggeration_factors():
+        if ratio * factor >= target or factor >= 1_000_000:
+            return factor
+    return 1   # not reached: the factors never run out
+
+
+def _z_label(factor: int) -> str:
+    """z axis label, naming the vertical exaggeration when there is one."""
+    return LABEL_Z_MM if factor == 1 else f"{LABEL_Z_MM}\nz exaggerated ×{factor}"
+
+
+def _section_figure(x_range, z_range):
+    """Figure for a cross-section spanning ``x_range`` x ``z_range`` (mm).
+
+    Returns ``(fig, ax, cax, factor)``: the section axes, stretched along z
+    by ``factor`` (:func:`section_exaggeration`) through the data aspect so
+    the tick labels stay in mm, and a horizontal colorbar axes of the same
+    width under it. The axes are placed in inches, so the colorbar always
+    matches the section and the title sits clear of both.
+    """
+    x0, x1 = (float(v) for v in x_range)
+    z0, z1 = (float(v) for v in z_range)
+    length, thickness = x1 - x0, z1 - z0
+    factor = section_exaggeration(length, thickness)
+    drawn = (thickness * factor / length if length > 0 and thickness > 0
+             else _SECTION_TARGET_ASPECT)
+    m = _SECTION_MARGINS_IN
+    fig_w = _SECTION_FIG_WIDTH_IN
+    ax_w = fig_w - m["left"] - m["right"]
+    ax_h = ax_w * drawn
+    if ax_h > _SECTION_MAX_AXES_HEIGHT_IN:
+        ax_h = _SECTION_MAX_AXES_HEIGHT_IN
+        ax_w = ax_h / drawn
+    fig_h = m["top"] + ax_h + m["gap"] + m["cbar"] + m["bottom"]
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    ax = fig.add_axes((m["left"] / fig_w, (m["bottom"] + m["cbar"] + m["gap"]) / fig_h,
+                       ax_w / fig_w, ax_h / fig_h))
+    cax = fig.add_axes((m["left"] / fig_w, m["bottom"] / fig_h,
+                        ax_w / fig_w, m["cbar"] / fig_h))
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(z0, z1)
+    if length > 0 and thickness > 0:
+        ax.set_aspect(factor)     # 1 mm of z is drawn as long as `factor` mm of x
+    ax.grid(False)
+    ax.set_xlabel(LABEL_X_MM)
+    ax.set_ylabel(_z_label(factor))
+    return fig, ax, cax, factor
+
+
+def _set_titles(ax, title: str, subtitle: str | None = None) -> None:
+    """Left-aligned bold ``title`` above ``ax``, with a smaller grey ``subtitle``
+    line between it and the axes."""
+    ax.set_title(title, loc="left", pad=22 if subtitle else 8)
+    if subtitle:
+        ax.annotate(subtitle, xy=(0.0, 1.0), xycoords="axes fraction",
+                    xytext=(0, 6), textcoords="offset points",
+                    ha="left", va="bottom", fontsize=10, color="0.35")
+
+
+def _colour_limits(values, *, floor: float, robust: bool = False
+                   ) -> tuple[float, float, bool]:
+    """Colour-scale limits ``(vmin, vmax, constant)`` of the finite ``values``.
+
+    A field whose spread is at most ``_CONSTANT_FIELD_RTOL`` of its
+    magnitude (or 1e-12 absolute) is constant: a scale over its round-off
+    would show an offset and meaningless ticks, so the limits are the value
+    plus or minus the larger of 1 % of it and ``floor``. Otherwise they are
+    the data range or, with ``robust``, its 2nd and 98th percentiles, so a
+    few singular peaks do not wash out the rest (the colorbar marks the
+    clipped ends). ``(0, 1, False)`` when no value is finite.
+    """
+    v = np.asarray(values, dtype=float).ravel()
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return 0.0, 1.0, False
+    lo, hi = float(v.min()), float(v.max())
+    if hi - lo <= max(_CONSTANT_FIELD_RTOL * max(abs(lo), abs(hi)), 1e-12):
+        mid = 0.5 * (lo + hi)
+        half = max(0.01 * abs(mid), floor)
+        return mid - half, mid + half, True
+    if robust:
+        p_lo, p_hi = (float(p) for p in np.percentile(v, [2.0, 98.0]))
+        if p_hi > p_lo:
+            lo, hi = p_lo, p_hi
+    return lo, hi, False
+
+
+def _colorbar_extend(values, vmin: float, vmax: float) -> str:
+    """Colorbar ``extend`` marking the values outside ``[vmin, vmax]``."""
+    v = np.asarray(values, dtype=float).ravel()
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return "neither"
+    tol = 1e-9 * max(abs(vmin), abs(vmax), 1e-300)
+    below, above = bool(v.min() < vmin - tol), bool(v.max() > vmax + tol)
+    return {(True, True): "both", (True, False): "min",
+            (False, True): "max"}.get((below, above), "neither")
+
+
+def _finish_colorbar(cb, label: str) -> None:
+    """Plain tick labels on ``cb`` (no offset, no scientific notation) and its label."""
+    formatter = ScalarFormatter(useOffset=False)
+    formatter.set_scientific(False)
+    cb.formatter = formatter
+    cb.locator = MaxNLocator(nbins=7)
+    cb.update_ticks()
+    cb.ax.grid(False)
+    cb.set_label(label)
+
+
+def _mark_uniform_value(cb, value: float) -> None:
+    """Mark a constant field's ``value`` on its (horizontal) colorbar."""
+    cb.ax.axvline(value, color="k", linewidth=2.0)
+
+
+def _sequential_cmap(name: str, *, reverse: bool = False) -> ListedColormap:
+    """``name`` without its palest fifth, so its low end stays visible on white."""
+    colours = matplotlib.colormaps[name](np.linspace(0.2, 1.0, 256))
+    return ListedColormap(colours[::-1] if reverse else colours,
+                          name=f"{name}{'_r' if reverse else ''}_from_20pct")
+
+
+#: Stress colormaps. Signed fields crossing zero use RdBu_r on a range
+#: symmetric about zero, so its white midpoint is true zero (#51); a field of
+#: one sign uses the matching half (blue: compression, darkest = most
+#: negative; red: tension), sequential over the field's own range; a
+#: magnitude (von Mises) uses the project's cividis (#51).
+_STRESS_CMAP_DIVERGING = "RdBu_r"
+_STRESS_CMAP_NEGATIVE = _sequential_cmap("Blues", reverse=True)
+_STRESS_CMAP_POSITIVE = _sequential_cmap("Reds")
+_STRESS_CMAP_MAGNITUDE = "cividis"
+
+
+def _stress_colour_scale(values, *, magnitude: bool = False):
+    """``(cmap, norm, extend, constant)`` for a stress field (MPa).
+
+    The diverging map only when the field crosses zero, otherwise a
+    sequential one over the field's range (see ``_STRESS_CMAP_*``), so a
+    field of one sign shows its variation instead of one flat colour. The
+    range is the 2nd to 98th percentile; a constant field gets its value
+    ±1 % (at least ±1 MPa).
+    """
+    vmin, vmax, constant = _colour_limits(values, floor=1.0, robust=True)
+    if magnitude:
+        cmap = _STRESS_CMAP_MAGNITUDE
+    elif vmin < 0.0 < vmax:
+        v = max(-vmin, vmax)
+        vmin, vmax = -v, v
+        cmap = _STRESS_CMAP_DIVERGING
+    elif vmax <= 0.0:
+        cmap = _STRESS_CMAP_NEGATIVE
+    else:
+        cmap = _STRESS_CMAP_POSITIVE
+    return (cmap, Normalize(vmin=vmin, vmax=vmax),
+            _colorbar_extend(values, vmin, vmax), constant)
+
 
 def plot_profile(result: dict):
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -608,30 +1143,44 @@ def plot_profile(result: dict):
     ax.set_ylabel(LABEL_Z_MM)
     ax.set_title("Through-Thickness Porosity Profile")
     ax.set_xlim(left=0)
+    ax.ticklabel_format(axis="both", style="plain", useOffset=False)
     fig.tight_layout()
     return fig
 
 
 def plot_mesh(result: dict):
     """Mid-y cross-section coloured by stiffness retention with void overlays."""
-    fig, ax = plt.subplots(figsize=(8, 5))
     mesh = result["mesh"]
     section = mesh.mid_y_section_indices()   # (nz + 1, nx + 1)
     X = mesh.nodes[section, 0]
     Z = mesh.nodes[section, 2]
-    Sr = mesh.stiffness_reduction[section]
+    Sr = mesh.stiffness_reduction[section] * 100.0
+    fig, ax, cax, factor = _section_figure((X.min(), X.max()), (Z.min(), Z.max()))
 
-    im = ax.contourf(X, Z, Sr * 100, levels=20, cmap="cividis",
-                     vmin=max(0, Sr.min() * 100 - 1), vmax=100)
-    fig.colorbar(im, ax=ax, label=LABEL_STIFFNESS_RETENTION)
+    vmin, vmax, constant = _colour_limits(Sr, floor=1.0)
+    if constant:
+        vmax = min(vmax, 100.0)      # retention never exceeds 100 %
+    else:
+        # 100 % (pristine) anchors the top of the scale.
+        vmin, vmax = max(0.0, vmin - 1.0), max(100.0, vmax)
+    im = ax.pcolormesh(X, Z, Sr, shading="gouraud", cmap="cividis",
+                       vmin=vmin, vmax=vmax)
+    cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+    label = LABEL_STIFFNESS_RETENTION
+    if constant:
+        value = float(np.mean(Sr))
+        label += f" · uniform: {value:.1f} %"
+        _mark_uniform_value(cb, value)
+    _finish_colorbar(cb, label)
 
     step_x = max(1, mesh.nx // 20)
-    step_z = max(1, mesh.nz // 20)
+    step_z = max(1, mesh.nz // 24)
     for k in range(0, mesh.nz + 1, step_z):
         ax.plot(X[k], Z[k], "k-", linewidth=0.3, alpha=0.4)
     for i in range(0, mesh.nx + 1, step_x):
         ax.plot(X[:, i], Z[:, i], "k-", linewidth=0.3, alpha=0.4)
 
+    n_voids = 0
     void_elems = mesh.void_elements
     if len(void_elems) > 0:
         from matplotlib.collections import PatchCollection
@@ -660,24 +1209,18 @@ def plot_mesh(result: dict):
                 linewidth=1.0, zorder=5, alpha=1.0,
             )
             ax.add_collection(pc)
-            ax.plot([], [], "s", color="white", markeredgecolor="red",
-                    markeredgewidth=1.0,
-                    label=f"Voids ({len(void_patches)})")
-            ax.legend(loc="upper right")
+            n_voids = len(void_patches)
 
-    ax.set_xlabel(LABEL_X_MM)
-    ax.set_ylabel(LABEL_Z_MM)
-    ax.set_title(
-        f"FE Mesh — Stiffness Retention  |  "
-        f"{len(mesh.nodes):,} nodes, {len(mesh.elements):,} elements"
-    )
-    ax.set_aspect("equal")
-    fig.tight_layout()
+    subtitle = (f"mid-y section · {len(mesh.nodes):,} nodes, "
+                f"{len(mesh.elements):,} elements")
+    if n_voids:
+        subtitle += f" · {n_voids} void elements (white, red outline)"
+    _set_titles(ax, "FE mesh: stiffness retention", subtitle)
     return fig
 
 
 def plot_results(result: dict, layup_str: str):
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(9, 5))
     emp = result["empirical"]
     fe_field = result.get("fe_field")
     fe_loading = result.get("fe_loading", "compression")
@@ -685,58 +1228,67 @@ def plot_results(result: dict, layup_str: str):
     layup_scale = result.get("layup_scale", {})
 
     modes = ["compression", "tension", "shear", "ilss"]
-    models = ["judd_wright", "power_law", "linear"]
-    model_labels = ["Judd-Wright", "Power Law", "Linear"]
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
-    hatches = [None, None, None]
+    group_labels = [m.upper() for m in modes]
+    # (key, legend label, colour, hatch)
+    series: list[tuple[str, str, str, str | None]] = [
+        ("judd_wright", "Judd-Wright", "#1f77b4", None),
+        ("power_law", "Power Law", "#ff7f0e", None),
+        ("linear", "Linear", "#2ca02c", None),
+    ]
 
     # A thermal-only solve has no stiffness measure (knockdown NaN): no bar.
     has_fe = fe_field is not None and bool(np.isfinite(fe_field.knockdown))
+    flexure = has_fe and fe_loading in _FLEXURE_MODES
     if has_fe:
-        models.append("fe")
-        model_labels.append(f"FE Stiffness ({fe_loading})")
-        colors.append("#d62728")
-        hatches.append("//")
+        series.append(("fe", f"FE Stiffness ({fe_loading})", "#d62728", "//"))
+    if flexure:
+        # FE only: its own group, after the empirical modes.
+        modes.append(fe_loading)
+        group_labels.append("FLEXURE (FE)")
 
-    n_models = len(models)
+    def knockdown(key: str, mode: str) -> float:
+        if key == "fe":
+            return float(fe_field.knockdown) if mode == fe_loading else float("nan")
+        return float(emp[mode][key]["knockdown"]) if mode in emp else float("nan")
+
     x = np.arange(len(modes))
-    width = 0.8 / n_models
-
-    for i, (model_key, label, color, hatch) in enumerate(
-        zip(models, model_labels, colors, hatches, strict=True)
-    ):
-        vals = []
-        for mode in modes:
-            if model_key == "fe":
-                vals.append(fe_field.knockdown if mode == fe_loading else float("nan"))
-            else:
-                vals.append(emp[mode][model_key]["knockdown"])
-        bar_x = x + i * width - (n_models - 1) * width / 2
-        labeled = False
-        for bx, bv in zip(bar_x, vals, strict=True):
-            if not np.isnan(bv):
-                ax.bar(bx, bv, width, color=color, hatch=hatch,
-                       edgecolor="white" if hatch is None else "0.3",
-                       label="" if labeled else label)
-                labeled = True
+    width = 0.8 / len(series)
+    labelled: set[str] = set()
+    for j, mode in enumerate(modes):
+        bars = [(s, knockdown(s[0], mode)) for s in series]
+        bars = [(s, v) for s, v in bars if np.isfinite(v)]
+        # Centre the bars each group has (the FE bar is in one group only).
+        offsets = (np.arange(len(bars)) - (len(bars) - 1) / 2.0) * width
+        for ((key, label, colour, hatch), value), off in zip(bars, offsets, strict=True):
+            ax.bar(x[j] + off, value, width, color=colour, hatch=hatch,
+                   edgecolor="white" if hatch is None else "0.3",
+                   label="_nolegend_" if key in labelled else label)
+            labelled.add(key)
+    if flexure:
+        ax.axvline(x[-1] - 0.5, color="0.6", linewidth=0.8, linestyle=":")
 
     ax.set_xticks(x)
-    ax.set_xticklabels([m.upper() for m in modes])
+    ax.set_xticklabels(group_labels)
     ax.set_ylabel(LABEL_KNOCKDOWN)
-    ax.set_title(
-        f"Knockdown Factor by Loading Mode  |  "
-        f"Vp = {cfg['Vp']:.1f}%, {cfg['void_shape']}, "
-        f"{cfg['distribution']}, {layup_str}"
-    )
+    _set_titles(
+        ax, "Knockdown factor by loading mode",
+        f"Vp = {cfg['Vp']:.1f} %, {cfg['void_shape']} voids, "
+        f"{_distribution_text(cfg)} distribution, {layup_str}")
     ax.set_ylim(0, 1.1)
-    ax.legend(loc="lower left")
+    # Outside the axes, right of the bars, so it never covers one.
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0,
+              frameon=False)
     ax.grid(True, axis="y")
+    ax.grid(False, axis="x")
 
     note = ("Solid bars = strength knockdown (at mean Vp); "
             "hatched bar = stiffness knockdown (FE)")
     if fe_field is not None and not has_fe:
         note = ("Solid bars = strength knockdown (at mean Vp); the FE "
                 "thermal-only solve has no stiffness knockdown (n/a)")
+    if flexure:
+        note += ("\nFLEXURE: FE beam-stiffness knockdown only; there is no "
+                 "empirical flexure model")
     amplified = {m: s for m, s in layup_scale.items() if s > 1.0}
     if amplified:
         factors = ", ".join(f"{m} x{s:.2f}" for m, s in sorted(amplified.items()))
@@ -764,10 +1316,32 @@ _STRESS_COMPONENTS = {
     "Von Mises": (-1, "Von Mises Stress (MPa)"),
 }
 
+#: File-name slug of each stress component (by component index).
+_STRESS_SLUGS = {0: "s11", 1: "s22", 2: "s33", 3: "t23", 4: "t13", 5: "t12",
+                 -1: "von_mises"}
+
+
+def default_stress_component(result: dict) -> str:
+    """The stress component the Stress tab opens on for ``result``.
+
+    The one that governs the load case: τ₁₃ for ILSS (interlaminar shear),
+    σ₂₂ for a thermal-only solve (transverse stress, where residual cracking
+    starts), τ₁₂ for in-plane shear, σ₁₁ otherwise (fibre stress, also in
+    flexure).
+    """
+    fe_loading = result.get("fe_loading")
+    if fe_loading == "ilss":
+        return "τ₁₃ (interlaminar)"
+    if fe_loading == "thermal":
+        return "σ₂₂ (transverse)"
+    if fe_loading == "shear":
+        return "τ₁₂ (in-plane shear)"
+    return "σ₁₁ (fiber)"
+
 
 def plot_uq(uq: dict):
     """Histogram of sampled knockdowns with the p5 / p50 / p95 band."""
-    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig, ax = plt.subplots(figsize=(9, 4.5))
     kd = np.asarray(uq["samples"]["knockdown"])
     pct = uq["knockdown"]["percentiles"]
     ax.hist(kd, bins=40, color="0.7", edgecolor="0.4")
@@ -780,15 +1354,18 @@ def plot_uq(uq: dict):
     ax.set_xlabel(LABEL_KNOCKDOWN)
     ax.set_ylabel("Draws")
     ax.set_title(f"Knockdown uncertainty: {uq['mode']}, {uq['n_samples']} draws")
-    ax.legend(loc="upper left")
+    ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+    # Outside the axes, so it never covers the histogram's tails.
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0,
+              frameon=False)
     fig.tight_layout()
     return fig
 
 
 def plot_stress(result: dict, comp_name: str):
-    fig, ax = plt.subplots(figsize=(8, 5))
     fe_field = result.get("fe_field")
     if fe_field is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
         ax.text(0.5, 0.5, "No FE results available.",
                 transform=ax.transAxes, ha="center", va="center",
                 color="0.5")
@@ -810,49 +1387,59 @@ def plot_stress(result: dict, comp_name: str):
     else:
         elem_stress = stress_local.mean(axis=1)[:, comp_idx]
 
-    mid_elem_indices = mesh.mid_y_element_indices().ravel()
-
-    elem_nodes_coords = mesh.nodes[mesh.elements[mid_elem_indices]]
-    cx = elem_nodes_coords[:, :, 0].mean(axis=1)
-    cz = elem_nodes_coords[:, :, 2].mean(axis=1)
-
-    interior_mask = (cx > mesh.L_x * 0.10) & (cx < mesh.L_x * 0.90)
-    mid_elem_indices = mid_elem_indices[interior_mask]
-    cx = cx[interior_mask]
-    cz = cz[interior_mask]
-    sv = elem_stress[mid_elem_indices]
-
-    finite_mask = np.isfinite(sv)
-    if finite_mask.sum() >= 3:
-        # Symmetric range so RdBu_r's white midpoint is true σ=0; using raw
-        # 5/95 percentiles shifts the neutral color off zero and makes the
-        # sign visually misread (#51).
-        p5 = np.percentile(sv[finite_mask], 5)
-        p95 = np.percentile(sv[finite_mask], 95)
-        v = max(abs(p5), abs(p95)) or 1.0
-        tcf = ax.tricontourf(cx[finite_mask], cz[finite_mask],
-                             sv[finite_mask], levels=20, cmap="RdBu_r",
-                             vmin=-v, vmax=v)
-        fig.colorbar(tcf, ax=ax, label=label)
-    else:
-        ax.text(0.5, 0.5, "Insufficient interior data for contour plot.",
+    # Mid-y element row (nz, nx) and its nodes (nz + 1, nx + 1); the
+    # structured mesh makes the nodes the corners of the element cells.
+    elems = mesh.mid_y_element_indices()
+    section = mesh.mid_y_section_indices()
+    X = mesh.nodes[section, 0]
+    Z = mesh.nodes[section, 2]
+    cx = mesh.nodes[mesh.elements[elems[0]]][:, :, 0].mean(axis=1)
+    x_lo, x_hi = float(X.min()), float(X.max())
+    # Leave out the 10 % at each end (grips, supports, free-edge peaks).
+    cols = np.flatnonzero((cx > x_lo + 0.10 * (x_hi - x_lo))
+                          & (cx < x_lo + 0.90 * (x_hi - x_lo)))
+    sv = elem_stress[elems][:, cols] if cols.size else np.empty((0, 0))
+    if cols.size == 0 or np.isfinite(sv).sum() < 3:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.text(0.5, 0.5, "Insufficient interior data for a stress plot.",
                 transform=ax.transAxes, ha="center", va="center",
                 color="0.5")
+        ax.set_axis_off()
+        return fig
+    i0, i1 = int(cols[0]), int(cols[-1])
+    Xc, Zc = X[:, i0:i1 + 2], Z[:, i0:i1 + 2]
 
-    ax.set_xlabel(LABEL_X_MM)
-    ax.set_ylabel(LABEL_Z_MM)
-    ax.set_title(
-        f"FE Stress (local/material frame): {comp_name}  |  "
-        "interior, mid-y cross-section"
-    )
-    ax.set_aspect("equal")
-    fig.tight_layout()
+    fig, ax, cax, factor = _section_figure((Xc.min(), Xc.max()), (Zc.min(), Zc.max()))
+    cmap, norm, extend, constant = _stress_colour_scale(sv, magnitude=comp_idx == -1)
+    # One flat cell per element: the element-averaged stress, which jumps
+    # between plies (a contour would smear it across the interfaces).
+    qm = ax.pcolormesh(Xc, Zc, np.ma.masked_invalid(sv), cmap=cmap, norm=norm,
+                       shading="flat")
+    cb = fig.colorbar(qm, cax=cax, orientation="horizontal", extend=extend)
+    if constant:
+        value = float(np.nanmean(sv))
+        label += f" · uniform: {value:.4g} MPa"
+        _mark_uniform_value(cb, value)
+    elif norm.vmin * norm.vmax > 0.0:
+        # A sequential scale over a narrow range makes small differences
+        # look large: say how small they are.
+        mid = 0.5 * (norm.vmin + norm.vmax)
+        spread = 0.5 * (norm.vmax - norm.vmin) / abs(mid)
+        if spread < _NEARLY_UNIFORM_SPREAD:
+            label += f" · nearly uniform: {mid:.4g} MPa ± {100 * spread:.2g} %"
+    _finish_colorbar(cb, label)
+    _set_titles(ax, f"FE stress: {comp_name}",
+                "ply (material) axes · mid-y section, middle 80 % of the "
+                "length · element averages")
     return fig
 
 
 # ======================================================================
 # Streamlit UI
 # ======================================================================
+
+#: Default layup of the sidebar (24-ply quasi-isotropic).
+_DEFAULT_LAYUP = "[0/45/-45/90]_3s"
 
 _DISTRIBUTION_OPTIONS = {
     "uniform": ("uniform", "midplane"),
@@ -872,6 +1459,22 @@ def _ilss_specimen_caption(n_plies: int, t_ply: float, nz: int) -> str:
             f"{6 * h:.1f} × {2 * h:.1f} × {h:.2f} mm on a {4 * h:.1f} mm span, "
             f"meshed 24 × 8 × {nz} (nz from this setting; nx and ny apply to "
             f"the other modes).")
+
+
+def _flexure_specimen_caption(loading: str, n_plies: int, t_ply: float, nz: int) -> str:
+    """Sidebar note: a flexure FE solve uses the D7264 specimen, not the coupon."""
+    procedure = ("procedure A, three-point: load at mid-span"
+                 if _FLEXURE_MODES[loading] == "3pt" else
+                 "procedure B, four-point: loads at the quarter points")
+    if not n_plies:
+        return (f"Flexure (FE only): the FE solve uses the ASTM D7264 specimen "
+                f"({procedure}; span 32h, 13 mm wide).")
+    h = n_plies * float(t_ply)
+    return (f"Flexure (FE only): the FE solve uses the ASTM D7264 specimen "
+            f"({procedure}), {h:.2f} mm thick on a {32 * h:.1f} mm span (32:1), "
+            f"13 mm wide, about {1.2 * 32 * h:.0f} mm long, with {nz} element "
+            f"layers (nz from this setting; nx and ny follow the span). There "
+            f"is no empirical flexure knockdown.")
 
 
 def _validate_layup_inline():
@@ -912,6 +1515,21 @@ def _sync_default_nz(nz_default: int) -> None:
     if current is None or current == previous:
         st.session_state["mesh_nz"] = min(int(nz_default), _NZ_SLIDER_MAX)
     st.session_state["_mesh_nz_default"] = min(int(nz_default), _NZ_SLIDER_MAX)
+
+
+def _sync_stress_component(default: str) -> None:
+    """Point the Stress tab's component selector at the load case's default.
+
+    Same rule as :func:`_sync_default_nz`: the selector follows
+    :func:`default_stress_component` while it still shows the previous
+    default (or has no value yet); a component the user picked stays. Must
+    run before the selector is created in the script run.
+    """
+    previous = st.session_state.get("_stress_component_default")
+    current = st.session_state.get("stress_component")
+    if current is None or current == previous or current not in _STRESS_COMPONENTS:
+        st.session_state["stress_component"] = default
+    st.session_state["_stress_component_default"] = default
 
 
 def _set_delta_T(value: float) -> None:
@@ -1016,9 +1634,10 @@ def _build_sidebar_inputs() -> dict | None:
             options=list(MATERIALS.keys()),
             index=0,
         )
+        # Keyed, with no value=: _render seeds the default through
+        # st.session_state (passing both made Streamlit warn).
         layup_str = st.text_input(
             "Layup",
-            value="[0/45/-45/90]_3s",
             key="layup_input",
             on_change=_validate_layup_inline,
             help=(
@@ -1087,14 +1706,21 @@ def _build_sidebar_inputs() -> dict | None:
         st.subheader("Loading")
         loading_mode = st.selectbox(
             "Loading mode",
-            options=["compression", "tension", "shear", "ilss"],
+            options=list(_LOADING_LABELS),
+            format_func=_LOADING_LABELS.__getitem__,
             index=0,
             help=(
-                "All four modes are computed empirically; this selects the "
-                "primary mode for the FE solve and bar-chart highlight. "
-                "ILSS solves the ASTM D2344 short-beam specimen (span 4h, "
-                "length 6h, width 2h, roller supports, loading-nose contact "
-                "band) instead of the coupon below."
+                "The empirical knockdowns of compression, tension, shear "
+                "and ILSS are always all computed; this selects the FE "
+                "solve and its bar in the chart. ILSS solves the ASTM D2344 "
+                "short-beam specimen (span 4h, length 6h, width 2h, roller "
+                "supports, loading-nose contact band) instead of the coupon "
+                "below. flexure_3pt / flexure_4pt are FE only: ASTM D7264 "
+                "procedure A (three-point) / B (four-point, load span half "
+                "the support span) on a 32:1 specimen 13 mm wide, reporting "
+                "the FE flexural modulus next to the lamination-theory one. "
+                "There is no empirical flexure knockdown: flexural strength "
+                "is outside the empirical validation (README, Limitations)."
             ),
         )
 
@@ -1149,6 +1775,8 @@ def _build_sidebar_inputs() -> dict | None:
                        f"(enable Expert mode to change).")
         if loading_mode == "ilss" and thermal_mode != "thermal_only":
             st.caption(_ilss_specimen_caption(n_plies, t_ply, nz))
+        elif loading_mode in _FLEXURE_MODES and thermal_mode != "thermal_only":
+            st.caption(_flexure_specimen_caption(loading_mode, n_plies, t_ply, nz))
 
         if thermal_mode != "off":
             # The thermal solve refuses a mesh whose element layers merge
@@ -1236,12 +1864,23 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
         solve. Configure the laminate and porosity field in the sidebar and
         press **Run analysis**.
 
+        The empirical knockdowns cover compression, tension, shear and ILSS
+        (all four, whichever mode is selected). The selected loading mode
+        sets the FE solve: ILSS runs on the ASTM D2344 short-beam specimen,
+        and the FE-only flexure modes on the ASTM D7264 three- or
+        four-point specimen, with the FE flexural modulus shown next to the
+        lamination-theory value.
+
         - **Profile** — through-thickness porosity distribution
-        - **Mesh** — mid-y cross-section of the FE mesh, coloured by stiffness retention
+        - **Mesh** — mid-y cross-section of the FE mesh, coloured by
+          stiffness retention (thin sections are drawn with the thickness
+          exaggerated; the axis label gives the factor)
         - **Results** — empirical knockdown bar chart with the FE stiffness
-          knockdown overlaid, and the thermal residual-stress results when
-          the FE thermal load is on
-        - **Stress** — FE stress contour for a chosen component
+          knockdown overlaid, the short-beam, flexure and thermal
+          residual-stress results of the FE solve, an uncertainty analysis
+          and an optional mesh-convergence check
+        - **Stress** — FE stress in the ply axes for a chosen component,
+          opening on the one that governs the load case
         - **Export** — download the empirical knockdown sweep as JSON or
           CSV, the FE field as a VTU file for ParaView, or generate an NCR
           validation summary (PDF / Markdown / JSON) with a recommended MRB
@@ -1261,7 +1900,7 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
                else f"residual stress added to {cfg_r['loading_mode']}."))
     spec = result.get("fe_specimen")
     mesh_note = (f"mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}" if spec is None
-                 else f"FE on the {spec['standard']} short-beam specimen "
+                 else f"FE on the {spec['standard']} {spec['specimen']} "
                       f"({spec['length_mm']:.1f} × {spec['width_mm']:.1f} × "
                       f"{spec['thickness_mm']:.2f} mm, mesh "
                       f"{spec['mesh'].replace('x', '×')})")
@@ -1305,8 +1944,90 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
     _build_short_beam_results(result)
+    _build_flexure_results(result)
     _build_thermal_results(result)
     _build_uq_expander(result)
+    _build_convergence_expander(result)
+
+
+def _build_flexure_results(result: dict) -> None:
+    """Metrics of the ASTM D7264 flexure FE solve (nothing for other modes)."""
+    summary = fe_flexure_summary(result)
+    if summary is None:
+        return
+    procedure = result["fe_flexure"]["procedure"]
+    st.subheader("FE flexure (ASTM D7264 procedure "
+                 f"{'A, three-point' if procedure == '3pt' else 'B, four-point'})")
+    rows, caption = summary
+    for col, (label, value, help_text) in zip(st.columns(len(rows)), rows,
+                                              strict=True):
+        col.metric(label, value, help=help_text)
+    st.caption(caption)
+
+
+def _build_convergence_expander(result: dict) -> None:
+    """Opt-in mesh-convergence check of the analysis' FE solve (refinement_study)."""
+    with st.expander("Mesh convergence check"):
+        st.caption(
+            "Solves the analysis' FE load case again on in-plane refinements "
+            "of its mesh (nx and ny scaled, nz fixed) and reports how the "
+            "results change. Global results such as the knockdown converge. "
+            "The domain-maximum failure index sits at a free edge, corner or "
+            "load point, where the linear-elastic stress is singular: it "
+            "keeps growing with refinement, so it is mesh-dependent by "
+            "nature. Read the interior values, which leave out a fixed margin "
+            "along the edges.")
+        reason = convergence_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        choice = st.radio("Levels", list(_CONVERGENCE_LEVELS), key="conv_levels",
+                          horizontal=True,
+                          help="Three levels give an observed order of "
+                               "convergence and an extrapolated value; two "
+                               "give only the change between them.")
+        plan = convergence_plan(result, _CONVERGENCE_LEVELS[choice])
+        st.dataframe(
+            [{"Level": i,
+              "Mesh": " × ".join(str(n) for n in lv["resolution"]),
+              "Elements": f"{lv['n_elements']:,}",
+              "Est. peak memory": f"{lv['memory_gb']:.2g} GB",
+              "Est. time": ("unknown" if lv["time_s"] is None
+                            else f"~{lv['time_s']:.0f} s")}
+             for i, lv in enumerate(plan, start=1)],
+            hide_index=True, use_container_width=True)
+        times = [lv["time_s"] for lv in plan]
+        total = ("an unknown time" if None in times
+                 else f"about {sum(t for t in times if t is not None):.0f} s")
+        st.caption(
+            f"Before running: {len(plan)} levels, {total} in all (the "
+            f"analysis' FE solve time scaled by the DOF ratio to the power "
+            f"1.5; a rough guide). The levels run one after another, so the "
+            f"peak memory is the finest level's.")
+        cfg = result["config"]
+        params = (_config_to_key(cfg), tuple(lv["resolution"] for lv in plan))
+        if st.button("Check mesh convergence", key="conv_run"):
+            st.session_state["conv_params"] = params
+        if st.session_state.get("conv_params") != params:
+            return
+        with st.spinner("Solving the refined meshes..."):
+            try:
+                study = run_convergence_cached(*params)
+            except ValueError as exc:
+                st.error(f"The convergence check did not run: {exc}")
+                return
+        levels, verdicts = convergence_tables(study)
+        st.dataframe(levels, hide_index=True, use_container_width=True)
+        st.dataframe(verdicts, hide_index=True, use_container_width=True)
+        st.caption(
+            f"Verdicts at a tolerance of {study.tol:.0%}: 'converged' (the "
+            f"estimated error of the finest mesh is within it), 'not "
+            f"converged' (refine further), 'mesh-dependent' (grows with "
+            f"refinement: a stress singularity, do not use the value). The "
+            f"knockdown's change is relative to the stiffness loss 1 − KD. "
+            f"Interior quantities leave out {study.interior_margin:.3g} mm "
+            + ("around the supports and the loading band and from the side "
+               "faces." if study.loading == "ilss" else "from the lateral faces."))
 
 
 def _build_short_beam_results(result: dict) -> None:
@@ -1409,14 +2130,15 @@ def _build_stress_tab(result: dict | None):
             else "No FE field available for this configuration."
         )
         return
+    # Opens on the component that governs the load case; a component the
+    # user picks stays picked (the default goes through session state).
+    _sync_stress_component(default_stress_component(result))
     comp_name = st.selectbox(
         "Stress component",
         options=list(_STRESS_COMPONENTS.keys()),
-        index=0,
+        key="stress_component",
     )
-    comp_idx = _STRESS_COMPONENTS[comp_name][0]
-    slug = ("s11", "s22", "s33", "t23", "t13", "t12")[comp_idx] \
-        if comp_idx >= 0 else "von_mises"
+    slug = _STRESS_SLUGS[_STRESS_COMPONENTS[comp_name][0]]
     _show_figure(plot_stress(result, comp_name), f"stress_{slug}", "dl_png_stress")
     formulation = getattr(result["fe_field"], "formulation", None)
     if formulation:
@@ -1586,11 +2308,12 @@ def _render():
         "composite laminates. Adjust inputs in the sidebar, then click **Run analysis**."
     )
 
-    # ---- Initial layup validation (first render only) ----------------------
-    # Pre-populate so the status badge shows immediately for the default
-    # value, without overwriting any user-typed value on later reruns.
+    # ---- Layup default and initial validation -----------------------------
+    # The layup input takes its default only from st.session_state (the
+    # widget has no value=), so it never overwrites a value the user typed;
+    # the status badge shows immediately for the default.
+    st.session_state.setdefault("layup_input", _DEFAULT_LAYUP)
     if "_layup_status" not in st.session_state:
-        st.session_state.setdefault("layup_input", "[0/45/-45/90]_3s")
         _validate_layup_inline()
 
     sidebar = _build_sidebar_inputs()
