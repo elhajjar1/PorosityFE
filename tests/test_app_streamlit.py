@@ -322,8 +322,9 @@ class TestFlexureFlow:
         assert metrics["FE knockdown"] == f"{fe.knockdown:.3f}"
         assert any("three-point flexure specimen" in s.value for s in at.success)
         assert at.selectbox(key="stress_component").value == "σ₁₁ (fiber)"
-        # The convergence check does not refine the D7264 specimen (yet).
-        assert any("Not available for the flexure modes" in i.value for i in at.info)
+        # The convergence check refines the D7264 specimen, nx kept even.
+        plan = at.dataframe[0].value
+        assert list(plan["Mesh"]) == ["40 × 8 × 4", "60 × 12 × 4"]
         labels = [b.proto.label for b in at.get("download_button")]
         assert "Download FE results (VTU)" in labels
 

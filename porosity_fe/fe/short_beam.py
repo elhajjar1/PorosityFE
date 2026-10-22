@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ..mesh import CompositeMesh, FlexureGeometry
-from .flexure import _structured_grid
+from .flexure import _structured_grid, default_interior_margin
 
 if TYPE_CHECKING:
     from .results import FieldResults
@@ -72,11 +72,6 @@ def require_ilss_geometry(mesh: CompositeMesh) -> FlexureGeometry:
         f"or set mesh.ilss_geometry = FlexureGeometry(...) with the supports on "
         f"node lines. For a three-point bend of this coupon use "
         f"loading='flexure_3pt'.")
-
-
-def default_interior_margin(mesh: CompositeMesh) -> float:
-    """Default contact-zone margin of the short-beam interior region (mm): ``h / 2``."""
-    return 0.5 * float(mesh.L_z)
 
 
 def interior_element_mask(mesh: CompositeMesh, geometry: FlexureGeometry,

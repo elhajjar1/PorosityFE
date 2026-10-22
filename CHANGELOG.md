@@ -29,8 +29,46 @@ All notable changes to PorosityFE will be documented in this file.
     and domain maximum failure index) and each quantity's verdict and
     behaviour, and says that the domain maximum at free edges and corners
     is mesh-dependent and the interior values are the ones to read.
-    Results are cached (`max_entries=8`). It is not offered for the
-    flexure modes, whose D7264 specimen `refinement_study` does not build.
+    Results are cached (`max_entries=8`). For the flexure modes it
+    refines the D7264 specimen (see the next entry).
+- **Interior failure metrics and mesh-convergence studies for flexure.**
+  Knockdowns, moduli and the domain failure quantities are unchanged.
+  - The flexure modes have their own interior region
+    (`porosity_fe.fe.flexure.interior_element_mask`). It is the span
+    between the supports, at least `interior_margin` (default `h / 2`)
+    from the side faces and, in the `x`-`z` plane, from each support
+    line and load band. Only a half-disc around each contact line is
+    left out, so in three-point bending the tension face at mid-span,
+    where the bending stress peaks, stays in.
+    - Before, the flexure modes used the coupon's lateral-face margin,
+      `max(h, 2 element widths)`. That left no element on the 13 mm wide,
+      4-element D7264 specimen, so `interior_max_failure_index` and
+      `interior_first_ply_failure_load_factor` were `None`.
+    - On the default 24-ply T800 QI specimen the interior maximum failure
+      index is now 0.993 of the domain maximum, in three- and four-point
+      bending. Dropping whole cross-sections next to the load, as the
+      short-beam region does, would give 0.95.
+  - `CompositeMesh.for_flexure(nx=...)` sets the element count along the
+    length instead of `element_length`. `nx` must be even.
+    - The span gets the most elements that leave each overhang at least
+      the requested length, or two fewer when that puts the four-point
+      load lines on node lines. The overhangs take whole elements, so they
+      can come out longer than requested.
+    - `nx` equal to the default mesh's rebuilds it node for node.
+  - `refinement_study(loading='flexure_3pt' | 'flexure_4pt')` refines the
+    D7264 specimen. It builds every level with `for_flexure`, using the
+    level's `nx`, `ny` and `nz`.
+    - The default base is the specimen's own mesh: 48 x 4 x 24 for the
+      24-ply presets.
+    - Generated levels round `nx` up to even, and explicit levels with an
+      odd `nx` raise.
+    - The interior margin defaults to `h / 2`, as for ILSS. The span is
+      the same at every level; only the unloaded overhangs can differ.
+  - The app's convergence check works for flexure. Its level table now
+    gives the failure indices to four significant figures, since at the
+    app's ILSS and flexure loads they are around 0.01. The interior-index
+    help text describes the region of the case that was run: free edges,
+    the D2344 shear spans, or the flexure contact zones.
 - **Three- and four-point flexure on roller supports (IMPROVEMENT_PLAN
   3.6, C1).** The CLI and pipeline do not expose it yet (the app does,
   see the previous entry), and the `'ilss'` mode is unchanged. Existing

@@ -338,7 +338,10 @@ class FESolver:
             leave out. Defaults to ``max(h, 2 element widths)`` per
             direction, with ``h`` the laminate thickness. For ``'ilss'``
             it is the distance from the support lines, the edges of the
-            loading band and the side faces, default ``h / 2`` (see
+            loading band and the side faces, and for ``'flexure_3pt'`` /
+            ``'flexure_4pt'`` the distance from each support and load line
+            (in the ``x``-``z`` plane) and from the side faces; both
+            default to ``h / 2`` (see
             :attr:`FieldResults.interior_max_failure_index`).
 
         Returns

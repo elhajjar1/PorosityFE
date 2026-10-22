@@ -20,11 +20,16 @@ equilibrium gives for the classical-lamination-theory bending stresses of a
 narrow beam (``N = 0``, ``M_y = M_xy = 0``), using the element layers'
 porosity-degraded stiffness averaged over the span. For one orthotropic
 material it is the familiar ``(5/6) G_13 h``.
+
+:func:`interior_element_mask` is the region the interior failure metrics
+of the flexure modes are taken over: the span clear of the contact zones
+at the supports and under the loads, and of the side faces.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from typing import Literal
 
 import numpy as np
@@ -163,3 +168,77 @@ def flexural_modulus(mesh: CompositeMesh, batch: ElementBatch, u: np.ndarray,
             delta, applied_load, applied_load * a / (2.0 * b * K_s))
         return None
     return float(a * (3.0 * L ** 2 - 4.0 * a ** 2) / (4.0 * b * h ** 3 * bending))
+
+
+def default_interior_margin(mesh: CompositeMesh) -> float:
+    """Default contact-zone margin of the flexure and short-beam interior
+    regions (mm): ``h / 2``, with ``h`` the laminate thickness."""
+    return 0.5 * float(mesh.L_z)
+
+
+def interior_element_mask(mesh: CompositeMesh, geometry: FlexureGeometry,
+                          procedure: Literal['3pt', '4pt'],
+                          margin: float | None = None) -> np.ndarray:
+    """Elements of a flexure test away from the contact zones and side faces.
+
+    An element is interior when its centroid lies between the supports, at
+    least ``margin`` from the side faces (``y``) and at least ``margin``
+    from every contact zone, the distance measured in the ``x``-``z``
+    plane: from each support line on the bottom face and from each load
+    band (``geometry.load_width`` wide, centred on
+    :meth:`FlexureGeometry.load_x`) on the top face. The overhangs are
+    left out. The default margin is ``h / 2``, as for the short-beam test
+    (:func:`porosity_fe.fe.short_beam.interior_element_mask`).
+
+    Unlike the short-beam region, which drops whole cross-sections next to
+    the nose to keep the shear spans, only a half-disc around each contact
+    line is left out. In three-point bending the bending stress peaks at
+    mid-span, under the load: the bottom (tension) face there stays
+    interior, and the top face is interior from ``margin`` either side of
+    the load. On the default 24-ply T800 QI specimen the interior maximum
+    failure index is 0.99 of the domain maximum (0.95 with whole sections
+    dropped); the rest is the free edge.
+
+    Parameters
+    ----------
+    mesh : CompositeMesh
+        The flexure mesh.
+    geometry : FlexureGeometry
+        Its supports and loads
+        (:meth:`~porosity_fe.BoundaryHandler.flexure_geometry`).
+    procedure : {'3pt', '4pt'}
+        Three- or four-point loading: which load lines are contacts.
+    margin : float, optional
+        Distance in mm, finite and ``>= 0``; default ``h / 2``.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask ``(n_elem,)``.
+
+    Raises
+    ------
+    ValueError
+        If ``margin`` is negative or not finite, or ``procedure`` is
+        unknown.
+    """
+    if margin is not None and (
+            isinstance(margin, bool)
+            or not isinstance(margin, (int, float, np.number))
+            or not math.isfinite(float(margin)) or float(margin) < 0.0):
+        raise ValueError(
+            f"interior_margin must be a finite length >= 0 in mm, got {margin!r}.")
+    d = default_interior_margin(mesh) if margin is None else float(margin)
+    nodes = np.asarray(mesh.nodes, dtype=float)
+    cent = nodes[mesh.elements].mean(axis=1)
+    x, y, z = cent[:, 0], cent[:, 1], cent[:, 2]
+    z_bot, z_top = float(nodes[:, 2].min()), float(nodes[:, 2].max())
+    y_lo, y_hi = float(nodes[:, 1].min()), float(nodes[:, 1].max())
+    x0, x1 = geometry.support_x
+    mask = (x >= x0) & (x <= x1) & (y >= y_lo + d) & (y <= y_hi - d)
+    for xs in (x0, x1):
+        mask &= np.hypot(x - xs, z - z_bot) >= d
+    half = 0.5 * geometry.load_width
+    for xl in geometry.load_x(procedure):
+        mask &= np.hypot(np.maximum(np.abs(x - xl) - half, 0.0), z - z_top) >= d
+    return mask
