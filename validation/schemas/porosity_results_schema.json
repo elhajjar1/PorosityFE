@@ -152,6 +152,36 @@
         }
       }
     },
+    "delamination_onset": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., onset=...)), added in schema_version 1.3: DelaminationOnset.summary() of the stress-based interface onset (Brewer-Lagace or Ye) of the results. criterion; x_avg_mm, the side of the in-plane averaging window (mm; 0 = nodal traction); Zc_MPa, the compressive strength of the optional compression term (null without one); load_factor_basis; max_index and interior_max_index (dimensionless, 1 = onset; null when no node was evaluated); critical_interface and critical_x_mm, critical_y_mm, critical_z_mm (null when no node was evaluated); onset_load_factor and interior_onset_load_factor (dimensionless multiples of the load named by load_factor_basis; null when infinite or not evaluated); interface_max_index, the largest index of each interface keyed by the interface as a string (null where none of its nodes was evaluated). Written only when the onset is passed.",
+      "properties": {
+        "criterion": {"type": "string", "enum": ["brewer_lagace", "ye"]},
+        "x_avg_mm": {"type": "number"},
+        "Zc_MPa": {"type": ["number", "null"]},
+        "load_factor_basis": {"type": "string", "enum": ["mechanical", "delta_T", "mechanical_with_residual"]},
+        "max_index": {"type": ["number", "null"]},
+        "critical_interface": {"type": ["integer", "null"]},
+        "critical_x_mm": {"type": ["number", "null"]},
+        "critical_y_mm": {"type": ["number", "null"]},
+        "critical_z_mm": {"type": ["number", "null"]},
+        "onset_load_factor": {"type": ["number", "null"]},
+        "interior_max_index": {"type": ["number", "null"]},
+        "interior_onset_load_factor": {"type": ["number", "null"]},
+        "interface_max_index": {"type": "object", "additionalProperties": {"type": ["number", "null"]}}
+      }
+    },
+    "knockdown_decomposition": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., knockdown_decomposition=...)), added in schema_version 1.3: the FE stiffness knockdown of a porous, delaminated laminate split by defect (KnockdownDecomposition.summary()), each against the laminate with no porosity, voids or delamination. loading; knockdown_total (porosity and delamination), knockdown_porosity_only (the same porosity, every interface pair bonded), knockdown_delamination_only (the same delamination, no porosity), dimensionless; dominant, the defect whose knockdown alone is the lower (null when they agree to 1e-9). Written only when passed.",
+      "properties": {
+        "loading": {"type": "string"},
+        "knockdown_total": {"type": ["number", "null"]},
+        "knockdown_porosity_only": {"type": ["number", "null"]},
+        "knockdown_delamination_only": {"type": ["number", "null"]},
+        "dominant": {"type": ["string", "null"], "enum": ["porosity", "delamination", null]}
+      }
+    },
     "raw_sidecar": {
       "type": "string",
       "description": "Basename of the optional .npz sidecar containing the raw displacement/stress/strain arrays (FESolver.export_results include_raw=True)."

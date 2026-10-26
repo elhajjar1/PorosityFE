@@ -1,6 +1,7 @@
 """FE subpackage: element, assembler, solver, stress recovery and export."""
 
 from .assembler import BoundaryHandler, GlobalAssembler
+from .decomposition import KnockdownDecomposition, knockdown_decomposition
 from .element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401
 from .element import Hex8Element
 from .export import write_pvd
@@ -30,6 +31,7 @@ __all__ = [
     "GlobalAssembler",
     "Hex8Element",
     "InterfaceTractions",
+    "KnockdownDecomposition",
     "QuantityConvergence",
     "RefinementLevel",
     "RefinementStudy",
@@ -39,6 +41,7 @@ __all__ = [
     "extrapolate_to_nodes",
     "fracture_load_factors",
     "interface_tractions",
+    "knockdown_decomposition",
     "refinement_study",
     "short_beam_shear",
     "vcct_energy_release_rates",

@@ -519,7 +519,8 @@ class FieldResults:
                encoding: Literal['raw', 'base64'] = 'raw',
                nodal: bool = True,
                exploded: bool = False,
-               average: NodalAverage = 'ply') -> None:
+               average: NodalAverage = 'ply',
+               onset: DelaminationOnset | None = None) -> None:
         """Write the hex mesh and FE fields to a binary VTK XML file (``.vtu``).
 
         Opens in ParaView, VisIt, PyVista and meshio. The writer is
@@ -544,7 +545,12 @@ class FieldResults:
           ``G_I``, ``G_II``, ``G_III`` and ``G_T`` (N/mm) at both nodes of
           every front pair and ``NaN`` at every other node (binary VTK XML
           stores ``NaN``; the legacy ASCII file of :meth:`to_vtk` leaves
-          them out, and the JSON export carries the front table).
+          them out, and the JSON export carries the front table);
+        - with ``onset``: ``onset_index``, the stress-based delamination
+          onset index (:attr:`DelaminationOnset.index
+          <porosity_fe.DelaminationOnset.index>`) at every evaluated
+          interface node, both nodes of a duplicated pair, and ``NaN``
+          elsewhere.
 
         Cell data
         ---------
@@ -582,12 +588,17 @@ class FieldResults:
             Averaging of the recovered fields between elements; see
             :func:`~porosity_fe.extrapolate_to_nodes`. ``'none'`` matters
             only with ``exploded=True``.
+        onset : DelaminationOnset, optional
+            Keyword-only. The interface onset of these results
+            (:meth:`delamination_onset`), written as the point field
+            ``onset_index``; default ``None`` writes no onset field.
 
         Raises
         ------
         ValueError
-            For an unknown option, a non-hex mesh, or results that do not
-            match the mesh.
+            For an unknown option, a non-hex mesh, results that do not
+            match the mesh, or an ``onset`` with nodes the mesh does not
+            have.
 
         See Also
         --------
@@ -595,7 +606,7 @@ class FieldResults:
         """
         write_vtu(self, mesh, filename, precision=precision,
                   encoding=encoding, nodal=nodal, exploded=exploded,
-                  average=average)
+                  average=average, onset=onset)
 
     def _nodal(self, field_gp: np.ndarray, mesh: CompositeMesh,
                frame: str, average: NodalAverage,

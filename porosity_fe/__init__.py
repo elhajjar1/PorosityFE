@@ -91,6 +91,7 @@ from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
 from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
 from .fe import InterfaceTractions as InterfaceTractions  # noqa: F401, E402
+from .fe import KnockdownDecomposition as KnockdownDecomposition  # noqa: F401, E402
 from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
 from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
 from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
@@ -100,6 +101,7 @@ from .fe import delamination_onset as delamination_onset  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
 from .fe import fracture_load_factors as fracture_load_factors  # noqa: F401, E402
 from .fe import interface_tractions as interface_tractions  # noqa: F401, E402
+from .fe import knockdown_decomposition as knockdown_decomposition  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
@@ -233,6 +235,8 @@ __all__ = [
     "vcct_energy_release_rates",
     "fracture_load_factors",
     "critical_energy_release_rate",
+    "KnockdownDecomposition",
+    "knockdown_decomposition",
     # Porosity-dependent interlaminar toughness
     "ToughnessKnockdown",
     "toughness_knockdown_factor",

@@ -31,7 +31,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import scipy.sparse
@@ -63,6 +63,10 @@ from .assembler import (
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
+
+if TYPE_CHECKING:
+    from .decomposition import KnockdownDecomposition
+    from .interlaminar import DelaminationOnset
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -942,7 +946,10 @@ class FESolver:
                        filename: str | os.PathLike,
                        fmt: str = 'json',
                        mesh: CompositeMesh | None = None,
-                       include_raw: bool = False) -> None:
+                       include_raw: bool = False, *,
+                       onset: DelaminationOnset | None = None,
+                       knockdown_decomposition: KnockdownDecomposition | None = None,
+                       ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
         With ``fmt='json'`` (the default, unchanged legacy behavior) this
@@ -977,6 +984,23 @@ class FESolver:
             arrays so a full audit can re-derive the per-key summary
             statistics. Default ``False`` so existing outputs are not
             bloated (#55).
+        onset : DelaminationOnset, optional
+            Keyword-only. The stress-based interface onset of these results
+            (:meth:`FieldResults.delamination_onset`). With ``fmt='json'``
+            its :meth:`~porosity_fe.DelaminationOnset.summary` is written as
+            a ``delamination_onset`` block (the criterion, ``x_avg_mm``,
+            the maximum index, the critical interface and location, the
+            onset load factors and the maximum index of each interface);
+            with ``fmt='vtu'`` the per-node index is written as the point
+            field ``onset_index`` (see :meth:`FieldResults.to_vtu`). Ignored
+            for ``fmt='vtk'``. ``None`` (default) writes neither.
+        knockdown_decomposition : KnockdownDecomposition, optional
+            Keyword-only. The knockdown of these results split by defect
+            (:func:`~porosity_fe.knockdown_decomposition`), written with
+            ``fmt='json'`` as a ``knockdown_decomposition`` block
+            (``knockdown_total``, ``knockdown_porosity_only``,
+            ``knockdown_delamination_only``, ``dominant``). ``None``
+            (default) writes none.
 
         Notes
         -----
@@ -1005,6 +1029,12 @@ class FESolver:
           where ``G_T = 0``, ``front`` without a front, the contact
           counts when ``crack_contact=False``, and ``toughness_knockdown``
           and ``toughness_uncalibrated`` without toughness data.
+        * In the ``delamination_onset`` block (with ``onset``): ``Zc_MPa``
+          without a compression term, the maximum indices, the critical
+          interface and location where no node was evaluated, the onset
+          load factors where infinite (the load drives no node to onset) or
+          none was evaluated, and an interface's entry of
+          ``interface_max_index`` where none of its nodes was evaluated.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
@@ -1012,4 +1042,5 @@ class FESolver:
         ``None``.
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
-                        include_raw=include_raw)
+                        include_raw=include_raw, onset=onset,
+                        knockdown_decomposition=knockdown_decomposition)

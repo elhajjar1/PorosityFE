@@ -102,6 +102,19 @@ toughness in N/mm (1 N/mm = 1 kJ/m²). See :doc:`theory/delamination`.
    fracture_load_factors
    critical_energy_release_rate
 
+The FE knockdown of a porous, delaminated laminate is measured against the
+laminate with neither defect; :func:`knockdown_decomposition` adds the
+knockdowns of the porosity alone and of the delamination alone against the
+same reference (two more solves, never run by :meth:`FESolver.solve`), so
+the user sees which defect drives the loss.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   knockdown_decomposition
+   KnockdownDecomposition
+
 The toughness at each front node is the material's, knocked down by the
 porosity there: :class:`ToughnessKnockdown` selects the law
 (``FESolver.solve(..., toughness_knockdown=...)``; the default exponential

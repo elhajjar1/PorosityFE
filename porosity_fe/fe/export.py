@@ -28,6 +28,8 @@ from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 if TYPE_CHECKING:
+    from .decomposition import KnockdownDecomposition
+    from .interlaminar import DelaminationOnset
     from .results import FieldResults
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -117,6 +119,33 @@ def _front_point_fields(results: FieldResults,
         values[front.duplicate] = rates
         fields.append((name, values))
     return fields
+
+
+def _onset_point_fields(onset: DelaminationOnset | None,
+                        mesh: CompositeMesh) -> list[tuple[str, np.ndarray]]:
+    """The stress-based onset index of ``onset`` as ``(N,)`` point data.
+
+    ``onset_index`` at every evaluated interface node (both nodes of a
+    duplicated pair), ``NaN`` at every other node; empty without ``onset``.
+    VTU only, like :func:`_front_point_fields`.
+    """
+    if onset is None:
+        return []
+    n_nodes = np.asarray(mesh.nodes).shape[0]
+    node = np.asarray(onset.node, dtype=np.intp)
+    if node.size and int(node.max()) >= n_nodes:
+        raise ValueError(
+            f"onset has interface node {int(node.max())} but the mesh has "
+            f"{n_nodes} nodes; pass the onset of these results on this mesh.")
+    values = np.full(n_nodes, np.nan, dtype=float)
+    ok = np.asarray(onset.evaluated, dtype=bool)
+    values[node[ok]] = np.asarray(onset.index, dtype=float)[ok]
+    pairs = getattr(mesh, 'interface_node_pairs', None)
+    if pairs is not None:
+        originals, duplicates = pairs()
+        if originals.size:
+            values[duplicates] = values[originals]
+    return [("onset_index", values)]
 
 
 def _fracture_block(results: FieldResults) -> dict | None:
@@ -297,7 +326,8 @@ def write_vtu(results: FieldResults, mesh: CompositeMesh,
               encoding: Literal['raw', 'base64'] = 'raw',
               nodal: bool = True,
               exploded: bool = False,
-              average: NodalAverage = 'ply') -> None:
+              average: NodalAverage = 'ply',
+              onset: DelaminationOnset | None = None) -> None:
     """Write ``results`` on ``mesh`` as binary VTK XML; see :meth:`FieldResults.to_vtu`."""
     if precision not in ('float64', 'float32'):
         raise ValueError(
@@ -312,6 +342,7 @@ def write_vtu(results: FieldResults, mesh: CompositeMesh,
 
     point_fields = _point_fields(results, mesh)
     point_fields += _front_point_fields(results, mesh)
+    point_fields += _onset_point_fields(onset, mesh)
     if nodal:
         s_nodal, s_corner = extrapolate_to_nodes(
             results.stress_global, mesh, average=average)
@@ -479,7 +510,10 @@ def export_results(field_results: FieldResults,
                    filename: str | os.PathLike,
                    fmt: str = 'json',
                    mesh: CompositeMesh | None = None,
-                   include_raw: bool = False) -> None:
+                   include_raw: bool = False, *,
+                   onset: DelaminationOnset | None = None,
+                   knockdown_decomposition: KnockdownDecomposition | None = None,
+                   ) -> None:
     """Export FE results as JSON, VTK or VTU; see :meth:`FESolver.export_results`."""
     fmt = str(fmt).lower()
     filename = Path(filename)
@@ -491,8 +525,10 @@ def export_results(field_results: FieldResults,
             )
         if fmt == 'vtk':
             field_results.to_vtk(mesh, filename)
-        else:
+        elif onset is None:
             field_results.to_vtu(mesh, filename)
+        else:
+            field_results.to_vtu(mesh, filename, onset=onset)
         return
     if fmt != 'json':
         raise ValueError(
@@ -595,6 +631,12 @@ def export_results(field_results: FieldResults,
     fracture = _fracture_block(field_results)
     if fracture is not None:
         results_data['fracture'] = fracture
+    # Opt-in post-processing blocks: written only when passed, so the
+    # default export is unchanged.
+    if onset is not None:
+        results_data['delamination_onset'] = onset.summary()
+    if knockdown_decomposition is not None:
+        results_data['knockdown_decomposition'] = knockdown_decomposition.summary()
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),
