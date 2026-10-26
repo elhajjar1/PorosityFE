@@ -780,6 +780,43 @@ class TestOBrien:
         assert coupled.E_LAM == pytest.approx(r.E_LAM, rel=1e-12)          # symmetric
         assert coupled.G > r.G
 
+    def test_fe_cross_check(self):
+        """FE edge delaminations in both -30/90 interfaces of the specimen,
+        1.5 mm in from the free edge along the whole length: the energy
+        released per crack front (fixed grip, from the effective modulus at
+        two delamination widths) matches G / 2, O'Brien's value for two
+        interfaces growing together, and the VCCT G_T at mid-length is
+        within 7 % (Delta_a = 0.125 mm at a bimaterial interface)."""
+        Lx, Ly, nx, ny = 3.0, 6.0, 6, 48
+        eps = 1e-3
+        dy = Ly / ny
+
+        def run(a):
+            pf = PorosityField(T300_5208, 0.0)
+            delams = [Delamination.rectangle(k, center=(Lx / 2, Ly), half_size=(Lx, a))
+                      for k in (3, 6)]
+            mesh = CompositeMesh(pf, T300_5208, nx=nx, ny=ny, nz=11,
+                                 ply_angles=EDT_LAYUP, delaminations=delams)
+            mesh.L_x, mesh.L_y = Lx, Ly
+            mesh.generate_mesh()
+            res = FESolver(mesh, T300_5208, pf, ply_angles=EDT_LAYUP).solve(
+                'tension', applied_strain=eps)
+            return mesh, res
+
+        a1, a2 = 1.5, 1.5 + 2 * dy
+        mesh, r1 = run(a1 + 0.5 * dy)          # crack boundary between node lines
+        _, r2 = run(a2 + 0.5 * dy)
+        volume = Lx * Ly * mesh.L_z
+        dE_da = (r2.effective_modulus - r1.effective_modulus) / (a2 - a1)
+        G_front = -0.5 * eps ** 2 * volume * dE_da / (2 * Lx)
+        ref = obrien_edge_delamination(T300_5208, EDT_LAYUP, [3, 6], eps)
+        assert G_front == pytest.approx(ref.G_simultaneous, rel=0.02)
+        front = r1.crack_front
+        mid = np.abs(front.x - Lx / 2) < Lx / 4
+        assert mid.sum() >= 4
+        assert front.G_T[mid].mean() == pytest.approx(ref.G_simultaneous, rel=0.07)
+        assert np.all(front.G_III[mid] < 0.05 * front.G_T[mid])
+
     def test_scaling_and_limits(self):
         r1 = obrien_edge_delamination(T300_5208, EDT_LAYUP, [3, 6], 1e-3)
         r2 = obrien_edge_delamination(T300_5208, EDT_LAYUP, [3, 6], 2e-3)

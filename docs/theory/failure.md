@@ -410,6 +410,17 @@ $\nu_{12} = 0.21$) and 1.51 mm thickness:
 His measured stiffness loss extrapolated to $E^* = 0.742\,E_0$, which the
 uncoupled value matched.
 
+The FE model gives a cross-check. A $3 \times 6$ mm coupon of the specimen
+in tension, one element per ply and 0.125 mm elements across the width,
+with explicit delaminations 1.5 mm in from the free edge in both $-30/90$
+interfaces along the whole length ({doc}`delamination`):
+
+- releases 0.9 % less energy per crack front than $G/2$, the value for two
+  interfaces growing together (from the effective modulus at two
+  delamination widths, fixed grip);
+- has a VCCT $G_T$ at mid-length 5 % below $G/2$, with
+  $G_\text{I}/G_T = 0.58$ and $G_\text{III}$ negligible.
+
 ```python
 # t300: a MaterialProperties with the ply constants above, t_ply = 1.51 / 11
 layup = [30, -30, 30, -30, 90, 90, 90, -30, 30, -30, 30]
