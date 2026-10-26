@@ -166,7 +166,10 @@ class FieldResults:
         its coordinates, frame, ``Delta_a`` and tributary width, ``G_I``,
         ``G_II``, ``G_III``, ``G_T`` (N/mm), the mode mixity ``psi`` and,
         when the material has toughness data, the mixed-mode toughness
-        ``G_c`` and the critical load factor ``lambda_c``
+        ``G_c``, knocked down by the porosity ``Vp`` at the node
+        (:class:`~porosity_fe.ToughnessKnockdown`; the law and the
+        ``toughness_uncalibrated`` flag are on the table), and the critical
+        load factor ``lambda_c``
         (:func:`~porosity_fe.vcct_energy_release_rates`). At the applied
         state, thermal residual included. ``None`` without a delaminated
         node pair.
@@ -297,7 +300,10 @@ class FieldResults:
             ``fracture_governing_node``, ``fracture_governing_psi``,
             ``fracture_governing_G_T``, ``crack_front_max_G_T``,
             ``crack_contact``, ``contact_iterations``, ``contact_pairs``,
-            ``contact_converged``), ``None`` without a delamination.
+            ``contact_converged``, ``toughness_knockdown``: the
+            description of the porosity-toughness law, and
+            ``toughness_uncalibrated``), ``None`` without a delamination
+            (the two toughness keys also without toughness data).
         """
         kd = float(self.knockdown)
         sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
@@ -348,6 +354,11 @@ class FieldResults:
             'contact_iterations': self.contact_iterations,
             'contact_pairs': self.contact_pairs,
             'contact_converged': self.contact_converged,
+            'toughness_knockdown': (
+                None if front is None or front.toughness_knockdown is None
+                else front.toughness_knockdown.describe()),
+            'toughness_uncalibrated': (
+                None if front is None else front.toughness_uncalibrated),
         }
 
     def energy_release_rates(self, mesh: CompositeMesh) -> CrackFront | None:

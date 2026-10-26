@@ -125,7 +125,9 @@ def _fracture_block(results: FieldResults) -> dict | None:
 
     Finite values only: an undefined or infinite value is ``null`` (no
     toughness data, no front, ``psi`` where ``G_T = 0``, an infinite
-    critical load factor).
+    critical load factor). ``toughness_knockdown`` describes the porosity
+    law of the toughness and ``toughness_uncalibrated`` flags its
+    placeholder coefficients (both ``null`` without toughness data).
     """
     contact = getattr(results, 'crack_contact', None)
     front = getattr(results, 'crack_front', None)
@@ -144,6 +146,11 @@ def _fracture_block(results: FieldResults) -> dict | None:
                           else _finite_or_none(front.psi[row])),  # type: ignore[union-attr]
         'governing_G_T_N_per_mm': (None if row is None
                                    else _finite_or_none(front.G_T[row])),  # type: ignore[union-attr]
+        'toughness_knockdown': (
+            None if front is None or front.toughness_knockdown is None
+            else front.toughness_knockdown.describe()),
+        'toughness_uncalibrated': (
+            None if front is None else front.toughness_uncalibrated),
         'n_front_nodes': 0 if front is None else len(front),
         'front': None if front is None else front.to_dict(),
     }

@@ -2,8 +2,8 @@
 
 The interface forces of every duplicated pair, the virtual-crack-closure
 table of the front (:mod:`porosity_fe.fe.vcct`) and, when the material has
-toughness data, the mixed-mode toughness and critical load factor of every
-front node. A step of :meth:`FESolver.solve
+toughness data, the mixed-mode toughness (knocked down by the porosity at
+each front node) and critical load factor of every front node. A step of :meth:`FESolver.solve
 <porosity_fe.fe.solver.FESolver.solve>`, which calls it only on a mesh with
 a delaminated node pair.
 """
@@ -18,6 +18,7 @@ import numpy as np
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..toughness import ToughnessKnockdown
 from . import vcct
 from .assembler import Ties
 
@@ -38,6 +39,7 @@ def fracture_outputs(
     mesh: CompositeMesh, material: MaterialProperties, ties: Ties | None, *,
     load: tuple[np.ndarray, np.ndarray],
     prestress: tuple[np.ndarray, np.ndarray] | None = None,
+    toughness_knockdown: ToughnessKnockdown | None = None,
 ) -> FractureOutputs:
     """Interface forces, front table and critical load factor of a solve.
 
@@ -57,6 +59,11 @@ def fracture_outputs(
         thermal one for ``loading='thermal'``.
     prestress : (u, r), optional
         The fixed part (the thermal residual state of a combined solve).
+    toughness_knockdown : ToughnessKnockdown, optional
+        The porosity law of the toughness at the front nodes; ``None`` (the
+        default here) takes the default exponential law with its
+        uncalibrated placeholders, as :meth:`FESolver.solve
+        <porosity_fe.fe.solver.FESolver.solve>` does.
 
     Returns
     -------
@@ -77,17 +84,21 @@ def fracture_outputs(
             "No interlaminar toughness (MaterialProperties.G_Ic, G_IIc, "
             "bk_eta): energy release rates only, no fracture load factor.")
         return FractureOutputs(front, None, None, forces)
+    law = ToughnessKnockdown() if toughness_knockdown is None else toughness_knockdown
     if prestress is None:
-        front = vcct.fracture_load_factors(front, material)
+        front = vcct.fracture_load_factors(front, material, toughness_knockdown=law)
     else:
         moving = vcct._evaluate(geometry, mesh, load[0],
                                 vcct._pair_forces(mesh, load[1], ties))
         fixed = vcct._evaluate(geometry, mesh, prestress[0],
                                vcct._pair_forces(mesh, prestress[1], ties))
-        lam = vcct.fracture_load_factors(moving, material, prestress=fixed).lambda_c
+        lam = vcct.fracture_load_factors(moving, material, prestress=fixed,
+                                         toughness_knockdown=law).lambda_c
         G_c = vcct.critical_energy_release_rate(
-            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp)
-        front = dataclasses.replace(front, G_c=G_c, lambda_c=lam)
+            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp,
+            toughness_knockdown=law)
+        front = dataclasses.replace(front, G_c=G_c, lambda_c=lam,
+                                    **vcct._toughness_record(law, front.Vp))
     row = front.governing
     return FractureOutputs(
         crack_front=front, load_factor=front.load_factor,

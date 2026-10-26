@@ -127,7 +127,7 @@
     },
     "fracture": {
       "type": "object",
-      "description": "FE-field export of a mesh with an explicit delamination (a delaminated interface node pair), added in schema_version 1.3: crack-face contact (crack_contact, and contact_iterations, contact_pairs, contact_converged, null when contact was off), the critical load factor of the Benzeggagh-Kenane criterion (fracture_load_factor, dimensionless, multiplying the load named by load_factor_basis; null without toughness data or when infinite) with its governing_node (original node id), governing_psi (mode mixity) and governing_G_T_N_per_mm, and the virtual-crack-closure table of the front (front, null without a front). Energy release rates and toughness in N/mm (1 N/mm = 1 kJ/m^2), lengths in mm. Every undefined or non-finite value is null.",
+      "description": "FE-field export of a mesh with an explicit delamination (a delaminated interface node pair), added in schema_version 1.3: crack-face contact (crack_contact, and contact_iterations, contact_pairs, contact_converged, null when contact was off), the critical load factor of the Benzeggagh-Kenane criterion (fracture_load_factor, dimensionless, multiplying the load named by load_factor_basis; null without toughness data or when infinite) with its governing_node (original node id), governing_psi (mode mixity) and governing_G_T_N_per_mm, the porosity-toughness law that knocked the toughness down at each front node (toughness_knockdown, a description; toughness_uncalibrated, true when its uncalibrated placeholder coefficients lowered a toughness; both null without toughness data), and the virtual-crack-closure table of the front (front, null without a front). Energy release rates and toughness in N/mm (1 N/mm = 1 kJ/m^2), lengths in mm. Every undefined or non-finite value is null.",
       "properties": {
         "crack_contact": {"type": ["boolean", "null"]},
         "contact_iterations": {"type": ["integer", "null"]},
@@ -138,10 +138,12 @@
         "governing_node": {"type": ["integer", "null"]},
         "governing_psi": {"type": ["number", "null"]},
         "governing_G_T_N_per_mm": {"type": ["number", "null"]},
+        "toughness_knockdown": {"type": ["string", "null"]},
+        "toughness_uncalibrated": {"type": ["boolean", "null"]},
         "n_front_nodes": {"type": "integer"},
         "front": {
           "type": ["object", "null"],
-          "description": "Front table, one entry per front node in every array: node and interface (integers), x_mm, y_mm, z_mm, direction_x and direction_y (growth direction), delta_a_mm, width_mm (tributary width), G_I_N_per_mm, G_II_N_per_mm, G_III_N_per_mm, G_T_N_per_mm, psi (mode mixity, null where G_T = 0), Vp (porosity, fraction), G_c_N_per_mm and lambda_c (null columns without toughness data; a null entry where lambda_c is infinite).",
+          "description": "Front table, one entry per front node in every array: node and interface (integers), x_mm, y_mm, z_mm, direction_x and direction_y (growth direction), delta_a_mm, width_mm (tributary width), G_I_N_per_mm, G_II_N_per_mm, G_III_N_per_mm, G_T_N_per_mm, psi (mode mixity, null where G_T = 0), Vp (porosity at the crack plane, fraction), G_c_N_per_mm (knocked down by that porosity) and lambda_c (null columns without toughness data; a null entry where lambda_c is infinite).",
           "additionalProperties": {"type": ["array", "null"], "items": {"type": ["number", "null"]}}
         }
       }

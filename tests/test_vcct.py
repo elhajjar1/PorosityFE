@@ -500,8 +500,12 @@ class TestLoadFactor:
         tear = dataclasses.replace(mat, G_IIIc=1.2)
         assert critical_energy_release_rate(tear, 0.0, 0.0, 1.0) == pytest.approx(1.2)
         assert critical_energy_release_rate(tear, 0.0, 1.0, 0.0) == pytest.approx(mat.G_IIc)
-        # The porosity hook does not change the toughness yet.
-        assert critical_energy_release_rate(mat, 1.0, 1.0, Vp=0.05) == \
+        # Porosity knocks the toughness down (tests/test_toughness.py); with
+        # no knockdown law it is the pristine one at any Vp.
+        assert critical_energy_release_rate(mat, 1.0, 1.0, Vp=0.05,
+                                            toughness_knockdown=None) == \
+            critical_energy_release_rate(mat, 1.0, 1.0)
+        assert critical_energy_release_rate(mat, 1.0, 1.0, Vp=0.05) < \
             critical_energy_release_rate(mat, 1.0, 1.0)
         with pytest.raises(ValueError, match='G_Ic'):
             critical_energy_release_rate(T800_16, 1.0, 0.0)
