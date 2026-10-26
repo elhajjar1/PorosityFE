@@ -138,6 +138,8 @@ from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
 from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
 from .results import ConfigResult as ConfigResult  # noqa: F401, E402
 from .results import FailureResult as FailureResult  # noqa: F401, E402
+from .toughness import ToughnessKnockdown as ToughnessKnockdown  # noqa: F401, E402
+from .toughness import toughness_knockdown_factor as toughness_knockdown_factor  # noqa: F401, E402
 from .transforms import rotate_stiffness_3d as rotate_stiffness_3d  # noqa: F401, E402
 from .transforms import rotation_matrix_3d as rotation_matrix_3d  # noqa: F401, E402
 from .transforms import strain_transformation_3d as strain_transformation_3d  # noqa: F401, E402
@@ -220,6 +222,9 @@ __all__ = [
     "vcct_energy_release_rates",
     "fracture_load_factors",
     "critical_energy_release_rate",
+    # Porosity-dependent interlaminar toughness
+    "ToughnessKnockdown",
+    "toughness_knockdown_factor",
     # Visualization
     "FEVisualizer",
     # IO
