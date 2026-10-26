@@ -12,7 +12,10 @@ solve reports the energy release rates $G_\text{I}$, $G_\text{II}$ and
 $G_\text{III}$ by the virtual crack closure technique (VCCT). When the
 material has interlaminar toughness data, it also reports the critical load
 factor at which the delamination starts to grow, from the
-Benzeggagh-Kenane mixed-mode criterion. Delamination *initiation* from an
+Benzeggagh-Kenane mixed-mode criterion, with the toughness knocked down by
+the porosity at the crack plane
+([Porosity and toughness](#porosity-and-toughness)). Delamination
+*initiation* from an
 intact interface is still screened by the stress-based Hashin delamination
 mode ({doc}`failure`).
 
@@ -34,6 +37,8 @@ result = FESolver(mesh, mat, pf).solve('compression')
 
 front = result.crack_front              # one row per front node
 front.G_T, front.psi                    # N/mm, mode mixity
+front.Vp, front.G_c                     # porosity at the crack, its toughness
+front.toughness_uncalibrated            # True: the placeholder knockdown law
 result.fracture_load_factor             # growth at this multiple of the load
 result.contact_pairs                    # crack-face pairs in contact
 ```
@@ -307,9 +312,10 @@ III. The inputs are the optional {class}`~porosity_fe.MaterialProperties`
 fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. No
 preset sets them (see [Toughness data](#toughness-data)). Without them the
 solve still reports the energy release rates, logs one INFO line, and the
-load factor is `None`. The function receives the porosity at each front node
-as the hook of the porosity-toughness law of plan phase 4; for now it
-returns the pristine toughness.
+load factor is `None`. Each pure-mode toughness is the material's, knocked
+down by the porosity at the front node
+([Porosity and toughness](#porosity-and-toughness)); $\eta$ does not
+change.
 
 **Mechanical load.** Every energy release rate scales with $\lambda^2$ and
 $\psi$ does not change, so node $i$ starts to grow at
@@ -344,13 +350,17 @@ applied state is held for every $\lambda$ (see
 - {class}`~porosity_fe.FieldResults`: `crack_front`, `fracture_load_factor`,
   `fracture_governing_node`, `interface_forces`, `crack_contact`,
   `contact_iterations`, `contact_pairs` and `contact_converged`, all `None`
-  without a delaminated pair; `summary().details` carries them.
+  without a delaminated pair; `summary().details` carries them, with
+  `toughness_knockdown` (a description of the porosity-toughness law) and
+  `toughness_uncalibrated`, which the front table holds as
+  `crack_front.toughness_knockdown` and `crack_front.toughness_uncalibrated`.
 - JSON ({meth}`FESolver.export_results <porosity_fe.FESolver.export_results>`,
   schema 1.3): a `fracture` block with the contact counts, the load factor,
-  the governing node, its $\psi$ and $G_T$, and the front table (one array
-  per column, unit-suffixed keys such as `G_T_N_per_mm`). Undefined or
-  infinite values are `null`. A mesh without a delaminated pair writes no
-  block.
+  the governing node, its $\psi$ and $G_T$, `toughness_knockdown` and
+  `toughness_uncalibrated`, and the front table (one array per column,
+  unit-suffixed keys such as `G_T_N_per_mm`; `Vp` is the porosity at the
+  crack plane). Undefined or infinite values are `null`. A mesh without a
+  delaminated pair writes no block.
 - VTU ({meth}`FieldResults.to_vtu <porosity_fe.FieldResults.to_vtu>`): point
   data `G_I`, `G_II`, `G_III` and `G_T` at both nodes of every front pair,
   `NaN` elsewhere. The legacy ASCII VTK leaves them out, since its readers do
@@ -435,8 +445,116 @@ secondary source, [NV] not verified):
 | T300/914C (DCB benchmark) | 0.1703 | 0.4936 | 1.62 | Krueger, NASA/TM-2008-215123 [P] |
 | C12K/R6376 (SLB benchmark) | 0.3405 | 1.286 | 3.39 | Krueger, NASA/TM-2008-215123 [P] |
 
-Use precracked or initiation values as the base that a porosity knockdown
-would apply to; values measured from the insert run high.
+Use precracked or initiation values as the base that the porosity
+knockdown applies to; values measured from the insert run high.
+
+## Porosity and toughness
+
+Voids at the crack plane lower the interlaminar toughness. The toughness at
+each front node is the material's pristine value times a porosity factor
+for each mode ({class}`~porosity_fe.ToughnessKnockdown`):
+
+$$
+G_{Ic}(V_p) = G_{Ic}\, f_\text{I}(V_p), \qquad
+G_{IIc}(V_p) = G_{IIc}\, f_\text{II}(V_p), \qquad
+G_{IIIc}(V_p) = G_{IIIc}\, f_\text{III}(V_p),
+$$
+
+and the B-K criterion above takes these, with $\eta$ unchanged. The law
+lives outside {class}`~porosity_fe.MaterialProperties`, which holds the
+pristine toughness, and is chosen per solve:
+{meth}`FESolver.solve(..., toughness_knockdown=...) <porosity_fe.FESolver.solve>`,
+and the same keyword on {func}`~porosity_fe.fracture_load_factors` and
+{func}`~porosity_fe.critical_energy_release_rate`.
+{func}`~porosity_fe.toughness_knockdown_factor` evaluates the factor without
+FE, for screening; no empirical strength mode uses it.
+
+| `toughness_knockdown` | $f(V_p)$ |
+|---|---|
+| `'exponential'` (default) | $e^{-b V_p}$ with the placeholders $b_\text{I} = 6.2$, $b_\text{II} = b_\text{III} = 14$ |
+| `ToughnessKnockdown(b_I=..., b_II=..., b_III=...)` | $e^{-b V_p}$ with your coefficients; one left `None` keeps its placeholder |
+| `ToughnessKnockdown('linear', b_I=..., b_II=...)` | $\max(1 - b V_p, 0)$; it has no placeholder, so both are required |
+| a callable `f(Vp, mode)` | your factor at each `Vp` (a float) and `mode` (`'I'`, `'II'` or `'III'`) |
+| `None` or `'none'` | 1, the pristine toughness |
+
+$b$ is per unit $V_p$ (a fraction) and must be finite and $\ge 0$. Mode III
+follows mode II unless `b_III` is given. Every law gives $0 \le f \le 1$ and
+$f(0) = 1$: the toughness never rises with porosity, and a callable value
+outside $[0, 1]$ raises. Without porosity at the front, $G_c$ and
+$\lambda_c$ are exactly the pristine ones, whatever the law.
+
+**Local porosity.** $V_p$ at a front node (`CrackFront.Vp`) is the porosity
+field at the crack plane: the mean of
+{attr}`CompositeMesh.porosity <porosity_fe.CompositeMesh.porosity>` at the
+pair's original and duplicate node, which hold the same value, the field
+sampled at the interface node. This is where the porosity *distribution*
+matters for delamination: interface-clustered voids lower the toughness
+where the crack runs. On the end-notched flexure beam of
+`tests/test_toughness.py` (16 UD plies of T800/epoxy with the IM7/8552
+toughness of the table above, a mid-plane crack, 2 % mean porosity, pure
+mode II at the front):
+
+| Porosity field | $V_p$ at the front | $G_c$ (N/mm) | $\lambda_c$ |
+|---|---|---|---|
+| `'uniform'`, no knockdown (`None`) | 0.020 | 0.774 | 3.160 |
+| `'uniform'` | 0.020 | 0.585 | 2.747 |
+| `'interface'` (Gaussians at every ply interface) | 0.025 | 0.544 | 2.649 |
+| `'clustered'` at the mid-plane | 0.048 | 0.395 | 2.255 |
+
+The field values come from the profiles as they are normalized today, so
+the local $V_p$ of the `'interface'` profile depends on plan item 0.4 (its
+renormalization). A discrete {class}`~porosity_fe.VoidGeometry` that
+contains a front node sets $V_p = 1$ there, far beyond the data.
+
+**Calibration status: uncalibrated.** No published $G_c(V_p)$ relation
+exists. About ten studies measured both, and they disagree (Mehdikhani et
+al. 2019, doi:10.1177/0021998318772152): initiation $G_{Ic}$ falls or does
+not change, $G_{IIc}$ falls, and propagation $G_{Ic}$ can *rise* through
+fibre and ply bridging and multiple crack planes. The placeholders are
+two-point estimates $b = -\ln(G_c / G_{c,\text{ref}}) / \Delta V_p$ ([P] read
+in the primary source, [S] from a secondary source):
+
+| Study | Material | $V_p$ | Finding | $b$ |
+|---|---|---|---|---|
+| Hakim et al. 2017 [P], doi:10.4236/msa.2017.82011 | T700/EPON 828 UD, DCB | 1.49, 1.77, 3.43 % | static $G_{Ic}$ 0.52, 0.44, 0.45 N/mm (Table 1) | 7.45 from the end points (4.39 by least squares over all three) |
+| Olivier et al. 2007 [S], ICCM16 | UD carbon/epoxy | up to 5 % | $G_{Ic}$ $-22$ % for $+5$ % voids (as reported by Mehdikhani et al. 2019), a propagation value (as cited by Carraro et al. 2015) | 4.97 |
+| Agius and Fox 2015 [P, abstract], doi:10.1016/j.compositesa.2015.02.023 | out-of-autoclave prepreg, not named in the abstract | < 0.3 / 1.5 % | $G_{IIc}$ 21 % higher for the low-void laminates | 12.7 to 15.9 for a low-void value of 0 to 0.3 %; 14.1 at 0.15 % |
+| Carraro, Maragoni and Quaresimin 2015 [P], doi:10.1179/2055035914Y.0000000004 | STS40 NCF/EC157, DCB | 0 / 1.9 % (0° interface), 0 / 1.23 % (±45°) | initiation unchanged (0°) or slightly higher (±45°), propagation slightly higher; values only in figures | not used |
+| Asp and Brandt 1997 [S] | UD carbon/epoxy | 0 / 0.9 % | initiation down or unchanged, propagation $G_{Ic}$ about $+75$ %, mode II slightly down | not used |
+
+$b_\text{I} = 6.2$ is the mean of 4.97 and 7.45, and $b_\text{II} = 14$ the
+Agius and Fox estimate at the midpoint of its low-void range, rounded. Mode
+III has no data. Every result that a placeholder changes is flagged:
+`crack_front.toughness_uncalibrated` (and the same key in
+`summary().details` and the JSON `fracture` block) is `True` when the law
+uses a placeholder and some front node has $V_p > 0$, and the first such
+use logs one INFO line per process. `toughness_knockdown` describes the law
+in every case.
+
+**Validation.** `validate_porosity` runs the bundled toughness datasets
+(`hakim_2017`, `agius_fox_2015`) through the law, normalized to each
+baseline group, and reports them in a section of their own, apart from the
+strength and modulus MAE: 6.20 % and 1.15 % (3.67 % property-weighted,
+4.18 % point-weighted over 5 points). The placeholders come in part from
+the same studies, so this is a consistency check, not an independent
+validation. Hakim's 1.77 % and 3.43 % groups have about the same $G_{Ic}$,
+which no monotone law follows.
+
+**Limits.**
+
+- Conservative by construction: the law ignores the rise of mode I
+  propagation toughness with voids. VCCT with the load factor is a
+  growth-onset criterion, so the pristine values should be initiation or
+  precracked ones (see [Toughness data](#toughness-data)).
+- The data span $V_p \le 0.05$; beyond it the law extrapolates.
+- One porosity per front node, the field at the interface. Void size,
+  shape and position relative to the crack plane are not modelled, though
+  they matter: voids on the crack plane ease growth, voids off it deflect
+  the crack and add bridging (Carraro et al. 2015). Hakim et al. measured
+  more porosity in the layers around the insert than the specimen average.
+- The coefficient uncertainty is not propagated
+  ({func}`~porosity_fe.propagate_uncertainty` does not perturb $b$; plan
+  item 4.5).
 
 ## Limitations
 
@@ -457,8 +575,10 @@ would apply to; values measured from the insert run high.
 - Contact is frictionless, node to node on the matching duplicated nodes
   (small sliding), from a zero gap. With a thermal prestress the load factor
   holds the contact set of the applied state.
-- No preset has toughness data, and porosity does not change the toughness
-  yet (plan phase 4). The knockdown is not split into porosity and
-  delamination parts.
+- No preset has toughness data. The porosity knockdown of the toughness has
+  uncalibrated placeholder coefficients and ignores the rise of mode I
+  propagation toughness with voids
+  ([Porosity and toughness](#porosity-and-toughness)). The stiffness
+  knockdown is not split into porosity and delamination parts.
 - The stresses at the front are singular, so stresses and failure indices
   next to it depend on the mesh.

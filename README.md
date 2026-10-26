@@ -652,8 +652,9 @@ is the default) and must lie in `[-1, 0]` for a closed envelope.
 ## Validation
 
 PorosityFE is validated against **13 peer-reviewed experimental datasets**
-covering carbon/epoxy, IM7/toughened epoxy, T300/epoxy systems, and
-CF/PEEK thermoplastic. Validation is automated via `validate_porosity`
+of strength and modulus, covering carbon/epoxy, IM7/toughened epoxy,
+T300/epoxy systems, and CF/PEEK thermoplastic, plus 2 exploratory
+interlaminar toughness datasets reported separately (below). Validation is automated via `validate_porosity`
 CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
 or in-process via `validation/validate_all.py`.
 
@@ -679,13 +680,16 @@ Overall MAE:
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 
+**Interlaminar toughness (exploratory, not in the headline).** Two more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1) and Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: MAE 6.20 % and 1.15 % (3.67 % property-weighted, 4.18 % point-weighted, 5 points). The placeholders come in part from these same studies, so this is a consistency check, not a validation; the headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Carraro et al. 2015 report R-curves only in figures and are not included.
+
 ## Limitations
 
 - Empirical models are calibrated for porosity levels up to ~5% (`Vp ≲ 0.05`); higher values are extrapolated and flagged with a warning
 - FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
 - Thermal residual stress is linear thermoelastic under a uniform effective `delta_T` (FE path only); chemical shrinkage, viscoelastic relaxation and moisture swelling are not modelled, and only `AS4_3501_6_epoxy` ships with lamina CTEs
 - Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
-- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`). The FE solve keeps its faces from interpenetrating (frictionless contact), reports the VCCT energy release rates G_I, G_II and G_III along the front (`FieldResults.crack_front`) and, when the material has interlaminar toughness (`G_Ic`, `G_IIc`, `bk_eta`; no preset has them), the Benzeggagh-Kenane load factor at which growth starts (`FieldResults.fracture_load_factor`). It is linear fracture mechanics: growth onset only, no propagation, cohesive zone or delamination buckling. Planform fronts are staircases on the structured grid, so G scatters from node to node; porosity does not change the toughness yet, and the app has no delamination input. Initiation from an intact interface is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
+- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`). The FE solve keeps its faces from interpenetrating (frictionless contact), reports the VCCT energy release rates G_I, G_II and G_III along the front (`FieldResults.crack_front`) and, when the material has interlaminar toughness (`G_Ic`, `G_IIc`, `bk_eta`; no preset has them), the Benzeggagh-Kenane load factor at which growth starts (`FieldResults.fracture_load_factor`). It is linear fracture mechanics: growth onset only, no propagation, cohesive zone or delamination buckling. Planform fronts are staircases on the structured grid, so G scatters from node to node, and the app has no delamination input. Initiation from an intact interface is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
+- Porosity and interlaminar toughness: the toughness at each crack-front node is knocked down by the porosity at the crack plane (`FESolver.solve(..., toughness_knockdown=...)`, `ToughnessKnockdown`; `toughness_knockdown_factor` for screening without FE), so interface-clustered voids lower `G_c` where the crack runs. The default law `G_c = G_c0 exp(-b Vp)` has **uncalibrated** placeholder coefficients (`b_I = 6.2`, `b_II = b_III = 14` per unit `Vp`, two-point estimates from three studies, data up to `Vp = 0.05`); every result they change carries `toughness_uncalibrated = True`. The law never raises the toughness, so it ignores the rise of mode I propagation toughness with voids (fibre bridging) that some studies report. Pass your own coefficients, the linear law, a callable, or `None` for the pristine toughness
 - **Flexural strength** was removed from the validation database in v1.1.1
   because 3-point bend failure involves mixed compression + interlaminar
   shear mechanisms that the Judd-Wright mode proxy cannot capture reliably

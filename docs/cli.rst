@@ -29,7 +29,14 @@ validate_porosity
 Runs every bundled experimental dataset (``validation/datasets/*.json``)
 through the empirical pipeline and writes ``validation_master_report.png``
 and ``validation_detail_report.md``. The run summary prints the
-property-weighted and point-weighted mean absolute error. A standalone
+property-weighted and point-weighted mean absolute error of the strength
+and modulus datasets. The interlaminar toughness datasets (``G_Ic``,
+``G_IIc`` blocks) go through the porosity-toughness law instead
+(:func:`~porosity_fe.toughness_knockdown_factor`, uncalibrated placeholder
+coefficients) and are reported apart: their own summary lines, and their
+own section of ``validation_detail_report.md`` with the test stage and
+starter crack of each entry. They never enter the headline MAE or the PNG
+(see :doc:`theory/delamination`, "Porosity and toughness"). A standalone
 executable of this command is built from ``ValidatePorosity.spec`` with
 PyInstaller and attached to each GitHub release.
 

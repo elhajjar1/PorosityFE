@@ -116,8 +116,8 @@ All notable changes to PorosityFE will be documented in this file.
     separate mode III toughness; critical load factor
     `sqrt(G_c / G_T)` per node, or, with a thermal residual state, the
     root of the quadratic `G_T(lam) = G_c(psi(lam))` by `brentq`. The
-    toughness hook takes the local porosity and returns the pristine values
-    until the porosity-toughness law (phase 4).
+    toughness hook takes the local porosity; the porosity-toughness law is
+    the phase 4 entry below.
   - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
     (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
     `None` by default; no preset sets them. Without them the solve reports
@@ -147,6 +147,56 @@ All notable changes to PorosityFE will be documented in this file.
     1.003 at the mean radius of the staircase front, with 0.785 to 1.434
     around it. Theory page "Delamination": contact, VCCT, criterion, load
     factor, verification table and toughness data.
+- **Porosity-dependent interlaminar toughness, and toughness validation
+  data** (delamination plan, phase 4). Results without a delaminated node
+  pair are unchanged: on the 27-case quick FE fingerprint every
+  `FieldResults` field and the JSON export are identical, and only
+  `summary().details` gains two `None` keys. The empirical strength results
+  and the validation headline (4.49 % / 3.89 %) are unchanged.
+  - The law (`porosity_fe/toughness.py`): `G_c(Vp) = G_c0 f(Vp)` for each
+    mode, with `ToughnessKnockdown` choosing `f` outside
+    `MaterialProperties`: `'exponential'` (`exp(-b Vp)`, the default),
+    `'linear'` (`max(1 - b Vp, 0)`, coefficients required), `'none'` /
+    `None`, or a callable `f(Vp, mode)`. Coefficients are per unit `Vp`
+    and `>= 0`; mode III follows mode II; the law never raises the
+    toughness, and a callable value outside `[0, 1]` raises.
+    `toughness_knockdown_factor(Vp, mode)` screens without FE.
+  - Placeholder exponents `b_I = 6.2`, `b_II = 14`, **uncalibrated**
+    two-point estimates (decision D4): `b_I` the mean of Olivier et al.
+    2007 (4.97, secondary source) and Hakim et al. 2017 (7.45), `b_II`
+    from Agius and Fox 2015 (12.7 to 15.9). `Calibration` mirrors them as
+    `TOUGHNESS_B_PLACEHOLDER`. The rise of mode I propagation toughness
+    with voids that some studies report is ignored (conservative).
+  - FE coupling: the toughness at each crack-front node is knocked down by
+    `CrackFront.Vp`, the porosity field at the crack plane (the mean of
+    the pair's two nodes), so interface-clustered voids lower `G_c` where
+    the crack runs. `FESolver.solve`, `fracture_load_factors` and
+    `critical_energy_release_rate` take `toughness_knockdown=` (default
+    `'exponential'`); with zero porosity at the front `G_c` and `lambda_c`
+    are bit-identical to before. On an end-notched flexure beam with 2 %
+    mean porosity, a mid-plane cluster puts 4.8 % at the front and lowers
+    `G_c` from 0.585 to 0.395 N/mm against uniform porosity.
+  - Flags: `CrackFront.toughness_knockdown` and `toughness_uncalibrated`
+    (true when a placeholder lowered a toughness), the same keys in
+    `summary().details` and the JSON `fracture` block (schema 1.3,
+    additive), and one INFO line per process at the first such use.
+  - Validation: the dataset schema gains `G_Ic` and `G_IIc` blocks (N/mm),
+    each tagged with its stage (initiation / propagation / unspecified)
+    and starter crack (insert / precracked / unspecified); a
+    toughness-only dataset needs only fiber and matrix.
+    `validation/validate_all.py` maps the keys (they raised `KeyError`),
+    predicts them with the law (`predict_toughness`) and summarizes them
+    apart (`summarize_toughness_mae`, a report section and a
+    `validate_porosity` summary line); `summarize_mae` leaves them out.
+    New datasets `hakim_2017` (static `G_Ic` at 1.49, 1.77 and 3.43 %
+    voids, Table 1) and `agius_fox_2015` (`G_IIc` ratio from the
+    abstract): toughness MAE 3.67 % property-weighted, 4.18 %
+    point-weighted, a consistency check since the placeholders come in
+    part from the same studies. Carraro et al. 2015 give values only in
+    figures and are not included.
+  - Docs: theory page "Delamination", section "Porosity and toughness"
+    (the law, local porosity, sources and calibration status, limits);
+    README Validation and Limitations; CLI page.
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled
