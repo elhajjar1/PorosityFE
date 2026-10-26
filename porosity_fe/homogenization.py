@@ -419,6 +419,35 @@ def _build_clt_abd(material: MaterialProperties, ply_angles: list[float],
     return A_mat, D_mat
 
 
+def _clt_abd_full(C_base: np.ndarray, ply_angles: list[float], t_ply: float
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """CLT ``A``, ``B`` and ``D`` (3 x 3 each) of a possibly unsymmetric stack.
+
+    The plies (angles in degrees, thickness ``t_ply`` each) are stacked from
+    ``z = -h/2`` to ``h/2`` in the order given, about the stack's own
+    mid-plane, with the plane-stress reduced stiffness of
+    :func:`_build_clt_abd` (``sigma_33 = 0`` condensed out of the rotated
+    6 x 6 stiffness). Unlike :func:`_build_clt_abd` it forms the coupling
+    matrix ``B``, for the sublaminates of a delaminated laminate.
+    """
+    idx = [0, 1, 5]  # 11, 22, 12 in Voigt
+    h = len(ply_angles) * t_ply
+    A = np.zeros((3, 3))
+    B = np.zeros((3, 3))
+    D = np.zeros((3, 3))
+    for k, angle_deg in enumerate(ply_angles):
+        z0 = -h / 2.0 + k * t_ply
+        z1 = z0 + t_ply
+        angle_rad = np.radians(float(angle_deg))
+        C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z') \
+            if abs(angle_rad) > 1e-15 else C_base
+        Q_bar = C_rot[np.ix_(idx, idx)] - np.outer(C_rot[idx, 2], C_rot[idx, 2]) / C_rot[2, 2]
+        A += Q_bar * (z1 - z0)
+        B += Q_bar * (z1 ** 2 - z0 ** 2) / 2.0
+        D += Q_bar * (z1 ** 3 - z0 ** 3) / 3.0
+    return A, B, D
+
+
 def compute_degraded_clt_moduli(material: MaterialProperties,
                                 ply_angles: list[float],
                                 Vp: float,

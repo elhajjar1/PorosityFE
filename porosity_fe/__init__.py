@@ -76,6 +76,8 @@ from .cli import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401, E
 from .cli import _vp_label as _vp_label  # noqa: F401, E402
 from .cli import main as main  # noqa: F401, E402
 from .delamination import Delamination as Delamination  # noqa: F401, E402
+from .edge_delamination import EdgeDelamination as EdgeDelamination  # noqa: F401, E402
+from .edge_delamination import obrien_edge_delamination as obrien_edge_delamination  # noqa: F401, E402
 from .empirical import Calibration as Calibration  # noqa: F401, E402
 from .empirical import EmpiricalSolver as EmpiricalSolver  # noqa: F401, E402
 from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
@@ -229,11 +231,13 @@ __all__ = [
     # Porosity-dependent interlaminar toughness
     "ToughnessKnockdown",
     "toughness_knockdown_factor",
-    # Interlaminar stresses and delamination onset
+    # Interlaminar stresses, delamination onset and free-edge delamination
     "InterfaceTractions",
     "interface_tractions",
     "DelaminationOnset",
     "delamination_onset",
+    "EdgeDelamination",
+    "obrien_edge_delamination",
     # Visualization
     "FEVisualizer",
     # IO
