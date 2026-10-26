@@ -1365,7 +1365,12 @@ class TestDefectAnalysis:
         fe = delam_result["fe_field"]
         values = {label: value for label, value, _ in rows}
         assert values["Fracture load factor λ_c"] == f"{fe.fracture_load_factor:.3g}"
-        assert "Governing node" in values and uncalibrated is True
+        row = fe.crack_front.governing
+        assert values["Governing node (x, y mm)"] == \
+            f"{fe.crack_front.x[row]:.1f}, {fe.crack_front.y[row]:.1f}"
+        assert uncalibrated is True
+        n = fe.contact_iterations
+        assert f"after {n} solve{'' if n == 1 else 's'}." in caption
         assert "Virtual crack closure" in caption and "staircase" in caption
         table = app.fe_front_rows(delam_result)
         assert len(table) == len(fe.crack_front)
@@ -1483,11 +1488,11 @@ class TestFractureSpecimens:
         values = {label: value for label, value, _ in rows}
         front = r["fe_field"].crack_front
         mid = int(np.argmin(np.abs(front.y - 12.5)))
-        assert values["P_c at mid-width"] == f"{front.lambda_c[mid] * 10.0:.4g} N"
-        assert values["P_c, weakest node"] == \
-            f"{r['fe_field'].fracture_load_factor * 10.0:.4g} N"
-        assert values["Compliance C"] == \
-            f"{r['fe_field'].load_point_compliance:.4g} mm/N"
+        assert values["P_c at mid-width (N)"] == f"{front.lambda_c[mid] * 10.0:.4g}"
+        assert values["P_c, weakest node (N)"] == \
+            f"{r['fe_field'].fracture_load_factor * 10.0:.4g}"
+        assert values["Compliance C (mm/N)"] == \
+            f"{r['fe_field'].load_point_compliance:.4g}"
         assert "ASTM D5528" in caption and "unidirectional" in caption
         # The mode mix at mid-width: mode I for the DCB, mode II for the ENF.
         assert float(values["ψ at mid-width"]) < 0.01
@@ -1525,5 +1530,5 @@ class TestFractureSpecimens:
         r = app.run_analysis(_base_cfg(loading_mode="dcb", angles=[0.0] * 4,
                                        t_ply=0.75, nz=4))
         values = dict((lab, v) for lab, v, _ in app.fe_fracture_test_summary(r)[0])
-        assert values["P_c at mid-width"] == "n/a"
-        assert values["G_T at mid-width"].endswith("N/mm")
+        assert values["P_c at mid-width (N)"] == "n/a"
+        assert float(values["G_T at mid-width (N/mm)"]) > 0.0

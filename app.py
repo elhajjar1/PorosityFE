@@ -1305,7 +1305,7 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     lam = fe.fracture_load_factor
     row = front.governing
     focus = row if row is not None else int(np.argmax(front.G_T))
-    where = f"x = {front.x[focus]:.1f}, y = {front.y[focus]:.1f} mm"
+    where = f"{front.x[focus]:.1f}, {front.y[focus]:.1f}"
     rows = [
         ("Fracture load factor λ_c",
          "n/a" if lam is None else _fmt_value(lam, "{:.3g}"),
@@ -1313,12 +1313,13 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
          "analysis load at which the delamination starts to grow (G_T reaches "
          "the Benzeggagh-Kenane toughness G_c(ψ)). n/a without G_Ic, G_IIc "
          "and η; ∞ when the load releases no energy at the front."),
-        ("Governing node" if row is not None else "Largest G_T at", where,
+        ("Governing node (x, y mm)" if row is not None
+         else "Largest G_T at (x, y mm)", where,
          "Front node with the smallest λ_c (without toughness, the largest "
          "G_T)."),
         ("Mode mixity ψ there", _fmt_value(front.psi[focus], "{:.2f}"),
          f"ψ = (G_II + G_III) / G_T at that node: {_mode_shares(front, focus)}."),
-        ("Max G_T", f"{float(np.max(front.G_T)):.4g} N/mm",
+        ("Max G_T (N/mm)", f"{float(np.max(front.G_T)):.3g}",
          "Largest total energy release rate over the front at the analysis "
          "load; it scales with the load squared."),
     ]
@@ -1335,8 +1336,9 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
         parts.append(f"Toughness: {front.toughness_knockdown.describe()}, at "
                      f"the porosity of each front node.")
     if fe.crack_contact:
+        solves = fe.contact_iterations
         parts.append(f"Crack-face contact: {fe.contact_pairs} pairs in contact "
-                     f"after {fe.contact_iterations} solves.")
+                     f"after {solves} solve{'' if solves == 1 else 's'}.")
     parts.append(
         "Linear elastic fracture mechanics: growth onset only, no propagation, "
         "fatigue growth or delamination buckling. A planform front is a "
@@ -1346,12 +1348,17 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     return rows, " ".join(parts), bool(front.toughness_uncalibrated)
 
 
-#: Line colours of the front plot: G_T, the toughness G_c, ψ.
-_FRONT_COLOURS = ("#1f77b4", "0.35", "#d62728")
+#: Line colours of the front plot: G_T, ψ.
+_FRONT_COLOURS = ("#1f77b4", "#d62728")
 
 
 def plot_front(result: dict):
-    """``G_T`` (with ``G_c``) and ``ψ`` along the delamination front."""
+    """``G_T`` and ``ψ`` along the delamination front.
+
+    ``G_T`` is at the analysis load, so it is usually far below the
+    toughness; the table holds ``G_c`` and ``λ_c`` at every node, and the
+    governing node is starred.
+    """
     front = _crack_front(result)
     fig, (ax_g, ax_p) = plt.subplots(2, 1, figsize=(9, 5.6), sharex=True)
     if front is None:
@@ -1364,16 +1371,13 @@ def plot_front(result: dict):
         style = "-o" if n == 0 else "-s"
         ax_g.plot(s[seg], front.G_T[seg], style, color=_FRONT_COLOURS[0],
                   markersize=3, linewidth=1.2, label=f"G_T at the analysis load{tag}")
-        if front.G_c is not None:
-            ax_g.plot(s[seg], front.G_c[seg], "--", color=_FRONT_COLOURS[1],
-                      linewidth=1.0, label="_nolegend_" if n else "G_c (toughness)")
-        ax_p.plot(s[seg], front.psi[seg], style, color=_FRONT_COLOURS[2],
+        ax_p.plot(s[seg], front.psi[seg], style, color=_FRONT_COLOURS[1],
                   markersize=3, linewidth=1.2)
     row = front.governing
     if row is not None:
         ax_g.plot([s[row]], [front.G_T[row]], "*", color="black", markersize=10,
                   label=f"governing, λ_c = {float(front.lambda_c[row]):.3g}")
-    ax_g.set_ylabel("G (N/mm)")
+    ax_g.set_ylabel("G_T (N/mm)")
     ax_g.set_ylim(bottom=0.0)
     ax_g.legend(loc="best", frameon=False, fontsize=8)
     ax_p.set_ylabel("Mode mixity ψ")
@@ -1438,7 +1442,7 @@ def fe_onset_summary(result: dict) -> tuple[list[tuple[str, str, str]], list[dic
               f"/{summ['critical_interface'] + 2})",
          "Interface k lies between ply k and k + 1 from the bottom (0-based); "
          "the plies are counted from 1 here."),
-        ("Location", "n/a" if loc is None else f"x = {loc[0]:.1f}, y = {loc[1]:.1f} mm",
+        ("Location (x, y mm)", "n/a" if loc is None else f"{loc[0]:.1f}, {loc[1]:.1f}",
          "Interface node of the largest index."),
         ("Onset load factor", _fmt_value(onset.onset_load_factor, "{:.3g}"),
          "Multiple of the analysis load at which the index first reaches 1."),
@@ -1485,19 +1489,19 @@ def fe_fracture_test_summary(result: dict) -> tuple[list[tuple[str, str, str]], 
     lam_mid = None if front.lambda_c is None else float(front.lambda_c[mid])
     lam = fe.fracture_load_factor
     rows = [
-        ("Compliance C", _fmt_value(fe.load_point_compliance, "{:.4g} mm/N"),
+        ("Compliance C (mm/N)", _fmt_value(fe.load_point_compliance, "{:.4g}"),
          f"Load-point compliance: the displacement of the load point per unit "
          f"{spec['load']} (work conjugate)."),
-        ("G_T at mid-width", f"{float(front.G_T[mid]):.4g} N/mm",
+        ("G_T at mid-width (N/mm)", f"{float(front.G_T[mid]):.4g}",
          f"At P = {P:g} N; it scales with P²."),
         ("ψ at mid-width", _fmt_value(front.psi[mid], "{:.3f}"),
          "Mode mixity (G_II + G_III) / G_T where the test reports compare."),
-        ("P_c at mid-width",
-         "n/a" if lam_mid is None else _fmt_value(lam_mid * P, "{:.4g} N"),
+        ("P_c at mid-width (N)",
+         "n/a" if lam_mid is None else _fmt_value(lam_mid * P, "{:.4g}"),
          "Critical load λ_c · P of the front node at mid-width: growth onset. "
          "Needs G_Ic, G_IIc and η."),
-        ("P_c, weakest node",
-         "n/a" if lam is None else _fmt_value(lam * P, "{:.4g} N"),
+        ("P_c, weakest node (N)",
+         "n/a" if lam is None else _fmt_value(lam * P, "{:.4g}"),
          "λ_c · P at the front node that grows first."),
     ]
     parts = [

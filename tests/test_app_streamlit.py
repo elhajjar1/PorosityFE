@@ -495,8 +495,8 @@ class TestDefectsPanel:
         assert result["config"]["crack_length"] == 50.0
         assert result["fe_specimen"]["thickness_mm"] == pytest.approx(2.0)
         metrics = {m.label: m.value for m in at.metric}
-        assert metrics["P_c at mid-width"].endswith(" N")
-        assert metrics["Compliance C"].endswith(" mm/N")
+        assert float(metrics["P_c at mid-width (N)"]) > 0.0
+        assert float(metrics["Compliance C (mm/N)"]) > 0.0
         assert any(h.value == "Defects: delamination and interface onset"
                    for h in at.subheader)
         # The NCR cannot disposition a test specimen.
