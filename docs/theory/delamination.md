@@ -71,7 +71,8 @@ The duplication runs at the end of
 {meth}`~porosity_fe.CompositeMesh.generate_mesh`, so it survives the
 builders that resize the plate and generate again
 ({meth}`~porosity_fe.CompositeMesh.for_flexure`,
-{meth}`~porosity_fe.CompositeMesh.for_ilss`), and the delaminations are
+{meth}`~porosity_fe.CompositeMesh.for_ilss` and the fracture specimens of
+[Fracture specimens](#fracture-specimens)), and the delaminations are
 checked against the final plate. The assembled stiffness is that of two
 sublaminates that share nothing at the interface. It does not depend on the
 size or shape of the delamination: that enters only through the ties
@@ -426,6 +427,248 @@ enlarged to $6a \times 6a \times 12a$ at $h = a/8$. The node-to-node scatter
 around the staircase does not shrink with refinement (0.73 to 1.43 at
 $h = a/16$); the front average converges.
 
+## Fracture specimens
+
+{meth}`~porosity_fe.CompositeMesh.for_dcb`,
+{meth}`~porosity_fe.CompositeMesh.for_enf` and
+{meth}`~porosity_fe.CompositeMesh.for_mmb` build the specimens of the three
+interlaminar fracture tests (plan phase 3), and the loading modes `'dcb'`,
+`'enf'` and `'mmb'` of {meth}`FESolver.solve <porosity_fe.FESolver.solve>`
+load them:
+
+```python
+import dataclasses
+
+from porosity_fe import (MATERIALS, CompositeMesh, FESolver, PorosityField,
+                         compliance_calibration)
+
+# Illustration only: the IM7/8552 toughness of the table below on the T800
+# ply; use values measured for your material (N/mm).
+mat = dataclasses.replace(MATERIALS['T800_epoxy'],
+                          G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)
+pf = PorosityField(mat, 0.0)
+mesh = CompositeMesh.for_mmb(pf, mat, mode_ratio=0.5)     # ASTM D6671 defaults
+result = FESolver(mesh, mat, pf).solve('mmb', applied_load=-100.0)
+
+result.fracture_load_factor * 100.0     # onset lever load, N
+result.load_point_compliance            # lever-point compliance, mm/N
+result.crack_front.psi                  # FE mode mix along the front
+```
+
+Each builder places the insert as a through-width
+{class}`~porosity_fe.Delamination` strip at the mid-plane (or `interface=`)
+from the loaded end, open there, and records a
+{class}`~porosity_fe.FractureSpecimenGeometry` as
+`mesh.fracture_geometry`. The loading mode must match it (another mesh
+raises before anything is assembled). Every load and support acts along
+$z$ on a node line across the full width, with consistent nodal weights
+({meth}`BoundaryHandler.line_load <porosity_fe.BoundaryHandler.line_load>`);
+`applied_load` is $P$:
+
+| Test | Builder defaults (plan's reading of the standard) | Loads | Supports |
+|---|---|---|---|
+| DCB, mode I (ASTM D5528) | 125 mm long from the load line, 25 mm wide, $a_0 = 50$ mm | $\lvert P\rvert$ on the top face (upper arm, $+z$) and on the bottom face (lower arm, $-z$) at $x = 0$; the sign of `applied_load` is ignored | six statically determinate constraints at the far end, which carry no load |
+| ENF, mode II (ASTM D7905) | span $2L = 100$ mm, $a_0 = 30$ mm from the support, 25 mm wide, no overhang | $P$ on the top face at mid-span | rollers on the bottom face at the supports ({meth}`~porosity_fe.BoundaryHandler.roller_supports`); crack-face contact |
+| MMB, modes I and II (ASTM D6671) | $L = 50$ mm, $a_0 = 25$ mm, 25 mm wide, lever for $G_\text{II}/G_T = 0.5$ | the lever's forces: $-P c / L$ on the top face at $x = 0$ (the upper arm's hinge) and $P (c + L)/L$ on the top face at mid-span (the saddle) | rollers on the bottom face under the lower arm's hinge ($x = 0$) and at $x = 2L$ |
+
+The ASTM texts were not available, so **check every default dimension
+against the purchased standard**. The benchmarks below use the NASA specimens instead. The DCB
+hinge line is the specimen end, so $a_0$ is measured from the load line as
+in D5528 and the end block or hinge beyond it is not modelled; the
+standard ENF specimen overhangs its supports, which carry no load and are
+left out by default (`overhang=`).
+
+**MMB lever.** The lever is a rigid bar hinged to the upper arm at the
+cracked end, resting on the saddle at mid-span, loaded by $P$ at the lever
+length $c$ beyond it. It is statically determinate, so its forces follow
+from its equilibrium, and in a linear analysis applying them is exact
+({meth}`FractureSpecimenGeometry.mmb_loads <porosity_fe.FractureSpecimenGeometry.mmb_loads>`):
+hinge $-Pc/L$, saddle $P(c + L)/L$, and the specimen's support reactions
+$-P(L - c)/(2L)$ under the lower arm's hinge and $-P(c + L)/(2L)$ at the far
+end ($z$ components; $P < 0$ presses the lever down and the hinge opens the
+crack). Reeder and Crews' superposition splits this into a DCB part,
+opening loads $P_\text{I} = P(3c - L)/(4L)$ (in magnitude) on the two
+arms, and an ENF part, a mid-span load $P_\text{II} = P(c + L)/L$ whose
+end reaction the two arms share (Reeder 1992, NASA TM-104210: the hinge
+load opens the delamination as in the DCB test, the fulcrum load bends the
+specimen as in the ENF test). For unidirectional arms of thickness $h$ and the crack at
+the mid-plane, beam theory with the crack-length corrections of the DCB
+($\chi h$, the correction of the DCB checks under [Verification](#verification))
+and of the ENF ($0.42\,\chi h$, as the single-leg check; attributed to Wang
+and Williams 1992, not checked against the paper) gives
+
+$$
+G_\text{I} = \frac{12 P_\text{I}^2 (a + \chi h)^2}{b^2 h^3 E_{11}}, \qquad
+G_\text{II} = \frac{9 P_\text{II}^2 (a + 0.42 \chi h)^2}{16\, b^2 h^3 E_{11}}, \qquad
+\frac{G_\text{I}}{G_\text{II}} = \frac{4}{3} \left(\frac{3c - L}{c + L}\right)^2 \beta^2,
+\quad \beta = \frac{a + \chi h}{a + 0.42 \chi h}.
+$$
+
+With $\beta = 1$ this is the uncorrected relation; its leading coefficients,
+$36c^2 - 24cL + 4L^2$ and $3c^2 + 6cL + 3L^2$ over $64 L^2 b E_{11} I$, are
+those of Reeder (1992), NASA TM-104210, Eq. (1), whose correction terms are
+not legible in the copy available here. {func}`~porosity_fe.mmb_mode_ratio`
+evaluates the ratio and {func}`~porosity_fe.mmb_lever_length` inverts it,
+$c = L (2\beta + \sqrt{3r}) / (6\beta - \sqrt{3r})$ with
+$r = G_\text{I}/G_\text{II}$; pure mode II needs $c = L/3$. On the NASA
+MMB specimen (IM7/8552, $2h = 4.5$, $2L = 100.8$, $a_0 = 25.4$ mm) it gives
+91.96, 40.90 and 27.02 mm for $G_\text{II}/G_T = 0.2$, 0.5 and 0.8, where
+Krueger used 92.9, 41.3 and 27.3 mm, set from the experimental study's
+specimens (NASA/CR-2012-217562, Figs. 3 and 4): 1.0 to 1.1 % longer. At
+Krueger's lever lengths the FE mode mix at mid-width is 0.986 and 0.994 of
+this beam theory's in plane strain and 0.96 to 0.98 in the
+three-dimensional specimen (whose centre is slightly more mode I); always
+read the FE value, {attr}`CrackFront.psi <porosity_fe.CrackFront.psi>`.
+
+**Mesh.** By default the in-plane mesh is graded towards the front (plan
+decision D5): six elements of exactly `element_length` (default $2h/4$)
+on each side of the crack tip, so the elements either side of the front
+are equal, as VCCT needs, then lengths growing by 25 % per element up to
+`max_element_length` (default $\min(2h, 20 \cdot 2h / n_z)$, as
+{meth}`~porosity_fe.CompositeMesh.for_flexure`); the hinges, supports, load
+lines and the tip are node lines. The node lines are
+{attr}`CompositeMesh.x_grid <porosity_fe.CompositeMesh.x_grid>`; `None`
+(every other mesh) keeps them evenly spaced, and the structured helpers
+read the node coordinates, so they work on either. `nx=` gives a uniform
+grid instead, which must put the key positions on node lines (the builders
+name the multiple). `nz` must be a multiple of the ply count; for a
+unidirectional laminate the ply count only sets the element layers.
+`plane_strain=True` holds $u_y = 0$ at every node: the counterpart of a
+two-dimensional plane-strain model, with the same fields across the width
+for a unidirectional laminate.
+
+**Outputs.** The usual {class}`~porosity_fe.FieldResults`, with the
+front table, the critical load factor (when the material has toughness)
+and the load-point compliance
+{attr}`~porosity_fe.FieldResults.load_point_compliance`
+$C = \mathbf F \cdot \mathbf u / P^2$: the opening of the DCB's hinge
+lines, the ENF's mid-span deflection or the MMB lever point's displacement
+per unit load, the displacement that does work with $P$. `effective_modulus`
+is `None`. The knockdown keeps the reference rule of the other modes, the
+compliance of the bonded, pore-free specimen under the same loads over the
+solved one's; for the DCB that is a small number, since its bonded
+counterpart hardly opens. {attr}`~porosity_fe.FieldResults.fracture_load_factor`
+is the minimum over the front: in the three-dimensional ENF and MMB it
+sits at the free side faces, where $G_\text{II}$ peaks and depends on the
+mesh, so read the front table for the value at mid-width, which is what the
+NASA reports quote (their $y/B = 0$).
+
+**Data reduction.** {func}`~porosity_fe.compliance_calibration` fits the
+compliance from specimens at several crack lengths as the standards do,
+and gives $G = \frac{P^2}{2b} \frac{dC}{da}$ of the fit: D5528 modified
+beam theory ($C^{1/3} = m(a + \Delta)$, so $G = 3P\delta / (2b(a +
+\Delta))$), D5528 compliance calibration (Berry's $C = a^n / H$,
+$G = nP\delta/(2ba)$) and the D7905 cubic fit ($C = A + m a^3$,
+$G = 3 m P^2 a^2 / (2b)$). On the NASA DCB (6 layers) at $a$ = 26 to
+34 mm the first two give $G$ at 30 mm at 0.9993 and 0.9994 of the
+width-averaged VCCT, with a modified-beam-theory correction $\Delta$ =
+2.67 mm (the beam-theory $\chi h$ is 2.90 mm); on the ENF in plane strain
+at $a_0 \pm 5.08$ mm the cubic fit gives 0.9970
+(`tests/test_fracture_specimens.py`).
+
+### NASA benchmarks
+
+Krueger's benchmark specimens, each with the report's material, geometry
+and toughness, solved at a load $P$ and scaled by the critical load factor
+at mid-width: the onset load $\lambda_c P$ (and the critical opening for
+the DCB, whose critical load the report only plots). Materials:
+
+| Specimen | Elastic constants | Toughness, N/mm | Geometry, mm | Reference onset |
+|---|---|---|---|---|
+| DCB [0]24 | T300/1076, NASA/TM-2008-215123 Table 1 | $G_{Ic} = 0.1703$ (T300/914C, section 5.1 and Fig. 2a) | $B = 25$, $2h = 3$, $2L = 150$, $a = 30$ (Fig. 3a) | $\delta_\text{crit}/2 = 0.75$ mm at $a = 30$ mm (section 5.2.1), from a three-dimensional C3D8I model |
+| ENF [0]24 | IM7/8552, NASA/CR-2011-217305 Table I | $G_{IIc} = 0.78$, $G_{Ic} = 0.21$, $\eta = 2.57$ (Table II) | $B = 25.4$, $2h = 4.5$, $2L = 101.6$, $a_0 = 25.4$ (Fig. 1) | $Q_\text{crit} = 1526$ N, $w_\text{crit} = 1.42$ mm (section 6.3), from two-dimensional plane-strain CPE4I models |
+| MMB [0]24 | IM7/8552, NASA/CR-2012-217562 Table I | $G_{Ic} = 0.212$, $G_{IIc} = 0.774$, $\eta = 2.1$ (Table II) | $b = 25.4$, $2h = 4.5$, $2L = 100.8$, $a_0 = 25.4$ (Fig. 1); $c = 41.3$ and 27.3 (Fig. 4) | $P_\text{crit} = 385$ N, $w_\text{crit} = 1.34$ mm at $G_\text{II}/G_T = 0.5$; 751 N, 1.65 mm at 0.8 (sections 5.3, 5.4), from two-dimensional plane-strain CPE4I models |
+
+The reports' models are geometrically nonlinear and those here linear; the
+ENF and MMB references are two-dimensional, so they are compared with the
+specimens in plane strain (`plane_strain=True`) and with the
+three-dimensional specimens at mid-width. Measured with 12 element layers
+(six per arm; Krueger used three) and the default graded mesh, as in the
+tests; the time is one solve including the knockdown's pristine reference
+on a shared 4-core machine:
+
+| Benchmark | Model | Measured | Reference | Difference | Mesh ($n_x \times n_y \times n_z$) | Time |
+|---|---|---|---|---|---|---|
+| DCB | 3-D, mid-width | $\delta_\text{crit}/2$ = 0.7289 mm ($P_\text{crit}$ = 61.25 N) | 0.75 mm | −2.8 % | 64 × 10 × 12 | 14 s |
+| DCB | plane strain | 0.7427 mm (62.54 N) | 0.75 mm | −1.0 % | 64 × 1 × 12 | 0.4 s |
+| ENF | plane strain | $Q_\text{crit}$ = 1523.0 N | 1526 N | −0.2 % | 38 × 1 × 12 | 0.2 s |
+| ENF | 3-D, mid-width | 1537.6 N | 1526 N | +0.8 % | 38 × 6 × 12 | 5 s |
+| MMB, $c = 41.3$ | plane strain | $P_\text{crit}$ = 383.5 N | 385 N | −0.4 % | 38 × 1 × 12 | 0.2 s |
+| MMB, $c = 41.3$ | 3-D, mid-width | 377.0 N | 385 N | −2.1 % | 38 × 6 × 12 | 2.2 s |
+| MMB, $c = 27.3$ | plane strain | 738.0 N | 751 N | −1.7 % | 38 × 1 × 12 | 0.2 s |
+| MMB, $c = 27.3$ | 3-D, mid-width | 732.0 N | 751 N | −2.5 % | 38 × 6 × 12 | 2.3 s |
+
+All are within the 3 % target. The critical displacements, which also
+depend on the load-point indentation under a line load (a singularity that
+grows slowly with refinement), come out at $w_\text{crit}$ = 1.373 mm
+(plane strain) and 1.396 mm (3-D) for the ENF against 1.42, and 1.347 and
+1.631 mm (plane strain) and 1.332 and 1.628 mm (3-D) for the MMB against
+1.34 and 1.65. The FE mode mix of the MMB at mid-width is 0.487 and 0.788
+in plane strain and 0.475 and 0.778 in 3-D, below the nominal 0.5 and 0.8,
+as Krueger reports for his models (the ratios reach the targets only after
+about 20 mm of growth, CR-2012-217562 section 5.1.1).
+
+**Mesh study** (the same specimens; Δa the element length at the front,
+"max" the largest element length, mm):
+
+| Benchmark | Model | 6 layers | 12 layers | 24 layers | 12 layers, finer in plane |
+|---|---|---|---|---|---|
+| DCB $\delta_\text{crit}/2$, mm | plane strain | 0.7396 | 0.7427 | 0.7439 | 0.7465 (Δa 0.25, max 1) |
+| DCB $\delta_\text{crit}/2$, mm | 3-D | 0.7260 | 0.7289 | 0.7302 | 0.7317 (Δa 0.375, max 1.5, $n_y$ 18) |
+| ENF $Q_\text{crit}$, N | plane strain | 1543.8 | 1523.0 | 1513.2 | 1522.4 (Δa 0.5, max 1) |
+| ENF $Q_\text{crit}$, N | 3-D | 1559.2 | 1537.6 | 1527.3 | 1536.4 (Δa 0.5, max 2.25, $n_y$ 12) |
+| MMB 0.5 $P_\text{crit}$, N | plane strain | 385.1 | 383.5 | 382.9 | 382.5 (Δa 0.5, max 1) |
+| MMB 0.5 $P_\text{crit}$, N | 3-D | 378.5 | 377.0 | 375.8 | 375.4 (Δa 0.5, max 2.25, $n_y$ 12) |
+| MMB 0.8 $P_\text{crit}$, N | plane strain | 744.4 | 738.0 | 735.2 | 736.9 (Δa 0.5, max 1) |
+| MMB 0.8 $P_\text{crit}$, N | 3-D | 738.2 | 732.0 | 728.6 | 730.2 (Δa 0.5, max 2.25, $n_y$ 12) |
+
+**Mesh guidance.** The in-plane mesh matters little for these
+unidirectional specimens (refining the front from $2h/4$ to 0.5 mm or
+less and the largest elements to 1 to 2.25 mm moves the onset loads by
+0.4 % or less and the DCB opening by 0.5 %), but the element layers through the
+arms do: from 6 to 24 layers the ENF onset load falls by 2.0 % (plane
+strain) and the MMB's by 0.6 and 1.2 %, while the DCB opening rises by
+0.6 %. Use at least six elements per arm and compare $\lambda_c$ at two
+resolutions. Krueger's 2-D models had three per arm; the 6-layer
+plane-strain values here are within 1.2 % of his (ENF +1.2 %, MMB 0.0 %
+and −0.9 %). The three-dimensional mid-width values differ from plane
+strain by 0.8 to 1.9 %: the energy release rate varies across the width
+(the DCB's is 1.04 times its width average at mid-width), and Krueger also
+reports higher 3-D failure indices than 2-D across the MMB's width
+(CR-2012-217562, section 5.1.2); the finest 3-D MMB at 0.8 is 3.0 % below
+the 2-D reference. In the 3-D ENF the side-face nodes read the lowest
+$\lambda_c$, and that front minimum is not converged (1500 to 1464 N as
+the mesh is refined); the mid-width value is.
+
+**Single-leg bending** (`POROSITY_FE_FRACTURE_BENCH=1`). The fourth
+benchmark of NASA/TM-2008-215123 is a multidirectional single-leg-bending
+specimen: C12K/R6376 (Table 1; $G_{Ic} = 0.3405$, $G_{IIc} = 1.2859$ N/mm,
+$\eta = 3.39$, Fig. 2b), the D±30 layup
+$[\pm 30/0/{-30}/0/30/0_4/30/0/{-30}/0/{-30}/30 \,/\, {-30}/30/0/30/0/{-30}/0_4/{-30}/0/30/0/\mp 30]$
+(section 2) delaminated at the mid-plane, a $+30/-30$ interface;
+$B = 25.4$, $t_1 = t_2 = 2.032$, $2L = 177.8$, $a = 34.29$ mm (Fig. 3b).
+It is the ENF builder's beam (32 layers, one per ply, default graded mesh,
+$n_y = 8$, 73,440 degrees of freedom) supported under the upper arm at the
+cracked end, the lower arm free, and at the far end, and loaded at
+mid-span (Fig. 9; there is no single-leg loading mode, the test sets the
+supports). The reference is the critical centre deflection
+$w_\text{crit} = 3.23$ mm (section 5.6.1). Measured: 3.361 mm, **+4.0 %**,
+within the 5 % target, with $P_\text{crit}$ = 313.9 N (plotted only, Fig.
+45) and $G_\text{II}/G_T$ = 0.351 at mid-width, rising above 0.9 at the
+side faces, as in the report's Fig. 42. The report's FE model figures
+(the SLB models of Figs. 9 and 10) label the arms $t_1 = t_2 = 2.0$ and $a = 34.0$ mm; with
+those the deflection is 3.457 mm (+7.0 %), so the comparison holds only to
+the specimen dimensions of Fig. 3. It is not a mesh effect: the element
+length at the front from 1.0 to 0.375 mm changes $w_\text{crit}$ by
+0.05 % (with the model figures' dimensions; 0.06 % from 1.016 to 0.5 mm
+with Fig. 3's), and mirroring the layup (reading the stacking sequence from
+the other face) changes nothing at mid-width. What is left is
+the model: the report's analysis is geometrically nonlinear, and its plies
+away from the delamination are smeared by the rule of mixtures, which,
+the report notes, does not represent their full bending stiffness; at a
+$+30/-30$ interface the mode split also depends on $\Delta a$, which the
+report sets to about three ply thicknesses.
+
 ## Toughness data
 
 No preset carries toughness. Sourced values from the delamination plan's
@@ -582,5 +825,12 @@ which no monotone law follows.
   propagation toughness with voids
   ([Porosity and toughness](#porosity-and-toughness)). The stiffness
   knockdown is not split into porosity and delamination parts.
+- The fracture specimens are linear; the NASA benchmark models are
+  geometrically nonlinear, and their MMB lever rotates with the specimen.
+  The default specimen dimensions are a reading of ASTM D5528, D7905 and
+  D6671 that was not checked against the standards. The multidirectional
+  single-leg-bending benchmark is matched to 4 % with the report's
+  specimen dimensions but only to 7 % with those its FE model figures
+  label (see the benchmark notes), and there is no single-leg loading mode.
 - The stresses at the front are singular, so stresses and failure indices
   next to it depend on the mesh.

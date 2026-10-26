@@ -953,12 +953,18 @@ class CompositeMesh:
 
         Examples
         --------
-        >>> mat = dataclasses.replace(MATERIALS['T800_epoxy'], G_Ic=0.2,
-        ...                           G_IIc=0.8, bk_eta=2.0)  # doctest: +SKIP
-        >>> mesh = CompositeMesh.for_dcb(PorosityField(mat, 0.0), mat)
-        >>> result = FESolver(mesh, mat, mesh.porosity_field).solve(
-        ...     'dcb', applied_load=50.0)                       # doctest: +SKIP
-        >>> 50.0 * result.fracture_load_factor    # onset load, N  # doctest: +SKIP
+        The D5528 defaults on the T800 ply, with the IM7/8552 toughness of
+        the theory page's table for illustration (N/mm):
+
+        >>> mat = dataclasses.replace(MATERIALS['T800_epoxy'], G_Ic=0.212,
+        ...                           G_IIc=0.774, bk_eta=2.1)
+        >>> field = PorosityField(mat, 0.0)
+        >>> mesh = CompositeMesh.for_dcb(field, mat)
+        >>> mesh.fracture_geometry.crack_length, mesh.L_x, mesh.L_y
+        (50.0, 125.0, 25.0)
+        >>> result = FESolver(mesh, mat, field).solve(
+        ...     'dcb', applied_load=50.0)                     # doctest: +SKIP
+        >>> 50.0 * result.fracture_load_factor   # onset load, N  # doctest: +SKIP
         """
         a0 = _finite_positive('crack_length', crack_length)
         total = _finite_positive('length', length)

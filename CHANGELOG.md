@@ -239,6 +239,63 @@ All notable changes to PorosityFE will be documented in this file.
   - Docs: theory page "Delamination", section "Porosity and toughness"
     (the law, local porosity, sources and calibration status, limits);
     README Validation and Limitations; CLI page.
+- **Fracture specimens: DCB, ENF and MMB, verified against the NASA
+  benchmarks** (delamination plan, phase 3). Existing results are
+  unchanged: on the quick FE fingerprint every existing `FieldResults`
+  field and the JSON export are identical, and `summary().details` only
+  gains the `load_point_compliance` key (`None`).
+  - `CompositeMesh.for_dcb`, `for_enf` and `for_mmb` build the
+    double-cantilever-beam (ASTM D5528), end-notched-flexure (D7905) and
+    mixed-mode-bending (D6671) specimens: the insert as a through-width
+    `Delamination` strip at the mid-plane (or `interface=`) open at the
+    loaded end; the hinges, supports, load lines and crack tip on node
+    lines; and a public `FractureSpecimenGeometry` recorded as
+    `mesh.fracture_geometry`. The default dimensions are the plan's reading
+    of the standards, whose text was not available: check them against
+    the purchased editions.
+  - The in-plane mesh is graded towards the front (plan decision D5): six
+    elements of exactly `element_length` either side of it, then 25 %
+    growth up to `max_element_length`. The node lines are the new
+    `CompositeMesh.x_grid` (`None`, evenly spaced, everywhere else);
+    `nx=` gives a uniform grid that must align the key positions.
+    `plane_strain=True` holds `u_y = 0`, the counterpart of a 2-D
+    plane-strain model.
+  - Loading modes `'dcb'` (equal and opposite hinge line loads, six
+    statically determinate constraints at the far end), `'enf'`
+    (three-point bending on `roller_supports`, crack-face contact) and
+    `'mmb'` (the forces of the statically determinate MMB lever, on
+    rollers), force controlled by `applied_load`, through
+    `BoundaryHandler.fracture_bcs`; `line_load(..., face='z_min')` loads
+    the bottom face. New `FieldResults.load_point_compliance` (mm/N, these
+    modes only; also in the JSON `stiffness` block). `effective_modulus` is
+    `None`; the knockdown keeps the reference rule (bonded, pore-free
+    specimen).
+  - MMB lever relations `mmb_lever_length` and `mmb_mode_ratio`: Reeder
+    and Crews' split into DCB and ENF parts with crack-length corrected
+    beam theory. They give 40.90 and 27.02 mm for `G_II / G_T` = 0.5 and
+    0.8 on the NASA specimen, where Krueger used 41.3 and 27.3 mm.
+  - Data reduction: `compliance_calibration` (public, with
+    `ComplianceCalibration`) fits compliance against crack length by
+    D5528 modified beam theory, D5528 compliance calibration or the D7905
+    cubic fit, and gives `G = P^2 / (2 b) dC/da` of the fit.
+  - `refinement_study` runs the three modes on uniform grids aligned with
+    the key positions (`specimen=` for the dimensions) and adds
+    `load_point_compliance` and `fracture_load_factor` to their reported
+    quantities.
+  - Verified against Krueger's NASA benchmarks with the reports'
+    materials, geometry and toughness (`tests/test_fracture_specimens.py`,
+    12 element layers, mid-width onset): DCB T300/1076
+    (NASA/TM-2008-215123) critical opening 0.7289 mm against 0.75 mm
+    (−2.8 %); ENF IM7/8552 (NASA/CR-2011-217305) 1523.0 N in plane strain
+    and 1537.6 N in 3-D against 1526 N; MMB IM7/8552
+    (NASA/CR-2012-217562) 383.5 and 738.0 N in plane strain and 377.0 and
+    732.0 N in 3-D against 385 and 751 N. The multidirectional SLB
+    (C12K/R6376, TM-2008-215123; `POROSITY_FE_FRACTURE_BENCH=1`) gives a
+    critical deflection 4.0 % above the report's with the specimen
+    dimensions of its Fig. 3, but 7.0 % above with the 2.0 mm arms and
+    34.0 mm crack its FE model figures label. Theory page "Delamination":
+    specimens, loads, the MMB lever relations with their sources, the
+    benchmark table, the mesh study and mesh guidance.
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled
