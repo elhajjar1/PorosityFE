@@ -68,51 +68,25 @@ _GP_TO_TOP = _GP_TO_NODE[4:8]
 _GP_TO_BOTTOM = _GP_TO_NODE[0:4]
 
 
-class _InterfaceRows:
-    """Row layout shared by :class:`InterfaceTractions` and :class:`DelaminationOnset`.
+def _covered(interface: np.ndarray) -> tuple[int, ...]:
+    """The interfaces of a row layout, increasing."""
+    return tuple(int(k) for k in np.unique(interface))
 
-    One row per interface node, interfaces in increasing order, each in
-    structured order (``x`` fastest): ``(ny + 1) * (nx + 1)`` rows per
-    interface.
-    """
 
-    interface: np.ndarray
-    shape: tuple[int, int]
-
-    @property
-    def interfaces(self) -> tuple[int, ...]:
-        """The interfaces covered, in increasing order."""
-        return tuple(int(k) for k in np.unique(self.interface))
-
-    def grid(self, values: np.ndarray, interface: int) -> np.ndarray:
-        """The rows of ``interface`` of a per-row array as an ``(ny + 1, nx + 1)`` map.
-
-        Parameters
-        ----------
-        values : np.ndarray
-            ``(n,)`` or ``(n, k)`` array with one entry per row, for example
-            :attr:`InterfaceTractions.traction` or
-            :attr:`DelaminationOnset.index`.
-        interface : int
-            Interface index.
-
-        Returns
-        -------
-        np.ndarray
-            ``(ny + 1, nx + 1)`` or ``(ny + 1, nx + 1, k)``, indexed
-            ``[j, i]`` (``y`` row, ``x`` column).
-        """
-        sel = self.interface == int(interface)
-        if not sel.any():
-            raise ValueError(
-                f"interface {interface} is not covered; the rows hold "
-                f"interfaces {list(self.interfaces)}.")
-        v = np.asarray(values)[sel]
-        return v.reshape(self.shape + v.shape[1:])
+def _grid_of(interface: np.ndarray, shape: tuple[int, int], values: np.ndarray,
+             k: int) -> np.ndarray:
+    """The rows of interface ``k`` of a per-row array as an ``(ny+1, nx+1)`` map."""
+    sel = interface == int(k)
+    if not sel.any():
+        raise ValueError(
+            f"interface {k} is not covered; the rows hold interfaces "
+            f"{list(_covered(interface))}.")
+    v = np.asarray(values)[sel]
+    return v.reshape(shape + v.shape[1:])
 
 
 @dataclass(frozen=True, eq=False)
-class InterfaceTractions(_InterfaceRows):
+class InterfaceTractions:
     """Interlaminar traction at the nodes of the ply interfaces.
 
     Rows are interface nodes (see :meth:`grid` for maps). The traction is
@@ -174,6 +148,29 @@ class InterfaceTractions(_InterfaceRows):
         return int(self.node.size)
 
     @property
+    def interfaces(self) -> tuple[int, ...]:
+        """The interfaces covered, in increasing order."""
+        return _covered(self.interface)
+
+    def grid(self, values: np.ndarray, interface: int) -> np.ndarray:
+        """One interface of a per-row array as an ``(ny + 1, nx + 1)`` map.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            ``(n,)`` or ``(n, k)``, one entry per row, e.g. :attr:`traction`.
+        interface : int
+            Interface index.
+
+        Returns
+        -------
+        np.ndarray
+            ``(ny + 1, nx + 1)`` or ``(ny + 1, nx + 1, k)``, indexed ``[j, i]``
+            (``y`` row, ``x`` column).
+        """
+        return _grid_of(self.interface, self.shape, values, interface)
+
+    @property
     def shear(self) -> np.ndarray:
         """Resultant interlaminar shear ``sqrt(tau_xz^2 + tau_yz^2)`` (MPa)."""
         return np.hypot(self.traction[:, 0], self.traction[:, 1])
@@ -185,7 +182,7 @@ class InterfaceTractions(_InterfaceRows):
 
 
 @dataclass(frozen=True, eq=False)
-class DelaminationOnset(_InterfaceRows):
+class DelaminationOnset:
     """Stress-based delamination onset at the ply interfaces.
 
     Rows are interface nodes, as in :class:`InterfaceTractions` (see
@@ -260,6 +257,29 @@ class DelaminationOnset(_InterfaceRows):
 
     def __len__(self) -> int:
         return int(self.node.size)
+
+    @property
+    def interfaces(self) -> tuple[int, ...]:
+        """The interfaces covered, in increasing order."""
+        return _covered(self.interface)
+
+    def grid(self, values: np.ndarray, interface: int) -> np.ndarray:
+        """One interface of a per-row array as an ``(ny + 1, nx + 1)`` map.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            ``(n,)`` or ``(n, k)``, one entry per row, e.g. :attr:`index`.
+        interface : int
+            Interface index.
+
+        Returns
+        -------
+        np.ndarray
+            ``(ny + 1, nx + 1)`` or ``(ny + 1, nx + 1, k)``, indexed ``[j, i]``
+            (``y`` row, ``x`` column).
+        """
+        return _grid_of(self.interface, self.shape, values, interface)
 
     def _argmax(self, mask: np.ndarray) -> int | None:
         sel = mask & self.evaluated
@@ -405,7 +425,11 @@ def _interface_layers(grid: _Grid, interfaces: Iterable[int] | None
     if interfaces is None:
         chosen = on_layer
     else:
-        chosen = sorted({int(k) for k in interfaces})
+        given = list(interfaces)
+        if any(isinstance(k, bool) or not isinstance(k, (int, np.integer))
+               for k in given):
+            raise ValueError(f"interfaces must be integers, got {given!r}.")
+        chosen = sorted({int(k) for k in given})
         bad = [k for k in chosen if not 0 <= k <= n - 2]
         if bad:
             raise ValueError(
@@ -726,12 +750,36 @@ def _quadratic_load_factor(t_m: np.ndarray, t_th: np.ndarray | None,
     return np.minimum(tension, compression)
 
 
-def _to_ply_axes(t: np.ndarray, angle_deg: float) -> np.ndarray:
-    """``(tau_xz, tau_yz, sigma_zz)`` in the axes of a ply at ``angle_deg``:
-    ``(tau_13, tau_23, sigma_33)``."""
-    c, s = math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))
+def _to_ply_axes(t: np.ndarray, angle_deg: np.ndarray) -> np.ndarray:
+    """Rows ``(tau_xz, tau_yz, sigma_zz)`` in the axes of plies at
+    ``angle_deg`` (one per row): ``(tau_13, tau_23, sigma_33)``."""
+    a = np.radians(angle_deg)
+    c, s = np.cos(a), np.sin(a)
     return np.stack([c * t[:, 0] + s * t[:, 1], -s * t[:, 0] + c * t[:, 1],
                      t[:, 2]], axis=1)
+
+
+def _degraded_rows(material: MaterialProperties, radii: tuple, vp: np.ndarray,
+                   Zc: float | None) -> tuple[np.ndarray, ...]:
+    """``(Z_t, S_13, S_23, Z_c)`` per row, degraded at each row's porosity.
+
+    One evaluation per distinct porosity level; ``Z_c`` is ``NaN`` without
+    a compression strength.
+    """
+    Zt, S13, S23, Zc_s = (np.full(vp.size, np.nan) for _ in range(4))
+    levels, inverse = np.unique(np.clip(vp, 0.0, 1.0), return_inverse=True)
+    inverse = inverse.reshape(-1)
+    for i, level in enumerate(levels):
+        st = failure.degraded_strengths(material, radii, float(level))
+        zt_o, s13_o = failure.degraded_interlaminar_strengths(material, radii, float(level))
+        sel = inverse == i
+        Zt[sel] = st[2] if zt_o is None else zt_o
+        S13[sel] = st[5] if s13_o is None else s13_o
+        S23[sel] = st[5]
+        if Zc is not None:
+            r_m, _ = failure._strength_ratios(material, radii, float(level))
+            Zc_s[sel] = max(Zc * r_m, Calibration.STRENGTH_FLOOR_MPA)
+    return Zt, S13, S23, Zc_s
 
 
 def delamination_onset(results: FieldResults, mesh: CompositeMesh,
@@ -887,28 +935,9 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     if prestress is not None:
         evaluated &= np.isfinite(prestress).all(axis=1)
 
-    # Porosity-degraded strengths at each node's Vp (cached per level).
-    n_rows = vp.size
-    Zt = np.full(n_rows, np.nan)
-    S13 = np.full(n_rows, np.nan)
-    S23 = np.full(n_rows, np.nan)
-    Zc_s = np.full(n_rows, np.nan)
-    levels, inverse = np.unique(np.clip(vp, 0.0, 1.0), return_inverse=True)
-    inverse = inverse.reshape(-1)
-    floor = Calibration.STRENGTH_FLOOR_MPA
-    for i, level in enumerate(levels):
-        st = failure.degraded_strengths(material, radii, float(level))
-        zt_o, s13_o = failure.degraded_interlaminar_strengths(material, radii, float(level))
-        sel = inverse == i
-        Zt[sel] = st[2] if zt_o is None else zt_o
-        S13[sel] = st[5] if s13_o is None else s13_o
-        S23[sel] = st[5]
-        if Zc is not None:
-            r_m, _ = failure._strength_ratios(material, radii, float(level))
-            Zc_s[sel] = max(Zc * r_m, floor)
-
-    index = np.full(n_rows, np.nan)
-    lam = np.full(n_rows, np.nan)
+    Zt, S13, S23, Zc_s = _degraded_rows(material, radii, vp, Zc)
+    index = np.full(vp.size, np.nan)
+    lam = np.full(vp.size, np.nan)
     e = evaluated
     wt = 1.0 / Zt[e] ** 2
     w13 = 1.0 / S13[e] ** 2
@@ -921,20 +950,14 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
         index[e] = _quadratic_index(t_e, w13, w23, wt, wc)
         lam[e] = _quadratic_load_factor(t_m_e, t_th_e, w13, w23, wt, wc)
     else:
+        # The worse of the two plies at the interface, in their own axes.
         idx_sides, lam_sides = [], []
         for side in (0, 1):
-            angles = ply_pair[e, side]
-            rot = np.empty_like(t_e)
-            rot_m = np.empty_like(t_e)
-            rot_th = None if t_th_e is None else np.empty_like(t_e)
-            for a in np.unique(angles):
-                sel = angles == a
-                rot[sel] = _to_ply_axes(t_e[sel], float(a))
-                rot_m[sel] = _to_ply_axes(t_m_e[sel], float(a))
-                if rot_th is not None and t_th_e is not None:
-                    rot_th[sel] = _to_ply_axes(t_th_e[sel], float(a))
-            idx_sides.append(_quadratic_index(rot, w13, w23, wt, 0.0))
-            lam_sides.append(_quadratic_load_factor(rot_m, rot_th, w13, w23, wt, 0.0))
+            ang = ply_pair[e, side]
+            rot_th = None if t_th_e is None else _to_ply_axes(t_th_e, ang)
+            idx_sides.append(_quadratic_index(_to_ply_axes(t_e, ang), w13, w23, wt, 0.0))
+            lam_sides.append(_quadratic_load_factor(
+                _to_ply_axes(t_m_e, ang), rot_th, w13, w23, wt, 0.0))
         index[e] = np.maximum(*idx_sides)
         lam[e] = np.minimum(*lam_sides)
 

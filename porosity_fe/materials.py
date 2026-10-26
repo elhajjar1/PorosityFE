@@ -132,10 +132,12 @@ class MaterialProperties:
         Through-thickness (interlaminar) tensile strength ``Z_t``, in MPa.
         ``None`` (default) keeps the historical stand-in ``sigma_2t``
         (transverse isotropy) wherever a criterion checks ``sigma_33`` in
-        tension. When set, every FE criterion uses it for ``sigma_33 > 0``:
-        Tsai-Wu (``F_3``, ``F_33``, ``F_13``), Hashin's delamination mode,
+        tension. When set, every FE criterion uses it for ``sigma_33`` in
+        tension: Tsai-Wu (its direction-3 terms ``F_3``, ``F_33`` and the
+        interactions built on ``F_33``), Hashin's delamination mode,
         maximum stress and the interface onset criteria
-        (:func:`~porosity_fe.delamination_onset`). Degraded by the same
+        (:func:`~porosity_fe.delamination_onset`). The compressive
+        allowable of ``sigma_33`` stays ``sigma_2c``. Degraded by the same
         porosity ratio ``r_m`` as the other matrix strengths. Positive and
         finite.
     tau_13 : float, optional
