@@ -54,6 +54,86 @@ def _element_porosity_and_skip(porosity: np.ndarray, elements: np.ndarray,
     return elem_Vp, skip
 
 
+#: Optional interlaminar strength overrides ``(Z_t, S_13)`` (MPa) of one
+#: element, or arrays of them; ``None`` in a slot keeps that criterion's
+#: historical stand-in (see :func:`degraded_interlaminar_strengths`).
+Interlaminar = tuple[float | np.ndarray | None, float | np.ndarray | None]
+
+
+def _strength_ratios(material: MaterialProperties, void_shape_radii: tuple,
+                     elem_Vp: float) -> tuple[float, float]:
+    """Porosity retention ratios ``(r_matrix, r_fiber)`` of the strengths.
+
+    See :func:`degraded_strengths` for the rule; both are 1.0 at
+    ``elem_Vp <= 1e-12``.
+    """
+    mat = material
+    C_m_pristine = mat.get_isotropic_matrix_stiffness()
+    if elem_Vp > 1e-12:
+        C_eff = _mt_effective_stiffness(
+            C_m_pristine, elem_Vp,
+            void_shape_radii,
+            mat.matrix_poisson)
+        # Matrix stiffness degradation ratio (matrix-dominated)
+        r_matrix = np.sqrt(max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0))
+        # Fiber-direction ratio: scale by ROM ratio (much weaker effect)
+        E_m = mat.matrix_modulus
+        E_m_eff_approx = E_m * max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0)
+        Vf = mat.fiber_volume_fraction
+        Vm = 1.0 - Vf
+        r_fiber = (Vf * mat.fiber_modulus + Vm * E_m_eff_approx) / \
+                  (Vf * mat.fiber_modulus + Vm * E_m)
+        r_fiber = np.sqrt(max(r_fiber, 0.0))  # sqrt for strength vs stiffness
+    else:
+        r_matrix = 1.0
+        r_fiber = 1.0
+    return r_matrix, r_fiber
+
+
+def degraded_interlaminar_strengths(material: MaterialProperties,
+                                    void_shape_radii: tuple, elem_Vp: float
+                                    ) -> tuple[float | None, float | None]:
+    """Porosity-degraded optional interlaminar strengths ``(Z_t, S_13)``.
+
+    ``MaterialProperties.sigma_3t`` and ``tau_13`` scaled by the same
+    matrix ratio ``r_m`` as the matrix strengths of
+    :func:`degraded_strengths`, and floored the same way. A slot is
+    ``None`` when the material leaves that strength unset, and every
+    criterion then keeps its historical stand-in: ``Z_t = Y_t``
+    (``sigma_2t``) everywhere; ``S_13 = S_12`` (``tau_12``) for Tsai-Wu and
+    maximum stress, ``S_13 = S_23`` (``tau_ilss``) for Hashin's delamination
+    mode and the interface onset criteria.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Pristine ply properties.
+    void_shape_radii : tuple
+        Void shape of the Mori-Tanaka degradation.
+    elem_Vp : float
+        Void volume fraction in [0, 1].
+
+    Returns
+    -------
+    (Zt_s, S13_s) : tuple of float or None
+        Degraded strengths in MPa, ``None`` where not supplied.
+    """
+    if material.sigma_3t is None and material.tau_13 is None:
+        return None, None
+    r_matrix, _ = _strength_ratios(material, void_shape_radii, elem_Vp)
+    floor = Calibration.STRENGTH_FLOOR_MPA
+    Zt = None if material.sigma_3t is None else \
+        max(float(material.sigma_3t) * r_matrix, floor)
+    S13 = None if material.tau_13 is None else \
+        max(float(material.tau_13) * r_matrix, floor)
+    return Zt, S13
+
+
+def _has_interlaminar(material: MaterialProperties) -> bool:
+    """Whether the material sets ``sigma_3t`` or ``tau_13``."""
+    return material.sigma_3t is not None or material.tau_13 is not None
+
+
 def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
                        elem_Vp: float
                        ) -> tuple[float, float, float, float, float, float]:
@@ -108,28 +188,12 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
     Returns
     -------
     (Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s) : tuple of floats
-        Floor-clamped degraded strengths in MPa.
+        Floor-clamped degraded strengths in MPa. The optional interlaminar
+        strengths ``sigma_3t`` and ``tau_13`` are degraded by the same
+        ``r_matrix`` in :func:`degraded_interlaminar_strengths`.
     """
     mat = material
-    C_m_pristine = mat.get_isotropic_matrix_stiffness()
-    if elem_Vp > 1e-12:
-        C_eff = _mt_effective_stiffness(
-            C_m_pristine, elem_Vp,
-            void_shape_radii,
-            mat.matrix_poisson)
-        # Matrix stiffness degradation ratio (matrix-dominated)
-        r_matrix = np.sqrt(max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0))
-        # Fiber-direction ratio: scale by ROM ratio (much weaker effect)
-        E_m = mat.matrix_modulus
-        E_m_eff_approx = E_m * max(C_eff[0, 0] / C_m_pristine[0, 0], 0.0)
-        Vf = mat.fiber_volume_fraction
-        Vm = 1.0 - Vf
-        r_fiber = (Vf * mat.fiber_modulus + Vm * E_m_eff_approx) / \
-                  (Vf * mat.fiber_modulus + Vm * E_m)
-        r_fiber = np.sqrt(max(r_fiber, 0.0))  # sqrt for strength vs stiffness
-    else:
-        r_matrix = 1.0
-        r_fiber = 1.0
+    r_matrix, r_fiber = _strength_ratios(material, void_shape_radii, elem_Vp)
 
     Xt = mat.sigma_1t * r_fiber
     Xc = mat.sigma_1c * r_fiber
@@ -243,6 +307,9 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
             'delamination': float('nan'),
         }
 
+    # The optional interlaminar strengths reach the criteria only when the
+    # material sets one, so the default calls are unchanged.
+    opted_in = _has_interlaminar(material)
     for e in range(n_elem):
         elem_Vp = float(elem_Vp_all[e])
 
@@ -251,11 +318,13 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
             continue
 
         strengths = degraded_strengths(material, void_shape_radii, elem_Vp)
+        kw = ({'interlaminar': degraded_interlaminar_strengths(
+            material, void_shape_radii, elem_Vp)} if opted_in else {})
         s_all = stress_local[e]  # (n_gp, 6)
 
         if criterion == 'tsai_wu':
             fi_per_gp = evaluate_tsai_wu(s_all, strengths, e, elem_Vp,
-                                         material.tsai_wu_F12)
+                                         material.tsai_wu_F12, **kw)
             elem_max = float(fi_per_gp.max())
             per_elem_fi[e] = elem_max
             if elem_max > max_fi:
@@ -263,9 +332,9 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                 best_mode_indices['max_fi'] = elem_max
         else:
             if criterion == 'hashin':
-                mode_fi_per_gp = evaluate_hashin(s_all, strengths)
+                mode_fi_per_gp = evaluate_hashin(s_all, strengths, **kw)
             else:  # 'max_stress'
-                mode_fi_per_gp = evaluate_max_stress(s_all, strengths)
+                mode_fi_per_gp = evaluate_max_stress(s_all, strengths, **kw)
             # mode_fi_per_gp is a dict of arrays, each shape (n_gp,).
             fi_per_gp = mode_fi_per_gp['max_fi']
             if not np.all(np.isfinite(fi_per_gp)):
@@ -297,19 +366,29 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
 
 def _tsai_wu_coefficients(
         strengths: tuple[float, float, float, float, float, float],
-        tsai_wu_F12: float | None) -> tuple[float, ...]:
+        tsai_wu_F12: float | None,
+        interlaminar: Interlaminar | None = None) -> tuple[float, ...]:
     """Tsai-Wu coefficients ``(F1, F2, F3, F11, F22, F33, F44, F55, F66,
-    F12, F13, F23)`` for one element's degraded strengths."""
+    F12, F13, F23)`` for one element's degraded strengths.
+
+    ``interlaminar`` is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths`: a set ``Z_t`` replaces ``Y_t``
+    in the direction-3 terms (``F3``, ``F33``, and through them ``F13`` and
+    ``F23``; the compressive allowable stays ``Y_c``), a set ``S_13``
+    replaces ``S_12`` in ``F55``. ``None`` slots keep the transversely
+    isotropic coefficients exactly.
+    """
     Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
         F1 = 1.0 / Xt_s - 1.0 / Xc_s
         F2 = 1.0 / Yt_s - 1.0 / Yc_s
-        F3 = F2
+        F3 = F2 if Zt_o is None else 1.0 / Zt_o - 1.0 / Yc_s
         F11 = 1.0 / (Xt_s * Xc_s)
         F22 = 1.0 / (Yt_s * Yc_s)
-        F33 = F22
+        F33 = F22 if Zt_o is None else 1.0 / (Zt_o * Yc_s)
         F44 = 1.0 / S23_s**2
-        F55 = 1.0 / S12_s**2
+        F55 = 1.0 / S12_s**2 if S13_o is None else 1.0 / S13_o**2
         F66 = 1.0 / S12_s**2
         # F12, F23 use sqrt of a product. Guard against negative
         # products in case future refactors break the F11/F22/F33 sign.
@@ -321,7 +400,8 @@ def _tsai_wu_coefficients(
         # scales with this element's degraded strengths like the default.
         F12_star = -0.5 if tsai_wu_F12 is None else float(tsai_wu_F12)
         F12 = F12_star * np.sqrt(F11_F22)
-        F13 = F12
+        F13 = F12 if Zt_o is None else \
+            F12_star * np.sqrt(np.maximum(F11 * F33, 0.0))
         F23 = -0.5 * np.sqrt(F22_F33)
     return F1, F2, F3, F11, F22, F33, F44, F55, F66, F12, F13, F23
 
@@ -329,7 +409,8 @@ def _tsai_wu_coefficients(
 def evaluate_tsai_wu(s_all: np.ndarray,
                      strengths: tuple[float, float, float, float, float, float],
                      e: int, elem_Vp: float,
-                     tsai_wu_F12: float | None = None) -> np.ndarray:
+                     tsai_wu_F12: float | None = None, *,
+                     interlaminar: Interlaminar | None = None) -> np.ndarray:
     """Tsai-Wu polynomial evaluated for one element's Gauss points.
 
     The diagonal coefficients ``F1, F2, F11, F22, F33, F44, F55, F66``
@@ -355,13 +436,20 @@ def evaluate_tsai_wu(s_all: np.ndarray,
     ``material.tsai_wu_F12 is None``. Returns the per-GP failure index
     array (shape ``(n_gp,)``).
 
+    ``interlaminar`` (keyword-only) is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths`; a set ``Z_t`` takes over the
+    direction-3 tensile allowable (``F_3``, ``F_33``, and so ``F_13 =
+    F*_12 sqrt(F_11 F_33)`` and ``F_23 = -0.5 sqrt(F_22 F_33)``) and a set
+    ``S_13`` the ``tau_13`` allowable (``F_55``). ``None`` (default) keeps
+    ``Y_t`` and ``S_12``.
+
     References
     ----------
     Tsai, S. W. & Wu, E. M. (1971). "A General Theory of Strength for
     Anisotropic Materials." *J. Composite Materials* 5(1), 58-80.
     """
     (F1, F2, F3, F11, F22, F33, F44, F55, F66,
-     F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12)
+     F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12, interlaminar)
 
     # Vectorize across all Gauss points of this element (#41).
     fi_per_gp = (
@@ -384,7 +472,8 @@ def evaluate_tsai_wu(s_all: np.ndarray,
     return fi_per_gp
 
 def evaluate_hashin(s_all: np.ndarray,
-                    strengths: tuple[float, float, float, float, float, float]
+                    strengths: tuple[float, float, float, float, float, float],
+                    *, interlaminar: Interlaminar | None = None
                     ) -> dict[str, np.ndarray]:
     """Hashin failure indices for unidirectional plies, plus delamination.
 
@@ -418,6 +507,13 @@ def evaluate_hashin(s_all: np.ndarray,
     Returns a dict of per-GP arrays: ``{'max_fi', 'fiber_t', 'fiber_c',
     'matrix_t', 'matrix_c', 'shear', 'delamination'}``.
 
+    ``interlaminar`` (keyword-only) is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths`. A set ``Z_t`` replaces ``Y_t``
+    and a set ``S_13`` replaces ``S_23`` for ``τ_13`` in the delamination
+    mode, which becomes
+    ``(<σ_33>/Z_t)^2 + (τ_13/S_13)^2 + (τ_23/S_23)^2``. ``None`` (default)
+    is the form above, unchanged.
+
     Notes
     -----
     "Hashin" is a family of criteria rather than a single canonical form.
@@ -445,6 +541,7 @@ def evaluate_hashin(s_all: np.ndarray,
     on the other side before treating any divergence as a bug.
     """
     Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     sigma_11 = s_all[:, 0]
     sigma_22 = s_all[:, 1]
     tau_12 = s_all[:, 5]
@@ -470,7 +567,12 @@ def evaluate_hashin(s_all: np.ndarray,
 
     # Delamination initiation (Brewer & Lagace 1988)
     sigma_33_t = np.maximum(s_all[:, 2], 0.0)
-    delam = (sigma_33_t / Yt_s) ** 2 + (s_all[:, 4] ** 2 + s_all[:, 3] ** 2) / S23_s ** 2
+    Zt_s = Yt_s if Zt_o is None else Zt_o
+    if S13_o is None:
+        delam = (sigma_33_t / Zt_s) ** 2 + (s_all[:, 4] ** 2 + s_all[:, 3] ** 2) / S23_s ** 2
+    else:
+        delam = ((sigma_33_t / Zt_s) ** 2 + (s_all[:, 4] / S13_o) ** 2
+                 + (s_all[:, 3] / S23_s) ** 2)
 
     max_fi = np.maximum.reduce([ft, fc, mt, mc, delam])
     return {
@@ -484,7 +586,8 @@ def evaluate_hashin(s_all: np.ndarray,
     }
 
 def evaluate_max_stress(s_all: np.ndarray,
-                        strengths: tuple[float, float, float, float, float, float]
+                        strengths: tuple[float, float, float, float, float, float],
+                        *, interlaminar: Interlaminar | None = None
                         ) -> dict[str, np.ndarray]:
     """Maximum-stress failure indices.
 
@@ -495,8 +598,16 @@ def evaluate_max_stress(s_all: np.ndarray,
     are zeroed (rather than NaN) since each mode is well-defined for
     max-stress. ``delamination`` is always zero: max-stress already checks
     ``σ_33`` in the matrix buckets and ``τ_13`` / ``τ_23`` in ``shear``.
+
+    ``interlaminar`` (keyword-only) is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths`: a set ``Z_t`` is the allowable
+    of ``σ_33`` in tension (instead of ``Y_t``), a set ``S_13`` that of
+    ``τ_13`` (instead of ``S_12``). ``None`` (default) keeps both.
     """
     Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
+    Zt_s = Yt_s if Zt_o is None else Zt_o
+    S13_s = S12_s if S13_o is None else S13_o
     sigma_11 = s_all[:, 0]
     sigma_22 = s_all[:, 1]
     sigma_33 = s_all[:, 2]
@@ -507,18 +618,19 @@ def evaluate_max_stress(s_all: np.ndarray,
     ft = np.where(sigma_11 >= 0.0, sigma_11 / Xt_s, 0.0)
     fc = np.where(sigma_11 < 0.0, -sigma_11 / Xc_s, 0.0)
     # Matrix uses worst of σ_22 and σ_33 (transverse normals share the
-    # same in-plane transverse strength).
+    # same in-plane transverse strength, unless Z_t is set).
     mt_22 = np.where(sigma_22 >= 0.0, sigma_22 / Yt_s, 0.0)
-    mt_33 = np.where(sigma_33 >= 0.0, sigma_33 / Yt_s, 0.0)
+    mt_33 = np.where(sigma_33 >= 0.0, sigma_33 / Zt_s, 0.0)
     mt = np.maximum(mt_22, mt_33)
     mc_22 = np.where(sigma_22 < 0.0, -sigma_22 / Yc_s, 0.0)
     mc_33 = np.where(sigma_33 < 0.0, -sigma_33 / Yc_s, 0.0)
     mc = np.maximum(mc_22, mc_33)
     # Shear: worst of all three engineering shear components against the
-    # appropriate allowable (S_23 for the 23 plane, S_12 for 12 / 13).
+    # appropriate allowable (S_23 for the 23 plane, S_12 for 12, and S_12
+    # or a set S_13 for 13).
     shear = np.maximum.reduce([
         np.abs(tau_12) / S12_s,
-        np.abs(tau_13) / S12_s,
+        np.abs(tau_13) / S13_s,
         np.abs(tau_23) / S23_s,
     ])
 
@@ -548,12 +660,19 @@ def _positive_root(A: np.ndarray, B: np.ndarray) -> np.ndarray:
 def _point_load_factors(s_all: np.ndarray,
                         strengths: tuple[float, float, float, float, float, float],
                         criterion: str,
-                        tsai_wu_F12: float | None) -> np.ndarray:
-    """Per-Gauss-point load factor at which ``criterion`` reaches 1."""
+                        tsai_wu_F12: float | None,
+                        interlaminar: Interlaminar | None = None) -> np.ndarray:
+    """Per-Gauss-point load factor at which ``criterion`` reaches 1.
+
+    ``interlaminar`` is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths`, used as in the criteria.
+    """
     s0, s1, s2, s3, s4, s5 = (s_all[:, k] for k in range(6))
+    Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     if criterion == 'tsai_wu':
         (F1, F2, F3, F11, F22, F33, F44, F55, F66,
-         F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12)
+         F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12,
+                                                interlaminar)
         B = F1 * s0 + F2 * s1 + F3 * s2
         A = (F11 * s0**2 + F22 * s1**2 + F33 * s2**2
              + F44 * s3**2 + F55 * s4**2 + F66 * s5**2
@@ -572,11 +691,15 @@ def _point_load_factors(s_all: np.ndarray,
             np.where(s1 < 0.0, _positive_root(
                 (s1 / (2.0 * S23_s)) ** 2 + shear,
                 ((Yc_s / (2.0 * S23_s)) ** 2 - 1.0) * (s1 / Yc_s)), np.inf),
-            _positive_root((np.maximum(s2, 0.0) / Yt_s) ** 2
-                           + (s4 ** 2 + s3 ** 2) / S23_s ** 2, zero),
+            _positive_root(
+                (np.maximum(s2, 0.0) / (Yt_s if Zt_o is None else Zt_o)) ** 2
+                + ((s4 ** 2 + s3 ** 2) / S23_s ** 2 if S13_o is None
+                   else (s4 / S13_o) ** 2 + (s3 / S23_s) ** 2), zero),
         ]
         return np.minimum.reduce(modes)
-    fi = evaluate_max_stress(s_all, strengths)['max_fi']
+    fi = evaluate_max_stress(
+        s_all, strengths,
+        **({} if interlaminar is None else {'interlaminar': interlaminar}))['max_fi']
     with np.errstate(divide='ignore'):
         return np.where(fi > 0.0, 1.0 / fi, np.inf)
 
@@ -670,7 +793,8 @@ def _piece_load_factor(s_th: np.ndarray, s_m: np.ndarray,
 def _point_load_factors_prestressed(
         s_th: np.ndarray, s_m: np.ndarray, strengths: tuple,
         criterion: str, tsai_wu_F12: float | None,
-        tsai_wu_coefficients: tuple | None = None) -> np.ndarray:
+        tsai_wu_coefficients: tuple | None = None,
+        interlaminar: Interlaminar | None = None) -> np.ndarray:
     """Load factor on ``s_m`` with a fixed pre-stress ``s_th``.
 
     Smallest ``lam >= 0`` at which ``criterion`` evaluated on
@@ -691,10 +815,16 @@ def _point_load_factors_prestressed(
       two branches of ``<sigma_33>`` in delamination) is solved on the
       interval of ``lam`` where its sign condition holds, including onset
       at a sign switch with the branch already at 1.
+
+    ``interlaminar`` is the optional ``(Z_t, S_13)`` pair of
+    :func:`degraded_interlaminar_strengths` (scalars or arrays like
+    ``strengths``), used as in the criteria; for Tsai-Wu it is ignored when
+    ``tsai_wu_coefficients`` is given.
     """
+    Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     if criterion == 'tsai_wu':
         co = tsai_wu_coefficients if tsai_wu_coefficients is not None \
-            else _tsai_wu_coefficients(strengths, tsai_wu_F12)
+            else _tsai_wu_coefficients(strengths, tsai_wu_F12, interlaminar)
         lin_th, quad_th = _tsai_wu_forms(s_th, s_th, co)
         lin_m, A = _tsai_wu_forms(s_m, s_m, co)
         _, cross = _tsai_wu_forms(s_th, s_m, co)
@@ -703,10 +833,12 @@ def _point_load_factors_prestressed(
         return np.where(c <= 0.0, 0.0, lam)
 
     Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s = strengths
+    Zt_s = Yt_s if Zt_o is None else Zt_o
     if criterion == 'max_stress':
+        S13_s = S12_s if S13_o is None else S13_o
         # (component, tensile allowable, compressive allowable)
-        bounds = ((0, Xt_s, Xc_s), (1, Yt_s, Yc_s), (2, Yt_s, Yc_s),
-                  (3, S23_s, S23_s), (4, S12_s, S12_s), (5, S12_s, S12_s))
+        bounds = ((0, Xt_s, Xc_s), (1, Yt_s, Yc_s), (2, Zt_s, Yc_s),
+                  (3, S23_s, S23_s), (4, S13_s, S13_s), (5, S12_s, S12_s))
         lam = np.full(s_th.shape[:-1], np.inf)
         for k, upper, lower in bounds:
             a, b = s_th[..., k], s_m[..., k]
@@ -723,14 +855,15 @@ def _point_load_factors_prestressed(
             f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}.")
     shear12 = 1.0 / S12_s ** 2
     inter = 1.0 / S23_s ** 2
+    inter13 = inter if S13_o is None else 1.0 / S13_o ** 2
     pieces: list[tuple[tuple[int, bool], dict, dict]] = [
         ((0, True), {0: 1.0 / Xt_s ** 2, 5: shear12}, {}),            # fiber_t
         ((0, False), {0: 1.0 / Xc_s ** 2}, {}),                       # fiber_c
         ((1, True), {1: 1.0 / Yt_s ** 2, 5: shear12}, {}),            # matrix_t
         ((1, False), {1: 1.0 / (2.0 * S23_s) ** 2, 5: shear12},       # matrix_c
          {1: ((Yc_s / (2.0 * S23_s)) ** 2 - 1.0) / Yc_s}),
-        ((2, True), {2: 1.0 / Yt_s ** 2, 3: inter, 4: inter}, {}),    # delam, s33 >= 0
-        ((2, False), {3: inter, 4: inter}, {}),                       # delam, s33 < 0
+        ((2, True), {2: 1.0 / Zt_s ** 2, 3: inter, 4: inter13}, {}),  # delam, s33 >= 0
+        ((2, False), {3: inter, 4: inter13}, {}),                     # delam, s33 < 0
     ]
     return np.minimum.reduce([
         _piece_load_factor(s_th, s_m, cond, quad, lin)
@@ -765,11 +898,17 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
             strengths_by_vp[vp] = st
         return st
 
+    opted_in = _has_interlaminar(material)
+
+    def interlaminar_of(vp: float) -> tuple[float | None, float | None]:
+        return degraded_interlaminar_strengths(material, void_shape_radii, vp)
+
     if prestress_local is None:
         for e in active:
-            lam = _point_load_factors(stress_local[e],
-                                      strengths_of(float(elem_Vp_all[e])),
-                                      criterion, material.tsai_wu_F12)
+            vp = float(elem_Vp_all[e])
+            lam = _point_load_factors(stress_local[e], strengths_of(vp),
+                                      criterion, material.tsai_wu_F12,
+                                      interlaminar_of(vp) if opted_in else None)
             lam_e[e] = float(lam.min())
         return lam_e
 
@@ -786,15 +925,27 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
     inverse = inverse.reshape(-1)
     table = np.array([strengths_of(float(v)) for v in vps])          # (n_vp, 6)
     strengths = tuple(table[inverse, j][:, None] for j in range(6))
+    # The optional (Z_t, S_13) per distinct porosity level; a slot the
+    # material leaves unset is None at every level.
+    inter_rows = [interlaminar_of(float(v)) for v in vps] if opted_in else None
+    interlaminar: Interlaminar | None = None
+    if inter_rows is not None:
+        def column(j: int) -> np.ndarray | None:
+            if inter_rows[0][j] is None:
+                return None
+            return np.array([r[j] for r in inter_rows], dtype=float)[inverse][:, None]
+        interlaminar = (column(0), column(1))
     co = None
     if criterion == 'tsai_wu':
         co_table = np.array([
-            _tsai_wu_coefficients(tuple(row), material.tsai_wu_F12)
-            for row in table])                                       # (n_vp, 12)
+            _tsai_wu_coefficients(tuple(row), material.tsai_wu_F12,
+                                  None if inter_rows is None else inter_rows[i])
+            for i, row in enumerate(table)])                         # (n_vp, 12)
         co = tuple(co_table[inverse, j][:, None] for j in range(co_table.shape[1]))
     lam = _point_load_factors_prestressed(
         prestress_local[active], stress_local[active], strengths, criterion,
-        material.tsai_wu_F12, tsai_wu_coefficients=co)
+        material.tsai_wu_F12, tsai_wu_coefficients=co,
+        interlaminar=interlaminar)
     lam_e[active] = lam.min(axis=1)
     return lam_e
 
