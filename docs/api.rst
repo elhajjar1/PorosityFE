@@ -115,6 +115,28 @@ law has uncalibrated placeholder coefficients), and
    ToughnessKnockdown
    toughness_knockdown_factor
 
+Interlaminar stresses and delamination onset
+--------------------------------------------
+
+The interlaminar traction recovered at the ply interfaces from a solve,
+the stress-based onset criteria on it (Brewer-Lagace, Ye) with their load
+factor, and O'Brien's closed-form energy release rate of a free-edge
+delamination. Post-processing and lamination theory only: nothing the solve
+computes changes. Stresses and strengths in MPa, energy release rates in
+N/mm. See :doc:`theory/failure` (Interlaminar stresses and delamination
+onset).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   interface_tractions
+   InterfaceTractions
+   delamination_onset
+   DelaminationOnset
+   obrien_edge_delamination
+   EdgeDelamination
+
 Laminate theory and transforms
 ------------------------------
 

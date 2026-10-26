@@ -15,9 +15,11 @@ factor at which the delamination starts to grow, from the
 Benzeggagh-Kenane mixed-mode criterion, with the toughness knocked down by
 the porosity at the crack plane
 ([Porosity and toughness](#porosity-and-toughness)). Delamination
-*initiation* from an
-intact interface is still screened by the stress-based Hashin delamination
-mode ({doc}`failure`).
+*initiation* from an intact interface is screened by stress-based
+criteria instead: the Hashin delamination mode at the ply Gauss points,
+and the Brewer-Lagace criterion on the interface tractions with O'Brien's
+free-edge energy release rate ({doc}`failure`, section "Interlaminar
+stresses and delamination onset").
 
 ```python
 import dataclasses

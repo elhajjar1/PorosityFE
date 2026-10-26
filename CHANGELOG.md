@@ -5,6 +5,48 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Interlaminar stresses and delamination onset at the ply interfaces**
+  (delamination plan, phase 1.1-1.3 and 1.5). Post-processing and
+  lamination theory only: existing results are unchanged unless the new
+  strengths are set.
+  - `MaterialProperties.sigma_3t` (through-thickness tensile strength
+    `Z_t`) and `tau_13` (`S_13`), in MPa, default `None`, validated
+    positive and finite, perturbable when set; no preset sets them. With
+    `None` every criterion keeps its stand-in: `sigma_2t` for `Z_t`; for
+    `tau_13`, `tau_12` in Tsai-Wu and maximum stress and `tau_ilss` in
+    Hashin. When set, Tsai-Wu, Hashin's delamination mode, maximum stress,
+    their load factors and the interface criteria use them, degraded by
+    the same matrix ratio `r_m` (`fe.failure.degraded_interlaminar_strengths`).
+  - `interface_tractions(results, mesh)` (also `FieldResults.interface_tractions`):
+    the traction `(tau_xz, tau_yz, sigma_zz)` at every ply interface that
+    is a node layer, extrapolated to the shared face from the element
+    layer below and the one above with the trilinear extrapolation of
+    `extrapolate_to_nodes`. `InterfaceTractions` reports both sides, their
+    average and their jump, a resolution indicator; on a delaminated
+    interface only bonded faces count.
+  - `delamination_onset(results, mesh, material)` (also
+    `FieldResults.delamination_onset`): the Brewer-Lagace quadratic
+    criterion on the traction averaged over a square window of side
+    `x_avg` (default one ply thickness; a calibration parameter), with an
+    optional compression term (`Zc`), or Ye's criterion in the ply axes
+    (`criterion='ye'`). Strengths are porosity-degraded at the interface
+    node. `DelaminationOnset` gives the per-node index and onset load
+    factor (closed form, or the quadratic root with a thermal prestress),
+    the critical interface and location, an interior variant and a
+    JSON-ready `summary()`.
+  - `obrien_edge_delamination(material, ply_angles, interfaces, strain)`:
+    O'Brien's free-edge delamination energy release rate
+    `G = (eps^2 t / 2) (E_LAM - E*)` from lamination theory, with or
+    without the bending-extension coupling of the sublaminates
+    (`EdgeDelamination`). It reproduces O'Brien's
+    `[+-30/+-30/90/90bar]s` specimen (NASA TM-81940): `E*/E_LAM` 0.745
+    (0.743) without coupling, 0.693 (0.69) with it, and G = 135 J/m² at
+    his onset strain (his G_c = 137 J/m²).
+  - The failure theory page has a section "Interlaminar stresses and
+    delamination onset": the recovery, the averaging, the criteria, the
+    strength fallbacks and their `tau_13` inconsistency, the load factor,
+    the free-edge G and the limits. The app and the exports do not carry
+    the interface onset yet.
 - **Failure modes made visible, and the docs say what delamination
   coverage exists** (delamination plan, phase 0). The default Tsai-Wu
   results, the knockdowns and the validation MAE are unchanged.
