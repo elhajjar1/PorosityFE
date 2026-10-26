@@ -115,6 +115,24 @@ law has uncalibrated placeholder coefficients), and
    ToughnessKnockdown
    toughness_knockdown_factor
 
+The fracture specimens: :meth:`CompositeMesh.for_dcb`,
+:meth:`CompositeMesh.for_enf` and :meth:`CompositeMesh.for_mmb` build the
+double-cantilever-beam, end-notched-flexure and mixed-mode-bending
+specimens (ASTM D5528, D7905 and D6671) and record their
+:class:`FractureSpecimenGeometry`; the ``'dcb'``, ``'enf'`` and ``'mmb'``
+loading modes of :meth:`FESolver.solve` load them. The MMB lever relations
+and the compliance-based data reduction of the test standards:
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   FractureSpecimenGeometry
+   mmb_lever_length
+   mmb_mode_ratio
+   compliance_calibration
+   ComplianceCalibration
+
 Interlaminar stresses and delamination onset
 --------------------------------------------
 

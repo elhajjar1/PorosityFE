@@ -14,6 +14,23 @@ import numpy as np
 from ._ply_angles import _resolve_ply_angles
 from ._types import MeshFace
 from .delamination import Delamination
+from .fracture_specimens import (
+    _D5528_CRACK_LENGTH,
+    _D5528_LENGTH,
+    _D5528_WIDTH,
+    _D6671_CRACK_LENGTH,
+    _D6671_MODE_RATIO,
+    _D6671_SPAN,
+    _D6671_WIDTH,
+    _D7905_CRACK_LENGTH,
+    _D7905_SPAN,
+    _D7905_WIDTH,
+    FractureSpecimenGeometry,
+    _build_specimen,
+    _finite_positive,
+    _SpecimenLayout,
+    mmb_lever_length,
+)
 from .gauss import gauss_points_hex
 from .materials import MaterialProperties
 from .porosity_field import PorosityField
@@ -319,6 +336,17 @@ class CompositeMesh:
         :class:`~porosity_fe.FESolver` needs it and raises without it. Set
         it by hand (supports on node lines) to run the short-beam test on
         another mesh.
+    fracture_geometry : FractureSpecimenGeometry or None
+        Loads, supports and insert of a delamination fracture specimen, set
+        by :meth:`for_dcb`, :meth:`for_enf` and :meth:`for_mmb`; the
+        ``'dcb'``, ``'enf'`` and ``'mmb'`` loading modes of
+        :class:`~porosity_fe.FESolver` need it and raise without it.
+    x_grid : np.ndarray or None
+        ``x`` (mm) of the ``nx + 1`` node lines, increasing from 0 to
+        ``L_x``; ``None`` (default) spaces them evenly. The fracture-specimen
+        builders set it for a mesh graded towards the crack front (plan
+        decision D5). :meth:`generate_mesh` raises when it does not match
+        ``nx`` and ``L_x``: set it back to ``None`` before changing either.
     n_nodes, n_elements, n_dof, n_structured_nodes : int
         Read-only sizes, duplicated interface nodes included in the first
         three; :attr:`n_structured_nodes` is ``(nx+1)(ny+1)(nz+1)``.
@@ -422,6 +450,8 @@ class CompositeMesh:
         self.void_elements: np.ndarray | None = None
         self.flexure_geometry: FlexureGeometry | None = None
         self.ilss_geometry: FlexureGeometry | None = None
+        self.fracture_geometry: FractureSpecimenGeometry | None = None
+        self.x_grid: np.ndarray | None = None
         self.delaminations: tuple[Delamination, ...] = _as_delaminations(delaminations)
         # Duplicated interface node pairs (see _duplicate_interfaces): the
         # original node of pair p is _pair_original[p], its duplicate is
@@ -821,8 +851,337 @@ class CompositeMesh:
         mesh.ilss_geometry = mesh.flexure_geometry
         return mesh
 
+    # ------------------------------------------------------------------
+    # Delamination fracture specimens (plan phase 3)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def for_dcb(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+                crack_length: float = _D5528_CRACK_LENGTH,
+                length: float = _D5528_LENGTH,
+                width: float = _D5528_WIDTH,
+                interface: int | None = None,
+                element_length: float | None = None,
+                max_element_length: float | None = None,
+                nx: int | None = None,
+                ny: int | None = None,
+                nz: int | None = None,
+                plane_strain: bool = False,
+                ply_angles: list[float] | str | None = 'UD',
+                ) -> CompositeMesh:
+        """Mesh of a double-cantilever-beam (DCB, mode I) specimen.
+
+        The ``'dcb'`` loading mode of :class:`~porosity_fe.FESolver` runs
+        it: the two arms are pulled apart by equal and opposite hinge loads
+        on the line ``x = 0`` (top and bottom faces), and a statically
+        determinate set of six constraints at the far end holds the
+        specimen without carrying load. The insert is a through-width
+        :class:`~porosity_fe.Delamination` strip at ``interface`` from
+        ``x = 0`` (the loaded end, open there) to ``crack_length``; the
+        crack tip and the hinge line lie on node lines. The geometry is
+        recorded as :attr:`fracture_geometry`.
+
+        The defaults are the delamination plan's reading of ASTM D5528
+        (unidirectional laminate, specimen at least 125 mm long, 20 to
+        25 mm wide, insert about 50 mm from the load line). The ASTM text
+        was not available: check them against the purchased standard. The
+        hinge line is the specimen end here, so ``crack_length`` is measured
+        from the load line as in the standard, and the end block or hinge
+        beyond it is not modelled.
+
+        Parameters
+        ----------
+        porosity_field : PorosityField
+            Porosity field, sampled at the nodes.
+        material : MaterialProperties
+            Ply material; the specimen thickness is
+            ``material.total_thickness``.
+        crack_length : float
+            Insert length ``a0`` from the load line (mm), default 50.
+        length : float
+            Specimen length from the load line (mm), default 125.
+        width : float
+            Specimen width ``b`` (mm), default 25.
+        interface : int, optional
+            Ply interface of the insert, default the mid-plane
+            (``n_plies // 2 - 1``; an odd ply count needs it).
+        element_length : float, optional
+            Element length along ``x`` at the crack front (``Delta a`` of
+            the virtual crack closure), default a quarter of the specimen
+            thickness. Six elements of exactly this length lie on each side
+            of the front; beyond them the length grows by 25 % per element
+            up to ``max_element_length`` (a graded mesh, plan decision D5;
+            :attr:`x_grid`). Ignored when ``nx`` is given.
+        max_element_length : float, optional
+            Largest element length along ``x`` and ``y`` (mm), default
+            ``min(h, 20 h / nz)`` with ``h`` the specimen thickness (element
+            aspect ratio at most 20, length at most ``h``, as
+            :meth:`for_flexure`).
+        nx : int, optional
+            Elements along ``x`` on a uniform grid instead of the graded
+            mesh; it must put the crack tip on a node line (for the
+            defaults a multiple of 5).
+        ny : int, optional
+            Elements across the width, default the smallest even count with
+            elements no wider than ``max_element_length``.
+        nz : int, optional
+            Elements through the thickness, a multiple of ``n_plies``,
+            default ``n_plies``.
+        plane_strain : bool
+            Solve the specimen in plane strain, ``u_y = 0`` at every node,
+            the counterpart of a two-dimensional plane-strain model (the
+            fields of a unidirectional laminate are then the same across
+            the width, so ``ny = 1`` is enough, at the cost of an
+            element-quality warning for the wide elements). Default ``False``: the full three-dimensional
+            specimen, whose energy release rate varies across the width.
+        ply_angles : list of float or {'QI', 'UD'}, optional
+            Layup, default ``'UD'`` (the standard tests unidirectional
+            laminates).
+
+        Returns
+        -------
+        CompositeMesh
+            The specimen, ``L_x = length``, ``L_y = width``, with
+            :attr:`fracture_geometry` and :attr:`delaminations` set.
+
+        Raises
+        ------
+        ValueError
+            If a length is not positive and finite, the insert is not
+            shorter than the specimen, ``nz`` is not a multiple of
+            ``n_plies``, or ``nx`` puts the crack tip between node lines.
+
+        Examples
+        --------
+        >>> mat = dataclasses.replace(MATERIALS['T800_epoxy'], G_Ic=0.2,
+        ...                           G_IIc=0.8, bk_eta=2.0)  # doctest: +SKIP
+        >>> mesh = CompositeMesh.for_dcb(PorosityField(mat, 0.0), mat)
+        >>> result = FESolver(mesh, mat, mesh.porosity_field).solve(
+        ...     'dcb', applied_load=50.0)                       # doctest: +SKIP
+        >>> 50.0 * result.fracture_load_factor    # onset load, N  # doctest: +SKIP
+        """
+        a0 = _finite_positive('crack_length', crack_length)
+        total = _finite_positive('length', length)
+        if not a0 < total:
+            raise ValueError(
+                f"CompositeMesh.for_dcb: the insert ({a0:g} mm) must be shorter "
+                f"than the specimen ({total:g} mm).")
+        layout = _SpecimenLayout(
+            test='dcb', points=(0.0, a0, total), front=1,
+            width=_finite_positive('width', width),
+            geometry_kwargs=dict(crack_length=a0, load_end=0.0))
+        return _build_specimen(
+            cls, porosity_field, material, layout, interface=interface,
+            element_length=element_length, max_element_length=max_element_length,
+            nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
+
+    @classmethod
+    def for_enf(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+                crack_length: float = _D7905_CRACK_LENGTH,
+                span: float = _D7905_SPAN,
+                width: float = _D7905_WIDTH,
+                overhang: float = 0.0,
+                interface: int | None = None,
+                element_length: float | None = None,
+                max_element_length: float | None = None,
+                nx: int | None = None,
+                ny: int | None = None,
+                nz: int | None = None,
+                plane_strain: bool = False,
+                ply_angles: list[float] | str | None = 'UD',
+                ) -> CompositeMesh:
+        """Mesh of an end-notched-flexure (ENF, mode II) specimen.
+
+        The ``'enf'`` loading mode of :class:`~porosity_fe.FESolver` runs
+        it: three-point bending on roller supports ``span`` apart (bottom
+        face), the load at mid-span on the top face, with crack-face
+        contact. The insert is a through-width
+        :class:`~porosity_fe.Delamination` strip at ``interface`` from the
+        cracked end (``x = 0``) to ``crack_length`` beyond the support
+        under it; the supports, the load line and the crack tip lie on node
+        lines. The geometry is recorded as :attr:`fracture_geometry`.
+
+        The defaults are the delamination plan's reading of ASTM D7905
+        (support span 2L = 100 mm, ``a0`` = 30 mm from the support; the
+        width is not in the plan). The ASTM text was not available: check
+        them against the purchased standard. The standard specimen is longer
+        than the span; its unloaded overhangs are left out by default
+        (``overhang = 0``).
+
+        Parameters
+        ----------
+        porosity_field, material
+            As :meth:`for_dcb`.
+        crack_length : float
+            ``a0`` (mm) from the support under the cracked end to the crack
+            tip, default 30; less than the span, and not at mid-span.
+        span : float
+            Support span ``2 L`` (mm), default 100.
+        width : float
+            Specimen width (mm), default 25.
+        overhang : float
+            Length beyond each support (mm), default 0. The insert runs
+            through the overhang at the cracked end.
+        interface, element_length, max_element_length, ny, nz, plane_strain, ply_angles
+            As :meth:`for_dcb`.
+        nx : int, optional
+            Elements along ``x`` on a uniform grid instead of the graded
+            mesh; it must put the supports, mid-span and the crack tip on
+            node lines (for the defaults a multiple of 10).
+
+        Returns
+        -------
+        CompositeMesh
+            The specimen, ``L_x = span + 2 overhang``, with
+            :attr:`fracture_geometry` and :attr:`delaminations` set.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`for_dcb`, or if the crack tip is not inside the span
+            or lies at mid-span.
+        """
+        a0 = _finite_positive('crack_length', crack_length)
+        L2 = _finite_positive('span', span)
+        over = _finite_positive('overhang', overhang, allow_zero=True)
+        if not a0 < L2 or math.isclose(a0, 0.5 * L2, rel_tol=1e-9):
+            raise ValueError(
+                f"CompositeMesh.for_enf: the crack tip must lie inside the "
+                f"{L2:g} mm span and not under the mid-span load, got "
+                f"crack_length {a0:g} mm.")
+        points = sorted({0.0, over, over + a0, over + 0.5 * L2, over + L2, 2.0 * over + L2})
+        layout = _SpecimenLayout(
+            test='enf', points=tuple(points), front=points.index(over + a0),
+            width=_finite_positive('width', width),
+            geometry_kwargs=dict(crack_length=a0, load_end=over, span=L2))
+        return _build_specimen(
+            cls, porosity_field, material, layout, interface=interface,
+            element_length=element_length, max_element_length=max_element_length,
+            nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
+
+    @classmethod
+    def for_mmb(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+                crack_length: float = _D6671_CRACK_LENGTH,
+                span: float = _D6671_SPAN,
+                lever_length: float | None = None,
+                mode_ratio: float | None = None,
+                width: float = _D6671_WIDTH,
+                overhang: float = 0.0,
+                interface: int | None = None,
+                element_length: float | None = None,
+                max_element_length: float | None = None,
+                nx: int | None = None,
+                ny: int | None = None,
+                nz: int | None = None,
+                plane_strain: bool = False,
+                ply_angles: list[float] | str | None = 'UD',
+                ) -> CompositeMesh:
+        """Mesh of a mixed-mode-bending (MMB, mode I and II) specimen.
+
+        The ``'mmb'`` loading mode of :class:`~porosity_fe.FESolver` runs
+        it with the loads of the MMB lever
+        (:meth:`FractureSpecimenGeometry.mmb_loads`): a hinge load on the
+        upper arm at the cracked end (``x = 0``, top face), the saddle load
+        at mid-span (top face), and roller supports under the lower arm's
+        hinge (``x = 0``) and at the far end of the span (bottom face). The
+        lever is statically determinate, so applying its forces is exact in
+        a linear analysis. The insert is a through-width
+        :class:`~porosity_fe.Delamination` strip at ``interface`` from
+        ``x = 0`` to ``crack_length``; the hinge line, mid-span, the far
+        support and the crack tip lie on node lines. The geometry is
+        recorded as :attr:`fracture_geometry`.
+
+        The defaults are the delamination plan's reading of ASTM D6671
+        (half-span L = 50 mm, ``a0`` about 25 mm; the width is not in the
+        plan) and ``G_II / G_T = 0.5``. The ASTM text was not available:
+        check them against the purchased standard.
+
+        Parameters
+        ----------
+        porosity_field, material
+            As :meth:`for_dcb`.
+        crack_length : float
+            ``a0`` (mm) from the hinge line, default 25; less than the span,
+            and not at mid-span.
+        span : float
+            Support span ``2 L`` (mm), default 100.
+        lever_length : float, optional
+            Lever length ``c`` (mm) from the saddle to the lever load.
+            Default: :func:`~porosity_fe.mmb_lever_length` for
+            ``mode_ratio``.
+        mode_ratio : float, optional
+            Target ``G_II / G_T`` of the beam theory of
+            :func:`~porosity_fe.mmb_lever_length` when ``lever_length`` is not
+            given, default 0.5. The FE mode mix differs from it by a few
+            per cent; read :attr:`CrackFront.psi <porosity_fe.CrackFront.psi>`.
+        width : float
+            Specimen width (mm), default 25.
+        overhang : float
+            Length beyond the far support (mm), default 0.
+        interface, element_length, max_element_length, ny, nz, plane_strain, ply_angles
+            As :meth:`for_dcb`.
+        nx : int, optional
+            Elements along ``x`` on a uniform grid instead of the graded
+            mesh; it must put the hinge line, mid-span, the far support and
+            the crack tip on node lines (for the defaults a multiple of 4).
+
+        Returns
+        -------
+        CompositeMesh
+            The specimen, ``L_x = span + overhang``, with
+            :attr:`fracture_geometry` and :attr:`delaminations` set.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`for_enf`, or if both ``lever_length`` and
+            ``mode_ratio`` are given.
+        """
+        a0 = _finite_positive('crack_length', crack_length)
+        L2 = _finite_positive('span', span)
+        over = _finite_positive('overhang', overhang, allow_zero=True)
+        if not a0 < L2 or math.isclose(a0, 0.5 * L2, rel_tol=1e-9):
+            raise ValueError(
+                f"CompositeMesh.for_mmb: the crack tip must lie inside the "
+                f"{L2:g} mm span and not under the saddle, got crack_length "
+                f"{a0:g} mm.")
+        if lever_length is not None and mode_ratio is not None:
+            raise ValueError(
+                "CompositeMesh.for_mmb: pass lever_length or mode_ratio, not both.")
+        if lever_length is None:
+            c = mmb_lever_length(
+                material, _D6671_MODE_RATIO if mode_ratio is None else mode_ratio,
+                span=L2, crack_length=a0)
+        else:
+            c = _finite_positive('lever_length', lever_length, allow_zero=True)
+        points = sorted({0.0, a0, 0.5 * L2, L2, L2 + over})
+        layout = _SpecimenLayout(
+            test='mmb', points=tuple(points), front=points.index(a0),
+            width=_finite_positive('width', width),
+            geometry_kwargs=dict(crack_length=a0, load_end=0.0, span=L2,
+                                 lever_length=c))
+        return _build_specimen(
+            cls, porosity_field, material, layout, interface=interface,
+            element_length=element_length, max_element_length=max_element_length,
+            nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
+
+    def _x_node_lines(self) -> np.ndarray:
+        """``x`` of the node lines: :attr:`x_grid`, or evenly spaced."""
+        if self.x_grid is None:
+            return np.linspace(0, self.L_x, self.nx + 1)
+        x = np.asarray(self.x_grid, dtype=float)
+        tol = 1e-9 * max(float(self.L_x), 1.0)
+        if x.shape != (self.nx + 1,) or not np.all(np.isfinite(x)) \
+                or abs(float(x[0])) > tol or abs(float(x[-1]) - float(self.L_x)) > tol \
+                or not np.all(np.diff(x) > 0.0):
+            raise ValueError(
+                f"CompositeMesh.x_grid must hold nx + 1 = {self.nx + 1} increasing "
+                f"node-line positions from 0 to L_x = {self.L_x:g} mm, got shape "
+                f"{x.shape}; set mesh.x_grid = None for evenly spaced node lines.")
+        return x
+
     def generate_mesh(self):
-        x = np.linspace(0, self.L_x, self.nx + 1)
+        x = self._x_node_lines()
         y = np.linspace(0, self.L_y, self.ny + 1)
         z = np.linspace(0, self.L_z, self.nz + 1)
 
@@ -1314,7 +1673,9 @@ class CompositeMesh:
             Target coordinate per axis. Pass ``None`` to ignore an axis.
         tol : float or None
             Distance tolerance. If ``None``, defaults to half of a typical
-            element edge length (``0.5 * min(L_x/nx, L_y/ny, L_z/nz)``).
+            element edge length (``0.5 * min(L_x/nx, L_y/ny, L_z/nz)``, with
+            the shortest element along ``x`` instead of ``L_x/nx`` on a
+            graded mesh, :attr:`x_grid`).
 
         Returns
         -------
@@ -1334,7 +1695,10 @@ class CompositeMesh:
             )
         if tol is None:
             dxs = []
-            if self.nx > 0:
+            if self.x_grid is not None:
+                # A graded mesh: half its shortest element along x.
+                dxs.append(float(np.min(np.diff(np.asarray(self.x_grid, dtype=float)))))
+            elif self.nx > 0:
                 dxs.append(self.L_x / self.nx)
             if self.ny > 0:
                 dxs.append(self.L_y / self.ny)

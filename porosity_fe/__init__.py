@@ -105,6 +105,11 @@ from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
+from .fracture_specimens import ComplianceCalibration as ComplianceCalibration  # noqa: F401, E402
+from .fracture_specimens import FractureSpecimenGeometry as FractureSpecimenGeometry  # noqa: F401, E402
+from .fracture_specimens import compliance_calibration as compliance_calibration  # noqa: F401, E402
+from .fracture_specimens import mmb_lever_length as mmb_lever_length  # noqa: F401, E402
+from .fracture_specimens import mmb_mode_ratio as mmb_mode_ratio  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
 from .gauss import gauss_points_hex as gauss_points_hex  # noqa: F401, E402
 from .homogenization import _MT_CACHE_MAXSIZE as _MT_CACHE_MAXSIZE  # noqa: F401, E402
@@ -238,6 +243,12 @@ __all__ = [
     "delamination_onset",
     "EdgeDelamination",
     "obrien_edge_delamination",
+    # Fracture specimens (DCB, ENF, MMB) and their data reduction
+    "FractureSpecimenGeometry",
+    "mmb_lever_length",
+    "mmb_mode_ratio",
+    "ComplianceCalibration",
+    "compliance_calibration",
     # Visualization
     "FEVisualizer",
     # IO
