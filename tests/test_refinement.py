@@ -450,6 +450,43 @@ class TestOtherLoadCases:
         with pytest.raises(ValueError, match=r"24x8x4: .* 48x16x4"):
             refinement_study(MAT4, 0.02, 'ilss', max_elements=10)
 
+    def test_flexure_levels_are_d7264_specimens(self, monkeypatch):
+        # Each level is a CompositeMesh.for_flexure specimen with the level's
+        # nx (rounded up to even), ny and nz; the span is the same throughout.
+        built = []
+        real = CompositeMesh.for_flexure.__func__
+
+        def for_flexure(cls, *a, **k):
+            mesh = real(cls, *a, **k)
+            built.append(mesh)
+            return mesh
+
+        monkeypatch.setattr(CompositeMesh, 'for_flexure', classmethod(for_flexure))
+        st = _study('flexure_3pt', base_resolution=(19, 6, 4), factors=(1, 1.5),
+                    applied_load=-10.0)
+        assert st.resolutions == ((20, 6, 4), (30, 9, 4))
+        assert [(m.nx, m.ny, m.nz) for m in built] == [(20, 6, 4), (30, 9, 4)]
+        h = MAT4.total_thickness
+        for mesh in built:
+            assert mesh.flexure_geometry.span == pytest.approx(32 * h, rel=1e-12)
+        assert st.interior_margin == pytest.approx(0.5 * h, rel=1e-12)
+        for lv in st.levels:
+            assert lv.effective_modulus is not None and lv.effective_modulus > 0
+            assert lv.interior_max_failure_index is not None
+        assert st.convergence['effective_modulus'].behavior != 'unavailable'
+        assert "around the support and load lines" in st.summary()
+
+    def test_flexure_explicit_levels_must_have_even_nx(self, monkeypatch):
+        monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)
+        with pytest.raises(ValueError, match="must be even"):
+            _study('flexure_4pt', base_resolution=None,
+                   resolutions=[(20, 6, 4), (31, 9, 4)])
+
+    def test_flexure_default_base_is_the_specimen_mesh(self, monkeypatch):
+        monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)
+        with pytest.raises(ValueError, match=r"40x14x4: .* 80x28x4"):
+            refinement_study(MAT4, 0.02, 'flexure_3pt', max_elements=10)
+
     def test_refine_all_scales_nz_by_ply_multiples(self):
         st = _study(base_resolution=(10, 6, 4), refine='all', factors=(1, 2))
         assert st.resolutions == ((10, 6, 4), (20, 12, 8))

@@ -399,6 +399,7 @@ class CompositeMesh:
                     nz: int | None = None,
                     ny: int | None = None,
                     element_length: float | None = None,
+                    nx: int | None = None,
                     ply_angles: list[float] | str | None = 'QI',
                     ) -> CompositeMesh:
         """Mesh of a flexure specimen (ASTM D7264 / D790 proportions).
@@ -460,7 +461,15 @@ class CompositeMesh:
             :func:`check_mesh_quality` warning) and the element length at or
             below ``h``, where the default ``'hex8i'`` element is free of
             shear locking. The plain ``'hex8'`` element needs a much finer
-            mesh in bending.
+            mesh in bending. Ignored when ``nx`` is given.
+        nx : int, optional
+            Elements along the length instead of ``element_length``; even,
+            so mid-span is a node line. The span gets the most elements that
+            leave each overhang at least ``overhang`` long (two fewer when
+            that puts the four-point load lines on node lines), and the
+            overhangs take the rest, so they can come out longer than
+            requested. The span itself is exact at every ``nx``, which is
+            what :func:`~porosity_fe.refinement_study` refines.
         ply_angles : list of float or {'QI', 'UD'}, optional
             Layup, as for :class:`CompositeMesh`.
 
@@ -473,8 +482,10 @@ class CompositeMesh:
         Raises
         ------
         ValueError
-            If a length or ratio is not positive and finite, or the load
-            span or width does not fit (see :class:`FlexureGeometry`).
+            If a length or ratio is not positive and finite, the load
+            span or width does not fit (see :class:`FlexureGeometry`), or
+            ``nx`` is not an even integer that leaves at least two elements
+            between the supports.
 
         Examples
         --------
@@ -525,37 +536,56 @@ class CompositeMesh:
         if not isinstance(nz_f, (int, np.integer)) or nz_f <= 0:
             raise ValueError(
                 f"CompositeMesh.for_flexure: nz must be a positive integer, got {nz!r}.")
-        dx_max = positive('element_length', element_length)
-        if dx_max is None:
-            dx_max = min(h, _MAX_ASPECT_RATIO * h / nz_f)
-
-        # Elements between the supports: even, so mid-span is a node line,
-        # and if possible such that the four-point load lines are too.
-        m0 = 2 * math.ceil(L / (2.0 * dx_max) - 1e-9)
         shear_span = 0.5 * (L - Ls)
 
         def aligned(m: int) -> bool:
             k = shear_span * m / L
             return abs(k - round(k)) < 1e-6
 
-        m = next((c for c in range(m0, 2 * m0 + 1, 2) if aligned(c)), m0)
+        # Elements between the supports: even, so mid-span is a node line,
+        # and if possible such that the four-point load lines are too.
+        n_over: int | None = None
+        if nx is not None:
+            if isinstance(nx, bool) or not isinstance(nx, (int, np.integer)) \
+                    or nx < 2 or nx % 2:
+                raise ValueError(
+                    f"CompositeMesh.for_flexure: nx must be an even integer "
+                    f">= 2 (mid-span on a node line), got {nx!r}.")
+            # The most span elements that leave each overhang long enough.
+            m = 2 * math.floor(nx * L / (2.0 * (L + 2.0 * overhang_f)) + 1e-9)
+            if m < 2:
+                raise ValueError(
+                    f"CompositeMesh.for_flexure: nx={nx} leaves fewer than two "
+                    f"elements between the supports with {overhang_f:g} mm "
+                    f"overhangs on a {L:g} mm span; use a larger nx.")
+            if not aligned(m) and m >= 4 and aligned(m - 2):
+                m -= 2
+            n_over = (int(nx) - m) // 2
+            dx_max = L / m
+        else:
+            dx_max_arg = positive('element_length', element_length)
+            dx_max = min(h, _MAX_ASPECT_RATIO * h / nz_f) if dx_max_arg is None \
+                else dx_max_arg
+            m0 = 2 * math.ceil(L / (2.0 * dx_max) - 1e-9)
+            m = next((c for c in range(m0, 2 * m0 + 1, 2) if aligned(c)), m0)
         if not aligned(m):
             logger.info(
                 "CompositeMesh.for_flexure: the four-point load lines fall "
                 "between node lines; their load is shared by the neighbouring "
                 "nodes with consistent (linear shape-function) weights.")
         dx = L / m
-        n_over = math.ceil(overhang_f / dx - 1e-9) if overhang_f > 0.0 else 0
-        nx = m + 2 * n_over
+        if n_over is None:
+            n_over = math.ceil(overhang_f / dx - 1e-9) if overhang_f > 0.0 else 0
+        nx_total = m + 2 * n_over
         if ny is None:
             ny = max(2, 2 * math.ceil(width_f / (2.0 * dx_max) - 1e-9))
 
-        mesh = cls(porosity_field, material, nx=nx, ny=ny, nz=nz_f,
+        mesh = cls(porosity_field, material, nx=nx_total, ny=ny, nz=nz_f,
                    ply_angles=ply_angles)
-        mesh.L_x = nx * dx
+        mesh.L_x = nx_total * dx
         mesh.L_y = width_f
         mesh.generate_mesh()
-        x = np.linspace(0.0, mesh.L_x, nx + 1)
+        x = np.linspace(0.0, mesh.L_x, nx_total + 1)
         mesh.flexure_geometry = FlexureGeometry(
             support_x=(float(x[n_over]), float(x[n_over + m])),
             load_span=Ls, load_width=load_width)

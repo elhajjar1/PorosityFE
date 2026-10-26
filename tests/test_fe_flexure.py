@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import warnings
 
 import numpy as np
@@ -31,7 +32,12 @@ from porosity_fe import (
     compute_degraded_clt_flexural_modulus,
 )
 from porosity_fe.fe import solver as solver_mod
-from porosity_fe.fe.flexure import section_deflection, transverse_shear_stiffness
+from porosity_fe.fe.flexure import (
+    default_interior_margin,
+    interior_element_mask,
+    section_deflection,
+    transverse_shear_stiffness,
+)
 
 T800 = MATERIALS['T800_epoxy']
 # 8 plies, h = 1.464 mm; width 3 h as in the D7264 standard specimen.
@@ -160,6 +166,49 @@ class TestForFlexure:
         assert g.span == pytest.approx(16.0 * THIN.total_thickness)
         assert (mesh.ny, mesh.nz) == (2, 4)
         assert mesh.L_x / mesh.nx <= 1.0 + 1e-12
+
+    def test_nx_reproduces_the_default_mesh(self):
+        pf = PorosityField(T800, 0.03)
+        default = CompositeMesh.for_flexure(pf, T800)
+        same = CompositeMesh.for_flexure(pf, T800, nx=default.nx)
+        np.testing.assert_array_equal(same.nodes, default.nodes)
+        assert same.flexure_geometry == default.flexure_geometry
+
+    @pytest.mark.parametrize('nx', [40, 50, 60, 64, 80, 120])
+    def test_nx_keeps_the_span_exact_and_the_overhangs_long_enough(self, nx):
+        pf = PorosityField(THIN, 0.0)
+        default = CompositeMesh.for_flexure(pf, THIN)
+        mesh = CompositeMesh.for_flexure(pf, THIN, nx=nx, ny=4)
+        g = mesh.flexure_geometry
+        assert (mesh.nx, mesh.ny) == (nx, 4)
+        assert g.span == pytest.approx(default.flexure_geometry.span, rel=1e-12)
+        assert g.support_x[0] >= 0.1 * g.span - 1e-9
+        assert g.support_x[0] == pytest.approx(mesh.L_x - g.support_x[1])
+        dx = mesh.L_x / mesh.nx
+        assert g.span / dx == pytest.approx(round(g.span / dx), abs=1e-9)
+        # Supports, mid-span and the quarter-point load lines on node lines
+        # (D7264 load span: one span element pair at most goes to the
+        # overhangs for that).
+        x_nodes = np.unique(mesh.nodes[:, 0])
+        for x in (*g.support_x, g.midspan, *g.load_x('4pt')):
+            assert np.abs(x_nodes - x).min() < 1e-9 * mesh.L_x
+        m_max = 2 * math.floor(nx * g.span / (2.0 * 1.2 * g.span) + 1e-9)
+        assert round(g.span / dx) in (m_max, m_max - 2)
+
+    def test_nx_with_an_unaligned_load_span_is_logged(self, caplog):
+        pf = PorosityField(THIN, 0.0)
+        with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
+            mesh = CompositeMesh.for_flexure(pf, THIN, nx=40, load_span=np.pi * 10.0)
+        assert mesh.nx == 40
+        assert 'between node lines' in caplog.text
+
+    @pytest.mark.parametrize('nx, match', [
+        (41, 'even integer'), (0, 'even integer'), (True, 'even integer'),
+        (40.0, 'even integer'), (2, 'fewer than two elements'),
+    ])
+    def test_invalid_nx_raises(self, nx, match):
+        with pytest.raises(ValueError, match=match):
+            CompositeMesh.for_flexure(PorosityField(THIN, 0.0), THIN, nx=nx)
 
     @pytest.mark.parametrize('kwargs', [
         dict(span_to_thickness=0.0),
@@ -436,6 +485,113 @@ class TestFlexureSolve:
         assert r.effective_modulus == pytest.approx(
             _clt_flexural_modulus(mesh, 0.03), rel=0.02)
         assert np.abs(r.reaction_forces[:, 0]).max() < 1e-8 * 10.0
+
+
+class TestFlexureInterior:
+    """The interior region of the flexure modes' failure metrics."""
+
+    @staticmethod
+    def _centroids(mesh):
+        return np.asarray(mesh.nodes)[mesh.elements].mean(axis=1)
+
+    @pytest.mark.parametrize('procedure', ['3pt', '4pt'])
+    def test_mask_leaves_out_the_contact_zones_and_side_faces(self, thin, procedure):
+        mesh, _ = thin['QI', 0.0]
+        g = mesh.flexure_geometry
+        h = mesh.L_z
+        d = default_interior_margin(mesh)
+        assert d == pytest.approx(0.5 * h)
+        mask = interior_element_mask(mesh, g, procedure)
+        x, y, z = self._centroids(mesh).T
+        assert mask.any()
+        inner = mask.nonzero()[0]
+        assert np.all((x[inner] >= g.support_x[0]) & (x[inner] <= g.support_x[1]))
+        assert np.all((y[inner] >= d) & (y[inner] <= mesh.L_y - d))
+        for xs in g.support_x:
+            assert np.all(np.hypot(x[inner] - xs, z[inner]) >= d)
+        for xl in g.load_x(procedure):
+            assert np.all(np.hypot(x[inner] - xl, z[inner] - h) >= d)
+        # The rest of the span within the side margin is interior.
+        span_cols = ((x >= g.support_x[0]) & (x <= g.support_x[1])
+                     & (y >= d) & (y <= mesh.L_y - d))
+        near = np.zeros_like(mask)
+        for xs in g.support_x:
+            near |= np.hypot(x - xs, z) < d
+        for xl in g.load_x(procedure):
+            near |= np.hypot(x - xl, z - h) < d
+        np.testing.assert_array_equal(mask, span_cols & ~near)
+
+    def test_three_point_keeps_the_tension_face_at_mid_span(self, thin):
+        # With a margin of h the half-disc under the load takes the top-face
+        # elements either side of mid-span but not the bottom-face ones.
+        mesh, _ = thin['UD', 0.0]
+        g = mesh.flexure_geometry
+        d = mesh.L_z
+        mask = interior_element_mask(mesh, g, '3pt', margin=d)
+        x, y, z = self._centroids(mesh).T
+        dx = mesh.L_x / mesh.nx
+        assert dx <= d
+        beside = (np.abs(x - g.midspan) < dx) & (y >= d) & (y <= mesh.L_y - d)
+        bottom = beside & (z < mesh.L_z / mesh.nz)
+        top = beside & (z > mesh.L_z * (1.0 - 1.0 / mesh.nz))
+        assert bottom.any() and mask[bottom].all()
+        assert top.any() and not mask[top].any()
+
+    def test_load_band_widens_the_excluded_zone(self, thin):
+        mesh, _ = thin['QI', 0.0]
+        g = mesh.flexure_geometry
+        banded = dataclasses.replace(g, load_width=4.0 * mesh.L_x / mesh.nx)
+        line = interior_element_mask(mesh, g, '3pt')
+        band = interior_element_mask(mesh, banded, '3pt')
+        assert band.sum() < line.sum()
+        assert not np.any(band & ~line)
+
+    def test_margin_option(self, thin):
+        mesh, _ = thin['QI', 0.0]
+        g = mesh.flexure_geometry
+        x = self._centroids(mesh)[:, 0]
+        between = (x >= g.support_x[0]) & (x <= g.support_x[1])
+        np.testing.assert_array_equal(
+            interior_element_mask(mesh, g, '4pt', margin=0.0), between)
+        assert not interior_element_mask(mesh, g, '4pt', margin=mesh.L_y).any()
+        for bad in (-1.0, float('nan'), True, '1'):
+            with pytest.raises(ValueError, match='interior_margin'):
+                interior_element_mask(mesh, g, '4pt', margin=bad)
+        with pytest.raises(ValueError, match='procedure'):
+            interior_element_mask(mesh, g, '5pt')
+
+    @pytest.mark.parametrize('mode', MODES)
+    def test_solve_reports_the_interior_metrics(self, thin, mode):
+        mesh, results = thin['QI', 0.05]
+        r = results[mode]
+        assert r.interior_max_failure_index is not None
+        assert r.interior_first_ply_failure_load_factor is not None
+        # The bending peak is in the interior; only the free-edge and contact
+        # elements lie outside it.
+        assert 0.9 * r.max_failure_index <= r.interior_max_failure_index \
+            <= r.max_failure_index
+        assert r.interior_first_ply_failure_load_factor \
+            >= r.first_ply_failure_load_factor
+
+    def test_solve_interior_margin_and_none(self):
+        pf = PorosityField(THIN, 0.03)
+        mesh = CompositeMesh.for_flexure(pf, THIN, ply_angles='UD', **THIN_KW)
+        solver = FESolver(mesh, THIN, pf, ply_angles='UD')
+        wide = solver.solve('flexure_3pt', applied_load=LOAD, interior_margin=mesh.L_y)
+        assert wide.interior_max_failure_index is None
+        assert wide.interior_first_ply_failure_load_factor is None
+        with pytest.raises(ValueError, match='interior_margin'):
+            solver.solve('flexure_3pt', interior_margin=-1.0)
+
+    def test_default_coupon_uses_the_end_edge_supports(self):
+        pf = PorosityField(THIN, 0.03)
+        mesh = CompositeMesh(pf, THIN, nx=16, ny=8, nz=8, ply_angles='UD')
+        r = FESolver(mesh, THIN, pf, ply_angles='UD').solve('flexure_3pt')
+        g = BoundaryHandler(mesh).flexure_geometry()
+        expected = interior_element_mask(mesh, g, '3pt')
+        assert expected.any()
+        fi = r.per_element_failure_index
+        assert r.interior_max_failure_index == pytest.approx(fi[expected].max())
 
 
 def test_shear_stiffness_of_one_orthotropic_layer_is_five_sixths_gh():
