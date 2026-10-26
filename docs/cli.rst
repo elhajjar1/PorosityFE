@@ -18,6 +18,29 @@ and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
 uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or a
 failed analysis.
 
+``--delamination SPEC`` adds an opt-in FE delamination screening at each
+porosity level: the production coupon (``'QI'`` layup) with the
+delamination, solved under ``--delam-loading`` with the porosity of
+``--delam-config``, and its knockdown split into porosity-only and
+delamination-only parts (:func:`~porosity_fe.knockdown_decomposition`;
+three FE solves per level). Each level writes
+``porosity_delamination_<Vp>.json``, the FE JSON export with the
+``fracture`` block (energy release rates along the front, the fracture
+load factor, the toughness law and its ``toughness_uncalibrated`` flag) and
+the ``knockdown_decomposition`` block, and prints one summary line.
+``SPEC`` is ``strip:K:X_START:X_END``, ``rectangle:K:XC:YC:LX:WY`` or
+``ellipse:K:XC:YC:LX:WY``: the interface ``K`` (between ply ``K`` and
+``K + 1`` from the bottom, 0-based) and lengths in mm on the 50 x 20 mm
+coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. No preset
+has interlaminar toughness, so the fracture load factor needs
+``--toughness`` (N/mm). Without ``--delamination`` the run is unchanged,
+and its options are refused (see :doc:`theory/delamination`).
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.02 --delamination ellipse:11:25:10:12:8 \
+       --toughness 0.212 0.774 2.1
+
 .. argparse::
    :module: porosity_fe.cli
    :func: _build_arg_parser

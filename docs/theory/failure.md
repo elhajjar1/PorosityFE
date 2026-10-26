@@ -444,7 +444,12 @@ Composite Materials*, ASTM STP 775 (1982), which we did not access.
   [Degraded strengths](#degraded-strengths), the same in every direction.
 - `sigma_2t` and `tau_ilss` stand in for the interlaminar strengths unless
   `sigma_3t` and `tau_13` are set, and no preset sets them.
-- The interface onset is available from the Python API only: the app, the
-  JSON export and the VTU files do not carry it yet.
+- The interface onset is computed on request, never by the solve: in the
+  app with the sidebar option "Interface delamination onset"
+  (Brewer-Lagace, its averaging length an input), in the JSON export as a
+  `delamination_onset` block (`FESolver.export_results(..., onset=onset)`)
+  and in the VTU as the point field `onset_index`
+  (`FieldResults.to_vtu(..., onset=onset)`). The default exports do not
+  carry it.
 - O'Brien's $G$ uses the pristine ply stiffness, the laminate as given (not
   tiled to `n_plies`) and a uniaxial tensile strain.

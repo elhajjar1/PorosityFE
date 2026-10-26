@@ -5,6 +5,55 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Delamination in the app, the CLI and the NCR** (delamination plan,
+  phase 5 and the rest of 1.6). Everything is opt-in: the default app run
+  (its cache key and results), the default CLI output and every existing
+  FE result are unchanged.
+  - `knockdown_decomposition(mesh, material, porosity_field, loading)`
+    returns a `KnockdownDecomposition`: the FE knockdown of a porous,
+    delaminated laminate (`total`) and of its two single-defect variants,
+    the same porosity with every interface pair bonded (`porosity_only`)
+    and the same delamination with no porosity (`delamination_only`), all
+    against the one pristine reference (plan decision D6), with the
+    `dominant` defect. Up to two more solves, never run by
+    `FESolver.solve`; `total=` reuses a solve already run.
+  - `FESolver.export_results(..., onset=..., knockdown_decomposition=...)`
+    writes opt-in `delamination_onset` and `knockdown_decomposition` JSON
+    blocks (strict JSON; schema 1.3, additive), and
+    `FieldResults.to_vtu(..., onset=...)` the point field `onset_index`.
+  - App sidebar: a delamination of the FE mesh (an NDI indication:
+    interface, ellipse / rectangle / through-width strip, position and full
+    size in mm) with the knockdown split by defect; the interlaminar
+    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; no preset carries
+    them) and its porosity knockdown (the placeholder exponential law,
+    none, or your `b_I`, `b_II`); an interface onset check (Brewer-Lagace,
+    with `x_avg`); and the FE-only loading modes `dcb`, `enf` and `mmb`
+    (test planning, with the crack length and the MMB mode ratio that sets
+    the lever). The Results tab's **Defects** block shows the fracture
+    load factor, the governing node and its mode mixity, the front table,
+    G_T and ψ along the front, the knockdown decomposition, the onset with
+    its caveat, and for a specimen the compliance and P_c = λ_c · P at
+    mid-width; a warning shows whenever the toughness knockdown is
+    uncalibrated. The mesh-convergence check is not offered for a
+    delamination or a specimen.
+  - NCR (`porosity_fe.reporting`): `INDICATION_TYPES` (porosity,
+    delamination, combined) and `recommend_disposition(..., *, indication,
+    fracture_load_factor, required_load_factor, toughness_uncalibrated)`. A
+    delamination is dispositioned on its fracture margin, λ_c against the
+    required load factor the user enters (no default, no other threshold:
+    no published acceptance numbers exist), never on the void content; a
+    combined indication takes the more severe of the two paths. The
+    positional porosity call is unchanged. `build_ncr_record` takes
+    `meta['indication']` and `meta['required_load_factor']` and adds a
+    `delamination` block (interface depth and planform, toughness and its
+    law, λ_c, governing front node, knockdown decomposition), written by
+    the JSON (schema 1.3, additive), Markdown and PDF serialisers; the
+    app's NCR form offers it.
+  - `porosity-analyze --delamination SPEC` (with `--delam-loading`,
+    `--delam-config`, `--toughness`, `--toughness-knockdown`,
+    `--toughness-b`): an FE screening of the coupon at each porosity
+    level, written to `porosity_delamination_<Vp>.json` (the FE JSON with
+    the `fracture` and `knockdown_decomposition` blocks).
 - **Interlaminar stresses and delamination onset at the ply interfaces**
   (delamination plan, phase 1.1-1.3 and 1.5). Post-processing and
   lamination theory only: existing results are unchanged unless the new
@@ -45,8 +94,8 @@ All notable changes to PorosityFE will be documented in this file.
   - The failure theory page has a section "Interlaminar stresses and
     delamination onset": the recovery, the averaging, the criteria, the
     strength fallbacks and their `tau_13` inconsistency, the load factor,
-    the free-edge G and the limits. The app and the exports do not carry
-    the interface onset yet.
+    the free-edge G and the limits. The app and the exports carry the
+    interface onset on request (see the entry above).
 - **Failure modes made visible, and the docs say what delamination
   coverage exists** (delamination plan, phase 0). The default Tsai-Wu
   results, the knockdowns and the validation MAE are unchanged.

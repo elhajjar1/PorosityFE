@@ -166,8 +166,34 @@ $KD_\text{FE} = \mathcal S_\text{porous, delaminated} / \mathcal S_\text{pristin
 and a delamination alone, without porosity, gives a knockdown below 1. The
 reference cache is keyed on the tie set the reference uses (every pair
 bonded), so cracks of different sizes at the same interfaces share one
-reference, and it never shares an entry with a solve of other ties. The
-knockdown is not yet split into porosity-only and delamination-only parts.
+reference, and it never shares an entry with a solve of other ties.
+
+{func}`~porosity_fe.knockdown_decomposition` splits the knockdown by
+defect, so the user sees which one drives the loss. Against the same
+reference it reports
+
+- $KD_\text{total}$, the solve of the mesh as given;
+- $KD_\text{porosity}$, the same porosity and voids with every duplicated
+  pair bonded;
+- $KD_\text{delamination}$, the same delamination with no porosity or voids,
+
+as a {class}`~porosity_fe.KnockdownDecomposition` (with `dominant`, the
+defect whose knockdown alone is the lower). The two variants are shallow
+copies of the mesh, so they share its nodes, elements and reference; it
+takes up to two more solves, so {meth}`FESolver.solve
+<porosity_fe.FESolver.solve>` never runs it, and a variant equal to the mesh
+itself (no delaminated pair, or no porosity) is not solved again. The two
+defects need not combine multiplicatively, though on the 1 mm thick
+short-beam specimen of the tests (8-ply AS4/3501-6, uniform 3 % porosity, a
+2 mm strip at the mid-plane) they nearly do: $KD_\text{total} = 0.728$
+against $0.966 \times 0.753 = 0.727$. Under in-plane load, in a linear
+analysis (no buckling), an embedded delamination costs almost no
+stiffness; its effect is in the fracture load factor instead.
+
+```python
+parts = knockdown_decomposition(mesh, mat, pf, 'compression', total=result)
+parts.total, parts.porosity_only, parts.delamination_only, parts.dominant
+```
 
 ## Crack-face contact
 
@@ -368,6 +394,38 @@ applied state is held for every $\lambda$ (see
   data `G_I`, `G_II`, `G_III` and `G_T` at both nodes of every front pair,
   `NaN` elsewhere. The legacy ASCII VTK leaves them out, since its readers do
   not parse `NaN` reliably.
+- On request, never by default: `FESolver.export_results(...,
+  knockdown_decomposition=parts)` adds a `knockdown_decomposition` block,
+  and `onset=onset` (a {class}`~porosity_fe.DelaminationOnset`) a
+  `delamination_onset` block to the JSON and the point field `onset_index`
+  to the VTU ({doc}`failure`, "Interlaminar stresses and delamination
+  onset").
+
+### In the app, the CLI and the NCR
+
+- The web app's sidebar takes an explicit delamination (an NDI indication:
+  interface, planform, position and full size in mm on the FE mesh), the
+  toughness (`G_Ic`, `G_IIc`, optionally `G_IIIc`, and $\eta$; no preset
+  has them) and the porosity knockdown of the toughness (the placeholder
+  exponential law, none, or your `b_I`, `b_II`). The Results tab's
+  **Defects** block shows the front table and $G_T$ and $\psi$ along the
+  front, the fracture load factor with the governing node and its mode
+  mixity, the knockdown decomposition, and a warning whenever
+  `toughness_uncalibrated` is true. The `dcb`, `enf` and `mmb` loading
+  modes solve the [fracture specimens](#fracture-specimens) for test
+  planning (the crack length and the MMB mode ratio, which sets the lever
+  by {func}`~porosity_fe.mmb_lever_length`, are inputs) and report the
+  compliance and the critical load $P_c = \lambda_c P$ at mid-width.
+- `porosity-analyze --delamination SPEC` adds an FE screening of the
+  coupon at each porosity level, written to `porosity_delamination_<Vp>.json`
+  with the `fracture` and `knockdown_decomposition` blocks ({doc}`../cli`).
+- The NCR summary (`porosity_fe.reporting`) takes the indication types
+  porosity, delamination and combined. A delamination is dispositioned on
+  its fracture margin, $\lambda_c$ against the required load factor the
+  user enters (both multiples of the analysis load), never on the void
+  content; no published acceptance numbers exist, so there is no other
+  threshold. A combined indication takes the more severe of the porosity
+  and delamination paths.
 
 ## Verification
 
@@ -823,8 +881,7 @@ which no monotone law follows.
 - No preset has toughness data. The porosity knockdown of the toughness has
   uncalibrated placeholder coefficients and ignores the rise of mode I
   propagation toughness with voids
-  ([Porosity and toughness](#porosity-and-toughness)). The stiffness
-  knockdown is not split into porosity and delamination parts.
+  ([Porosity and toughness](#porosity-and-toughness)).
 - The fracture specimens are linear; the NASA benchmark models are
   geometrically nonlinear, and their MMB lever rotates with the specimen.
   The default specimen dimensions are a reading of ASTM D5528, D7905 and
