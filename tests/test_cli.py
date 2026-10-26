@@ -822,3 +822,149 @@ class TestAppliedStressIsInert:
 
     def test_default_is_silent(self, tmp_path, monkeypatch, capsys):
         assert "has no effect" not in self._run(tmp_path, monkeypatch, capsys, [])
+
+
+# ----------------------------------------------------------------------
+# Delamination screening (delamination plan, phase 5.3)
+# ----------------------------------------------------------------------
+
+_SPEC = ['--delamination', 'strip:0:20:30', '--delam-loading', 'tension']
+_TOUGH = ['--toughness', '0.212', '0.774', '2.1']
+
+
+@pytest.fixture
+def small_material(monkeypatch):
+    """A 4-ply T800 preset, so the screening's production mesh is 30 x 10 x 4."""
+    import dataclasses
+
+    from porosity_fe.materials import MATERIALS
+    monkeypatch.setitem(MATERIALS, 'T800_4ply',
+                        dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=4))
+    monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+    return 'T800_4ply'
+
+
+def _strict_json(path):
+    def refuse(token):
+        raise ValueError(token)
+    return json.loads(Path(path).read_text(encoding='utf-8'), parse_constant=refuse)
+
+
+class TestDelaminationScreening:
+    def test_writes_the_fracture_json(self, small_material, tmp_path):
+        import jsonschema
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet',
+                                        *_SPEC, *_TOUGH])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_delamination_3pct.json')
+        schema_path = Path(__file__).resolve().parent.parent / 'validation' / \
+            'schemas' / 'porosity_results_schema.json'
+        jsonschema.validate(instance=doc,
+                            schema=json.loads(schema_path.read_text(encoding='utf-8')))
+        assert doc['format'] == 'porosity-fe.fe-fields'
+        frac = doc['fracture']
+        assert frac['fracture_load_factor'] > 0.0 and frac['n_front_nodes'] > 0
+        assert frac['toughness_uncalibrated'] is True
+        parts = doc['knockdown_decomposition']
+        assert parts['loading'] == 'tension'
+        assert parts['knockdown_total'] < parts['knockdown_porosity_only'] < 1.0
+        # The empirical output is still written.
+        assert (tmp_path / 'porosity_analysis_results_3pct.json').exists()
+
+    def test_reports_a_line_per_level(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main(['--material', small_material,
+                                        '--vp', '0.01', '0.03',
+                                        '--output-dir', str(tmp_path), *_SPEC])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert out.count('Delamination screening (FE)') == 2
+        assert 'lambda_c = n/a (no toughness)' in out
+        # The solver's own progress lines are held back without --verbose.
+        assert 'Free-DOF stiffness' not in out
+        for label in ('1pct', '3pct'):
+            doc = _strict_json(tmp_path / f'porosity_delamination_{label}.json')
+            assert doc['fracture']['fracture_load_factor'] is None
+            assert doc['fracture']['toughness_uncalibrated'] is None
+
+    def test_default_run_is_unchanged(self, small_material, tmp_path, capsys):
+        """Without --delamination nothing new is written or printed, and the
+        empirical JSON is the same as with it."""
+        plain, screened = tmp_path / 'plain', tmp_path / 'screened'
+        assert porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                          '--output-dir', str(plain)]) == 0
+        out = capsys.readouterr().out
+        assert 'Delamination' not in out
+        assert sorted(p.name for p in plain.iterdir()) == [
+            'porosity_analysis_results_3pct.json']
+        assert porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                          '--output-dir', str(screened), '--quiet',
+                                          *_SPEC]) == 0
+
+        def body(path):
+            doc = _strict_json(path)
+            doc.pop('provenance')
+            return doc
+
+        name = 'porosity_analysis_results_3pct.json'
+        assert body(plain / name) == body(screened / name)
+
+    def test_toughness_law_options(self, small_material, tmp_path):
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet',
+                                        *_SPEC, *_TOUGH, '--toughness-b', '5', '12'])
+        assert rc == 0
+        frac = _strict_json(tmp_path / 'porosity_delamination_3pct.json')['fracture']
+        assert frac['toughness_uncalibrated'] is False
+        assert 'b_I = 5' in frac['toughness_knockdown']
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet',
+                                        *_SPEC, *_TOUGH, '--toughness-knockdown', 'none'])
+        assert rc == 0
+        frac = _strict_json(tmp_path / 'porosity_delamination_3pct.json')['fracture']
+        assert frac['toughness_knockdown'].startswith('none')
+
+    @pytest.mark.parametrize("argv, message", [
+        (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
+        (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
+        (['--delamination', 'circle:1:2:3'], 'unknown planform'),
+        (['--delamination', 'strip:1.5:0:10'], 'must be an integer'),
+        (['--delamination', 'strip:1:0'], 'takes 3 numbers'),
+        (['--delamination', 'ellipse:1:25:10:0:4'], 'half_size must be positive'),
+        (['--delamination', 'strip:1:a:10'], 'must be numbers'),
+        (['--delamination', 'strip:1:0:10', '--toughness', '0.2', '0.7'],
+         'G_IC G_IIC BK_ETA'),
+        (['--delamination', 'strip:1:0:10', '--toughness', '0.2', '0.7', '-2'],
+         'positive and finite'),
+        (['--delamination', 'strip:1:0:10', '--toughness-b', '5', '12',
+          '--toughness-knockdown', 'none'], 'cannot be combined'),
+    ])
+    def test_usage_errors(self, small_material, tmp_path, capsys, argv, message):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                       '--output-dir', str(tmp_path), *argv])
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+        assert not list(tmp_path.glob('porosity_delamination_*'))
+
+    def test_bad_input_exits_2(self, small_material, tmp_path, capsys):
+        """A delamination at an interface the laminate does not have."""
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet',
+                                        '--delamination', 'strip:5:20:30'])
+        assert rc == 2
+        assert 'delamination screening' in capsys.readouterr().err
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet',
+                                        *_SPEC, '--delam-config', 'nope'])
+        assert rc == 2
+
+    def test_parse_delamination(self):
+        from porosity_fe.cli import _parse_delamination
+        d = _parse_delamination('ellipse:11:25:10:12:8')
+        assert (d.shape, d.interface, d.center, d.half_size) == \
+            ('ellipse', 11, (25.0, 10.0), (6.0, 4.0))
+        d = _parse_delamination(' Rectangle : 2 : 5 : 5 : 4 : 2 ')
+        assert (d.shape, d.half_size) == ('rectangle', (2.0, 1.0))
+        d = _parse_delamination('strip:0:0:12.5')
+        assert (d.shape, d.x_start, d.x_end) == ('strip', 0.0, 12.5)

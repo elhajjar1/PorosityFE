@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
+import math
 import sys
 from pathlib import Path
 
 from . import __version__
+from .delamination import Delamination
 from .io import save_results_to_json
 from .materials import MATERIALS
 from .pipeline import _resolve_n_jobs, compare_configurations, sweep_configurations
@@ -23,6 +26,53 @@ DEFAULT_POROSITY_LEVELS = [0.01, 0.02, 0.03, 0.05, 0.08]
 
 #: Placeholder passed through to compare_configurations, which ignores it.
 _DEFAULT_APPLIED_STRESS = -1500.0
+
+#: Defaults of the delamination screening options (``--delamination``),
+#: applied only when it is given, so the options can tell "not given".
+_DELAM_LOADINGS = ('compression', 'tension', 'shear')
+_DELAM_DEFAULT_LOADING = 'compression'
+_DELAM_DEFAULT_CONFIG = 'uniform_spherical'
+_DELAM_DEFAULT_LAW = 'exponential'
+
+
+def _parse_delamination(spec: str) -> Delamination:
+    """``--delamination`` value as a :class:`Delamination`.
+
+    ``strip:K:X_START:X_END`` or ``rectangle|ellipse:K:XC:YC:LX:WY``: the
+    interface ``K`` (between ply ``K`` and ``K + 1`` from the bottom,
+    0-based) and, in mm on the FE coupon, the strip's ``x`` range or the
+    centre and the full length along ``x`` and width along ``y`` (as an NDI
+    indication is reported; the half-sizes are half of them).
+    """
+    parts = [p.strip() for p in str(spec).split(':')]
+    shape = parts[0].lower()
+    expected = {'strip': 3, 'rectangle': 5, 'ellipse': 5}
+    if shape not in expected:
+        raise argparse.ArgumentTypeError(
+            f"unknown planform {parts[0]!r} in {spec!r}; use "
+            f"'strip:K:X_START:X_END', 'rectangle:K:XC:YC:LX:WY' or "
+            f"'ellipse:K:XC:YC:LX:WY' (mm).")
+    if len(parts) - 1 != expected[shape]:
+        raise argparse.ArgumentTypeError(
+            f"{shape!r} takes {expected[shape]} numbers after the shape, got "
+            f"{len(parts) - 1} in {spec!r}.")
+    try:
+        values = [float(v) for v in parts[1:]]
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"the interface and lengths must be numbers, got {spec!r}.") from None
+    k = values[0]
+    if not (math.isfinite(k) and k == int(k)):
+        raise argparse.ArgumentTypeError(
+            f"the interface must be an integer >= 0, got {parts[1]!r}.")
+    try:
+        if shape == 'strip':
+            return Delamination.strip(int(k), values[1], values[2])
+        xc, yc, lx, wy = values[1:]
+        build = Delamination.ellipse if shape == 'ellipse' else Delamination.rectangle
+        return build(int(k), (xc, yc), (0.5 * lx, 0.5 * wy))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def _vp_label(Vp: float) -> str:
@@ -181,7 +231,153 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     uq.add_argument(
         "--uq-strength-cov", type=float, default=0.05, metavar="COV",
         help="CoV of each mode's pristine strength, as a fraction (0.05 = 5%%).")
+    delam = parser.add_argument_group(
+        "delamination screening (FE)",
+        "Opt-in: an FE solve of the coupon (production mesh, 'QI' layup) "
+        "with an explicit delamination at each porosity level, written to "
+        "porosity_delamination_<Vp>.json: the FE results with the fracture "
+        "block (energy release rates along the front, fracture load factor) "
+        "and the knockdown split into porosity-only and delamination-only "
+        "parts. Each level takes three FE solves. Lengths in mm, toughness in "
+        "N/mm.")
+    delam.add_argument(
+        "--delamination", type=_parse_delamination, default=None,
+        metavar="SPEC",
+        help=("The delamination: 'strip:K:X_START:X_END', "
+              "'rectangle:K:XC:YC:LX:WY' or 'ellipse:K:XC:YC:LX:WY', with K "
+              "the interface (between ply K and K + 1 from the bottom, "
+              "0-based) and the position and full sizes in mm on the 50 x 20 "
+              "mm coupon, x along the load. Example: --delamination "
+              "ellipse:11:25:10:12:8."))
+    delam.add_argument(
+        "--delam-loading", choices=_DELAM_LOADINGS, default=None,
+        help=f"FE loading of the screening (default {_DELAM_DEFAULT_LOADING}).")
+    delam.add_argument(
+        "--delam-config", default=None, metavar="NAME",
+        help=(f"Porosity configuration of the screening, a key of "
+              f"POROSITY_CONFIGS (default {_DELAM_DEFAULT_CONFIG})."))
+    delam.add_argument(
+        "--toughness", type=float, nargs="+", default=None,
+        metavar="G",
+        help=("Interlaminar toughness G_IC G_IIC BK_ETA [G_IIIC]: mode I and "
+              "II toughness (N/mm), the Benzeggagh-Kenane exponent and "
+              "optionally the mode III toughness (default G_IIC). No preset "
+              "has them; without them the screening reports energy release "
+              "rates only, no fracture load factor."))
+    delam.add_argument(
+        "--toughness-knockdown", choices=('exponential', 'none'), default=None,
+        help=("Porosity knockdown of the toughness at the front: "
+              "'exponential' (default; the uncalibrated placeholders "
+              "b_I = 6.2, b_II = 14, flagged in the output unless "
+              "--toughness-b is given) or 'none' (pristine toughness)."))
+    delam.add_argument(
+        "--toughness-b", type=float, nargs=2, default=None,
+        metavar=("B_I", "B_II"),
+        help="Your coefficients of the exponential law (per unit Vp).")
     return parser
+
+
+def _delamination_options(args) -> dict:
+    """The resolved delamination screening options; ``ValueError`` when one
+    is given without ``--delamination`` or is invalid."""
+    given = [name for name in ('delam_loading', 'delam_config', 'toughness',
+                               'toughness_knockdown', 'toughness_b')
+             if getattr(args, name) is not None]
+    if args.delamination is None:
+        if given:
+            flags = ", ".join("--" + n.replace('_', '-') for n in given)
+            raise ValueError(f"{flags} need --delamination.")
+        return {}
+    toughness = args.toughness
+    if toughness is not None:
+        if len(toughness) not in (3, 4):
+            raise ValueError(
+                f"--toughness takes G_IC G_IIC BK_ETA [G_IIIC], got "
+                f"{len(toughness)} values.")
+        bad = [v for v in toughness if not (math.isfinite(v) and v > 0.0)]
+        if bad:
+            raise ValueError(
+                f"--toughness values must be positive and finite (N/mm), got "
+                f"{bad[0]!r}.")
+    law = args.toughness_knockdown or _DELAM_DEFAULT_LAW
+    if args.toughness_b is not None:
+        if law == 'none':
+            raise ValueError("--toughness-b is the exponential law; it cannot "
+                             "be combined with --toughness-knockdown none.")
+        from .toughness import ToughnessKnockdown
+        knockdown = ToughnessKnockdown(b_I=args.toughness_b[0],
+                                       b_II=args.toughness_b[1])
+    else:
+        knockdown = None if law == 'none' else law
+    return {
+        'delamination': args.delamination,
+        'loading': args.delam_loading or _DELAM_DEFAULT_LOADING,
+        'config': args.delam_config or _DELAM_DEFAULT_CONFIG,
+        'toughness': toughness,
+        'toughness_knockdown': knockdown,
+    }
+
+
+def _run_delamination(options: dict, material, porosity_configs: dict,
+                      Vp: float, out_path: Path, *, quiet_solver: bool = True) -> str:
+    """FE delamination screening at one porosity level, written to ``out_path``.
+
+    One FE solve of the production coupon with the delamination, its
+    knockdown decomposition (two more solves) and the FE JSON export with
+    the ``fracture`` and ``knockdown_decomposition`` blocks. The solver's
+    own progress messages are held back unless ``quiet_solver`` is false
+    (``--verbose``). Returns a one-line summary.
+    """
+    level = logger.level
+    if quiet_solver:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        return _delamination_screening(options, material, porosity_configs,
+                                       Vp, out_path)
+    finally:
+        logger.setLevel(level)
+
+
+def _delamination_screening(options: dict, material, porosity_configs: dict,
+                            Vp: float, out_path: Path) -> str:
+    """The solves and export of :func:`_run_delamination`."""
+    from .fe import FESolver, knockdown_decomposition
+    from .mesh import CompositeMesh
+    from .pipeline import _default_mesh_resolution
+    from .porosity_field import PorosityField
+
+    config = options['config']
+    if config not in porosity_configs:
+        raise ValueError(f"Unknown --delam-config {config!r}; use one of "
+                         f"{sorted(porosity_configs)}.")
+    toughness = options['toughness']
+    if toughness is not None:
+        G_Ic, G_IIc, eta = toughness[:3]
+        G_IIIc = toughness[3] if len(toughness) == 4 else None
+        material = dataclasses.replace(material, G_Ic=G_Ic, G_IIc=G_IIc,
+                                       G_IIIc=G_IIIc, bk_eta=eta)
+    pf = PorosityField(material, Vp, **porosity_configs[config])
+    mesh = CompositeMesh(pf, material, *_default_mesh_resolution(material.n_plies),
+                         delaminations=[options['delamination']])
+    loading = options['loading']
+    result = FESolver(mesh, material, pf).solve(
+        loading, toughness_knockdown=options['toughness_knockdown'])
+    parts = knockdown_decomposition(mesh, material, pf, loading, total=result)
+    FESolver.export_results(result, out_path, knockdown_decomposition=parts)
+    front = result.crack_front
+    lam = result.fracture_load_factor
+    row = None if front is None else front.governing
+    where = "" if row is None else (
+        f" at x = {front.x[row]:.1f}, y = {front.y[row]:.1f} mm, "
+        f"psi = {front.psi[row]:.2f}")
+    return (f"  {loading}, {config}: lambda_c = "
+            f"{'n/a (no toughness)' if lam is None else f'{lam:.4g}'}{where}; "
+            f"knockdown total {parts.total:.4f}, porosity only "
+            f"{parts.porosity_only:.4f}, delamination only "
+            f"{parts.delamination_only:.4f}"
+            + ("; toughness knockdown uncalibrated"
+               if front is not None and front.toughness_uncalibrated else "")
+            + f"\n  Saved: {out_path}")
 
 
 def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
@@ -351,6 +547,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.vp is None:
         args.vp = list(DEFAULT_POROSITY_LEVELS)
 
+    try:
+        delamination = _delamination_options(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     for Vp in args.vp:
         if not (0.0 <= Vp <= 1.0) or Vp != Vp:  # NaN-safe range check
             hint = ""
@@ -467,6 +668,25 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             except Exception as exc:  # noqa: BLE001 - surface as a failure
                 print(f"ERROR: uncertainty propagation for Vp={Vp} failed: {exc}",
+                      file=sys.stderr)
+                return 3
+
+    if delamination:
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nDelamination screening (FE): Vp = %.2f%%", Vp * 100)
+            try:
+                line = _run_delamination(
+                    delamination, materials[args.material], porosity_configs,
+                    Vp, output_dir / f"porosity_delamination_{Vp_label}.json",
+                    quiet_solver=not args.verbose)
+                logger.info("%s", line)
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: delamination screening for Vp={Vp}: {exc}",
+                      file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as a failure
+                print(f"ERROR: delamination screening for Vp={Vp} failed: {exc}",
                       file=sys.stderr)
                 return 3
 
