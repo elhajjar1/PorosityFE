@@ -39,6 +39,7 @@ from porosity_fe_analysis import (
     compute_degraded_clt_flexural_modulus,
     compute_degraded_clt_moduli,
 )
+from porosity_fe import ToughnessKnockdown, toughness_knockdown_factor
 
 # Share the project-wide rcParams (fonts, DPI, cividis colormap, etc.)
 # with the static-PNG path in ``porosity_fe_analysis`` and the Streamlit
@@ -190,6 +191,84 @@ _PROPERTY_TO_MODE = {
 }
 
 
+#: Interlaminar toughness properties and their fracture mode. They are
+#: predicted by the porosity-toughness law (``porosity_fe.toughness``), not
+#: by the empirical strength pipeline, and are reported apart from the
+#: strength / modulus headline MAE (``summarize_toughness_mae``).
+_TOUGHNESS_PROPERTY_TO_MODE = {
+    'G_Ic': 'I',
+    'G_IIc': 'II',
+}
+_TOUGHNESS_PROPS = frozenset(_TOUGHNESS_PROPERTY_TO_MODE)
+
+
+def _point_tags(prop_data: Dict[str, Any], key: str, n: int) -> list:
+    """A toughness block's ``stage`` / ``precrack`` tag, one per point."""
+    tag = prop_data[key]
+    tags = [tag] * n if isinstance(tag, str) else list(tag)
+    if len(tags) != n:
+        raise ValueError(
+            f"{key!r} has {len(tags)} entries for {n} points; give one string "
+            "or one entry per point.")
+    return tags
+
+
+def _summary_tag(tags: list) -> str:
+    """One tag for a block: the common value, else ``'mixed'``."""
+    return tags[0] if len(set(tags)) == 1 else 'mixed'
+
+
+def predict_toughness(dataset: Dict[str, Any], prop_key: str, vp_pcts,
+                      sigma_Vp: float = 0.002,
+                      toughness_knockdown: Any = 'exponential'):
+    """Predict normalized interlaminar toughness at each porosity level.
+
+    ``G_c(Vp) / G_c(Vp_baseline) = f(Vp) / f(Vp_baseline)`` with the
+    porosity-toughness law ``f`` of :func:`porosity_fe.toughness_knockdown_factor`
+    (default: the exponential law with its uncalibrated placeholders,
+    ``b_I = 6.2``, ``b_II = 14`` per unit ``Vp``), for the mode of
+    ``prop_key`` (``'G_Ic'`` mode I, ``'G_IIc'`` mode II). The material does
+    not enter: the law is a ratio. The 1-sigma band re-evaluates the law at
+    ``Vp -/+ sigma_Vp`` as :func:`predict_strength` does.
+
+    Parameters
+    ----------
+    dataset:
+        Validated dataset dict.
+    prop_key:
+        ``'G_Ic'`` or ``'G_IIc'``.
+    vp_pcts:
+        Iterable of porosity percentages at which to evaluate.
+    sigma_Vp:
+        One-sigma Vp measurement uncertainty as a fraction (0.002 = 0.2
+        vol-%).
+    toughness_knockdown:
+        The law (a ``ToughnessKnockdown``, a law name, a callable or
+        ``None``).
+
+    Returns
+    -------
+    (predicted, predicted_band):
+        Normalized toughness and ``(lower, upper)`` 1-sigma bounds.
+    """
+    mode = _TOUGHNESS_PROPERTY_TO_MODE[prop_key]
+    baseline_vp = dataset.get('baseline_porosity_pct', 0.0) / 100.0
+
+    def _f(vp_frac):
+        vp_frac = float(min(max(vp_frac, 0.0), 1.0))
+        return float(toughness_knockdown_factor(vp_frac, mode, toughness_knockdown))
+
+    f_base = _f(baseline_vp) if baseline_vp > 1e-9 else 1.0
+    predicted = []
+    predicted_band = []
+    for vp in vp_pcts:
+        vp_frac = vp / 100.0
+        predicted.append(_f(vp_frac) / f_base)
+        lo, hi = sorted((_f(vp_frac - sigma_Vp) / f_base, _f(vp_frac + sigma_Vp) / f_base))
+        predicted_band.append((float(lo), float(hi)))
+    return predicted, predicted_band
+
+
 def predict_strength(dataset: Dict[str, Any], prop_key: str,
                      vp_pcts,
                      sigma_Vp: float = 0.002):
@@ -322,25 +401,17 @@ def compute_mae(predicted, experimental) -> float:
     return float(np.mean(errs))
 
 
-def summarize_mae(results: Dict[str, Any]) -> Dict[str, float]:
-    """Aggregate per-(paper, property) MAE numbers into overall summary.
-
-    The property-weighted form gives each (paper, property) entry equal
-    weight — this is what the README headline traditionally reports. The
-    point-weighted form weights each individual (Vp, normalized) measurement
-    equally — the more standard convention in regression-error reporting.
-    They typically differ by ~0.5 percentage points because datasets carry
-    very different numbers of points. See issue #36.
-
-    Returns a dict with both numbers, the count of entries, and the
-    individual extremes.
-    """
+def _aggregate_mae(results: Dict[str, Any], toughness: bool) -> Dict[str, float]:
+    """MAE summary over the strength / modulus entries (``toughness=False``)
+    or the interlaminar toughness entries (``toughness=True``)."""
     per_entry_mae = []
     per_entry_npts = []
     for ds_results in results.values():
         if 'error' in ds_results:
             continue
-        for r in ds_results.values():
+        for prop, r in ds_results.items():
+            if (prop in _TOUGHNESS_PROPS) != toughness:
+                continue
             if 'mae' in r and 'n_points' in r:
                 per_entry_mae.append(r['mae'])
                 per_entry_npts.append(r['n_points'])
@@ -363,6 +434,37 @@ def summarize_mae(results: Dict[str, Any]) -> Dict[str, float]:
         'best_mae': float(mae_arr.min()),
         'worst_mae': float(mae_arr.max()),
     }
+
+
+def summarize_mae(results: Dict[str, Any]) -> Dict[str, float]:
+    """Aggregate per-(paper, property) MAE numbers into overall summary.
+
+    The property-weighted form gives each (paper, property) entry equal
+    weight — this is what the README headline traditionally reports. The
+    point-weighted form weights each individual (Vp, normalized) measurement
+    equally — the more standard convention in regression-error reporting.
+    They typically differ by ~0.5 percentage points because datasets carry
+    very different numbers of points. See issue #36.
+
+    Returns a dict with both numbers, the count of entries, and the
+    individual extremes.
+
+    The interlaminar toughness entries (``G_Ic``, ``G_IIc``) are left out:
+    their law is an uncalibrated placeholder, so they are summarized apart
+    by :func:`summarize_toughness_mae` and never move this headline.
+    """
+    return _aggregate_mae(results, toughness=False)
+
+
+def summarize_toughness_mae(results: Dict[str, Any]) -> Dict[str, float]:
+    """MAE summary of the interlaminar toughness entries alone.
+
+    The same keys as :func:`summarize_mae`, over the ``G_Ic`` / ``G_IIc``
+    entries only. Exploratory: the porosity-toughness law is an
+    uncalibrated placeholder and the data are few, so this is reported
+    separately from the strength / modulus headline.
+    """
+    return _aggregate_mae(results, toughness=True)
 
 
 _MODULUS_PROPS = {'tensile_modulus', 'transverse_tensile_modulus',
@@ -398,8 +500,26 @@ def _run_one_dataset(path: str):
         exp = prop_data['normalized_values']
         try:
             predicted_band = None
+            extra: Dict[str, Any] = {}
             if prop_key in _MODULUS_PROPS:
                 pred = predict_modulus(data, prop_key, vp)
+            elif prop_key in _TOUGHNESS_PROPS:
+                if len(vp) != len(exp):
+                    raise ValueError(
+                        f"{len(vp)} void contents for {len(exp)} values.")
+                pred, predicted_band = predict_toughness(data, prop_key, vp)
+                law = ToughnessKnockdown()
+                mode = _TOUGHNESS_PROPERTY_TO_MODE[prop_key]
+                stage = _point_tags(prop_data, 'stage', len(vp))
+                precrack = _point_tags(prop_data, 'precrack', len(vp))
+                extra = {
+                    'category': 'toughness',
+                    'mode': mode,
+                    'stage': stage,
+                    'precrack': precrack,
+                    'law': law.describe(),
+                    'uncalibrated': law.uses_placeholder(mode),
+                }
             else:
                 pred, predicted_band = predict_strength(data, prop_key, vp)
             mae = compute_mae(pred, exp)
@@ -409,6 +529,7 @@ def _run_one_dataset(path: str):
                 'predicted': pred,
                 'mae': mae,
                 'n_points': len(vp),
+                **extra,
             }
             # Issue #65: surface a per-point 1-sigma validation band when
             # the analytic sensitivity is available (strength props go
@@ -517,8 +638,10 @@ def _emit_per_paper_band_pngs(results: Dict[str, Any], output_dir: str) -> list:
             ax.fill_between(vp, lower, upper, alpha=0.25,
                             color='#1f77b4',
                             label=r'$\pm 1\sigma$ ($\sigma_{V_p}=0.2$ vol-%)')
+            model = ('placeholder exponential, uncalibrated'
+                     if r.get('category') == 'toughness' else 'Judd-Wright')
             ax.plot(vp, pred, '-', color='#1f77b4',
-                    label='predicted (Judd-Wright)')
+                    label=f'predicted ({model})')
             ax.plot(vp, exp, 'ko', label='experimental')
             ax.set_xlabel('Void content (%)')
             ax.set_ylabel('Normalized ' + prop.replace('_', ' '))
@@ -532,6 +655,55 @@ def _emit_per_paper_band_pngs(results: Dict[str, Any], output_dir: str) -> list:
             plt.close(fig)
             written.append(png_path)
     return written
+
+
+def _toughness_report_lines(results: Dict[str, Any]) -> list:
+    """The Markdown section of the interlaminar toughness entries, separate
+    from the strength / modulus headline; empty without such entries."""
+    rows = []
+    for ds_name, ds_results in sorted(results.items()):
+        if 'error' in ds_results:
+            continue
+        for prop in sorted(ds_results.keys()):
+            if prop not in _TOUGHNESS_PROPS:
+                continue
+            r = ds_results[prop]
+            if 'error' in r:
+                rows.append(f"| {ds_name} | {prop} | - | - | - | ERROR |")
+                continue
+            rows.append(
+                f"| {ds_name} | {prop} | {_summary_tag(r['stage'])} | "
+                f"{_summary_tag(r['precrack'])} | {r['n_points']} | {r['mae']:.2f} |")
+    if not rows:
+        return []
+    summary = summarize_toughness_mae(results)
+    lines = [
+        '',
+        '## Interlaminar toughness (exploratory, not in the overall MAE)',
+        '',
+        f"Predicted by the porosity-toughness law {ToughnessKnockdown().describe()}, "
+        'normalized to each dataset\'s baseline group. Its coefficients are '
+        'uncalibrated two-point literature estimates taken in part from these '
+        'same studies (b_I from Hakim 2017 and Olivier 2007, b_II from Agius '
+        'and Fox 2015), so the MAE is a consistency check, not an independent '
+        'validation. The data are few and disagree, so these entries are '
+        'reported apart from the strength and modulus MAE above.',
+        '',
+    ]
+    if summary['n_entries']:
+        lines.extend([
+            f"- Property-weighted: **{summary['property_weighted_mae']:.2f}%** "
+            f"(n={summary['n_entries']} paper-property entries)",
+            f"- Point-weighted:    **{summary['point_weighted_mae']:.2f}%** "
+            f"(n={summary['n_points']} individual data points)",
+            '',
+        ])
+    lines.extend([
+        '| Dataset | Property | Stage | Starter crack | N points | MAE (%) |',
+        '|---|---|---|---|---|---|',
+        *rows,
+    ])
+    return lines
 
 
 def generate_master_report(results: Dict[str, Any], output_dir: str = None,
@@ -564,6 +736,8 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
         for prop, prop_result in ds_results.items():
             if 'error' in prop_result or 'skipped' in prop_result:
                 continue
+            if prop in _TOUGHNESS_PROPS:
+                continue        # reported in its own section, not in the plot
             by_property.setdefault(prop, []).append({
                 'dataset': ds_name,
                 'mae': prop_result['mae'],
@@ -630,6 +804,8 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
             md_lines.append(f"| {ds_name} | LOAD ERROR | - | - |")
             continue
         for prop in sorted(ds_results.keys()):
+            if prop in _TOUGHNESS_PROPS:
+                continue
             r = ds_results[prop]
             if 'skipped' in r:
                 md_lines.append(f"| {ds_name} | {prop} | - | SKIPPED (no model) |")
@@ -637,6 +813,8 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
                 md_lines.append(f"| {ds_name} | {prop} | - | ERROR |")
             else:
                 md_lines.append(f"| {ds_name} | {prop} | {r['n_points']} | {r['mae']:.2f} |")
+
+    md_lines.extend(_toughness_report_lines(results))
 
     md_path = os.path.join(output_dir, 'validation_detail_report.md')
     with open(md_path, 'w', encoding='utf-8', newline='') as f:
@@ -662,4 +840,12 @@ if __name__ == "__main__":
         print(
             f"Overall MAE (point-weighted):    {summary['point_weighted_mae']:.2f}%  "
             f"(n={summary['n_points']} points)"
+        )
+    tough = summarize_toughness_mae(results)
+    if tough['n_entries']:
+        print(
+            f"Toughness MAE (exploratory, uncalibrated law; not in the overall MAE): "
+            f"{tough['property_weighted_mae']:.2f}% property-weighted "
+            f"(n={tough['n_entries']} entries), "
+            f"{tough['point_weighted_mae']:.2f}% point-weighted (n={tough['n_points']} points)"
         )

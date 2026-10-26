@@ -1,0 +1,22 @@
+{
+  "reference": "Agius, S.L., & Fox, B.L. (2015). Rapidly cured out-of-autoclave laminates: understanding and controlling the effect of voids on laminate fracture toughness. Composites Part A: Applied Science and Manufacturing, 73, 186-194.",
+  "doi": "10.1016/j.compositesa.2015.02.023",
+  "data_source": "Abstract (values stated in the text); the full text was not available",
+  "material": {
+    "fiber": "not named in the abstract",
+    "matrix": "out-of-autoclave prepreg resin (not named in the abstract)"
+  },
+  "porosity_measurement": "not stated in the abstract",
+  "baseline_porosity_pct": 0.3,
+  "properties": {
+    "G_IIc": {
+      "test_standard": "mode II fracture test (not named in the abstract)",
+      "stage": "unspecified",
+      "precrack": "unspecified",
+      "void_content_pct": [0.3, 1.5],
+      "normalized_values": [1.0, 0.8264],
+      "digitization_method": "direct"
+    }
+  },
+  "notes": "From the abstract: conditioned prepreg gave 'consistently low levels of voids (<0.3%)', non-conditioned laminates 1.5 %, and 'Mode II fracture testing revealed a 21% improvement in toughness for the non-voided laminates', so G_IIc(1.5 %) / G_IIc(< 0.3 %) = 1 / 1.21 = 0.8264. The low-void group is stored at its stated upper bound, 0.3 %; with the true value between 0 and 0.3 % the two-point exponent ln(1.21) / dVp lies between 12.7 and 15.9. Absolute toughness, fibre and resin system, layup, test method and starter crack are in the full text, which was not read."
+}

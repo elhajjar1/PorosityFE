@@ -117,6 +117,32 @@ class TestValidatePorosityCLIRun:
         assert "Report:" in printed
         assert "Datasets processed:" in printed
         assert "Overall MAE" in printed
+        assert "Toughness MAE" not in printed     # no toughness dataset
+
+    def test_toughness_is_summarized_apart(self, tmp_path, capsys):
+        """A toughness dataset gets its own summary lines and report
+        section; the overall (strength) MAE stays that of the strength
+        dataset alone."""
+        from validate_porosity_cli import main
+        ds = _write_min_datasets(tmp_path / "ds")
+        (ds / "synthetic_toughness.json").write_text(json.dumps({
+            "reference": "Synthetic (2026). Toughness dataset for the CLI.",
+            "material": {"fiber": "T700", "matrix": "EPON 828 epoxy"},
+            "baseline_porosity_pct": 0.5,
+            "properties": {"G_Ic": {
+                "void_content_pct": [0.5, 2.5], "normalized_values": [1.0, 0.8],
+                "stage": "initiation", "precrack": "insert"}},
+        }), encoding="utf-8")
+        out = tmp_path / "out"
+        assert main(['--datasets', str(ds), '--output-dir', str(out)]) == 0
+        printed = capsys.readouterr().out
+        assert "2 succeeded, 0 failed" in printed
+        assert "(n=1 paper-property entries)" in printed.split("Interlaminar")[0]
+        tail = printed.split("Interlaminar toughness")[1]
+        assert "Toughness MAE (property-weighted)" in tail
+        assert "(n=1 paper-property entries)" in tail
+        report = (out / "validation_detail_report.md").read_text(encoding="utf-8")
+        assert "| synthetic_toughness | G_Ic | initiation | insert | 2 |" in report
 
     def test_missing_datasets_dir_returns_2(self, tmp_path, capsys):
         from validate_porosity_cli import main
