@@ -517,10 +517,10 @@ in the primary source, [S] from a secondary source):
 | Study | Material | $V_p$ | Finding | $b$ |
 |---|---|---|---|---|
 | Hakim et al. 2017 [P], doi:10.4236/msa.2017.82011 | T700/EPON 828 UD, DCB | 1.49, 1.77, 3.43 % | static $G_{Ic}$ 0.52, 0.44, 0.45 N/mm (Table 1) | 7.45 from the end points (4.39 by least squares over all three) |
-| Olivier et al. 2007 [S], ICCM16 | UD carbon/epoxy | up to 5 % | $G_{Ic}$ $-22$ % for $+5$ % voids (as reported by Mehdikhani et al. 2019), a propagation value (as cited by Carraro et al. 2015) | 4.97 |
+| Olivier et al. 2007 [P], ICCM16 (open access, Zenodo record 15414374) | T700GC/M21 $[0]_{16}$, DCB (ISO 15024, Berry's method) | 0.1, 5.09, 15.7 % | "a void content of 5% induces a decrease by about 22% in GIC" (§4.3), read from R-curves to 140 mm of crack (Fig. 8); cited as a propagation value by Carraro et al. 2015 | 4.97 |
 | Agius and Fox 2015 [P, abstract], doi:10.1016/j.compositesa.2015.02.023 | out-of-autoclave prepreg, not named in the abstract | < 0.3 / 1.5 % | $G_{IIc}$ 21 % higher for the low-void laminates | 12.7 to 15.9 for a low-void value of 0 to 0.3 %; 14.1 at 0.15 % |
 | Carraro, Maragoni and Quaresimin 2015 [P], doi:10.1179/2055035914Y.0000000004 | STS40 NCF/EC157, DCB | 0 / 1.9 % (0° interface), 0 / 1.23 % (±45°) | initiation unchanged (0°) or slightly higher (±45°), propagation slightly higher; values only in figures | not used |
-| Asp and Brandt 1997 [S] | UD carbon/epoxy | 0 / 0.9 % | initiation down or unchanged, propagation $G_{Ic}$ about $+75$ %, mode II slightly down | not used |
+| Asp and Brandt 1997 [S], ICCM-11 | UD carbon/epoxy | 0 / about 1 % | initiation $G_c$ slightly down (mode I) or unchanged (mixed mode), mode II slightly down; the original was not read | not used |
 
 $b_\text{I} = 6.2$ is the mean of 4.97 and 7.45, and $b_\text{II} = 14$ the
 Agius and Fox estimate at the midpoint of its low-void range, rounded. Mode

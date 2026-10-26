@@ -221,7 +221,7 @@ class TestPlaceholderSources:
         vp = np.asarray(hakim['void_content_pct']) / 100.0
         G = np.asarray(hakim['absolute_values_N_per_mm'])
         b_hakim = -math.log(G[-1] / G[0]) / (vp[-1] - vp[0])          # 7.45
-        b_olivier = -math.log(0.78) / 0.05      # -22 % at +5 % voids [S]: 4.97
+        b_olivier = -math.log(0.78) / 0.05      # -22 % at 5 % voids [P]: 4.97
         assert b_hakim == pytest.approx(7.45, abs=0.01)
         assert 0.5 * (b_hakim + b_olivier) == pytest.approx(B_I, abs=0.05)
         np.testing.assert_allclose(hakim['normalized_values'], G / G[0], atol=1e-4)

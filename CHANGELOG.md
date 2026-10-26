@@ -163,7 +163,7 @@ All notable changes to PorosityFE will be documented in this file.
     `toughness_knockdown_factor(Vp, mode)` screens without FE.
   - Placeholder exponents `b_I = 6.2`, `b_II = 14`, **uncalibrated**
     two-point estimates (decision D4): `b_I` the mean of Olivier et al.
-    2007 (4.97, secondary source) and Hakim et al. 2017 (7.45), `b_II`
+    2007 (4.97) and Hakim et al. 2017 (7.45), `b_II`
     from Agius and Fox 2015 (12.7 to 15.9). `Calibration` mirrors them as
     `TOUGHNESS_B_PLACEHOLDER`. The rise of mode I propagation toughness
     with voids that some studies report is ignored (conservative).

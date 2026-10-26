@@ -1,7 +1,7 @@
 {
   "reference": "Agius, S.L., & Fox, B.L. (2015). Rapidly cured out-of-autoclave laminates: understanding and controlling the effect of voids on laminate fracture toughness. Composites Part A: Applied Science and Manufacturing, 73, 186-194.",
   "doi": "10.1016/j.compositesa.2015.02.023",
-  "data_source": "Abstract (values stated in the text); the full text was not available",
+  "data_source": "Abstract (values stated in the text); the full text was not read",
   "material": {
     "fiber": "not named in the abstract",
     "matrix": "out-of-autoclave prepreg resin (not named in the abstract)"

@@ -30,9 +30,8 @@ Mode III follows mode II (``b_III = b_II``) unless ``b_III`` is given.
 
 The law never raises the toughness (``f <= 1``): it is conservative. Mode I
 *propagation* toughness can rise with voids through fibre and ply bridging
-and multiple crack planes (Asp and Brandt 1997, by about 75 % at 0.9 %
-voids, as summarized by Mehdikhani et al. 2019; Carraro, Maragoni and
-Quaresimin 2015); the law ignores that rise. The linear VCCT criterion of
+and multiple crack planes (Carraro, Maragoni and Quaresimin 2015); the law
+ignores that rise. The linear VCCT criterion of
 :mod:`porosity_fe.fe.vcct` is a growth-onset criterion, so the base values
 it knocks down are initiation (or precracked) toughness.
 
@@ -43,8 +42,9 @@ studies (theory page "Delamination", section "Porosity and toughness"):
 =====  ======  =========================================================
 Mode   ``b``   Source (per unit ``Vp``)
 =====  ======  =========================================================
-I      6.2     mean of 4.97 (Olivier et al. 2007, ICCM16: about -22 %
-               at +5 % voids, as reported by Mehdikhani et al. 2019) and
+I      6.2     mean of 4.97 (Olivier et al. 2007, ICCM16, T700GC/M21
+               DCB: "a void content of 5% induces a decrease by about
+               22% in GIC") and
                7.45 (Hakim et al. 2017, Table 1: static ``G_Ic`` 0.52 to
                0.45 kJ/m^2 from 1.49 % to 3.43 % voids)
 II     14      Agius and Fox 2015 (abstract): ``G_IIc`` 21 % higher below
@@ -99,8 +99,8 @@ _TOUGHNESS_LAWS: dict[str, Callable[[np.ndarray, float], np.ndarray]] = {
 
 #: Placeholder exponents ``b`` (per unit ``Vp``) of the exponential law, by
 #: mode; mode III follows mode II. Uncalibrated two-point estimates (see the
-#: module docstring): mode I is the mean of Olivier et al. 2007 (4.97, a
-#: secondary source) and Hakim et al. 2017 (7.45); mode II is Agius and Fox
+#: module docstring): mode I is the mean of Olivier et al. 2007 (4.97) and
+#: Hakim et al. 2017 (7.45); mode II is Agius and Fox
 #: 2015 (12.7 to 15.9, 14.1 at the midpoint of its low-void range).
 #: ``Calibration.TOUGHNESS_B_PLACEHOLDER`` is the same object.
 _TOUGHNESS_B_PLACEHOLDER: dict[str, float] = {'I': 6.2, 'II': 14.0}
