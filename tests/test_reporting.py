@@ -590,3 +590,298 @@ class TestDispositionTakesPercent:
         from porosity_fe.reporting import recommend_disposition
         with pytest.raises(ValueError, match='percent'):
             recommend_disposition(bad, 0.9)
+
+
+# ----------------------------------------------------------------------
+# Delamination and combined indications (delamination plan, phase 5.2)
+# ----------------------------------------------------------------------
+
+#: Illustration toughness (N/mm), the IM7/8552 values of the theory page.
+_TOUGHNESS = dict(G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)
+
+
+@pytest.fixture(scope="module")
+def delaminated_result():
+    """An app-shaped result with an FE tension solve of a 4-ply coupon with a
+    through-width delamination under the first ply, toughness and the
+    knockdown decomposition."""
+    import dataclasses
+    import logging
+    import warnings
+
+    from porosity_fe import (CompositeMesh, Delamination, FESolver, PorosityField,
+                             knockdown_decomposition)
+
+    logging.disable(logging.WARNING)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)   # thin coupon elements
+            mat = dataclasses.replace(MATERIALS["T800_epoxy"], n_plies=4,
+                                      t_ply=0.183, **_TOUGHNESS)
+            pf = PorosityField(mat, 0.03)
+            crack = Delamination.strip(0, 20.0, 30.0)
+            mesh = CompositeMesh(pf, mat, nx=10, ny=4, nz=4,
+                                 ply_angles=[0, 90, 90, 0], delaminations=[crack])
+            fe = FESolver(mesh, mat, pf).solve("tension")
+            parts = knockdown_decomposition(mesh, mat, pf, "tension", total=fe)
+    finally:
+        logging.disable(logging.NOTSET)
+    result = _result(n_plies=4, t_ply=0.183, nx=10, ny=4, nz=4)
+    result.update(fe_field=fe, mesh=mesh, material=mat, fe_loading="tension",
+                  fe_decomposition=parts, delamination=crack)
+    return result
+
+
+class TestDelaminationDisposition:
+    """Delamination indications are dispositioned on the fracture margin."""
+
+    UAI = TestRecommendDisposition.UAI
+    UAI_EE = TestRecommendDisposition.UAI_EE
+    EE_REPAIR = TestRecommendDisposition.EE_REPAIR
+    SCRAP = TestRecommendDisposition.SCRAP
+
+    def test_indication_types(self):
+        from porosity_fe.reporting import INDICATION_TYPES
+        assert INDICATION_TYPES == ("porosity", "delamination", "combined")
+
+    @pytest.mark.parametrize("lam, req, meets", [
+        (2.0, 1.5, True), (1.5, 1.5, True), (1.4999, 1.5, False),
+        (0.2, 0.4, False), (math.inf, 1.5, True), (0.0, 1.0, False)])
+    def test_margin_bins(self, lam, req, meets):
+        """The only threshold is the user's required load factor."""
+        d = recommend_disposition(3.0, 0.85, indication="delamination",
+                                  fracture_load_factor=lam, required_load_factor=req)
+        assert d["path"] == (self.UAI_EE if meets else self.SCRAP)
+        assert d["delamination_path"] == d["path"]
+        assert d["indication"] == "delamination"
+        margin = d["fracture_margin"]
+        assert margin["meets_required"] is meets
+        assert margin["required_load_factor"] == req
+        if math.isinf(lam):
+            assert margin["fracture_load_factor"] is None
+            assert margin["margin_of_safety"] is None
+        else:
+            assert margin["fracture_load_factor"] == lam
+            assert margin["margin_of_safety"] == pytest.approx(lam / req - 1.0)
+
+    @pytest.mark.parametrize("Vp, kd", [(0.0, 1.0), (10.0, 0.3)])
+    def test_delamination_ignores_the_void_content(self, Vp, kd):
+        """A delamination's path never comes from the Vp bins."""
+        d = recommend_disposition(Vp, kd, indication="delamination",
+                                  fracture_load_factor=2.0, required_load_factor=1.0)
+        assert d["path"] == self.UAI_EE
+        assert "porosity_path" not in d
+        assert not any("porosity allowable" in c for c in d["cited_criteria"])
+
+    @pytest.mark.parametrize("Vp, kd, lam, expected_porosity, expected", [
+        (0.5, 0.99, 2.0, UAI, UAI_EE),
+        (4.0, 0.85, 2.0, EE_REPAIR, EE_REPAIR),
+        (0.5, 0.99, 0.5, UAI, SCRAP),
+    ])
+    def test_combined_takes_the_more_severe_path(self, Vp, kd, lam,
+                                                 expected_porosity, expected):
+        d = recommend_disposition(Vp, kd, indication="combined",
+                                  fracture_load_factor=lam, required_load_factor=1.0)
+        assert d["porosity_path"] == expected_porosity
+        assert d["porosity_path"] == recommend_disposition(Vp, kd)["path"]
+        assert d["path"] == expected
+        assert d["indication"] == "combined"
+        assert d["rationale"].startswith("Porosity: ")
+        assert "The more severe path governs." in d["rationale"]
+        # Both sets of criteria and actions, the MRB procedure once.
+        assert sum("MRB procedure" in c for c in d["cited_criteria"]) == 1
+        assert any("porosity allowable" in c for c in d["cited_criteria"])
+        assert any("delaminations and disbonds" in c for c in d["cited_criteria"])
+        assert any("acid digestion" in a for a in d["required_mrb_actions"])
+        assert any("time-of-flight" in a for a in d["required_mrb_actions"])
+
+    def test_uncalibrated_toughness_adds_an_action_not_a_path(self):
+        base = recommend_disposition(1.0, 0.95, indication="delamination",
+                                     fracture_load_factor=2.0, required_load_factor=1.0)
+        flagged = recommend_disposition(1.0, 0.95, indication="delamination",
+                                        fracture_load_factor=2.0,
+                                        required_load_factor=1.0,
+                                        toughness_uncalibrated=True)
+        assert flagged["path"] == base["path"]
+        assert flagged["fracture_margin"]["toughness_uncalibrated"] is True
+        extra = [a for a in flagged["required_mrb_actions"]
+                 if a not in base["required_mrb_actions"]]
+        assert len(extra) == 1 and "uncalibrated placeholder" in extra[0]
+        assert "uncalibrated" in flagged["rationale"]
+
+    def test_class_actions_name_the_indication(self):
+        acts = recommend_disposition(0.5, 0.99, "non-structural", indication="delamination",
+                                     fracture_load_factor=2.0,
+                                     required_load_factor=1.0)["required_mrb_actions"]
+        assert any("affected by the delamination." in a for a in acts)
+        acts = recommend_disposition(0.5, 0.99, "non-structural", indication="combined",
+                                     fracture_load_factor=2.0,
+                                     required_load_factor=1.0)["required_mrb_actions"]
+        assert any("the porosity or the delamination." in a for a in acts)
+
+    @pytest.mark.parametrize("kwargs, match", [
+        (dict(indication="delamination"), "fracture_load_factor is required"),
+        (dict(indication="delamination", fracture_load_factor=2.0),
+         "required_load_factor is required"),
+        (dict(indication="combined", fracture_load_factor=float("nan"),
+              required_load_factor=1.0), "fracture_load_factor must be"),
+        (dict(indication="delamination", fracture_load_factor=-1.0,
+              required_load_factor=1.0), "fracture_load_factor must be"),
+        (dict(indication="delamination", fracture_load_factor=2.0,
+              required_load_factor=0.0), "required_load_factor must be"),
+        (dict(indication="delamination", fracture_load_factor=2.0,
+              required_load_factor=math.inf), "required_load_factor must be"),
+        (dict(indication="delamination", fracture_load_factor="2",
+              required_load_factor=1.0), "must be a number"),
+        (dict(indication="delamination", fracture_load_factor=True,
+              required_load_factor=1.0), "must be a number"),
+        (dict(indication="porosity", fracture_load_factor=2.0),
+         "apply to a 'delamination'"),
+        (dict(indication="porosity", required_load_factor=1.0),
+         "apply to a 'delamination'"),
+        (dict(indication="void"), "Unknown indication"),
+    ])
+    def test_invalid_inputs(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            recommend_disposition(3.0, 0.85, **kwargs)
+
+    def test_porosity_calls_are_unchanged(self):
+        """The positional call and an explicit porosity indication give the
+        same six keys as before the indication types existed."""
+        d = recommend_disposition(3.0, 0.85, "secondary")
+        assert d == recommend_disposition(3.0, 0.85, "secondary", indication="porosity")
+        assert set(d) == {"path", "structural_class", "rationale", "cited_criteria",
+                          "required_mrb_actions", "disclaimer"}
+        assert "porosity-knockdown analysis" in d["disclaimer"]
+
+
+class TestDelaminationNcrRecord:
+    META = {"prepared_by": "test", "indication": "delamination",
+            "required_load_factor": 0.5}
+
+    def test_porosity_record_ignores_the_fe_fields(self, delaminated_result):
+        """The default indication ignores the FE fields of the result."""
+        plain = _result(n_plies=4, t_ply=0.183, nx=10, ny=4, nz=4)
+        assert build_ncr_record(delaminated_result, {"date": "2026-01-01"}) == \
+            build_ncr_record(plain, {"date": "2026-01-01"})
+
+    def test_delamination_block(self, delaminated_result):
+        ncr = build_ncr_record(delaminated_result, self.META)
+        fe = delaminated_result["fe_field"]
+        block = ncr["delamination"]
+        assert ncr["summary"]["indication"] == "delamination"
+        assert ncr["summary"]["title"].startswith("Composite Delamination Analysis")
+        (planform,) = block["delaminations"]
+        assert planform == {
+            "interface": 0, "between_plies": [1, 2],
+            "height_from_bottom_mm": pytest.approx(0.183),
+            "depth_from_top_mm": pytest.approx(3 * 0.183),
+            "shape": "strip", "x_start_mm": 20.0, "x_end_mm": 30.0,
+            "area_mm2": pytest.approx(10.0 * 20.0)}
+        assert block["fracture_load_factor"] == pytest.approx(fe.fracture_load_factor)
+        assert block["required_load_factor"] == 0.5
+        assert block["toughness_N_per_mm"] == {"G_Ic": 0.212, "G_IIc": 0.774,
+                                               "G_IIIc": 0.774, "bk_eta": 2.1}
+        assert block["toughness_uncalibrated"] is True
+        assert "placeholder" in block["toughness_knockdown"]
+        assert block["n_front_nodes"] == len(fe.crack_front)
+        gov = block["governing_front_node"]
+        row = fe.crack_front.governing
+        assert gov["x_mm"] == pytest.approx(fe.crack_front.x[row])
+        assert gov["Vp"] == pytest.approx(0.03)
+        assert block["knockdown_decomposition"] == \
+            delaminated_result["fe_decomposition"].summary()
+        dp = ncr["recommended_disposition"]
+        assert dp["fracture_margin"]["toughness_uncalibrated"] is True
+        meets = fe.fracture_load_factor >= 0.5
+        assert dp["path"] == (TestRecommendDisposition.UAI_EE if meets
+                              else TestRecommendDisposition.SCRAP)
+        assert "Delamination indication" in ncr["nonconformance"]["summary"]
+
+    def test_combined_record(self, delaminated_result):
+        ncr = build_ncr_record(delaminated_result, dict(self.META, indication="combined"))
+        assert ncr["summary"]["title"].startswith(
+            "Composite Porosity and Delamination Analysis")
+        summary = ncr["nonconformance"]["summary"]
+        assert summary.startswith("Porosity / void content of 3.00%")
+        assert "Delamination indication: through-width strip" in summary
+        assert ncr["recommended_disposition"]["porosity_path"] == \
+            recommend_disposition(3.0, 0.85)["path"]
+
+    @pytest.mark.parametrize("change, match", [
+        ("no_fe", "needs an FE solve"),
+        ("no_toughness", "no fracture load factor"),
+        ("specimen", "fracture test specimen"),
+    ])
+    def test_refuses_what_it_cannot_disposition(self, delaminated_result, change, match):
+        import copy
+        import dataclasses
+        result = dict(delaminated_result)
+        if change == "no_fe":
+            result["fe_field"] = None
+        elif change == "no_toughness":
+            result["fe_field"] = dataclasses.replace(result["fe_field"],
+                                                     fracture_load_factor=None)
+        else:
+            mesh = copy.copy(result["mesh"])
+            mesh.fracture_geometry = object()
+            result["mesh"] = mesh
+        with pytest.raises(ValueError, match=match):
+            build_ncr_record(result, self.META)
+
+    def test_missing_inputs(self, delaminated_result):
+        with pytest.raises(ValueError, match="required_load_factor is required"):
+            build_ncr_record(delaminated_result, {"indication": "delamination"})
+        with pytest.raises(ValueError, match="Unknown indication"):
+            build_ncr_record(delaminated_result, {"indication": "crack"})
+
+    def test_json_is_strict_and_validates(self, delaminated_result, tmp_path):
+        import os
+
+        import jsonschema
+
+        from porosity_fe.reporting import write_ncr_json
+        ncr = build_ncr_record(delaminated_result, dict(self.META, indication="combined"))
+        path = tmp_path / "ncr.json"
+        write_ncr_json(str(path), ncr)
+
+        def refuse(token):
+            raise ValueError(token)
+
+        doc = json.loads(path.read_text(encoding="utf-8"), parse_constant=refuse)
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "validation", "schemas",
+            "porosity_results_schema.json")
+        with open(schema_path, encoding="utf-8") as f:
+            jsonschema.validate(instance=doc, schema=json.load(f))
+        assert doc["format"] == FORMAT_NCR and doc["schema_version"] == JSON_SCHEMA_VERSION
+        assert doc["delamination"]["indication"] == "combined"
+        assert doc["units"]["fracture_load_factor"].startswith("dimensionless")
+        # A porosity NCR keeps the units block it had.
+        plain = json.loads(serialise_ncr_json(_ncr({})))
+        assert "fracture_load_factor" not in plain["units"]
+
+    def test_infinite_load_factor_is_null(self, delaminated_result):
+        import dataclasses
+        result = dict(delaminated_result)
+        result["fe_field"] = dataclasses.replace(result["fe_field"],
+                                                 fracture_load_factor=math.inf)
+        doc = json.loads(serialise_ncr_json(build_ncr_record(result, self.META)))
+        assert doc["delamination"]["fracture_load_factor"] is None
+        assert doc["recommended_disposition"]["fracture_margin"]["margin_of_safety"] is None
+        assert doc["recommended_disposition"]["path"] == TestRecommendDisposition.UAI_EE
+
+    def test_markdown_and_pdf_sections(self, delaminated_result):
+        ncr = build_ncr_record(delaminated_result, dict(self.META, indication="combined"))
+        md = serialise_ncr_markdown(ncr)
+        heads = [line for line in md.splitlines() if line.startswith("## ")]
+        assert heads[2] == "## 2b. Delamination Analysis (fracture margin)"
+        assert "> **Toughness uncalibrated:" in md
+        assert "| Required load factor | 0.5 |" in md
+        assert "- Porosity path: " in md and "- Delamination path: " in md
+        text = "\n".join(_ncr_text_lines(ncr))
+        assert "2b. DELAMINATION ANALYSIS (fracture margin)" in text
+        assert "TOUGHNESS UNCALIBRATED" in text
+        assert serialise_ncr_pdf(ncr).startswith(b"%PDF")
+        # The porosity Markdown has no such section.
+        assert "2b." not in serialise_ncr_markdown(_ncr({}))

@@ -202,6 +202,16 @@ _UNITS_NCR = {
     "measured_Vp_percent": "%",
     "t_ply_mm": "mm",
 }
+#: Units of the ``delamination`` block of a delamination or combined NCR,
+#: added to :data:`_UNITS_NCR` only when the block is written.
+_UNITS_NCR_DELAMINATION = {
+    "fracture_load_factor": "dimensionless multiple of the analysis load",
+    "required_load_factor": "dimensionless multiple of the analysis load",
+    "margin_of_safety": "dimensionless (fracture_load_factor / required_load_factor - 1)",
+    "psi": "dimensionless mode mixity (G_II + G_III) / G_T",
+    "Vp": "dimensionless fraction in [0, 1]",
+    "bk_eta": "dimensionless",
+}
 _UNITS_STREAMLIT_EMPIRICAL = {
     "failure_stress": "MPa",
     "knockdown": "dimensionless fraction in (0, 1]",
