@@ -1036,10 +1036,14 @@ class TestFlexure:
 
     def test_loading_choices(self):
         assert list(app._LOADING_LABELS) == [
-            "compression", "tension", "shear", "ilss", "flexure_3pt", "flexure_4pt"]
+            "compression", "tension", "shear", "ilss", "flexure_3pt", "flexure_4pt",
+            "dcb", "enf", "mmb"]
         for mode in app._FLEXURE_MODES:
             assert "FE only" in app._LOADING_LABELS[mode]
             assert "D7264" in app._LOADING_LABELS[mode]
+        for mode, (standard, *_) in app._FRACTURE_MODES.items():
+            assert "FE only" in app._LOADING_LABELS[mode]
+            assert standard.split()[-1] in app._LOADING_LABELS[mode]
 
 
 # ----------------------------------------------------------------------
@@ -1236,3 +1240,290 @@ class TestFEFailureSummary:
         app.run_convergence_check(_base_cfg(failure_criterion="hashin"),
                                   [(4, 2, 4), (6, 3, 4)])
         assert calls[0]["failure_criterion"] == "hashin"
+
+
+# ----------------------------------------------------------------------
+# Defects: delamination, toughness, interface onset, fracture specimens
+# (delamination plan, phase 5.1)
+# ----------------------------------------------------------------------
+
+#: Illustration toughness (N/mm), the IM7/8552 values of the theory page.
+_TOUGHNESS = {"G_Ic": 0.212, "G_IIc": 0.774, "bk_eta": 2.1}
+
+
+def _delam_cfg(**overrides) -> dict:
+    """Tension on the small [0/90/90/0] coupon with a through-width
+    delamination under the first ply, the toughness, the knockdown split and
+    the interface onset."""
+    cfg = _base_cfg(loading_mode="tension", nz=4,
+                    delamination=app.Delamination.strip(0, 20.0, 30.0),
+                    knockdown_split=True, onset=True, **_TOUGHNESS)
+    cfg.update(overrides)
+    return cfg
+
+
+def _specimen_cfg(test: str, **overrides) -> dict:
+    """A fracture specimen of four 0.75 mm UD plies (a 3 mm specimen keeps
+    the graded mesh small), with the toughness."""
+    cfg = _base_cfg(loading_mode=test, angles=[0.0] * 4, t_ply=0.75, nz=4,
+                    **_TOUGHNESS)
+    cfg.update(overrides)
+    return cfg
+
+
+@pytest.fixture(scope="module")
+def delam_result():
+    return app.run_analysis(_delam_cfg())
+
+
+@pytest.fixture(scope="module")
+def specimen_results():
+    return {test: app.run_analysis(_specimen_cfg(test, mmb_mode_ratio=0.8)
+                                   if test == "mmb" else _specimen_cfg(test))
+            for test in ("dcb", "enf", "mmb")}
+
+
+class TestDefectConfigKey:
+    def test_default_key_is_unchanged(self):
+        """A config without the defect fields, or with each at its default,
+        has the key of before: one entry per _CFG_KEYS field."""
+        key = app._config_to_key(_base_cfg())
+        assert tuple(k for k, _ in key) == app._CFG_KEYS
+        explicit = _base_cfg(**{k: app._CFG_DEFAULTS[k] for k in app._CFG_OPTIONAL_KEYS})
+        assert app._config_to_key(explicit) == key
+
+    @pytest.mark.parametrize("field, value", [
+        ("delamination", app.Delamination.ellipse(1, (25.0, 10.0), (5.0, 3.0))),
+        ("knockdown_split", True), ("G_Ic", 0.2), ("G_IIc", 0.7), ("G_IIIc", 0.8),
+        ("bk_eta", 2.0), ("toughness_law", "none"), ("toughness_b", [5.0, 12.0]),
+        ("onset", True), ("onset_x_avg", 0.5), ("crack_length", 40.0),
+        ("mmb_mode_ratio", 0.8),
+    ])
+    def test_each_defect_field_enters_the_key_when_set(self, field, value):
+        key = app._config_to_key(_base_cfg(**{field: value}))
+        assert key != app._config_to_key(_base_cfg())
+        assert key[:len(app._CFG_KEYS)] == app._config_to_key(_base_cfg())
+        entry = dict(key)[field]
+        assert entry == (tuple(value) if isinstance(value, list) else value)
+        assert hash(key)
+
+    def test_the_cached_runner_restores_the_config(self, monkeypatch):
+        """The key round-trips to the config run_analysis sees."""
+        seen = {}
+        monkeypatch.setattr(app, "run_analysis", lambda cfg: seen.update(cfg) or {})
+        cfg = _delam_cfg(toughness_law="user", toughness_b=[5.0, 12.0])
+        app.run_analysis_cached.__wrapped__(app._config_to_key(cfg))
+        assert seen["delamination"] == cfg["delamination"]
+        assert seen["toughness_b"] == [5.0, 12.0]
+        assert seen["G_Ic"] == 0.212 and seen["onset"] is True
+
+
+class TestDefectAnalysis:
+    def test_default_run_has_no_defect_results(self, comp_result):
+        for k in ("delamination", "fe_decomposition", "fe_decomposition_error",
+                  "fe_decomposition_time_s", "fe_onset", "fe_onset_error"):
+            assert comp_result[k] is None
+        assert comp_result["fe_field"].crack_front is None
+        assert app.fe_delamination_summary(comp_result) is None
+        assert app.fe_decomposition_summary(comp_result) is None
+        assert app.fe_onset_summary(comp_result) is None
+        assert app.fe_fracture_test_summary(comp_result) is None
+        assert app.fe_front_rows(comp_result) == []
+        assert not app.ncr_delamination_available(comp_result)
+
+    def test_default_fields_do_not_change_the_solve(self, comp_result):
+        """The same FE numbers with every defect field at its default."""
+        explicit = app.run_analysis(_base_cfg(
+            **{k: app._CFG_DEFAULTS[k] for k in app._CFG_OPTIONAL_KEYS}))
+        a, b = comp_result["fe_field"], explicit["fe_field"]
+        assert a.knockdown == b.knockdown
+        assert a.max_failure_index == b.max_failure_index
+        np.testing.assert_array_equal(a.stress_global, b.stress_global)
+        assert comp_result["material"] == explicit["material"]
+
+    def test_delaminated_coupon(self, delam_result):
+        r = delam_result
+        fe, mesh = r["fe_field"], r["mesh"]
+        assert r["delamination"] == r["config"]["delamination"]
+        assert mesh.delaminations == (r["delamination"],)
+        assert r["material"].has_toughness and r["material"].G_Ic == 0.212
+        front = fe.crack_front
+        assert len(front) > 0 and fe.fracture_load_factor is not None
+        assert front.toughness_uncalibrated is True          # the placeholders
+        parts = r["fe_decomposition"]
+        assert parts.total == fe.knockdown
+        assert parts.total < parts.porosity_only < 1.0
+        assert r["fe_decomposition_time_s"] > 0.0
+        onset = r["fe_onset"]
+        assert onset is not None and onset.x_avg == pytest.approx(0.183)
+        # The empirical results do not see the delamination.
+        plain = app.run_analysis(_base_cfg(loading_mode="tension"))
+        assert r["empirical"] == plain["empirical"]
+
+    def test_summaries(self, delam_result):
+        rows, caption, uncalibrated = app.fe_delamination_summary(delam_result)
+        fe = delam_result["fe_field"]
+        values = {label: value for label, value, _ in rows}
+        assert values["Fracture load factor λ_c"] == f"{fe.fracture_load_factor:.3g}"
+        assert "Governing node" in values and uncalibrated is True
+        assert "Virtual crack closure" in caption and "staircase" in caption
+        table = app.fe_front_rows(delam_result)
+        assert len(table) == len(fe.crack_front)
+        assert set(table[0]) == {"x (mm)", "y (mm)", "G_I (N/mm)", "G_II (N/mm)",
+                                 "G_III (N/mm)", "G_T (N/mm)", "ψ", "Vp (%)",
+                                 "G_c (N/mm)", "λ_c"}
+        assert {row["Vp (%)"] for row in table} == {"3.00"}
+        rows, caption = app.fe_decomposition_summary(delam_result)
+        assert [label for label, _, _ in rows] == [
+            "KD total", "KD porosity only", "KD delamination only",
+            "Larger stiffness loss"]
+        rows, table, caption = app.fe_onset_summary(delam_result)
+        assert [label for label, _, _ in rows][:2] == ["Max onset index",
+                                                      "Critical interface"]
+        assert [t["Interface"] for t in table] == [0, 1, 2]
+        assert "depend on the mesh and on x_avg" in caption
+
+    def test_front_order_and_plot(self, delam_result):
+        front = delam_result["fe_field"].crack_front
+        segments, s, label = app.front_order(front)
+        # A strip inside the plate has two straight fronts across the width.
+        assert len(segments) == 2 and label.startswith("y along")
+        assert sorted(np.concatenate(segments).tolist()) == list(range(len(front)))
+        fig = app.plot_front(delam_result)
+        assert len(fig.axes) == 2
+        assert fig.axes[1].get_ylabel() == "Mode mixity ψ"
+        plt.close(fig)
+
+    def test_elliptical_front_is_ordered_by_angle(self):
+        r = app.run_analysis(_base_cfg(
+            nz=4, delamination=app.Delamination.ellipse(1, (25.0, 10.0), (12.0, 6.0))))
+        segments, s, label = app.front_order(r["fe_field"].crack_front)
+        assert len(segments) == 1 and label.startswith("Angle")
+        assert np.all(np.diff(s[segments[0]]) >= 0)
+        # No toughness: G only, the caption says so, no NCR margin.
+        rows, caption, uncalibrated = app.fe_delamination_summary(r)
+        assert dict((lab, v) for lab, v, _ in rows)["Fracture load factor λ_c"] == "n/a"
+        assert "no material preset carries them" in caption
+        assert uncalibrated is False
+        assert not app.ncr_delamination_available(r)
+
+    def test_toughness_laws(self):
+        user = app.run_analysis(_delam_cfg(toughness_law="user", toughness_b=[5.0, 12.0],
+                                           knockdown_split=False, onset=False))
+        front = user["fe_field"].crack_front
+        assert front.toughness_uncalibrated is False
+        assert front.toughness_knockdown.coefficient("I") == 5.0
+        none = app.run_analysis(_delam_cfg(toughness_law="none", knockdown_split=False,
+                                           onset=False))
+        assert none["fe_field"].crack_front.toughness_knockdown.law == "none"
+        assert none["fe_field"].fracture_load_factor > \
+            user["fe_field"].fracture_load_factor
+        with pytest.raises(ValueError, match="needs toughness_b"):
+            app.run_analysis(_delam_cfg(toughness_law="user"))
+        with pytest.raises(ValueError, match="Unknown toughness_law"):
+            app.run_analysis(_delam_cfg(toughness_law="linear"))
+        with pytest.raises(ValueError, match="must be a Delamination"):
+            app.run_analysis(_base_cfg(delamination=("strip", 0, 20.0, 30.0)))
+
+    def test_unresolved_layup_is_skipped_with_the_nz_fix(self):
+        r = app.run_analysis(_delam_cfg(nz=6))
+        assert r["fe_field"] is None and r["fe_nz_suggestion"] == 8
+        assert r["fe_skipped_reason"].startswith(
+            "the delaminated coupon mesh could not be built")
+        assert r["fe_decomposition"] is None and r["fe_onset"] is None
+        assert r["empirical"]
+
+    def test_delamination_on_the_short_beam(self):
+        r = app.run_analysis(_base_cfg(loading_mode="ilss", nz=4,
+                                       delamination=app.Delamination.strip(1, 0.5, 2.0),
+                                       knockdown_split=True))
+        assert r["mesh"].ilss_geometry is not None and r["mesh"].delaminations
+        parts = r["fe_decomposition"]
+        assert parts.dominant == "delamination" and parts.total < parts.delamination_only
+
+    def test_onset_alone_on_a_default_solve(self, comp_result):
+        r = app.run_analysis(_base_cfg(onset=True, onset_x_avg=0.0))
+        assert r["fe_onset"].x_avg == 0.0
+        assert r["fe_field"].knockdown == comp_result["fe_field"].knockdown
+        assert b'Name="onset_index"' in app.fe_vtu_bytes(r)
+        assert b'Name="onset_index"' not in app.fe_vtu_bytes(comp_result)
+        # Not every interface is a node layer with nz = 3: the reason is kept.
+        unresolved = app.run_analysis(_base_cfg(onset=True, nz=3))
+        assert unresolved["fe_onset"] is None
+        assert "node layer" in unresolved["fe_onset_error"]
+        rows, table, caption = app.fe_onset_summary(unresolved)
+        assert rows == [] and "not evaluated" in caption
+
+    def test_convergence_check_is_not_offered(self, delam_result, specimen_results):
+        assert "delamination" in app.convergence_unavailable_reason(delam_result)
+        assert app.convergence_unavailable_reason(specimen_results["dcb"]) is not None
+
+
+class TestFractureSpecimens:
+    def test_specimens_are_built_and_solved(self, specimen_results):
+        for test, r in specimen_results.items():
+            spec, fe = r["fe_specimen"], r["fe_field"]
+            assert r["fe_loading"] == test and r["mesh"].fracture_geometry.test == test
+            assert spec["standard"] == app._FRACTURE_MODES[test][0]
+            assert spec["crack_length_mm"] == app._FRACTURE_MODES[test][2]
+            assert spec["thickness_mm"] == pytest.approx(3.0)
+            assert fe.load_point_compliance > 0.0 and fe.fracture_load_factor > 0.0
+            assert r["delamination"] is None and r["fe_decomposition"] is None
+
+    def test_mmb_lever_from_the_mode_ratio(self, specimen_results):
+        r = specimen_results["mmb"]
+        spec = r["fe_specimen"]
+        assert spec["mode_ratio_target"] == 0.8
+        assert spec["lever_length_mm"] == pytest.approx(app.mmb_lever_length(
+            r["material"], 0.8, crack_length=spec["crack_length_mm"]))
+
+    def test_summary_rows(self, specimen_results):
+        r = specimen_results["dcb"]
+        rows, caption = app.fe_fracture_test_summary(r)
+        values = {label: value for label, value, _ in rows}
+        front = r["fe_field"].crack_front
+        mid = int(np.argmin(np.abs(front.y - 12.5)))
+        assert values["P_c at mid-width"] == f"{front.lambda_c[mid] * 10.0:.4g} N"
+        assert values["P_c, weakest node"] == \
+            f"{r['fe_field'].fracture_load_factor * 10.0:.4g} N"
+        assert values["Compliance C"] == \
+            f"{r['fe_field'].load_point_compliance:.4g} mm/N"
+        assert "ASTM D5528" in caption and "unidirectional" in caption
+        # The mode mix at mid-width: mode I for the DCB, mode II for the ENF.
+        assert float(values["ψ at mid-width"]) < 0.01
+        enf = dict((lab, v) for lab, v, _ in
+                   app.fe_fracture_test_summary(specimen_results["enf"])[0])
+        assert float(enf["ψ at mid-width"]) > 0.95
+        assert "Lever c =" in app.fe_fracture_test_summary(specimen_results["mmb"])[1]
+
+    def test_crack_length_and_bad_nz(self):
+        r = app.run_analysis(_specimen_cfg("enf", crack_length=35.0))
+        assert r["fe_specimen"]["crack_length_mm"] == 35.0
+        bad = app.run_analysis(_specimen_cfg("dcb", nz=6))
+        assert bad["fe_field"] is None and bad["fe_nz_suggestion"] == 8
+        assert bad["fe_skipped_reason"].startswith("the dcb specimen mesh could not")
+
+    def test_plots_and_stress_default(self, specimen_results):
+        r = specimen_results["dcb"]
+        fig = app.plot_results(r, "[0]_4")
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert not any(lab.startswith("FE Stiffness") for lab in labels)
+        plt.close(fig)
+        assert app.default_stress_component(r) == "σ₃₃ (through-thickness)"
+        assert app.default_stress_component(specimen_results["enf"]) == \
+            "τ₁₃ (interlaminar)"
+        fig = app.plot_mesh(r)
+        from matplotlib.text import Text
+        texts = [t.get_text() for t in fig.axes[0].findobj(Text)]
+        assert any("delamination in red" in t for t in texts)
+        red = [ln for ln in fig.axes[0].get_lines() if ln.get_color() == "red"]
+        insert = r["fe_specimen"]["crack_length_mm"]
+        assert red and max(ln.get_xdata().max() for ln in red) > insert - 1e-9
+        plt.close(fig)
+
+    def test_toughness_less_specimen_reports_g_only(self):
+        r = app.run_analysis(_base_cfg(loading_mode="dcb", angles=[0.0] * 4,
+                                       t_ply=0.75, nz=4))
+        values = dict((lab, v) for lab, v, _ in app.fe_fracture_test_summary(r)[0])
+        assert values["P_c at mid-width"] == "n/a"
+        assert values["G_T at mid-width"].endswith("N/mm")

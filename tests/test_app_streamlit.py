@@ -371,3 +371,139 @@ def test_convergence_expander_runs_the_study():
                                         "mesh-dependent", "n/a"}
     assert any("mesh-dependent" in c.value and "1 − KD" in c.value
                for c in at.caption)
+
+
+# ----------------------------------------------------------------------
+# Defects panel: delamination, toughness, onset, fracture specimens
+# (delamination plan, phase 5.1)
+# ----------------------------------------------------------------------
+
+def _small_mesh(at: AppTest, layup: str = "0/90/90/0") -> AppTest:
+    """Expert mode, a short layup and an 8 x 4 x 4 mesh, not yet run."""
+    at.toggle[0].set_value(True).run()
+    at.text_input(key="layup_input").set_value(layup).run()
+    at.slider[0].set_value(8)
+    at.slider[1].set_value(4)
+    at.slider[2].set_value(4)
+    return at.run()
+
+
+def _enter_toughness(at: AppTest) -> AppTest:
+    at.number_input(key="tough_G_Ic").set_value(0.212).run()
+    at.number_input(key="tough_G_IIc").set_value(0.774).run()
+    at.number_input(key="tough_bk_eta").set_value(2.1).run()
+    return at
+
+
+def _delamination_run(at: AppTest) -> AppTest:
+    """A through-width delamination under the first ply of the small coupon
+    in tension, with toughness and the interface onset."""
+    at = _small_mesh(at)
+    _select(at, "Loading mode", "tension")
+    at.checkbox(key="delam_on").check().run()
+    at.number_input(key="delam_interface").set_value(0).run()
+    at.selectbox(key="delam_shape").set_value("strip").run()
+    _enter_toughness(at)
+    at.checkbox(key="onset_on").check().run()
+    _button(at, "Run analysis").click().run()
+    return at
+
+
+class TestDefectsPanel:
+    def test_default_config_has_no_defect(self):
+        """Without the new inputs the run's cache key is the one before
+        them, and the Results tab has no Defects block."""
+        import app
+        at = _run_small_analysis(_fresh_app())
+        assert not at.exception
+        # The cached run rebuilds its config from the key: no defect field
+        # was in it.
+        cfg = at.session_state["result"]["config"]
+        assert not any(k in cfg for k in app._CFG_OPTIONAL_KEYS)
+        assert tuple(k for k, _ in app._config_to_key(cfg)) == app._CFG_KEYS
+        assert at.session_state["result"]["delamination"] is None
+        assert not any(h.value.startswith("Defects") for h in at.subheader)
+        assert not any(c.label == "Indication type" for c in at.selectbox)
+
+    def test_delamination_flow(self):
+        at = _delamination_run(_fresh_app())
+        assert not at.exception
+        result = at.session_state["result"]
+        fe = result["fe_field"]
+        assert result["delamination"].shape == "strip"
+        assert fe.crack_front is not None and fe.fracture_load_factor is not None
+        assert any(h.value == "Defects: delamination and interface onset"
+                   for h in at.subheader)
+        metrics = {m.label: m.value for m in at.metric}
+        assert metrics["Fracture load factor λ_c"] == f"{fe.fracture_load_factor:.3g}"
+        assert metrics["KD total"] == f"{fe.knockdown:.4f}"
+        assert "Max onset index" in metrics
+        # The uncalibrated placeholder law is flagged, on the Overview too.
+        assert sum("uncalibrated" in w.value for w in at.warning) >= 2
+        labels = [b.proto.label for b in at.get("download_button")]
+        assert labels.count("Download PNG") == 5          # + the front plot
+        assert any("Delamination: through-width strip" in s.value for s in at.success)
+
+    def test_ncr_dispositions_the_delamination(self):
+        at = _delamination_run(_fresh_app())
+        assert at.selectbox(key="ncr_indication").value == "combined"
+        _button(at, "Generate summary").click().run()
+        assert any("required load factor" in e.value for e in at.error)
+        at.selectbox(key="ncr_indication").set_value("delamination")
+        at.number_input(key="ncr_required_load_factor").set_value(0.5)
+        _button(at, "Generate summary").click().run()
+        assert not at.exception
+        assert any("Recommended disposition path" in w.value
+                   and "fracture margin" in w.value for w in at.warning)
+        assert len(at.get("download_button")) == 11       # 5 PNG + 3 + 3
+
+    def test_inputs_that_block_the_run(self):
+        at = _small_mesh(_fresh_app())
+        at.checkbox(key="delam_on").check().run()
+        at.number_input(key="delam_interface").set_value(5).run()
+        assert any("does not exist" in e.value for e in at.error)
+        assert _button(at, "Run analysis").disabled is True
+        at.number_input(key="delam_interface").set_value(1).run()
+        assert _button(at, "Run analysis").disabled is False
+        at.selectbox(key="tough_law").set_value("user").run()
+        assert _button(at, "Run analysis").disabled is True
+        at.number_input(key="tough_b_I").set_value(5.0).run()
+        at.number_input(key="tough_b_II").set_value(12.0).run()
+        assert _button(at, "Run analysis").disabled is False
+        # An unresolved layup is explained before the run, with the fix.
+        at.slider[2].set_value(6).run()
+        assert any("Use nz = 8" in w.value for w in at.warning)
+        _button(at, "Use nz = 8").click().run()
+        assert at.slider[2].value == 8
+        assert not at.exception
+
+    def test_dcb_specimen_for_test_planning(self):
+        at = _select(_fresh_app(), "Loading mode", "dcb")
+        captions = " ".join(c.value for c in at.caption)
+        assert "for test planning" in captions and "ASTM D5528" in captions
+        assert not any(c.label == "Add a delamination (NDI indication)"
+                       for c in at.checkbox)
+        # 2 mm thick (the widget's largest ply), so the graded mesh is small.
+        next(n for n in at.number_input if n.label == "Ply thickness (mm)") \
+            .set_value(0.5).run()
+        at = _small_mesh(at, layup="0/0/0/0")
+        _enter_toughness(at)
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        result = at.session_state["result"]
+        assert result["fe_loading"] == "dcb"
+        assert result["config"]["crack_length"] == 50.0
+        assert result["fe_specimen"]["thickness_mm"] == pytest.approx(2.0)
+        metrics = {m.label: m.value for m in at.metric}
+        assert metrics["P_c at mid-width"].endswith(" N")
+        assert metrics["Compliance C"].endswith(" mm/N")
+        assert any(h.value == "Defects: delamination and interface onset"
+                   for h in at.subheader)
+        # The NCR cannot disposition a test specimen.
+        assert not any(c.label == "Indication type" for c in at.selectbox)
+
+    def test_mmb_lever_caption(self):
+        at = _select(_fresh_app(), "Loading mode", "mmb")
+        at.number_input(key="frac_mmb_ratio").set_value(0.8).run()
+        assert any(c.value.startswith("Lever length c =") for c in at.caption)
+        assert not at.exception

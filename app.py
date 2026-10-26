@@ -47,18 +47,28 @@ from porosity_fe import (
     LABEL_Z_MM,
     MATERIALS,
     CompositeMesh,
+    Delamination,
     EmpiricalSolver,
     FESolver,
     RefinementStudy,
+    ToughnessKnockdown,
     _configure_matplotlib_style,
     build_empirical_pipeline,
     compute_degraded_clt_flexural_modulus,
+    knockdown_decomposition,
+    mmb_lever_length,
     propagate_uncertainty,
     refinement_study,
     short_beam_shear,
 )
 from porosity_fe.fe.failure import first_ply_failure_load_factor
 from porosity_fe.fe.refinement import _estimate_memory_bytes
+from porosity_fe.fracture_specimens import (
+    _D5528_CRACK_LENGTH,
+    _D6671_CRACK_LENGTH,
+    _D6671_MODE_RATIO,
+    _D7905_CRACK_LENGTH,
+)
 from porosity_fe.pipeline import _default_mesh_resolution
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -78,6 +88,7 @@ _README_URL = (
 # ======================================================================
 
 from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Streamlit UI
+    INDICATION_TYPES,
     STRUCTURAL_CLASSES,
     _sanitise_filename_component,
     _serialise_payload_csv,
@@ -111,10 +122,33 @@ _CFG_KEYS = (
     "nx", "ny", "nz", "thermal_mode", "delta_T", "failure_criterion",
 )
 
+#: Defect and fracture fields of the config (delamination plan, phase 5),
+#: in cache-key order: an explicit delamination (a :class:`Delamination`)
+#: and whether to split the knockdown by defect, the interlaminar toughness
+#: (N/mm) and its porosity knockdown law (``"exponential"`` with the
+#: placeholders, ``"none"``, or ``"user"`` with ``toughness_b = [b_I,
+#: b_II]``), the interface onset check and its averaging length (mm), and
+#: the crack length (mm) and MMB mode ratio of a fracture specimen. Unlike
+#: :data:`_CFG_KEYS`, each enters the cache key only when it differs from
+#: its default, so a config without them keeps the key (and the cached
+#: result) it had before they existed.
+_CFG_OPTIONAL_KEYS = (
+    "delamination", "knockdown_split", "G_Ic", "G_IIc", "G_IIIc", "bk_eta",
+    "toughness_law", "toughness_b", "onset", "onset_x_avg",
+    "crack_length", "mmb_mode_ratio",
+)
+
 #: Config fields that an older config dict may lack, and the value that
-#: absence means (no thermal load, the Tsai-Wu criterion).
+#: absence means (no thermal load, the Tsai-Wu criterion, no delamination,
+#: no toughness, the default toughness law, no onset check, the standard
+#: specimen dimensions).
 _CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
-                 "failure_criterion": "tsai_wu"}
+                 "failure_criterion": "tsai_wu",
+                 "delamination": None, "knockdown_split": False,
+                 "G_Ic": None, "G_IIc": None, "G_IIIc": None, "bk_eta": None,
+                 "toughness_law": "exponential", "toughness_b": None,
+                 "onset": False, "onset_x_avg": None,
+                 "crack_length": None, "mmb_mode_ratio": None}
 
 #: FE failure criteria offered in the sidebar: key -> label.
 _CRITERION_LABELS = {
@@ -139,6 +173,10 @@ def _config_to_key(cfg: dict) -> tuple:
     for k in _CFG_KEYS:
         v = cfg.get(k, _CFG_DEFAULTS[k]) if k in _CFG_DEFAULTS else cfg[k]
         key.append((k, tuple(v) if isinstance(v, list) else v))
+    for k in _CFG_OPTIONAL_KEYS:
+        v = cfg.get(k, _CFG_DEFAULTS[k])
+        if v != _CFG_DEFAULTS[k]:
+            key.append((k, tuple(v) if isinstance(v, list) else v))
     return tuple(key)
 
 
@@ -153,10 +191,44 @@ def _config_to_key(cfg: dict) -> tuple:
 _FE_APPLIED_STRAIN = 0.01
 _FE_ILSS_LOAD_N = -10.0
 _FE_FLEXURE_LOAD_N = -10.0
+#: Load of the fracture specimens (N): the hinge load on each arm of the
+#: DCB (its sign is not used), the mid-span load of the ENF and the lever
+#: load of the MMB (negative presses the lever down and opens the crack).
+#: Energy release rates scale with its square, so the critical load is the
+#: critical load factor times its magnitude.
+_FE_FRACTURE_LOAD_N = -10.0
 
 #: The FE-only flexure modes (ASTM D7264 procedures A and B on the
 #: :meth:`CompositeMesh.for_flexure` specimen) and their procedure keys.
 _FLEXURE_MODES = {"flexure_3pt": "3pt", "flexure_4pt": "4pt"}
+
+#: The FE-only delamination fracture specimens, for test planning:
+#: loading mode -> (standard, specimen, default crack length a0 in mm, what
+#: the load P is). The crack lengths are the defaults of
+#: :meth:`CompositeMesh.for_dcb`, ``for_enf`` and ``for_mmb``.
+_FRACTURE_MODES = {
+    "dcb": ("ASTM D5528", "double-cantilever-beam (DCB, mode I) specimen",
+            _D5528_CRACK_LENGTH, "hinge load on each arm"),
+    "enf": ("ASTM D7905", "end-notched-flexure (ENF, mode II) specimen",
+            _D7905_CRACK_LENGTH, "mid-span load"),
+    "mmb": ("ASTM D6671", "mixed-mode-bending (MMB) specimen",
+            _D6671_CRACK_LENGTH, "lever load"),
+}
+
+#: Sidebar choices of the porosity knockdown of the interlaminar toughness:
+#: ``cfg["toughness_law"]`` -> label.
+_TOUGHNESS_LAW_LABELS = {
+    "exponential": "Exponential, placeholders b_I = 6.2, b_II = 14 (uncalibrated)",
+    "none": "None: the pristine toughness",
+    "user": "Exponential with my coefficients b_I, b_II",
+}
+
+#: Sidebar planform choices of the delamination input.
+_DELAMINATION_SHAPES = {
+    "ellipse": "ellipse (NDI indication)",
+    "rectangle": "rectangle",
+    "strip": "through-width strip",
+}
 
 #: Sidebar loading choices: ``cfg["loading_mode"]`` -> label. The four
 #: empirical modes are computed whichever is selected; the selection picks
@@ -169,6 +241,9 @@ _LOADING_LABELS = {
     # Short enough to fit the sidebar box; the help text spells them out.
     "flexure_3pt": "flexure_3pt (FE only, D7264 A)",
     "flexure_4pt": "flexure_4pt (FE only, D7264 B)",
+    "dcb": "dcb (FE only, D5528 mode I)",
+    "enf": "enf (FE only, D7905 mode II)",
+    "mmb": "mmb (FE only, D6671 mixed mode)",
 }
 
 #: Sidebar label -> ``cfg["thermal_mode"]``. ``"combined"`` superposes the
@@ -273,7 +348,9 @@ def run_analysis(cfg: dict) -> dict:
     Returns a dict with keys: config, material, porosity_field, mesh,
     empirical, fe_field, fe_loading, fe_skipped_reason, layup_scale,
     fe_thermal, fe_mechanical_fpf, fe_nz_suggestion, fe_specimen,
-    fe_short_beam, fe_flexure, fe_solve_time_s.
+    fe_short_beam, fe_flexure, fe_solve_time_s, delamination,
+    fe_decomposition, fe_decomposition_error, fe_decomposition_time_s,
+    fe_onset, fe_onset_error.
 
     ``mesh`` is the mesh of the FE solve. For ``loading_mode="ilss"`` (with
     a mechanical load) that is the ASTM D2344 short-beam specimen of
@@ -298,6 +375,30 @@ def run_analysis(cfg: dict) -> dict:
     ``fe_field`` is ``None`` and ``fe_skipped_reason`` explains why, so the
     UI can still show the headline knockdown numbers.
 
+    The FE-only fracture modes ``"dcb"``, ``"enf"`` and ``"mmb"`` (ASTM
+    D5528, D7905, D6671; test planning) solve the specimen of
+    :meth:`CompositeMesh.for_dcb` / ``for_enf`` / ``for_mmb`` with the
+    sidebar laminate, ``cfg["nz"]`` element layers and ``cfg["crack_length"]``
+    (``cfg["mmb_mode_ratio"]``, the target ``G_II / G_T`` that sets the MMB
+    lever), loaded by :data:`_FE_FRACTURE_LOAD_N`; ``fe_specimen``
+    describes it.
+
+    ``cfg["delamination"]`` (a :class:`Delamination`, ``None`` when absent)
+    adds an explicit delamination to the FE mesh of the other modes (the
+    coupon, or the ILSS / flexure specimen), which then reports the crack
+    front (``fe_field.crack_front``) and, with the toughness of
+    ``cfg["G_Ic"]``, ``cfg["G_IIc"]``, ``cfg["bk_eta"]`` (and optionally
+    ``cfg["G_IIIc"]``, N/mm; no preset has them), the fracture load factor,
+    the toughness knocked down by porosity with ``cfg["toughness_law"]``.
+    ``delamination`` is the delamination of the mesh (``None`` without one,
+    and for the fracture modes). With ``cfg["knockdown_split"]`` the
+    knockdown is split by defect (:func:`knockdown_decomposition`, two more
+    solves; ``fe_decomposition``, its time and any error). With
+    ``cfg["onset"]`` the stress-based interface onset of the FE solve is
+    added (:meth:`FieldResults.delamination_onset`, averaging length
+    ``cfg["onset_x_avg"]``, default one ply; ``fe_onset``, or the reason in
+    ``fe_onset_error``). All are ``None`` when not requested.
+
     ``cfg["thermal_mode"]`` (``"off"`` when absent) selects the FE thermal
     load: ``"combined"`` adds the cure residual stress at
     ``cfg["delta_T"]`` (K, negative for a cool-down) to the mechanical
@@ -312,8 +413,10 @@ def run_analysis(cfg: dict) -> dict:
     Raises
     ------
     ValueError
-        For an unknown material or ``thermal_mode``, or a thermal mode
-        without a finite ``delta_T``.
+        For an unknown material or ``thermal_mode``, a thermal mode without
+        a finite ``delta_T``, a ``delamination`` that is not a
+        :class:`Delamination`, an unknown ``toughness_law``, ``"user"``
+        without both coefficients, or invalid toughness values.
     """
     if cfg["material_name"] not in MATERIALS:
         raise ValueError(
@@ -337,7 +440,14 @@ def run_analysis(cfg: dict) -> dict:
     material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
         material, t_ply=cfg["t_ply"], n_plies=cfg["n_plies"],
+        **_toughness_fields(cfg),
     )
+    delamination = cfg.get("delamination")
+    if delamination is not None and not isinstance(delamination, Delamination):
+        raise ValueError(
+            f"cfg['delamination'] must be a Delamination or None, got "
+            f"{delamination!r}.")
+    toughness_spec = _toughness_knockdown_spec(cfg)
 
     pf_kwargs = {
         "distribution": cfg["distribution"],
@@ -357,29 +467,51 @@ def run_analysis(cfg: dict) -> dict:
     fe_loading = "thermal" if thermal_mode == "thermal_only" else cfg["loading_mode"]
     fe_specimen = None
     specimen_error = None
+    # A fracture specimen carries its own insert; on the other meshes the
+    # delamination is an input. Without one every mesh is built as before.
+    delaminations = [] if delamination is None or fe_loading in _FRACTURE_MODES \
+        else [delamination]
+    defects = {"delaminations": delaminations} if delaminations else {}
     try:
         if fe_loading == "ilss":
             # ILSS is the ASTM D2344 short-beam test: solve it on the
             # standard specimen (span 4h, 6h x 2h), not on the coupon. The
             # empirical results do not depend on the mesh.
             mesh = CompositeMesh.for_ilss(porosity_field, material, nz=cfg["nz"],
-                                          ply_angles=cfg["angles"])
+                                          ply_angles=cfg["angles"], **defects)
             fe_specimen = _specimen_info(mesh)
         elif fe_loading in _FLEXURE_MODES:
             # Flexure is FE only: the ASTM D7264 specimen (span 32h, 13 mm
             # wide), one mesh for both procedures.
             mesh = CompositeMesh.for_flexure(porosity_field, material, nz=cfg["nz"],
-                                             ply_angles=cfg["angles"])
+                                             ply_angles=cfg["angles"], **defects)
             fe_specimen = _flexure_specimen_info(mesh, fe_loading)
+        elif fe_loading in _FRACTURE_MODES:
+            # The delamination fracture tests are FE only: the ASTM D5528,
+            # D7905 or D6671 specimen with the sidebar's laminate.
+            mesh = _fracture_specimen_mesh(fe_loading, porosity_field, material, cfg)
+            fe_specimen = _fracture_specimen_info(mesh, fe_loading, cfg)
+        elif delaminations:
+            # The pipeline's coupon, with the delaminated interface's nodes
+            # duplicated (the empirical solver keeps the plain one).
+            mesh = CompositeMesh(porosity_field, material, nx=cfg["nx"],
+                                 ny=cfg["ny"], nz=cfg["nz"],
+                                 ply_angles=cfg["angles"], **defects)
     except ValueError as exc:
         logger.exception("Specimen mesh failed for loading=%s", fe_loading)
-        specimen_error = f"the {fe_loading} specimen mesh could not be built: {exc}"
+        what = (f"the {fe_loading} specimen mesh"
+                if fe_loading in ("ilss", *_FLEXURE_MODES, *_FRACTURE_MODES)
+                else "the delaminated coupon mesh")
+        specimen_error = f"{what} could not be built: {exc}"
+    # The delamination outputs (front, toughness law) of a delaminated mesh.
+    cracked = bool(delaminations) or fe_loading in _FRACTURE_MODES
     t_solve = time.perf_counter()
     if specimen_error is None:
         fe_field, fe_skipped_reason = _run_fe_solve(
             mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
             thermal_mode=thermal_mode, delta_T=delta_T,
             failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+            **({"toughness_knockdown": toughness_spec} if cracked else {}),
         )
     else:
         fe_field, fe_skipped_reason = None, specimen_error
@@ -392,9 +524,36 @@ def run_analysis(cfg: dict) -> dict:
         fe_flexure = _clt_flexure_reference(material, cfg["angles"], cfg["Vp"] / 100.0,
                                             fe_loading)
 
+    fe_decomposition = fe_decomposition_error = fe_decomposition_time_s = None
+    if delaminations and cfg.get("knockdown_split") and fe_field is not None \
+            and fe_loading != "thermal":
+        # Two more solves: the same porosity without the delamination, and
+        # the delamination without porosity, against the same reference.
+        t_split = time.perf_counter()
+        try:
+            fe_decomposition = knockdown_decomposition(
+                mesh, material, porosity_field, fe_loading, total=fe_field,
+                delta_T=delta_T if thermal_mode == "combined" else None,
+                **_fe_load_kwargs(fe_loading))
+        except Exception as exc:
+            logger.exception("Knockdown decomposition failed for loading=%s",
+                             fe_loading)
+            fe_decomposition_error = f"{type(exc).__name__}: {exc}"
+        fe_decomposition_time_s = time.perf_counter() - t_split
+    fe_onset = fe_onset_error = None
+    if cfg.get("onset") and fe_field is not None:
+        try:
+            fe_onset = fe_field.delamination_onset(
+                mesh, material, x_avg=cfg.get("onset_x_avg"))
+        except ValueError as exc:
+            fe_onset_error = str(exc)
+
     fe_thermal = None
     fe_mechanical_fpf = None
     fe_nz_suggestion = None
+    if specimen_error is not None and cracked and cfg["nz"] % cfg["n_plies"]:
+        # A delamination needs every ply interface on a node layer.
+        fe_nz_suggestion = _resolving_nz(cfg["nz"], cfg["n_plies"])
     if thermal_mode != "off":
         fe_thermal = {"mode": thermal_mode, "delta_T": float(delta_T)}
         if fe_field is None:
@@ -427,7 +586,95 @@ def run_analysis(cfg: dict) -> dict:
         "fe_short_beam": fe_short_beam,
         "fe_flexure": fe_flexure,
         "fe_solve_time_s": fe_solve_time_s,
+        "delamination": delaminations[0] if delaminations else None,
+        "fe_decomposition": fe_decomposition,
+        "fe_decomposition_error": fe_decomposition_error,
+        "fe_decomposition_time_s": fe_decomposition_time_s,
+        "fe_onset": fe_onset,
+        "fe_onset_error": fe_onset_error,
     }
+
+
+def _toughness_fields(cfg: dict) -> dict:
+    """The interlaminar toughness of ``cfg`` that is set, as
+    :class:`MaterialProperties` fields (N/mm; ``bk_eta`` dimensionless)."""
+    return {k: float(cfg[k]) for k in ("G_Ic", "G_IIc", "G_IIIc", "bk_eta")
+            if cfg.get(k) is not None}
+
+
+def _toughness_knockdown_spec(cfg: dict):
+    """The ``toughness_knockdown`` argument of the FE solve for ``cfg``:
+    ``'exponential'`` (the placeholders), ``None`` (pristine toughness) or a
+    :class:`ToughnessKnockdown` with the user's ``b_I`` and ``b_II``."""
+    law = cfg.get("toughness_law", "exponential")
+    if law == "exponential":
+        return "exponential"
+    if law == "none":
+        return None
+    if law == "user":
+        b = cfg.get("toughness_b")
+        if b is None or len(b) != 2 or any(v is None for v in b):
+            raise ValueError(
+                "toughness_law='user' needs toughness_b = [b_I, b_II] (per "
+                "unit Vp).")
+        return ToughnessKnockdown(b_I=float(b[0]), b_II=float(b[1]))
+    raise ValueError(
+        f"Unknown toughness_law {law!r}; expected one of "
+        f"{sorted(_TOUGHNESS_LAW_LABELS)}.")
+
+
+def _fe_load_kwargs(loading: str) -> dict:
+    """The load arguments of the app's FE solve of ``loading``."""
+    if loading == "ilss":
+        return {"applied_load": _FE_ILSS_LOAD_N}
+    if loading in _FLEXURE_MODES:
+        return {"applied_load": _FE_FLEXURE_LOAD_N}
+    if loading in _FRACTURE_MODES:
+        return {"applied_load": _FE_FRACTURE_LOAD_N}
+    return {"applied_strain": (-_FE_APPLIED_STRAIN if loading == "compression"
+                               else _FE_APPLIED_STRAIN)}
+
+
+def _fracture_specimen_mesh(loading: str, porosity_field, material, cfg: dict):
+    """The fracture specimen of ``loading`` ('dcb', 'enf', 'mmb') with the
+    laminate, ``nz``, crack length and MMB mode ratio of ``cfg``."""
+    kwargs = {"nz": cfg["nz"], "ply_angles": cfg["angles"]}
+    if cfg.get("crack_length") is not None:
+        kwargs["crack_length"] = float(cfg["crack_length"])
+    if loading == "dcb":
+        return CompositeMesh.for_dcb(porosity_field, material, **kwargs)
+    if loading == "enf":
+        return CompositeMesh.for_enf(porosity_field, material, **kwargs)
+    if cfg.get("mmb_mode_ratio") is not None:
+        kwargs["mode_ratio"] = float(cfg["mmb_mode_ratio"])
+    return CompositeMesh.for_mmb(porosity_field, material, **kwargs)
+
+
+def _fracture_specimen_info(mesh, loading: str, cfg: dict) -> dict:
+    """Dimensions (mm), insert, lever and mesh of a fracture specimen."""
+    standard, specimen, _, load = _FRACTURE_MODES[loading]
+    geometry = mesh.fracture_geometry
+    info = {
+        "standard": standard,
+        "specimen": specimen,
+        "test": loading,
+        "length_mm": float(mesh.L_x),
+        "width_mm": float(mesh.L_y),
+        "thickness_mm": float(mesh.L_z),
+        "crack_length_mm": float(geometry.crack_length),
+        "interface": int(geometry.interface),
+        "span_mm": None if geometry.span is None else float(geometry.span),
+        "lever_length_mm": (None if geometry.lever_length is None
+                            else float(geometry.lever_length)),
+        "mode_ratio_target": None,
+        "load": load,
+        "applied_load_N": abs(_FE_FRACTURE_LOAD_N),
+        "mesh": f"{mesh.nx}x{mesh.ny}x{mesh.nz}",
+    }
+    if loading == "mmb":
+        info["mode_ratio_target"] = float(
+            cfg.get("mmb_mode_ratio") or _D6671_MODE_RATIO)
+    return info
 
 
 def _interior_region_text(fe_loading: str | None) -> str:
@@ -498,7 +745,7 @@ def _clt_flexure_reference(material, angles, vp: float, loading: str) -> dict:
 
 def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
                   *, thermal_mode: str = "off", delta_T: float | None = None,
-                  failure_criterion: str = "tsai_wu"):
+                  failure_criterion: str = "tsai_wu", **fracture):
     """Run the FE solve for ``loading_mode``; return ``(field, skipped_reason)``.
 
     Exactly one of the pair is ``None``. Any exception from the FE path is
@@ -509,9 +756,13 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     ``thermal_mode="combined"`` passes ``delta_T`` to the mechanical solve
     (residual stress superposed); ``"thermal_only"`` solves
     ``loading='thermal'`` at ``delta_T`` instead of ``loading_mode``.
-    ``failure_criterion`` is the FE criterion (``FESolver``'s).
+    ``failure_criterion`` is the FE criterion (``FESolver``'s). ``fracture``
+    (``toughness_knockdown=``, for a delaminated mesh) goes to the solve.
+    The fracture modes ``'dcb'``, ``'enf'`` and ``'mmb'`` are loaded by
+    :data:`_FE_FRACTURE_LOAD_N`.
     """
     thermal = {} if thermal_mode == "off" else {"delta_T": delta_T}
+    thermal.update(fracture)
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles,
                              failure_criterion=failure_criterion)
@@ -534,6 +785,13 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
             # reports the shear-corrected flexural modulus.
             field = fe_solver.solve(
                 loading=loading_mode, applied_load=_FE_FLEXURE_LOAD_N,
+                verbose=False, **thermal,
+            )
+        elif loading_mode in _FRACTURE_MODES:
+            # The DCB / ENF / MMB specimen, force controlled: the front's
+            # energy release rates scale with the load squared.
+            field = fe_solver.solve(
+                loading=loading_mode, applied_load=_FE_FRACTURE_LOAD_N,
                 verbose=False, **thermal,
             )
         else:
@@ -559,7 +817,9 @@ def fe_vtu_bytes(result: dict) -> bytes:
 
     Written by :meth:`FieldResults.to_vtu` with its defaults (the legacy
     VTK point and cell fields plus the recovered nodal stress and strain,
-    ``Float64``) to a temporary file, since the writer takes a path.
+    ``Float64``; the front's energy release rates on a delaminated mesh,
+    and the onset index when the analysis checked the interface onset) to
+    a temporary file, since the writer takes a path.
 
     Raises
     ------
@@ -570,9 +830,13 @@ def fe_vtu_bytes(result: dict) -> bytes:
     if fe_field is None:
         raise ValueError("The analysis has no FE field to export: the FE "
                          "solve was skipped.")
+    onset = result.get("fe_onset")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "fe_results.vtu"
-        fe_field.to_vtu(result["mesh"], path)
+        if onset is None:
+            fe_field.to_vtu(result["mesh"], path)
+        else:
+            fe_field.to_vtu(result["mesh"], path, onset=onset)
         return path.read_bytes()
 
 
@@ -593,6 +857,9 @@ def _applied_load_text(loading_mode: str, factor: float) -> str:
         where = ("midspan load" if _FLEXURE_MODES[loading_mode] == "3pt"
                  else "total load on the two load lines")
         return f"{factor * abs(_FE_FLEXURE_LOAD_N):.3g} N {where}"
+    if loading_mode in _FRACTURE_MODES:
+        return (f"{factor * abs(_FE_FRACTURE_LOAD_N):.3g} N "
+                f"{_FRACTURE_MODES[loading_mode][3]}")
     sign = "-" if loading_mode == "compression" else ""
     name = "shear strain" if loading_mode == "shear" else "strain"
     return f"{sign}{factor * _FE_APPLIED_STRAIN * 100:.3g} % {name}"
@@ -897,6 +1164,364 @@ def fe_thermal_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] |
 
 
 # ----------------------------------------------------------------------
+# Defects: delamination front, knockdown decomposition, interface onset,
+# fracture specimens (headless; the Results tab's Defects block shows them)
+# ----------------------------------------------------------------------
+
+def _crack_front(result: dict):
+    """The delamination front of the FE solve of ``result``, or ``None``."""
+    fe = result.get("fe_field")
+    front = None if fe is None else getattr(fe, "crack_front", None)
+    return None if front is None or len(front) == 0 else front
+
+
+def _load_factor_text(result: dict, factor: float) -> str:
+    """``factor`` times the load a load factor of ``result`` multiplies."""
+    fe = result["fe_field"]
+    if fe.load_factor_basis == "delta_T":
+        thermal = result.get("fe_thermal") or {}
+        return f"ΔT = {factor * float(thermal.get('delta_T', float('nan'))):.3g} K"
+    loading = result.get("fe_loading") or result["config"]["loading_mode"]
+    text = _applied_load_text(loading, factor)
+    if fe.load_factor_basis == "mechanical_with_residual":
+        text += ", with the residual stress held fixed"
+    return text
+
+
+def front_order(front) -> tuple[list[np.ndarray], np.ndarray, str]:
+    """The front nodes in order along the front, for plots and tables.
+
+    Returns ``(segments, abscissa, label)``: index arrays into the front
+    rows, one per straight front or one for a closed front, the abscissa of
+    every row and its axis label. A front across the width (a strip, a
+    specimen insert: every node of a segment at one ``x``) runs along ``y``;
+    one along the length runs along ``x``; any other front (an ellipse or a
+    rectangle, a staircase on the grid) is ordered by its angle around the
+    centroid of its nodes, in degrees from ``+x``.
+    """
+    x = np.asarray(front.x, dtype=float)
+    y = np.asarray(front.y, dtype=float)
+    tol = 1e-9 * max(float(np.ptp(x)) if x.size else 0.0,
+                     float(np.ptp(y)) if y.size else 0.0, 1.0)
+
+    def lines(along: np.ndarray, across: np.ndarray) -> list[np.ndarray] | None:
+        keys = np.round(across / tol) if tol > 0 else across
+        groups = [np.flatnonzero(keys == k) for k in np.unique(keys)]
+        if len(groups) > 2 or any(g.size < 2 for g in groups):
+            return None
+        return [g[np.argsort(along[g], kind="stable")] for g in groups]
+
+    across_width = lines(y, x)
+    if across_width is not None:
+        return across_width, y, "y along the front (mm)"
+    along_length = lines(x, y)
+    if along_length is not None:
+        return along_length, x, "x along the front (mm)"
+    angle = np.degrees(np.arctan2(y - y.mean(), x - x.mean())) % 360.0
+    return [np.argsort(angle, kind="stable")], angle, \
+        "Angle around the front (°, from +x)"
+
+
+def delamination_text(delamination: Delamination) -> str:
+    """A delamination's planform, position and interface in words (mm)."""
+    k = delamination.interface
+    if delamination.shape == "strip":
+        planform = (f"through-width strip from x = {delamination.x_start:g} to "
+                    f"{delamination.x_end:g} mm")
+    else:
+        (xc, yc), (ax, ay) = delamination.center, delamination.half_size
+        planform = (f"{delamination.shape} {2 * ax:g} × {2 * ay:g} mm centred "
+                    f"at ({xc:g}, {yc:g}) mm")
+    return f"{planform}, interface {k} (between plies {k + 1} and {k + 2})"
+
+
+def ncr_delamination_available(result: dict) -> bool:
+    """Whether the NCR can disposition ``result``'s delamination on a
+    fracture margin: a delamination of the part (not a fracture specimen)
+    with a front and a fracture load factor."""
+    fe = result.get("fe_field")
+    return (result.get("delamination") is not None and fe is not None
+            and _crack_front(result) is not None
+            and fe.fracture_load_factor is not None)
+
+
+def fe_front_rows(result: dict) -> list[dict]:
+    """Rows of the front table: one per front node, in order along the front.
+
+    Columns: position (mm), ``G_I``, ``G_II``, ``G_III``, ``G_T`` (N/mm, at
+    the analysis load), the mode mixity ``ψ = (G_II + G_III) / G_T``, the
+    porosity at the crack plane (shown in %), the toughness ``G_c`` there
+    and the critical load factor ``λ_c`` (``n/a`` without toughness data).
+    Empty without a front.
+    """
+    front = _crack_front(result)
+    if front is None:
+        return []
+    segments, _, _ = front_order(front)
+    rows = []
+    for seg in segments:
+        for i in seg:
+            rows.append({
+                "x (mm)": f"{front.x[i]:.2f}",
+                "y (mm)": f"{front.y[i]:.2f}",
+                "G_I (N/mm)": f"{front.G_I[i]:.4g}",
+                "G_II (N/mm)": f"{front.G_II[i]:.4g}",
+                "G_III (N/mm)": f"{front.G_III[i]:.4g}",
+                "G_T (N/mm)": f"{front.G_T[i]:.4g}",
+                "ψ": _fmt_value(front.psi[i], "{:.3f}"),
+                "Vp (%)": f"{100.0 * front.Vp[i]:.2f}",
+                "G_c (N/mm)": ("n/a" if front.G_c is None
+                               else _fmt_value(front.G_c[i], "{:.4g}")),
+                "λ_c": ("n/a" if front.lambda_c is None
+                        else _fmt_value(front.lambda_c[i], "{:.4g}")),
+            })
+    return rows
+
+
+def _mode_shares(front, row: int) -> str:
+    """``G_I``, ``G_II`` and ``G_III`` of front row ``row`` as shares of ``G_T``."""
+    total = float(front.G_T[row])
+    if not total > 0.0:
+        return "no energy released"
+    parts = (("G_I", front.G_I[row]), ("G_II", front.G_II[row]),
+             ("G_III", front.G_III[row]))
+    return " · ".join(f"{name} {100.0 * float(v) / total:.0f} %" for name, v in parts)
+
+
+def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], str, bool] | None:
+    """Metric rows ``(label, value, help)``, a caption and the uncalibrated
+    flag of the delamination front; ``None`` without a front.
+
+    The rows give the fracture load factor (the smallest critical load
+    factor over the front), where it governs, its mode mixity and mode
+    shares, and the largest ``G_T`` at the analysis load. The flag is
+    ``True`` when the toughness was knocked down by porosity with the
+    uncalibrated placeholder coefficients.
+    """
+    front = _crack_front(result)
+    if front is None:
+        return None
+    fe = result["fe_field"]
+    lam = fe.fracture_load_factor
+    row = front.governing
+    focus = row if row is not None else int(np.argmax(front.G_T))
+    where = f"x = {front.x[focus]:.1f}, y = {front.y[focus]:.1f} mm"
+    rows = [
+        ("Fracture load factor λ_c",
+         "n/a" if lam is None else _fmt_value(lam, "{:.3g}"),
+         "Smallest critical load factor over the front: the multiple of the "
+         "analysis load at which the delamination starts to grow (G_T reaches "
+         "the Benzeggagh-Kenane toughness G_c(ψ)). n/a without G_Ic, G_IIc "
+         "and η; ∞ when the load releases no energy at the front."),
+        ("Governing node" if row is not None else "Largest G_T at", where,
+         "Front node with the smallest λ_c (without toughness, the largest "
+         "G_T)."),
+        ("Mode mixity ψ there", _fmt_value(front.psi[focus], "{:.2f}"),
+         f"ψ = (G_II + G_III) / G_T at that node: {_mode_shares(front, focus)}."),
+        ("Max G_T", f"{float(np.max(front.G_T)):.4g} N/mm",
+         "Largest total energy release rate over the front at the analysis "
+         "load; it scales with the load squared."),
+    ]
+    parts = [
+        f"Virtual crack closure at {len(front)} front nodes "
+        f"(Δa = {float(np.median(front.delta_a)):.3g} mm) at the analysis load "
+        f"({_load_factor_text(result, 1.0)})."]
+    if lam is None:
+        parts.append("Enter G_Ic, G_IIc and η in the sidebar for the "
+                     "fracture load factor; no material preset carries them.")
+    elif math.isfinite(lam):
+        parts.append(f"Growth starts at {_load_factor_text(result, lam)}.")
+    if front.toughness_knockdown is not None:
+        parts.append(f"Toughness: {front.toughness_knockdown.describe()}, at "
+                     f"the porosity of each front node.")
+    if fe.crack_contact:
+        parts.append(f"Crack-face contact: {fe.contact_pairs} pairs in contact "
+                     f"after {fe.contact_iterations} solves.")
+    parts.append(
+        "Linear elastic fracture mechanics: growth onset only, no propagation, "
+        "fatigue growth or delamination buckling. A planform front is a "
+        "staircase on the grid, so G scatters from node to node, and between "
+        "plies of different angles the G_I / G_II split depends on Δa: compare "
+        "G_T, and refine nx and ny (Expert mode) to check it.")
+    return rows, " ".join(parts), bool(front.toughness_uncalibrated)
+
+
+#: Line colours of the front plot: G_T, the toughness G_c, ψ.
+_FRONT_COLOURS = ("#1f77b4", "0.35", "#d62728")
+
+
+def plot_front(result: dict):
+    """``G_T`` (with ``G_c``) and ``ψ`` along the delamination front."""
+    front = _crack_front(result)
+    fig, (ax_g, ax_p) = plt.subplots(2, 1, figsize=(9, 5.6), sharex=True)
+    if front is None:
+        ax_g.text(0.5, 0.5, "No delamination front.", transform=ax_g.transAxes,
+                  ha="center", va="center", color="0.5")
+        return fig
+    segments, s, label = front_order(front)
+    for n, seg in enumerate(segments):
+        tag = "" if len(segments) == 1 else f" (x = {front.x[seg[0]]:.1f} mm)"
+        style = "-o" if n == 0 else "-s"
+        ax_g.plot(s[seg], front.G_T[seg], style, color=_FRONT_COLOURS[0],
+                  markersize=3, linewidth=1.2, label=f"G_T at the analysis load{tag}")
+        if front.G_c is not None:
+            ax_g.plot(s[seg], front.G_c[seg], "--", color=_FRONT_COLOURS[1],
+                      linewidth=1.0, label="_nolegend_" if n else "G_c (toughness)")
+        ax_p.plot(s[seg], front.psi[seg], style, color=_FRONT_COLOURS[2],
+                  markersize=3, linewidth=1.2)
+    row = front.governing
+    if row is not None:
+        ax_g.plot([s[row]], [front.G_T[row]], "*", color="black", markersize=10,
+                  label=f"governing, λ_c = {float(front.lambda_c[row]):.3g}")
+    ax_g.set_ylabel("G (N/mm)")
+    ax_g.set_ylim(bottom=0.0)
+    ax_g.legend(loc="best", frameon=False, fontsize=8)
+    ax_p.set_ylabel("Mode mixity ψ")
+    ax_p.set_ylim(-0.05, 1.05)
+    ax_p.set_xlabel(label)
+    _set_titles(ax_g, "Delamination front: energy release rate and mode mixity",
+                f"VCCT, {len(front)} front nodes · ψ = (G_II + G_III) / G_T")
+    fig.tight_layout()
+    return fig
+
+
+def fe_decomposition_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows and a caption of the knockdown decomposition; ``None``
+    when it was not requested or the FE solve was skipped."""
+    parts = result.get("fe_decomposition")
+    error = result.get("fe_decomposition_error")
+    if parts is None and error is None:
+        return None
+    if parts is None:
+        return [], f"The knockdown decomposition failed: {error}"
+    dominant = {"porosity": "porosity", "delamination": "delamination",
+                None: "neither (equal)"}[parts.dominant]
+    rows = [
+        ("KD total", _fmt_value(parts.total, "{:.4f}"),
+         "Stiffness knockdown with the porosity and the delamination."),
+        ("KD porosity only", _fmt_value(parts.porosity_only, "{:.4f}"),
+         "The same porosity, the delamination bonded."),
+        ("KD delamination only", _fmt_value(parts.delamination_only, "{:.4f}"),
+         "The same delamination, no porosity."),
+        ("Larger stiffness loss", dominant,
+         "The defect whose knockdown alone is the lower."),
+    ]
+    took = result.get("fe_decomposition_time_s")
+    caption = (
+        "Each knockdown is the structural stiffness over that of the laminate "
+        "with neither defect, under the same load. In a linear analysis an "
+        "embedded delamination under in-plane load costs little stiffness "
+        "(there is no delamination buckling): its effect shows in the fracture "
+        "load factor, not here."
+        + ("" if took is None else f" The two extra FE solves took {took:.0f} s."))
+    return rows, caption
+
+
+def fe_onset_summary(result: dict) -> tuple[list[tuple[str, str, str]], list[dict], str] | None:
+    """Metric rows, per-interface rows and a caption of the interface onset;
+    ``None`` when it was not requested."""
+    onset = result.get("fe_onset")
+    error = result.get("fe_onset_error")
+    if onset is None and error is None:
+        return None
+    if onset is None:
+        return [], [], f"The interface onset was not evaluated: {error}"
+    summ = onset.summary()
+    loc = onset.critical_location
+    rows = [
+        ("Max onset index", _fmt_value(summ["max_index"], "{:.3g}"),
+         "Largest Brewer-Lagace index over the interface nodes at the analysis "
+         "load (1 = onset)."),
+        ("Critical interface",
+         "n/a" if summ["critical_interface"] is None
+         else f"{summ['critical_interface']} (plies {summ['critical_interface'] + 1}"
+              f"/{summ['critical_interface'] + 2})",
+         "Interface k lies between ply k and k + 1 from the bottom (0-based); "
+         "the plies are counted from 1 here."),
+        ("Location", "n/a" if loc is None else f"x = {loc[0]:.1f}, y = {loc[1]:.1f} mm",
+         "Interface node of the largest index."),
+        ("Onset load factor", _fmt_value(onset.onset_load_factor, "{:.3g}"),
+         "Multiple of the analysis load at which the index first reaches 1."),
+        ("Interior onset load factor",
+         _fmt_value(onset.interior_onset_load_factor, "{:.3g}"),
+         "The same away from the free edges (at least max(h, 2 element "
+         "widths) in)."),
+    ]
+    table = [{"Interface": k, "Plies": f"{k + 1}/{k + 2}",
+              "Max onset index": _fmt_value(v, "{:.3g}")}
+             for k, v in onset.interface_max_index().items()]
+    lam = onset.onset_load_factor
+    caption = (
+        f"Brewer-Lagace quadratic criterion on the interlaminar tractions "
+        f"averaged over a {onset.x_avg:.3g} mm window (x_avg, one ply thickness "
+        f"by default: a calibration parameter), against porosity-degraded "
+        f"strengths (Z_t = sigma_2t and S_13 = S_23 = tau_ilss unless the "
+        f"material sets sigma_3t and tau_13). "
+        + ("" if lam is None or not math.isfinite(lam)
+           else f"Onset at {_load_factor_text(result, lam)}. ")
+        + "The stress at a free edge is singular, so the values there depend "
+          "on the mesh and on x_avg; read the interior load factor. A "
+          "stress-based initiation screen of an intact interface, not a "
+          "fracture analysis.")
+    return rows, table, caption
+
+
+def fe_fracture_test_summary(result: dict) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows and a caption of a fracture specimen solve (DCB, ENF,
+    MMB); ``None`` for the other modes or when the FE solve was skipped.
+
+    The rows give the load-point compliance, ``G_T`` and ``ψ`` at mid-width
+    (where test reports compare), the critical load ``P_c = λ_c · P`` at
+    mid-width and at the weakest front node.
+    """
+    loading = result.get("fe_loading")
+    spec = result.get("fe_specimen")
+    front = _crack_front(result)
+    if loading not in _FRACTURE_MODES or spec is None or front is None:
+        return None
+    fe = result["fe_field"]
+    P = spec["applied_load_N"]
+    mid = int(np.argmin(np.abs(np.asarray(front.y) - 0.5 * spec["width_mm"])))
+    lam_mid = None if front.lambda_c is None else float(front.lambda_c[mid])
+    lam = fe.fracture_load_factor
+    rows = [
+        ("Compliance C", _fmt_value(fe.load_point_compliance, "{:.4g} mm/N"),
+         f"Load-point compliance: the displacement of the load point per unit "
+         f"{spec['load']} (work conjugate)."),
+        ("G_T at mid-width", f"{float(front.G_T[mid]):.4g} N/mm",
+         f"At P = {P:g} N; it scales with P²."),
+        ("ψ at mid-width", _fmt_value(front.psi[mid], "{:.3f}"),
+         "Mode mixity (G_II + G_III) / G_T where the test reports compare."),
+        ("P_c at mid-width",
+         "n/a" if lam_mid is None else _fmt_value(lam_mid * P, "{:.4g} N"),
+         "Critical load λ_c · P of the front node at mid-width: growth onset. "
+         "Needs G_Ic, G_IIc and η."),
+        ("P_c, weakest node",
+         "n/a" if lam is None else _fmt_value(lam * P, "{:.4g} N"),
+         "λ_c · P at the front node that grows first."),
+    ]
+    parts = [
+        f"{spec['standard']} {spec['specimen']}, for test planning: "
+        f"{spec['length_mm']:.1f} × {spec['width_mm']:.1f} × "
+        f"{spec['thickness_mm']:.2f} mm, insert a0 = {spec['crack_length_mm']:g} mm "
+        f"at interface {spec['interface']}"
+        + ("" if spec["span_mm"] is None else f", span {spec['span_mm']:g} mm")
+        + f", mesh {spec['mesh'].replace('x', ' × ')}; P is the {spec['load']}."]
+    if loading == "mmb":
+        parts.append(
+            f"Lever c = {spec['lever_length_mm']:.1f} mm for G_II/G_T = "
+            f"{spec['mode_ratio_target']:g} (beam theory of a unidirectional "
+            f"specimen, mmb_lever_length); the FE gives ψ = "
+            f"{_fmt_value(front.psi[mid], '{:.3f}')} at mid-width.")
+    parts.append(
+        "The standards test unidirectional laminates (e.g. [0]_24). The "
+        "default dimensions are a reading of the standards not checked against "
+        "them. Linear analysis: Krueger's NASA benchmarks are reproduced within "
+        "3 % in onset load (README, Limitations).")
+    return rows, " ".join(parts)
+
+
+# ----------------------------------------------------------------------
 # Mesh-convergence check (headless; the Results tab expander drives it)
 # ----------------------------------------------------------------------
 
@@ -925,6 +1550,11 @@ def convergence_unavailable_reason(result: dict) -> str | None:
     if result.get("fe_field") is None:
         return ("The FE solve of this analysis was skipped, so there is no FE "
                 "mesh to refine.")
+    if result.get("delamination") is not None or \
+            result.get("fe_loading") in _FRACTURE_MODES:
+        return ("The convergence check does not cover a delamination or a "
+                "fracture specimen yet: refine nx and ny in Expert mode and "
+                "compare the front's G_T.")
     return None
 
 
@@ -1336,8 +1966,31 @@ def plot_mesh(result: dict):
                 f"{len(mesh.elements):,} elements")
     if n_voids:
         subtitle += f" · {n_voids} void elements (white, red outline)"
+    if _draw_delaminations(ax, mesh, section, X, Z):
+        subtitle += " · delamination in red"
     _set_titles(ax, "FE mesh: stiffness retention", subtitle)
     return fig
+
+
+def _draw_delaminations(ax, mesh, section, X, Z) -> bool:
+    """Draw the delaminated part of each duplicated interface of ``mesh`` on
+    its mid-y section (node ids ``section``, coordinates ``X``, ``Z``):
+    every element edge of the interface with a delaminated node. Returns
+    whether anything was drawn."""
+    if not getattr(mesh, "delaminations", ()):
+        return False
+    originals, _ = mesh.interface_node_pairs()
+    opened = originals[~mesh.bonded_pairs()]
+    n_plies = int(mesh.material.n_plies)
+    drawn = False
+    for k in mesh.delaminated_interfaces:
+        layer = (k + 1) * mesh.nz // n_plies
+        is_open = np.isin(section[layer], opened)
+        for i in np.flatnonzero(is_open[:-1] | is_open[1:]):
+            ax.plot(X[layer, i:i + 2], Z[layer, i:i + 2], color="red",
+                    linewidth=2.0, solid_capstyle="butt")
+            drawn = True
+    return drawn
 
 
 def plot_results(result: dict, layup_str: str):
@@ -1358,7 +2011,11 @@ def plot_results(result: dict, layup_str: str):
     ]
 
     # A thermal-only solve has no stiffness measure (knockdown NaN): no bar.
-    has_fe = fe_field is not None and bool(np.isfinite(fe_field.knockdown))
+    # A fracture specimen's knockdown is a compliance ratio to the bonded
+    # specimen, not a stiffness loss of the laminate: no bar either.
+    fracture = fe_loading in _FRACTURE_MODES
+    has_fe = fe_field is not None and bool(np.isfinite(fe_field.knockdown)) \
+        and not fracture
     flexure = has_fe and fe_loading in _FLEXURE_MODES
     if has_fe:
         series.append(("fe", f"FE Stiffness ({fe_loading})", "#d62728", "//"))
@@ -1407,6 +2064,9 @@ def plot_results(result: dict, layup_str: str):
     if fe_field is not None and not has_fe:
         note = ("Solid bars = strength knockdown (at mean Vp); the FE "
                 "thermal-only solve has no stiffness knockdown (n/a)")
+        if fracture:
+            note = ("Solid bars = strength knockdown (at mean Vp); the FE "
+                    f"{fe_loading.upper()} specimen's results are under Defects")
     if flexure:
         note += ("\nFLEXURE: FE beam-stiffness knockdown only; there is no "
                  "empirical flexure model")
@@ -1445,14 +2105,17 @@ _STRESS_SLUGS = {0: "s11", 1: "s22", 2: "s33", 3: "t23", 4: "t13", 5: "t12",
 def default_stress_component(result: dict) -> str:
     """The stress component the Stress tab opens on for ``result``.
 
-    The one that governs the load case: τ₁₃ for ILSS (interlaminar shear),
-    σ₂₂ for a thermal-only solve (transverse stress, where residual cracking
+    The one that governs the load case: τ₁₃ for ILSS (interlaminar shear)
+    and the ENF and MMB specimens, σ₃₃ for the DCB (crack opening), σ₂₂ for
+    a thermal-only solve (transverse stress, where residual cracking
     starts), τ₁₂ for in-plane shear, σ₁₁ otherwise (fibre stress, also in
     flexure).
     """
     fe_loading = result.get("fe_loading")
-    if fe_loading == "ilss":
+    if fe_loading in ("ilss", "enf", "mmb"):
         return "τ₁₃ (interlaminar)"
+    if fe_loading == "dcb":
+        return "σ₃₃ (through-thickness)"
     if fe_loading == "thermal":
         return "σ₂₂ (transverse)"
     if fe_loading == "shear":
@@ -1728,6 +2391,231 @@ def _build_thermal_inputs(material_name: str) -> tuple[str, float | None]:
     return thermal_mode, (None if delta_T is None else float(delta_T))
 
 
+def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
+                                    n_plies: int, t_ply: float
+                                    ) -> tuple[float | None, float | None]:
+    """Crack length (and MMB mode ratio) of a fracture specimen; return
+    ``(crack_length, mmb_mode_ratio)``, both ``None`` for the other modes."""
+    if loading_mode not in _FRACTURE_MODES:
+        return None, None
+    standard, specimen, a0_default, load = _FRACTURE_MODES[loading_mode]
+    st.caption(
+        f"FE only, for test planning: the {standard} {specimen} with the "
+        f"laminate above (the standards test unidirectional laminates, e.g. "
+        f"[0]_24), the insert at the mid-plane. It reports the compliance and "
+        f"the critical {load} P_c = λ_c · P; enter the toughness below. The "
+        f"default dimensions are a reading of the standard, not checked "
+        f"against it.")
+    crack_length = st.number_input(
+        "Crack length a0 (mm)", min_value=1.0, max_value=500.0,
+        value=float(a0_default), step=1.0, format="%.1f",
+        key=f"frac_a0_{loading_mode}",
+        help=("Insert length from the load line (DCB), from the support under "
+              "the cracked end (ENF) or from the hinge line (MMB)."),
+    )
+    mode_ratio = None
+    if loading_mode == "mmb":
+        mode_ratio = st.number_input(
+            "Mode ratio G_II / G_T (MMB lever)", min_value=0.05, max_value=1.0,
+            value=float(_D6671_MODE_RATIO), step=0.05, format="%.2f",
+            key="frac_mmb_ratio",
+            help=("Sets the lever length by beam theory "
+                  "(mmb_lever_length); the FE mode mix differs by a few per "
+                  "cent and is reported with the results."),
+        )
+        try:
+            material = dataclasses.replace(
+                MATERIALS[material_name], t_ply=float(t_ply),
+                n_plies=int(n_plies) or MATERIALS[material_name].n_plies)
+            c = mmb_lever_length(material, float(mode_ratio),
+                                 crack_length=float(crack_length))
+            st.caption(f"Lever length c = {c:.1f} mm (beam theory, "
+                       f"unidirectional arms).")
+        except ValueError as exc:
+            st.caption(f"No lever for this mode ratio: {exc}")
+    return float(crack_length), (None if mode_ratio is None else float(mode_ratio))
+
+
+def _build_onset_inputs() -> tuple[bool, float | None]:
+    """Opt-in interface onset check; return ``(onset, x_avg)``."""
+    onset = st.checkbox(
+        "Interface delamination onset (Brewer-Lagace)", key="onset_on",
+        help=("Adds the stress-based onset check of every ply interface to "
+              "the FE solve: the interlaminar tractions averaged over x_avg "
+              "against porosity-degraded strengths, with the critical "
+              "interface, location and onset load factor. Post-processing "
+              "only; it needs nz a multiple of the ply count for every "
+              "interface to be a node layer."),
+    )
+    if not onset:
+        return False, None
+    x_avg = st.number_input(
+        "Averaging length x_avg (mm)", min_value=0.0, max_value=50.0,
+        value=None, step=0.05, format="%.3f", key="onset_x_avg",
+        placeholder="one ply thickness",
+        help=("Side of the square averaging window. Empty: one ply thickness "
+              "(Kim & Soni). A calibration parameter: free-edge values depend "
+              "on it and on the mesh."),
+    )
+    return True, None if x_avg is None else float(x_avg)
+
+
+def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
+                               n_plies: int, t_ply: float
+                               ) -> tuple[Delamination | None, bool, str | None]:
+    """Opt-in explicit delamination (an NDI indication) of the FE mesh.
+
+    Returns ``(delamination, knockdown_split, problem)``: the
+    :class:`Delamination` (``None`` when off), whether to split the
+    knockdown by defect, and why the run is blocked (``None`` when it is
+    not).
+    """
+    st.subheader("Delamination (FE)")
+    if loading_mode in _FRACTURE_MODES and thermal_mode != "thermal_only":
+        st.caption("The fracture specimen's insert is its delamination.")
+        return None, False, None
+    on = st.checkbox(
+        "Add a delamination (NDI indication)", key="delam_on",
+        help=("An explicit interlaminar crack at one ply interface, separate "
+              "from the porosity: the FE solve reports the energy release "
+              "rates along its front and, with toughness data, the load "
+              "factor at which it starts to grow."),
+    )
+    if not on:
+        return None, False, None
+    k_max = max(int(n_plies) - 2, 0)
+    interface = st.number_input(
+        "Interface k", min_value=0, max_value=200,
+        value=max(int(n_plies) // 2 - 1, 0), step=1, key="delam_interface",
+        help=("Interface k lies between ply k and ply k + 1 counted from the "
+              "bottom, 0-based (plies k + 1 and k + 2 counted from 1). The "
+              "mid-plane of an n-ply laminate is n/2 - 1."),
+    )
+    problem = None
+    if n_plies and int(interface) > k_max:
+        problem = (f"Interface {int(interface)} does not exist: the "
+                   f"{n_plies}-ply laminate has interfaces 0 to {k_max}.")
+        st.error(problem)
+    elif n_plies:
+        h = n_plies * float(t_ply)
+        z = (int(interface) + 1) * float(t_ply)
+        st.caption(f"Between plies {int(interface) + 1} and {int(interface) + 2} "
+                   f"from the bottom: {z:.2f} mm above the bottom face, "
+                   f"{h - z:.2f} mm below the top.")
+    shape = st.selectbox("Planform", options=list(_DELAMINATION_SHAPES),
+                         format_func=_DELAMINATION_SHAPES.__getitem__,
+                         key="delam_shape")
+    st.caption("Position and size in mm on the FE mesh: the 50 × 20 mm coupon "
+               "(x along the load; the ILSS and flexure specimens have their "
+               "own size, in the Overview after a run).")
+    c1, c2 = st.columns(2)
+    try:
+        if shape == "strip":
+            with c1:
+                x0 = st.number_input("x start (mm)", value=20.0, step=1.0,
+                                     format="%.2f", key="delam_x_start")
+            with c2:
+                x1 = st.number_input("x end (mm)", value=30.0, step=1.0,
+                                     format="%.2f", key="delam_x_end")
+            delamination = Delamination.strip(int(interface), float(x0), float(x1))
+        else:
+            with c1:
+                xc = st.number_input("Centre x (mm)", value=25.0, step=1.0,
+                                     format="%.2f", key="delam_xc")
+                lx = st.number_input("Length along x (mm)", min_value=0.01,
+                                     value=10.0, step=1.0, format="%.2f",
+                                     key="delam_lx")
+            with c2:
+                yc = st.number_input("Centre y (mm)", value=10.0, step=1.0,
+                                     format="%.2f", key="delam_yc")
+                wy = st.number_input("Width along y (mm)", min_value=0.01,
+                                     value=6.0, step=1.0, format="%.2f",
+                                     key="delam_wy")
+            build = Delamination.ellipse if shape == "ellipse" else Delamination.rectangle
+            delamination = build(int(interface), (float(xc), float(yc)),
+                                 (0.5 * float(lx), 0.5 * float(wy)))
+    except ValueError as exc:
+        problem = str(exc)
+        st.error(problem)
+        return None, False, problem
+    split = st.checkbox(
+        "Split the knockdown by defect (2 more FE solves)", value=True,
+        key="delam_split",
+        help=("Also solves the laminate with the porosity but no delamination, "
+              "and with the delamination but no porosity, so the Results show "
+              "which defect costs the stiffness (knockdown_decomposition)."),
+    )
+    return delamination, bool(split), problem
+
+
+def _build_toughness_inputs() -> tuple[dict, str | None]:
+    """Interlaminar toughness and its porosity knockdown; return the config
+    fields and why the run is blocked (``None`` when it is not)."""
+    st.subheader("Interlaminar toughness (FE)")
+    st.caption(
+        "No material preset carries interlaminar toughness: enter measured "
+        "initiation (or precracked) values for your material, in N/mm "
+        "(= kJ/m²). Without G_Ic, G_IIc and η the FE reports the energy "
+        "release rates only, no fracture load factor.")
+    c1, c2 = st.columns(2)
+    with c1:
+        G_Ic = st.number_input("G_Ic, mode I (N/mm)", min_value=0.001,
+                               max_value=20.0, value=None, step=0.01,
+                               format="%.4f", key="tough_G_Ic",
+                               placeholder="required for λ_c")
+        G_IIIc = st.number_input("G_IIIc, mode III (N/mm)", min_value=0.001,
+                                 max_value=20.0, value=None, step=0.01,
+                                 format="%.4f", key="tough_G_IIIc",
+                                 placeholder="= G_IIc",
+                                 help="Optional; empty uses G_IIc.")
+    with c2:
+        G_IIc = st.number_input("G_IIc, mode II (N/mm)", min_value=0.001,
+                                max_value=20.0, value=None, step=0.01,
+                                format="%.4f", key="tough_G_IIc",
+                                placeholder="required for λ_c")
+        bk_eta = st.number_input("B-K exponent η", min_value=0.01,
+                                 max_value=20.0, value=None, step=0.1,
+                                 format="%.3f", key="tough_bk_eta",
+                                 placeholder="required for λ_c",
+                                 help=("Benzeggagh-Kenane: G_c = G_Ic + "
+                                       "(G_IIc - G_Ic) ψ^η, fitted to mixed-"
+                                       "mode bending data."))
+    given = [v is not None for v in (G_Ic, G_IIc, bk_eta)]
+    if any(given) and not all(given):
+        st.info("Enter G_Ic, G_IIc and η for the fracture load factor.")
+    law = st.selectbox(
+        "Porosity knockdown of the toughness",
+        options=list(_TOUGHNESS_LAW_LABELS),
+        format_func=_TOUGHNESS_LAW_LABELS.__getitem__, key="tough_law",
+        help=("G_c = G_c0 exp(-b Vp) at the porosity of each front node. The "
+              "placeholder coefficients are two-point literature estimates, "
+              "flagged uncalibrated in the results; the law never raises the "
+              "toughness."),
+    )
+    fields = {"G_Ic": G_Ic, "G_IIc": G_IIc, "G_IIIc": G_IIIc, "bk_eta": bk_eta,
+              "toughness_law": law, "toughness_b": None}
+    problem = None
+    if law == "user":
+        c3, c4 = st.columns(2)
+        with c3:
+            b_I = st.number_input("b_I (per unit Vp)", min_value=0.0,
+                                  max_value=1000.0, value=None, step=0.5,
+                                  format="%.2f", key="tough_b_I",
+                                  placeholder="required")
+        with c4:
+            b_II = st.number_input("b_II (per unit Vp)", min_value=0.0,
+                                   max_value=1000.0, value=None, step=0.5,
+                                   format="%.2f", key="tough_b_II",
+                                   placeholder="required")
+        if b_I is None or b_II is None:
+            problem = "Enter b_I and b_II, or pick another toughness knockdown."
+            st.info(problem)
+        else:
+            fields["toughness_b"] = [float(b_I), float(b_II)]
+    return {k: (float(v) if isinstance(v, (int, float)) else v)
+            for k, v in fields.items()}, problem
+
+
 def _build_sidebar_inputs() -> dict | None:
     """Render the sidebar input controls and return the analysis config.
 
@@ -1841,9 +2729,21 @@ def _build_sidebar_inputs() -> dict | None:
                 "the support span) on a 32:1 specimen 13 mm wide, reporting "
                 "the FE flexural modulus next to the lamination-theory one. "
                 "There is no empirical flexure knockdown: flexural strength "
-                "is outside the empirical validation (README, Limitations)."
+                "is outside the empirical validation (README, Limitations). "
+                "dcb / enf / mmb are FE only: the ASTM D5528 / D7905 / D6671 "
+                "delamination fracture specimens, for test planning "
+                "(compliance and critical load with the toughness below)."
             ),
         )
+
+        # Ply count of the laminate as entered (the analysis replaces the
+        # preset's n_plies with it); the preset's when the layup is invalid.
+        try:
+            n_plies = len(parse_layup(layup_str))
+        except ValueError:
+            n_plies = 0
+        crack_length, mmb_mode_ratio = _build_fracture_specimen_inputs(
+            loading_mode, material_name, n_plies, t_ply)
 
         failure_criterion = st.selectbox(
             "FE failure criterion",
@@ -1857,19 +2757,21 @@ def _build_sidebar_inputs() -> dict | None:
                 "includes a delamination-onset mode (interlaminar normal "
                 "and shear stress at the ply Gauss points against the "
                 "porosity-degraded transverse tensile and interlaminar "
-                "shear strengths). There is no explicit delamination in "
-                "the model: this screens initiation only."
+                "shear strengths). It screens initiation inside the plies; "
+                "an explicit delamination is the Delamination input below."
             ),
         )
+        onset, onset_x_avg = _build_onset_inputs()
 
         thermal_mode, delta_T = _build_thermal_inputs(material_name)
 
-        # Ply count of the laminate as entered (the analysis replaces the
-        # preset's n_plies with it); the preset's when the layup is invalid.
-        try:
-            n_plies = len(parse_layup(layup_str))
-        except ValueError:
-            n_plies = 0
+        delamination, knockdown_split, delam_problem = _build_delamination_inputs(
+            loading_mode, thermal_mode, n_plies, t_ply)
+        specimen = loading_mode in _FRACTURE_MODES and thermal_mode != "thermal_only"
+        toughness, tough_problem = ({}, None)
+        if delamination is not None or specimen:
+            toughness, tough_problem = _build_toughness_inputs()
+
         nx0, ny0, nz0 = _default_mesh_resolution(
             n_plies or MATERIALS[material_name].n_plies)
         mesh_note = ("one element layer per ply" if not n_plies or nz0 == n_plies
@@ -1928,13 +2830,25 @@ def _build_sidebar_inputs() -> dict | None:
                     f"the merged plies differ in angle. Use nz = {nz_fix} "
                     f"(a multiple of {n_plies}).")
                 _offer_nz_fix(nz_fix, key="nz_fix_sidebar")
+        elif (delamination is not None or specimen) and n_plies and nz % n_plies:
+            # The same rule for a delamination: every ply interface must be
+            # a node layer.
+            nz_fix = _resolving_nz(nz, n_plies)
+            st.warning(
+                f"A delamination needs every ply interface on a node layer: "
+                f"nz = {nz} layers do not resolve the {n_plies}-ply layup, so "
+                f"the FE solve will be skipped. Use nz = {nz_fix} (a multiple "
+                f"of {n_plies}).")
+            _offer_nz_fix(nz_fix, key="nz_fix_delamination")
 
         _layup_bad = st.session_state.get("_layup_status", ("ok", None))[0] == "err"
         _missing_dT = thermal_mode != "off" and delta_T is None
+        _defect_problem = delam_problem or tough_problem
         _run_disabled = (
             _layup_bad
             or nx * ny * nz > CompositeMesh._MAX_TOTAL_ELEMENTS
             or _missing_dT
+            or _defect_problem is not None
         )
         run = st.button(
             "Run analysis",
@@ -1945,6 +2859,7 @@ def _build_sidebar_inputs() -> dict | None:
                 "Fix the layup string above before running." if _layup_bad
                 else "Enter ΔT (K) for the thermal load, or switch it off."
                 if _missing_dT
+                else _defect_problem if _defect_problem is not None
                 else "Reduce the mesh size to run." if _run_disabled
                 else None
             ),
@@ -1974,6 +2889,15 @@ def _build_sidebar_inputs() -> dict | None:
         "thermal_mode": thermal_mode,
         "delta_T": delta_T,
         "failure_criterion": failure_criterion,
+        # Defects and fracture (each at its default when not used, so the
+        # cache key of a run without them is unchanged).
+        "delamination": delamination,
+        "knockdown_split": knockdown_split,
+        **toughness,
+        "onset": onset,
+        "onset_x_avg": onset_x_avg,
+        "crack_length": crack_length,
+        "mmb_mode_ratio": mmb_mode_ratio,
     }
     return {"cfg": cfg, "layup_str": layup_str, "run": run}
 
@@ -2008,7 +2932,10 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
         sets the FE solve: ILSS runs on the ASTM D2344 short-beam specimen,
         and the FE-only flexure modes on the ASTM D7264 three- or
         four-point specimen, with the FE flexural modulus shown next to the
-        lamination-theory value.
+        lamination-theory value. The FE-only DCB, ENF and MMB modes solve
+        the ASTM D5528, D7905 and D6671 delamination fracture specimens for
+        test planning. An explicit delamination (an NDI indication) can be
+        added to the FE solve, with the interlaminar toughness you enter.
 
         - **Profile** — through-thickness porosity distribution
         - **Mesh** — mid-y cross-section of the FE mesh, coloured by
@@ -2016,8 +2943,10 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
           exaggerated; the axis label gives the factor)
         - **Results** — empirical knockdown bar chart with the FE stiffness
           knockdown overlaid, the short-beam, flexure and thermal
-          residual-stress results of the FE solve, an uncertainty analysis
-          and an optional mesh-convergence check
+          residual-stress results of the FE solve, the defect results
+          (delamination front, fracture load factor, knockdown by defect,
+          interface onset, fracture specimens) when requested, an
+          uncertainty analysis and an optional mesh-convergence check
         - **Stress** — FE stress in the ply axes for a chosen component,
           opening on the one that governs the load case
         - **Export** — download the empirical knockdown sweep as JSON or
@@ -2043,12 +2972,19 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
                       f"({spec['length_mm']:.1f} × {spec['width_mm']:.1f} × "
                       f"{spec['thickness_mm']:.2f} mm, mesh "
                       f"{spec['mesh'].replace('x', '×')})")
+    delamination = result.get("delamination")
+    delamination_note = ("" if delamination is None else
+                         f" Delamination: {delamination_text(delamination)}.")
     st.success(
         f"Last run: {cfg_r['material_name']}, layup {layup_for_title}, "
         f"Vp = {cfg_r['Vp']:.1f}%, {cfg_r['void_shape']}, "
         f"{cfg_r['distribution']}, {mesh_note}."
-        + thermal_note
+        + thermal_note + delamination_note
     )
+    front = _crack_front(result)
+    if front is not None and front.toughness_uncalibrated:
+        st.warning("⚠ The fracture results use the uncalibrated placeholder "
+                   "toughness knockdown (Results tab, Defects).")
     if result.get("fe_skipped_reason"):
         reason = result["fe_skipped_reason"]
         st.warning(
@@ -2086,6 +3022,7 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_short_beam_results(result)
     _build_flexure_results(result)
     _build_thermal_results(result)
+    _build_defect_results(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
 
@@ -2219,6 +3156,64 @@ def _build_thermal_results(result: dict) -> None:
                                               strict=True):
         col.metric(label, value, help=help_text)
     st.caption(caption)
+
+
+def _metric_row(rows) -> None:
+    """``rows`` of ``(label, value, help)`` as one row of metrics."""
+    if rows:
+        for col, (label, value, help_text) in zip(st.columns(len(rows)), rows,
+                                                  strict=True):
+            col.metric(label, value, help=help_text)
+
+
+def _build_defect_results(result: dict) -> None:
+    """The Defects block: fracture specimen, delamination front, knockdown
+    decomposition and interface onset (nothing when none was requested)."""
+    test = fe_fracture_test_summary(result)
+    front = fe_delamination_summary(result)
+    split = fe_decomposition_summary(result)
+    onset = fe_onset_summary(result)
+    if test is None and front is None and split is None and onset is None:
+        if result.get("delamination") is not None and result.get("fe_field") is None:
+            st.warning("The delamination's FE solve was skipped: "
+                       f"{result.get('fe_skipped_reason')}")
+            _offer_nz_fix(result.get("fe_nz_suggestion"), key="nz_fix_defects")
+        return
+    st.subheader("Defects: delamination and interface onset")
+    if front is not None and front[2]:
+        st.warning(
+            "⚠ Toughness knockdown uncalibrated: the toughness at the front "
+            "was lowered by the porosity there with the placeholder "
+            "coefficients b_I = 6.2, b_II = 14 (two-point literature "
+            "estimates). The fracture load factor and the critical loads "
+            "carry that uncertainty; enter your own coefficients, or none, in "
+            "the sidebar.")
+    if test is not None:
+        st.markdown(f"**FE fracture specimen ({result['fe_specimen']['standard']}, "
+                    f"{result['fe_loading'].upper()})**")
+        rows, caption = test
+        _metric_row(rows)
+        st.caption(caption)
+    if front is not None:
+        st.markdown("**Delamination front (virtual crack closure)**")
+        rows, caption, _ = front
+        _metric_row(rows)
+        st.caption(caption)
+        st.dataframe(fe_front_rows(result), hide_index=True,
+                     use_container_width=True)
+        _show_figure(plot_front(result), "delamination_front", "dl_png_front")
+    if split is not None:
+        st.markdown("**Knockdown by defect**")
+        rows, caption = split
+        _metric_row(rows)
+        st.caption(caption)
+    if onset is not None:
+        st.markdown("**Interface delamination onset (Brewer-Lagace)**")
+        rows, table, caption = onset
+        _metric_row(rows)
+        if table:
+            st.dataframe(table, hide_index=True, use_container_width=True)
+        st.caption(caption)
 
 
 def _build_uq_expander(result: dict):
@@ -2366,6 +3361,14 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         "identification stays on the parent NCR."
     )
 
+    # A delamination of the part with a fracture load factor can be
+    # dispositioned on its fracture margin (porosity alone otherwise).
+    delamination_ncr = ncr_delamination_available(result)
+    if result.get("delamination") is not None and not delamination_ncr:
+        st.caption(
+            "The delamination has no fracture load factor (no toughness "
+            "data), so this summary can disposition the porosity only.")
+
     with st.form("ncr_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -2388,6 +3391,30 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
                     "for any Use-As-Is."
                 ),
             )
+        indication, required = "porosity", None
+        if delamination_ncr:
+            c3, c4 = st.columns(2)
+            with c3:
+                indication = st.selectbox(
+                    "Indication type", options=list(INDICATION_TYPES),
+                    index=list(INDICATION_TYPES).index("combined"),
+                    key="ncr_indication",
+                    help=("porosity: bins on the void content and knockdown. "
+                          "delamination: the fracture margin λ_c against the "
+                          "required load factor, never the void content. "
+                          "combined: both, the more severe path governs."),
+                )
+            with c4:
+                required = st.number_input(
+                    "Required load factor", min_value=0.0001, value=None,
+                    step=0.1, format="%.4g", key="ncr_required_load_factor",
+                    placeholder="required",
+                    help=(f"The multiple of the analysis load "
+                          f"({_load_factor_text(result, 1.0)}) the part must "
+                          f"carry without delamination growth, from your "
+                          f"structural substantiation; there is no default. "
+                          f"The predicted λ_c multiplies the same load."),
+                )
         note = st.text_area(
             "Engineer note (optional)", value="",
             help="Any observation context to record on the summary.",
@@ -2399,6 +3426,10 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
 
     if not make_ncr:
         return
+    if indication != "porosity" and required is None:
+        st.error("Enter the required load factor to disposition the "
+                 "delamination on its fracture margin.")
+        return
 
     meta = {
         "prepared_by": prepared_by,
@@ -2408,6 +3439,9 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         "date": datetime.date.today().isoformat(),
         "layup": layup_for_title,
     }
+    if indication != "porosity":
+        meta["indication"] = indication
+        meta["required_load_factor"] = float(required)
     ncr = build_ncr_record(result, meta)
     dp = ncr["recommended_disposition"]
     st.warning(
