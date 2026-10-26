@@ -299,16 +299,16 @@ def _delamination_options(args) -> dict:
             raise ValueError(
                 f"--toughness values must be positive and finite (N/mm), got "
                 f"{bad[0]!r}.")
+    from .toughness import ToughnessKnockdown, ToughnessKnockdownSpec
+
     law = args.toughness_knockdown or _DELAM_DEFAULT_LAW
+    knockdown: ToughnessKnockdownSpec = None if law == 'none' else law
     if args.toughness_b is not None:
         if law == 'none':
             raise ValueError("--toughness-b is the exponential law; it cannot "
                              "be combined with --toughness-knockdown none.")
-        from .toughness import ToughnessKnockdown
         knockdown = ToughnessKnockdown(b_I=args.toughness_b[0],
                                        b_II=args.toughness_b[1])
-    else:
-        knockdown = None if law == 'none' else law
     return {
         'delamination': args.delamination,
         'loading': args.delam_loading or _DELAM_DEFAULT_LOADING,
@@ -366,10 +366,11 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
     FESolver.export_results(result, out_path, knockdown_decomposition=parts)
     front = result.crack_front
     lam = result.fracture_load_factor
-    row = None if front is None else front.governing
-    where = "" if row is None else (
-        f" at x = {front.x[row]:.1f}, y = {front.y[row]:.1f} mm, "
-        f"psi = {front.psi[row]:.2f}")
+    where = ""
+    if front is not None and front.governing is not None:
+        row = front.governing
+        where = (f" at x = {front.x[row]:.1f}, y = {front.y[row]:.1f} mm, "
+                 f"psi = {front.psi[row]:.2f}")
     return (f"  {loading}, {config}: lambda_c = "
             f"{'n/a (no toughness)' if lam is None else f'{lam:.4g}'}{where}; "
             f"knockdown total {parts.total:.4f}, porosity only "

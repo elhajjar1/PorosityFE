@@ -613,7 +613,7 @@ def recommend_disposition(
         "structural margins."
     )
 
-    out = {
+    out: dict = {
         "path": path,
         "structural_class": structural_class,
         "rationale": rationale,
