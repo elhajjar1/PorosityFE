@@ -9,15 +9,24 @@ Split out of ``fe/solver.py`` (IMPROVEMENT_PLAN 5.1);
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
 
+from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..results import FailureResult
 from .element import _DEFAULT_FORMULATION
 from .export import write_vtk, write_vtu
+from .interlaminar import (
+    DelaminationOnset,
+    InterfaceTractions,
+    OnsetCriterion,
+    delamination_onset,
+    interface_tractions,
+)
 from .recovery import NodalAverage, extrapolate_to_nodes
 from .vcct import CrackFront, vcct_energy_release_rates
 
@@ -386,6 +395,58 @@ class FieldResults:
             return None
         return vcct_energy_release_rates(mesh, self.displacement,
                                          self.interface_forces)
+
+    def interface_tractions(self, mesh: CompositeMesh, *,
+                            interfaces: Iterable[int] | None = None
+                            ) -> InterfaceTractions:
+        """Interlaminar traction at the ply interfaces, from both sides.
+
+        :func:`~porosity_fe.interface_tractions` on these results: the
+        traction ``(tau_xz, tau_yz, sigma_zz)`` extrapolated to every ply
+        interface that is a node layer from the element layer below and the
+        one above, their average and their jump.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results.
+        interfaces : iterable of int, optional
+            Only these interfaces; default all that are node layers.
+
+        Returns
+        -------
+        InterfaceTractions
+            One row per interface node.
+        """
+        return interface_tractions(self, mesh, interfaces=interfaces)
+
+    def delamination_onset(self, mesh: CompositeMesh,
+                           material: MaterialProperties, *,
+                           criterion: OnsetCriterion = 'brewer_lagace',
+                           x_avg: float | None = None,
+                           Zc: float | None = None,
+                           interfaces: Iterable[int] | None = None,
+                           interior_margin: float | None = None,
+                           void_shape_radii: tuple | None = None,
+                           ) -> DelaminationOnset:
+        """Stress-based delamination onset at the ply interfaces.
+
+        :func:`~porosity_fe.delamination_onset` on these results: the
+        Brewer-Lagace (or Ye) quadratic criterion on the interface traction
+        averaged over ``x_avg`` (default one ply thickness), with
+        porosity-degraded strengths, and the onset load factor. The
+        arguments are those of :func:`~porosity_fe.delamination_onset`.
+
+        Returns
+        -------
+        DelaminationOnset
+            Per-node onset index and load factor, the critical interface
+            and location, and the interior variant.
+        """
+        return delamination_onset(
+            self, mesh, material, criterion=criterion, x_avg=x_avg, Zc=Zc,
+            interfaces=interfaces, interior_margin=interior_margin,
+            void_shape_radii=void_shape_radii)
 
     def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:

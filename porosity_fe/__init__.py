@@ -83,17 +83,21 @@ from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
 from .fatigue import FatigueModel as FatigueModel  # noqa: F401, E402
 from .fe import BoundaryHandler as BoundaryHandler  # noqa: F401, E402
 from .fe import CrackFront as CrackFront  # noqa: F401, E402
+from .fe import DelaminationOnset as DelaminationOnset  # noqa: F401, E402
 from .fe import FESolver as FESolver  # noqa: F401, E402
 from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
 from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
+from .fe import InterfaceTractions as InterfaceTractions  # noqa: F401, E402
 from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
 from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
 from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
 from .fe import ShortBeamShear as ShortBeamShear  # noqa: F401, E402
 from .fe import critical_energy_release_rate as critical_energy_release_rate  # noqa: F401, E402
+from .fe import delamination_onset as delamination_onset  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
 from .fe import fracture_load_factors as fracture_load_factors  # noqa: F401, E402
+from .fe import interface_tractions as interface_tractions  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
@@ -225,6 +229,11 @@ __all__ = [
     # Porosity-dependent interlaminar toughness
     "ToughnessKnockdown",
     "toughness_knockdown_factor",
+    # Interlaminar stresses and delamination onset
+    "InterfaceTractions",
+    "interface_tractions",
+    "DelaminationOnset",
+    "delamination_onset",
     # Visualization
     "FEVisualizer",
     # IO
