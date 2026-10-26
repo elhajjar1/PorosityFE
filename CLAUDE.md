@@ -94,6 +94,43 @@ When changing one solver, check whether the matching behavior in the
 other is intentional or needs to move in lockstep — they're independent
 implementations of the same physical claim.
 
+### Delamination and fracture mechanics (FE only)
+
+Porosity is smeared into the stiffness; a delamination is an explicit
+crack. `Delamination` (`porosity_fe/delamination.py`) is a strip,
+rectangle or ellipse at interface `k` (between plies `k` and `k + 1`).
+`CompositeMesh(..., delaminations=...)` duplicates that interface's node
+plane, appending the duplicates after the `n_structured_nodes` structured
+nodes, and ties every pair outside the delamination (`bonded_ties`,
+exact master-slave elimination in `_ConstraintReduction`; a tied
+duplicate is never prescribed). Structured helpers must slice
+`[:n_structured_nodes]`. Every pair bonded gives the plain mesh's solution
+to round-off, and the pristine reference always has every pair bonded.
+On top of the solve:
+- `fe/_contact.py`: frictionless crack-face contact, a primal-dual active
+  set that changes only the ties (one extra LU cache entry).
+- `fe/vcct.py` / `fe/_fracture.py`: VCCT energy release rates at the
+  front (only the mode I product is clipped at zero; the shear products
+  keep their sign), the Benzeggagh-Kenane toughness with Reeder's mode III
+  term, and the critical load factor `lambda_c` (quadratic with a thermal
+  prestress). The toughness at each front node is knocked down by the local
+  porosity (`porosity_fe/toughness.py`, `ToughnessKnockdown`); the default
+  exponential law has **uncalibrated placeholder** coefficients and every
+  result it changes carries `toughness_uncalibrated = True`.
+- `fe/interlaminar.py`: interface traction recovery and the stress-based
+  Brewer-Lagace / Ye onset criteria (post-processing only);
+  `porosity_fe/edge_delamination.py`: O'Brien's free-edge G (lamination
+  theory).
+- `porosity_fe/fracture_specimens.py` and `CompositeMesh.for_dcb` /
+  `for_enf` / `for_mmb` with the `'dcb'` / `'enf'` / `'mmb'` loadings:
+  the fracture specimens, verified against Krueger's NASA benchmarks in
+  `tests/test_fracture_specimens.py` (the slow ones behind
+  `POROSITY_FE_FRACTURE_BENCH=1`).
+
+The empirical path has no delamination. The linear VCCT load factor is
+growth *onset* only: no propagation, cohesive zone or buckling.
+`DELAMINATION_PLAN.md` holds the plan, its status and the open decisions.
+
 ### `Vp` is always a fraction, never a percent
 
 `PorosityField.__init__` enforces `Vp ∈ [0, 1]` and emits a percent-vs-fraction
@@ -126,8 +163,10 @@ handling, change it here, not at the call sites.
 
 ### Validation database
 
-`validation/datasets/*.json` holds 13 peer-reviewed experimental
-datasets, schema-validated against
+`validation/datasets/*.json` holds 15 peer-reviewed experimental
+datasets (13 strength and modulus, plus 2 interlaminar-toughness ones,
+`hakim_2017` and `agius_fox_2015`, whose MAE is reported apart from the
+strength headline), schema-validated against
 `validation/schemas/validation_dataset_schema.json`. The datasets are
 tracked in the repository (it is where they are backed up), and CI runs
 the validation tests against them. The PyInstaller spec bundles them into
@@ -154,7 +193,8 @@ collection puts `test_cli.py` first.
 
 ## Units and conventions
 
-- **Stiffnesses and strengths: MPa. Thicknesses: mm.** Documented at the
+- **Stiffnesses and strengths: MPa. Thicknesses: mm. Energy release
+  rates and toughness: N/mm (= kJ/m²).** Documented at the
   API surface; look for the `Notes` block on
   `MaterialProperties.get_stiffness_matrix`, `Hex8Element.B_matrix`,
   `FieldResults`, and `EmpiricalSolver.apply_loading` for Voigt order,
@@ -162,6 +202,10 @@ collection puts `test_cli.py` first.
 - **Tsai-Wu `F_12`**: default is Tsai's `F_12 = -0.5·√(F_11·F_22)`; users
   can override via `MaterialProperties(tsai_wu_F12=...)` (must be in
   `[-1, 0]`).
+- **Interlaminar strengths**: optional `sigma_3t` (`Z_t`) and `tau_13`
+  (`S_13`); when `None` every criterion keeps its stand-in (`sigma_2t`;
+  `tau_12` in Tsai-Wu and maximum stress, `tau_ilss` in Hashin), so the
+  default results do not change.
 - **Calibration scope**: empirical coefficients are validated to
   `Vp ≲ 0.05`; flag extrapolations explicitly.
 
@@ -184,7 +228,10 @@ version-sensitive code.
   constants are required — there are no defaults. Both the FE
   micromechanics path and the empirical path read from the same dataclass,
   so populate constituent fields (`matrix_modulus`, `fiber_volume_fraction`,
-  etc.) even if you only plan to exercise the empirical solver.
+  etc.) even if you only plan to exercise the empirical solver. The CTEs,
+  the interlaminar strengths and the toughness (`G_Ic`, `G_IIc`,
+  `G_IIIc`, `bk_eta`) are optional and default to `None`; set them only
+  from a cited source.
 - **New empirical correlation**: register the law function in
   `_KNOCKDOWN_LAWS` (`porosity_fe/empirical.py`), the one place every
   solver path looks laws up; add its QI table to `Calibration`, its name to
