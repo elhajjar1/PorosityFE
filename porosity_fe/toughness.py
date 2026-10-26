@@ -65,7 +65,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal
 
 import numpy as np
 
@@ -113,7 +113,7 @@ def _check_mode(mode: object) -> ToughnessMode:
     if mode not in _MODES:
         raise ValueError(
             f"Unknown fracture mode {mode!r}. Use one of {list(_MODES)}.")
-    return cast(ToughnessMode, mode)
+    return mode
 
 
 def _check_Vp(Vp: Any) -> np.ndarray:

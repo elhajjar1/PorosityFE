@@ -5,8 +5,7 @@ from the tie forces of the bonded front pairs and the openings of the pairs
 one element behind (Krueger 2004, the 8-node brick formulas), the mixed-mode
 Benzeggagh-Kenane toughness, knocked down by the porosity at each front node
 (:class:`~porosity_fe.ToughnessKnockdown`), and the critical load factor. The
-duplicated
-interface nodes, the bonded ties and the front come from
+duplicated interface nodes, the bonded ties and the front come from
 :class:`~porosity_fe.CompositeMesh`; :meth:`FESolver.solve
 <porosity_fe.FESolver.solve>` fills :attr:`FieldResults.crack_front
 <porosity_fe.FieldResults.crack_front>` with the table built here. See the
