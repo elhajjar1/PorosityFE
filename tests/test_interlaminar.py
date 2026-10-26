@@ -25,6 +25,7 @@ Stresses and strengths in MPa, lengths in mm.
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 
 import numpy as np
@@ -310,6 +311,8 @@ class TestTractionRecovery:
             interface_tractions(res, mesh, interfaces=[0])
         with pytest.raises(ValueError, match='do not exist'):
             interface_tractions(res, mesh, interfaces=[3])
+        with pytest.raises(ValueError, match='integers'):
+            interface_tractions(res, mesh, interfaces=[1.0])
         mat, mesh3 = _small_mesh(n_plies=4, layup=(0, 90, 90, 0), nz=3)
         with pytest.raises(ValueError, match='no ply interface'):
             interface_tractions(_results(mesh3, _uniform(mesh3)), mesh3)
@@ -502,6 +505,7 @@ class TestOnset:
         assert onset.critical_interface == 0
         assert onset.load_factor_basis == 'mechanical'
         summary = onset.summary()
+        json.dumps(summary, allow_nan=False)                   # strict JSON
         assert summary['interface_max_index'] == {'0': pytest.approx(hand)}
         # The one-element plate has no interior.
         assert summary['interior_max_index'] is None and not onset.interior.any()
