@@ -8,6 +8,8 @@ Pure functions over recovered ply-local stresses, used by
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 
 from ..empirical import Calibration
@@ -58,6 +60,8 @@ def _element_porosity_and_skip(porosity: np.ndarray, elements: np.ndarray,
 #: element, or arrays of them; ``None`` in a slot keeps that criterion's
 #: historical stand-in (see :func:`degraded_interlaminar_strengths`).
 Interlaminar = tuple[float | np.ndarray | None, float | np.ndarray | None]
+#: The scalar form, for one element's Tsai-Wu coefficients.
+ScalarInterlaminar = tuple[float | None, float | None]
 
 
 def _strength_ratios(material: MaterialProperties, void_shape_radii: tuple,
@@ -367,7 +371,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
 def _tsai_wu_coefficients(
         strengths: tuple[float, float, float, float, float, float],
         tsai_wu_F12: float | None,
-        interlaminar: Interlaminar | None = None) -> tuple[float, ...]:
+        interlaminar: ScalarInterlaminar | None = None) -> tuple[float, ...]:
     """Tsai-Wu coefficients ``(F1, F2, F3, F11, F22, F33, F44, F55, F66,
     F12, F13, F23)`` for one element's degraded strengths.
 
@@ -410,7 +414,7 @@ def evaluate_tsai_wu(s_all: np.ndarray,
                      strengths: tuple[float, float, float, float, float, float],
                      e: int, elem_Vp: float,
                      tsai_wu_F12: float | None = None, *,
-                     interlaminar: Interlaminar | None = None) -> np.ndarray:
+                     interlaminar: ScalarInterlaminar | None = None) -> np.ndarray:
     """Tsai-Wu polynomial evaluated for one element's Gauss points.
 
     The diagonal coefficients ``F1, F2, F11, F22, F33, F44, F55, F66``
@@ -671,8 +675,8 @@ def _point_load_factors(s_all: np.ndarray,
     Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     if criterion == 'tsai_wu':
         (F1, F2, F3, F11, F22, F33, F44, F55, F66,
-         F12, F13, F23) = _tsai_wu_coefficients(strengths, tsai_wu_F12,
-                                                interlaminar)
+         F12, F13, F23) = _tsai_wu_coefficients(
+            strengths, tsai_wu_F12, cast('ScalarInterlaminar | None', interlaminar))
         B = F1 * s0 + F2 * s1 + F3 * s2
         A = (F11 * s0**2 + F22 * s1**2 + F33 * s2**2
              + F44 * s3**2 + F55 * s4**2 + F66 * s5**2
@@ -823,8 +827,11 @@ def _point_load_factors_prestressed(
     """
     Zt_o, S13_o = (None, None) if interlaminar is None else interlaminar
     if criterion == 'tsai_wu':
+        # Computed here only for scalar strengths; the vectorized caller
+        # passes the coefficients precomputed per porosity level.
         co = tsai_wu_coefficients if tsai_wu_coefficients is not None \
-            else _tsai_wu_coefficients(strengths, tsai_wu_F12, interlaminar)
+            else _tsai_wu_coefficients(strengths, tsai_wu_F12,
+                                       cast('ScalarInterlaminar | None', interlaminar))
         lin_th, quad_th = _tsai_wu_forms(s_th, s_th, co)
         lin_m, A = _tsai_wu_forms(s_m, s_m, co)
         _, cross = _tsai_wu_forms(s_th, s_m, co)
