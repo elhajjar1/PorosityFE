@@ -241,6 +241,8 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         Shape (n_elem, 8) hex connectivity.
     material : MaterialProperties
         Pristine ply properties (strengths, constituents, ``tsai_wu_F12``).
+        When it sets the optional ``sigma_3t`` or ``tau_13``, every
+        criterion uses them (:func:`degraded_interlaminar_strengths`).
     void_shape_radii : tuple
         Void shape used by the Mori-Tanaka strength degradation.
     criterion : {'tsai_wu', 'hashin', 'max_stress'}

@@ -154,7 +154,8 @@ def obrien_edge_delamination(material: MaterialProperties,
     ``G = (eps^2 t / 2) (E_LAM - E*)`` (O'Brien 1981, eq. 10), independent
     of the delamination size. ``E_LAM`` is the axial modulus of the intact
     laminate from classical lamination theory, ``E_LAM = 1 / (t a_11)``
-    with ``a = A^-1``. ``E* = sum(E_i t_i) / t`` (his eq. 2) is the modulus
+    with ``a = A^-1`` (the full ``ABD`` inverse with ``bending_coupling``).
+    ``E* = sum(E_i t_i) / t`` (his eq. 2) is the modulus
     of the laminate completely delaminated along ``interfaces``, from the
     moduli ``E_i`` of the sublaminates it then falls into, each loaded to
     the same axial strain (but free to take its own transverse strain).
@@ -206,9 +207,10 @@ def obrien_edge_delamination(material: MaterialProperties,
     Notes
     -----
     The rule of mixtures holds away from the delamination front, so ``G``
-    is the value the growing delamination approaches once it is a few ply
-    thicknesses long; near the free edge O'Brien's own finite-element
-    analysis gives less. It is the total energy release rate: the mode
+    is the value the delamination reaches once it has grown a short
+    distance from the edge; O'Brien's own finite-element analysis gives
+    less for a delamination that has barely started. It is the total
+    energy release rate: the mode
     split needs a finite-element analysis (VCCT). Compare it with a
     toughness measured in the same convention: O'Brien's eq. (10) takes the
     delaminated area as the planform area, one delamination per edge; see
