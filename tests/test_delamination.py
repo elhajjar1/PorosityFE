@@ -482,11 +482,14 @@ class TestFullyBondedEquivalence:
         np.testing.assert_array_equal(b.displacement[duplicates], b.displacement[originals])
         s_scale = np.abs(a.stress_global).max()
         np.testing.assert_allclose(b.stress_global, a.stress_global, rtol=0, atol=1e-9 * s_scale)
-        assert _rel(b.knockdown, a.knockdown) < 1e-10
-        assert _rel(b.effective_modulus, a.effective_modulus) < 1e-10
-        assert _rel(b.max_failure_index, a.max_failure_index) < 1e-10
-        assert _rel(b.first_ply_failure_load_factor, a.first_ply_failure_load_factor) < 1e-10
-        assert _rel(b.interior_max_failure_index, a.interior_max_failure_index) < 1e-10
+        # Same round-off bound as the fields. The flexure knockdown, a ratio
+        # of u^T K u energies on a slender beam, differs by ~1e-10 (CI) to
+        # ~1e-11 between the two node orderings, against ~1e-15 for the coupon.
+        assert _rel(b.knockdown, a.knockdown) < 1e-9
+        assert _rel(b.effective_modulus, a.effective_modulus) < 1e-9
+        assert _rel(b.max_failure_index, a.max_failure_index) < 1e-9
+        assert _rel(b.first_ply_failure_load_factor, a.first_ply_failure_load_factor) < 1e-9
+        assert _rel(b.interior_max_failure_index, a.interior_max_failure_index) < 1e-9
         # Reactions: the duplicates' are folded onto their originals.
         assert not np.any(b.reaction_forces[n0:])
         if loading == 'thermal':     # statically determinate: zero up to noise
