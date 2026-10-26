@@ -213,6 +213,18 @@ class FieldResults:
         Whether the contact active set settled within the iteration cap
         (a warning is logged when it did not); ``None`` when contact was
         not enforced.
+    load_point_compliance : float or None
+        Load-point compliance ``C = (F . u) / P^2`` (mm/N) of the fracture
+        tests ('dcb', 'enf', 'mmb'), with ``F`` the applied nodal forces,
+        ``u`` the mechanical displacement and ``P`` the applied load: the
+        displacement of the load point per unit load that does work with
+        ``P``. For the DCB it is the opening of the two hinge lines over the
+        hinge load, for the ENF the mid-span deflection over the load, for
+        the MMB the displacement of the lever's load point (rigid lever)
+        over the lever load. Feed it to
+        :func:`~porosity_fe.compliance_calibration` at several crack lengths
+        for the data reduction of the test standards. ``None`` for the other
+        loading modes and at zero load.
 
     Notes
     -----
@@ -266,6 +278,7 @@ class FieldResults:
     contact_iterations: int | None = None
     contact_pairs: int | None = None
     contact_converged: bool | None = None
+    load_point_compliance: float | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -312,7 +325,9 @@ class FieldResults:
             ``contact_converged``, ``toughness_knockdown``: the
             description of the porosity-toughness law, and
             ``toughness_uncalibrated``), ``None`` without a delamination
-            (the two toughness keys also without toughness data).
+            (the two toughness keys also without toughness data), and
+            ``load_point_compliance`` (``None`` except for the fracture
+            tests).
         """
         kd = float(self.knockdown)
         sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
@@ -342,6 +357,7 @@ class FieldResults:
                 'delta_T': self.delta_T,
                 'residual_max_failure_index': self.residual_max_failure_index,
                 **self._fracture_details(),
+                'load_point_compliance': self.load_point_compliance,
             },
         )
 

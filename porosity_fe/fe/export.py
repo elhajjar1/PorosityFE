@@ -607,6 +607,11 @@ def export_results(field_results: FieldResults,
             'reaction_force_sum_N': [
                 float(v) for v in np.sum(field_results.reaction_forces, axis=0)],
         }
+        compliance = getattr(field_results, 'load_point_compliance', None)
+        if compliance is not None:
+            # Fracture tests only, so the other exports are unchanged.
+            results_data['stiffness']['load_point_compliance_mm_per_N'] = \
+                _finite_or_none(compliance)
 
     output = _wrap_envelope(FORMAT_FE_FIELDS, None, results_data)
     if delta_T is not None:

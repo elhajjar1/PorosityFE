@@ -101,13 +101,17 @@
     },
     "stiffness": {
       "type": "object",
-      "description": "FE-field export: effective modulus and summed reactions.",
+      "description": "FE-field export: effective modulus, summed reactions and, for the fracture tests, the load-point compliance.",
       "properties": {
         "effective_modulus_MPa": {
           "type": ["number", "null"],
           "description": "Strain-energy modulus in MPa (E_x or G_xy). null when there is no single modulus (ILSS bend, loading='thermal')."
         },
-        "reaction_force_sum_N": {"type": "array", "items": {"type": "number"}, "description": "Summed nodal reactions (N), x/y/z."}
+        "reaction_force_sum_N": {"type": "array", "items": {"type": "number"}, "description": "Summed nodal reactions (N), x/y/z."},
+        "load_point_compliance_mm_per_N": {
+          "type": ["number", "null"],
+          "description": "Load-point compliance (mm/N) of the fracture tests (loading 'dcb', 'enf', 'mmb'): the work-conjugate displacement of the applied load over the load. Written only for those loadings."
+        }
       }
     },
     "thermal": {

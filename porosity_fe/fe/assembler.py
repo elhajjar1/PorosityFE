@@ -14,6 +14,7 @@ import numpy as np
 import scipy.sparse
 
 from .._types import FEFormulation
+from ..fracture_specimens import FractureSpecimenGeometry
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, FlexureGeometry
 from ..porosity_field import PorosityField
@@ -860,12 +861,14 @@ class BoundaryHandler:
         return constrained
 
     def line_load(self, x: float, total_load: float, *,
-                  width: float = 0.0) -> np.ndarray:
+                  width: float = 0.0,
+                  face: Literal['z_min', 'z_max'] = 'z_max') -> np.ndarray:
         """Consistent nodal forces of a load across the width of the top face.
 
         Spreads ``total_load`` (N, along ``z``; negative is downward)
         uniformly along ``y`` over the full width of the top face
-        (``z_max``), on the line ``x = x0`` (``width = 0``) or as a uniform
+        (``z_max``; the bottom face with ``face='z_min'``), on the line
+        ``x = x0`` (``width = 0``) or as a uniform
         pressure over the band ``|x - x0| <= width / 2``. The nodal forces
         are the work-equivalent (consistent) loads of the bilinear face shape
         functions:
@@ -890,6 +893,8 @@ class BoundaryHandler:
             Total force along ``z`` (N).
         width : float
             Band width along ``x`` (mm), default ``0.0`` (a line load).
+        face : {'z_max', 'z_min'}
+            Keyword-only loaded face, default the top face ``'z_max'``.
 
         Returns
         -------
@@ -901,7 +906,8 @@ class BoundaryHandler:
         ------
         ValueError
             If ``total_load`` or ``width`` is not finite, ``width`` is
-            negative, or the line or band leaves the top face.
+            negative, ``face`` is unknown, or the line or band leaves the
+            face.
         """
         total = float(total_load)
         w = float(width)
@@ -909,7 +915,9 @@ class BoundaryHandler:
             raise ValueError(f"total_load must be finite, got {total_load!r}.")
         if not math.isfinite(w) or w < 0.0:
             raise ValueError(f"width must be a finite length >= 0, got {width!r}.")
-        top = self._face_nodes('z_max')
+        if face not in ('z_min', 'z_max'):
+            raise ValueError(f"face must be 'z_min' or 'z_max', got {face!r}.")
+        top = self._face_nodes(face)
         grid = np.unique(self.mesh.nodes[top, 0])
         weights = _hat_weights(grid, float(x), w, self._line_tolerance())
 
@@ -917,7 +925,7 @@ class BoundaryHandler:
         for xi, wx in zip(grid, weights, strict=True):
             if wx == 0.0:
                 continue
-            line = self._prescribable(self.face_line_nodes('z_max', float(xi)))
+            line = self._prescribable(self.face_line_nodes(face, float(xi)))
             y = self.mesh.nodes[line, 1]
             wy = np.zeros(line.size)
             if line.size == 1:
@@ -1042,6 +1050,123 @@ class BoundaryHandler:
                        3 * b + 1: 0.0, 3 * b + 2: 0.0,
                        3 * c + 2: 0.0}
         return constrained, np.zeros(self.mesh.n_dof, dtype=np.float64)
+
+    def fracture_geometry(self, test: str | None = None) -> FractureSpecimenGeometry:
+        """Loads, supports and insert of the mesh's fracture specimen.
+
+        :attr:`CompositeMesh.fracture_geometry`, set by
+        :meth:`CompositeMesh.for_dcb`, :meth:`CompositeMesh.for_enf` and
+        :meth:`CompositeMesh.for_mmb`.
+
+        Parameters
+        ----------
+        test : {'dcb', 'enf', 'mmb'}, optional
+            The test the caller runs; the specimen must be one.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has no fracture geometry, or one of another test.
+        """
+        geometry = getattr(self.mesh, 'fracture_geometry', None)
+        builders = {'dcb': 'for_dcb', 'enf': 'for_enf', 'mmb': 'for_mmb'}
+        if geometry is None:
+            name = '' if test is None else f"loading={test!r} is a fracture test and "
+            hint = (f"CompositeMesh.{builders[test]}(porosity_field, material)"
+                    if test in builders else
+                    "CompositeMesh.for_dcb, for_enf or for_mmb")
+            raise ValueError(
+                f"{name}needs a specimen mesh with its loads, supports and insert "
+                f"(CompositeMesh.fracture_geometry is None on this "
+                f"{self.mesh.L_x:.4g} x {self.mesh.L_y:.4g} mm mesh). Build it with "
+                f"{hint}.")
+        if test is not None and geometry.test != test:
+            raise ValueError(
+                f"loading={test!r} on a {geometry.test!r} specimen: build the "
+                f"specimen with CompositeMesh.{builders.get(test, 'for_' + str(test))}, or "
+                f"set mesh.fracture_geometry = dataclasses.replace("
+                f"mesh.fracture_geometry, test={test!r}) to run it on this one.")
+        return geometry
+
+    def _far_end_supports(self) -> dict[int, float]:
+        """Six statically determinate constraints at the far end (``x_max``).
+
+        ``u_x = u_y = u_z = 0`` at the bottom corner ``(x_max, y_min)``,
+        ``u_x = u_z = 0`` at the bottom corner ``(x_max, y_max)`` and
+        ``u_x = 0`` at the top corner ``(x_max, y_min)``: they remove the
+        six rigid-body modes and nothing else, so a self-equilibrated load
+        (the DCB hinge loads) leaves zero reactions.
+        """
+        faces = {f: self._face_nodes(f)
+                 for f in ('x_max', 'y_min', 'y_max', 'z_min', 'z_max')}
+
+        def corner(fy: str, fz: str) -> int:
+            nodes = np.intersect1d(np.intersect1d(faces['x_max'], faces[fy]), faces[fz])
+            if nodes.size == 0:
+                raise RuntimeError(
+                    f"No node on the (x_max, {fy}, {fz}) corner. Check mesh generation.")
+            return int(nodes[0])
+
+        a, b, c = corner('y_min', 'z_min'), corner('y_max', 'z_min'), corner('y_min', 'z_max')
+        return {3 * a: 0.0, 3 * a + 1: 0.0, 3 * a + 2: 0.0,
+                3 * b: 0.0, 3 * b + 2: 0.0, 3 * c: 0.0}
+
+    def fracture_bcs(self, applied_load: float = -10.0, *,
+                     geometry: FractureSpecimenGeometry | None = None,
+                     ) -> tuple[dict[int, float], np.ndarray]:
+        """Boundary conditions of a DCB, ENF or MMB fracture specimen.
+
+        Force controlled: the loads of :meth:`FractureSpecimenGeometry.load_lines`
+        under ``applied_load`` as consistent line loads across the width
+        (:meth:`line_load`), on
+
+        - ``'dcb'``: the six statically determinate constraints of
+          :meth:`_far_end_supports` at the far end (no reactions under the
+          equal and opposite hinge loads);
+        - ``'enf'`` and ``'mmb'``: roller supports (:meth:`roller_supports`)
+          on the bottom face at ``geometry.support_x``.
+
+        With ``geometry.plane_strain`` every prescribable node also has
+        ``u_y = 0``.
+
+        Parameters
+        ----------
+        applied_load : float
+            ``P`` (N): the DCB hinge load (its magnitude opens the arms), the
+            ENF mid-span load or the MMB lever load (negative downward).
+        geometry : FractureSpecimenGeometry, optional
+            Default :meth:`fracture_geometry`.
+
+        Returns
+        -------
+        constrained_dofs : dict
+            ``{global_dof: 0.0}``.
+        F : np.ndarray
+            Shape ``(n_dof,)`` force vector.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has no fracture geometry and none is given, or a
+            support or load line is not on a node line.
+        """
+        geom = self.fracture_geometry() if geometry is None else geometry
+        if geom.test == 'dcb':
+            constrained = self._far_end_supports()
+        else:
+            assert geom.support_x is not None
+            constrained = self.roller_supports(geom.support_x)
+        F = np.zeros(self.mesh.n_dof, dtype=np.float64)
+        for x, face, force in geom.load_lines(applied_load):
+            if self.face_line_nodes(face, x).size == 0:  # type: ignore[arg-type]
+                raise ValueError(
+                    f"No {face} node line at x = {x:g} mm for a {geom.test!r} load: "
+                    f"build the specimen with CompositeMesh.for_{geom.test}.")
+            F += self.line_load(x, force, face=face)  # type: ignore[arg-type]
+        if geom.plane_strain:
+            for nid in self._prescribable(np.arange(self.mesh.n_nodes)):
+                constrained[3 * int(nid) + 1] = 0.0
+        return constrained, F
 
     @staticmethod
     def apply_elimination(K: scipy.sparse.spmatrix, F: np.ndarray,

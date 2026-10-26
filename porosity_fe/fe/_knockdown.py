@@ -31,6 +31,7 @@ from ._load_cases import (
     _DEFAULT_APPLIED_STRAIN,
     _FLEXURE_PROCEDURE,
     _FORCE_CONTROLLED,
+    _FRACTURE_TESTS,
     apply_boundary_conditions,
 )
 from .assembler import BoundaryHandler, GlobalAssembler, _mesh_ties, _ties_token
@@ -50,7 +51,8 @@ def _stiffness_measure(loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
 
     ``u^T K u / strain^2`` for the displacement-controlled modes (the
     effective modulus times the volume) and ``load^2 / u^T K u`` (inverse
-    compliance) for the force-controlled ILSS and flexure bends.
+    compliance) for the force-controlled ILSS and flexure bends and the
+    fracture tests.
     """
     energy = float(u @ (K @ u))
     if loading in _FORCE_CONTROLLED:
@@ -107,7 +109,10 @@ def knockdown(loading: str, porous: float, pristine: float) -> float:
 
     For compression, tension and shear the ratio is ``E_x`` or ``G_xy``
     porous / pristine; for the ILSS and flexure bends it is the ratio of the
-    beam stiffnesses (inverse compliances). IMPROVEMENT_PLAN 2.4 replaced the
+    beam stiffnesses (inverse compliances), and for the fracture tests
+    ('dcb', 'enf', 'mmb') the ratio of the load-point compliance of the
+    bonded, pore-free specimen to the solved one's (for the DCB a small
+    number: its bonded counterpart hardly opens). IMPROVEMENT_PLAN 2.4 replaced the
     earlier ratio of signed domain-mean stresses, which read ``sigma_xx``
     for shear, went unstable for the sign-changing ILSS ``tau_xz`` field,
     and was silently clamped to 1. A ratio above 1 is not clamped; it is
@@ -158,6 +163,10 @@ def pristine_stiffness_measure(
         # Nor are the short-beam supports and loading band. The shallow
         # pristine mesh copy below carries the same ilss_geometry.
         key += (bc_handler.ilss_geometry(),)
+    elif key_loading in _FRACTURE_TESTS:
+        # Nor the fracture specimen's loads and supports; its crack length
+        # is left out, since the reference bonds every pair.
+        key += (bc_handler.fracture_geometry(key_loading).reference_key,)
     pairs = getattr(mesh, 'interface_node_pairs', None)
     if pairs is not None and pairs()[0].size:
         # The reference ties every duplicated pair: key on that tie set,
