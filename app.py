@@ -891,7 +891,7 @@ def fe_failure_summary(result: dict) -> tuple[list[tuple[str, str, str]],
         governing = _MODE_LABELS.get(max(candidates, key=candidates.get),
                                      max(candidates, key=candidates.get))
     else:
-        governing = "not separated (Tsai-Wu)"
+        governing = "n/a"
     rows = [
         ("Criterion", _CRITERION_LABELS.get(crit, crit).split(" (")[0],
          "FE failure criterion of this run (sidebar)."),

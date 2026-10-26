@@ -1194,7 +1194,7 @@ class TestFEFailureSummary:
         rows, modes, caption = app.fe_failure_summary(ilss_by_criterion["tsai_wu"])
         values = {label: value for label, value, _ in rows}
         assert values["Criterion"] == "Tsai-Wu"
-        assert values["Governing mode"] == "not separated (Tsai-Wu)"
+        assert values["Governing mode"] == "n/a"
         fe = ilss_by_criterion["tsai_wu"]["fe_field"]
         assert values["Max FI (domain)"] == f"{fe.max_failure_index:.4g}"
         assert modes == []
