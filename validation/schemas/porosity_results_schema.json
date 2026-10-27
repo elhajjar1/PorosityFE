@@ -101,13 +101,17 @@
     },
     "stiffness": {
       "type": "object",
-      "description": "FE-field export: effective modulus and summed reactions.",
+      "description": "FE-field export: effective modulus, summed reactions and, for the fracture tests, the load-point compliance.",
       "properties": {
         "effective_modulus_MPa": {
           "type": ["number", "null"],
           "description": "Strain-energy modulus in MPa (E_x or G_xy). null when there is no single modulus (ILSS bend, loading='thermal')."
         },
-        "reaction_force_sum_N": {"type": "array", "items": {"type": "number"}, "description": "Summed nodal reactions (N), x/y/z."}
+        "reaction_force_sum_N": {"type": "array", "items": {"type": "number"}, "description": "Summed nodal reactions (N), x/y/z."},
+        "load_point_compliance_mm_per_N": {
+          "type": ["number", "null"],
+          "description": "Load-point compliance (mm/N) of the fracture tests (loading 'dcb', 'enf', 'mmb'): the work-conjugate displacement of the applied load over the load. Written only for those loadings."
+        }
       }
     },
     "thermal": {
@@ -127,7 +131,7 @@
     },
     "fracture": {
       "type": "object",
-      "description": "FE-field export of a mesh with an explicit delamination (a delaminated interface node pair), added in schema_version 1.3: crack-face contact (crack_contact, and contact_iterations, contact_pairs, contact_converged, null when contact was off), the critical load factor of the Benzeggagh-Kenane criterion (fracture_load_factor, dimensionless, multiplying the load named by load_factor_basis; null without toughness data or when infinite) with its governing_node (original node id), governing_psi (mode mixity) and governing_G_T_N_per_mm, and the virtual-crack-closure table of the front (front, null without a front). Energy release rates and toughness in N/mm (1 N/mm = 1 kJ/m^2), lengths in mm. Every undefined or non-finite value is null.",
+      "description": "FE-field export of a mesh with an explicit delamination (a delaminated interface node pair), added in schema_version 1.3: crack-face contact (crack_contact, and contact_iterations, contact_pairs, contact_converged, null when contact was off), the critical load factor of the Benzeggagh-Kenane criterion (fracture_load_factor, dimensionless, multiplying the load named by load_factor_basis; null without toughness data or when infinite) with its governing_node (original node id), governing_psi (mode mixity) and governing_G_T_N_per_mm, the porosity-toughness law that knocked the toughness down at each front node (toughness_knockdown, a description; toughness_uncalibrated, true when its uncalibrated placeholder coefficients lowered a toughness; both null without toughness data), and the virtual-crack-closure table of the front (front, null without a front). Energy release rates and toughness in N/mm (1 N/mm = 1 kJ/m^2), lengths in mm. Every undefined or non-finite value is null.",
       "properties": {
         "crack_contact": {"type": ["boolean", "null"]},
         "contact_iterations": {"type": ["integer", "null"]},
@@ -138,12 +142,109 @@
         "governing_node": {"type": ["integer", "null"]},
         "governing_psi": {"type": ["number", "null"]},
         "governing_G_T_N_per_mm": {"type": ["number", "null"]},
+        "toughness_knockdown": {"type": ["string", "null"]},
+        "toughness_uncalibrated": {"type": ["boolean", "null"]},
         "n_front_nodes": {"type": "integer"},
         "front": {
           "type": ["object", "null"],
-          "description": "Front table, one entry per front node in every array: node and interface (integers), x_mm, y_mm, z_mm, direction_x and direction_y (growth direction), delta_a_mm, width_mm (tributary width), G_I_N_per_mm, G_II_N_per_mm, G_III_N_per_mm, G_T_N_per_mm, psi (mode mixity, null where G_T = 0), Vp (porosity, fraction), G_c_N_per_mm and lambda_c (null columns without toughness data; a null entry where lambda_c is infinite).",
+          "description": "Front table, one entry per front node in every array: node and interface (integers), x_mm, y_mm, z_mm, direction_x and direction_y (growth direction), delta_a_mm, width_mm (tributary width), G_I_N_per_mm, G_II_N_per_mm, G_III_N_per_mm, G_T_N_per_mm, psi (mode mixity, null where G_T = 0), Vp (porosity at the crack plane, fraction), G_c_N_per_mm (knocked down by that porosity) and lambda_c (null columns without toughness data; a null entry where lambda_c is infinite).",
           "additionalProperties": {"type": ["array", "null"], "items": {"type": ["number", "null"]}}
         }
+      }
+    },
+    "delamination_onset": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., onset=...)), added in schema_version 1.3: DelaminationOnset.summary() of the stress-based interface onset (Brewer-Lagace or Ye) of the results. criterion; x_avg_mm, the side of the in-plane averaging window (mm; 0 = nodal traction); Zc_MPa, the compressive strength of the optional compression term (null without one); load_factor_basis; max_index and interior_max_index (dimensionless, 1 = onset; null when no node was evaluated); critical_interface and critical_x_mm, critical_y_mm, critical_z_mm (null when no node was evaluated); onset_load_factor and interior_onset_load_factor (dimensionless multiples of the load named by load_factor_basis; null when infinite or not evaluated); interface_max_index, the largest index of each interface keyed by the interface as a string (null where none of its nodes was evaluated). Written only when the onset is passed.",
+      "properties": {
+        "criterion": {"type": "string", "enum": ["brewer_lagace", "ye"]},
+        "x_avg_mm": {"type": "number"},
+        "Zc_MPa": {"type": ["number", "null"]},
+        "load_factor_basis": {"type": "string", "enum": ["mechanical", "delta_T", "mechanical_with_residual"]},
+        "max_index": {"type": ["number", "null"]},
+        "critical_interface": {"type": ["integer", "null"]},
+        "critical_x_mm": {"type": ["number", "null"]},
+        "critical_y_mm": {"type": ["number", "null"]},
+        "critical_z_mm": {"type": ["number", "null"]},
+        "onset_load_factor": {"type": ["number", "null"]},
+        "interior_max_index": {"type": ["number", "null"]},
+        "interior_onset_load_factor": {"type": ["number", "null"]},
+        "interface_max_index": {"type": "object", "additionalProperties": {"type": ["number", "null"]}}
+      }
+    },
+    "knockdown_decomposition": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., knockdown_decomposition=...)), added in schema_version 1.3: the FE stiffness knockdown of a porous, delaminated laminate split by defect (KnockdownDecomposition.summary()), each against the laminate with no porosity, voids or delamination. loading; knockdown_total (porosity and delamination), knockdown_porosity_only (the same porosity, every interface pair bonded), knockdown_delamination_only (the same delamination, no porosity), dimensionless; dominant, the defect whose knockdown alone is the lower (null when they agree to 1e-9). Written only when passed.",
+      "properties": {
+        "loading": {"type": "string"},
+        "knockdown_total": {"type": ["number", "null"]},
+        "knockdown_porosity_only": {"type": ["number", "null"]},
+        "knockdown_delamination_only": {"type": ["number", "null"]},
+        "dominant": {"type": ["string", "null"], "enum": ["porosity", "delamination", null]}
+      }
+    },
+    "delamination": {
+      "type": "object",
+      "description": "NCR export of a delamination or combined indication (build_ncr_record with meta['indication']), added in schema_version 1.3: indication; delaminations, one planform per delamination (interface k between ply k and k + 1 from the bottom, 0-based; between_plies, the two plies counted from 1; height_from_bottom_mm and depth_from_top_mm of the interface; shape; x_start_mm and x_end_mm of a strip, or center_x_mm, center_y_mm, length_x_mm and width_y_mm (full sizes) of a rectangle or ellipse; area_mm2 of the planform); analysis_loading and load_factor_basis of the FE solve; toughness_N_per_mm (G_Ic, G_IIc, G_IIIc in N/mm and the dimensionless bk_eta); toughness_knockdown (the porosity-toughness law) and toughness_uncalibrated; fracture_load_factor (lambda_c, a dimensionless multiple of the analysis load; null when infinite: no energy released at the front) and required_load_factor (the user's input, a multiple of the same load); n_front_nodes; governing_front_node (interface, x_mm, y_mm, z_mm, psi, G_T_N_per_mm, G_c_N_per_mm, Vp as a fraction; null without a finite lambda_c); knockdown_decomposition (as the FE-field block of that name; null when not computed); assessment (assess_delamination: structural_class, fracture_margin with fracture_load_factor and margin_of_safety = fracture_load_factor / required_load_factor - 1, dimensionless, both null when the fracture load factor is infinite, required_load_factor and toughness_uncalibrated; statement, cited_criteria, required_mrb_actions, disclaimer). A delamination gets no recommended disposition path: the MRB dispositions it on this assessment.",
+      "properties": {
+        "indication": {"type": "string", "enum": ["delamination", "combined"]},
+        "delaminations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "interface": {"type": "integer"},
+              "between_plies": {"type": "array", "items": {"type": "integer"}},
+              "height_from_bottom_mm": {"type": "number"},
+              "depth_from_top_mm": {"type": "number"},
+              "shape": {"type": "string", "enum": ["strip", "rectangle", "ellipse"]},
+              "x_start_mm": {"type": "number"},
+              "x_end_mm": {"type": "number"},
+              "center_x_mm": {"type": "number"},
+              "center_y_mm": {"type": "number"},
+              "length_x_mm": {"type": "number"},
+              "width_y_mm": {"type": "number"},
+              "area_mm2": {"type": "number"}
+            }
+          }
+        },
+        "analysis_loading": {"type": ["string", "null"]},
+        "load_factor_basis": {"type": "string", "enum": ["mechanical", "delta_T", "mechanical_with_residual"]},
+        "toughness_N_per_mm": {"type": "object", "additionalProperties": {"type": ["number", "null"]}},
+        "toughness_knockdown": {"type": ["string", "null"]},
+        "toughness_uncalibrated": {"type": ["boolean", "null"]},
+        "fracture_load_factor": {"type": ["number", "null"]},
+        "required_load_factor": {"type": "number"},
+        "n_front_nodes": {"type": "integer"},
+        "governing_front_node": {"type": ["object", "null"]},
+        "knockdown_decomposition": {"type": ["object", "null"]},
+        "assessment": {
+          "type": "object",
+          "required": ["fracture_margin", "statement", "cited_criteria", "required_mrb_actions", "disclaimer"],
+          "properties": {
+            "structural_class": {"type": "string"},
+            "fracture_margin": {
+              "type": "object",
+              "properties": {
+                "fracture_load_factor": {"type": ["number", "null"]},
+                "required_load_factor": {"type": "number"},
+                "margin_of_safety": {"type": ["number", "null"]},
+                "toughness_uncalibrated": {"type": "boolean"}
+              }
+            },
+            "statement": {"type": "string"},
+            "cited_criteria": {"type": "array", "items": {"type": "string"}},
+            "required_mrb_actions": {"type": "array", "items": {"type": "string"}},
+            "disclaimer": {"type": "string"}
+          }
+        }
+      }
+    },
+    "recommended_disposition": {
+      "type": ["object", "null"],
+      "description": "NCR recommended (not final) disposition path of the porosity: path, structural_class, rationale, cited_criteria, required_mrb_actions and disclaimer. null for a delamination indication (schema_version 1.3), which gets no recommended path; for a combined indication it covers the porosity only.",
+      "properties": {
+        "path": {"type": "string"},
+        "structural_class": {"type": "string"}
       }
     },
     "raw_sidecar": {

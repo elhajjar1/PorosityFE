@@ -1,0 +1,32 @@
+{
+  "reference": "Hakim, I.A., Donaldson, S.L., Meyendorf, N.G., & Browning, C.E. (2017). Porosity effects on interlaminar fracture behavior in carbon fiber-reinforced polymer composites. Materials Sciences and Applications, 8, 170-187.",
+  "doi": "10.4236/msa.2017.82011",
+  "data_source": "Table 1 (tabulated): serial-sectioning porosity and static mode I G_Ic of the three vacuum levels; the same G_Ic means are stated in Section 3.3.1",
+  "material": {
+    "fiber": "T700",
+    "matrix": "EPON 828 epoxy (EPIKURE 3223)",
+    "fiber_weight_fraction": 0.60,
+    "n_plies": 8,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "unidirectional, mid-plane insert"
+  },
+  "porosity_measurement": "serial sectioning: void area fraction of three polished layers per sample (Image Pro Plus, 25x), the mean of 15 measurements per vacuum level",
+  "baseline_porosity_pct": 1.49,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "ASTM D5528 (DCB, static)",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "specimen_width_mm": 25.4,
+        "specimen_length_mm": 152.4
+      },
+      "stage": "unspecified",
+      "precrack": "unspecified",
+      "void_content_pct": [1.49, 1.77, 3.43],
+      "normalized_values": [1.0, 0.8462, 0.8654],
+      "absolute_values_N_per_mm": [0.52, 0.44, 0.45],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "Hand lay-up and vacuum bagging at three vacuum levels: high (-686 mmHg, 1.49 % voids), moderate (-330 mmHg, 1.77 %) and poor (0 mmHg, 3.43 %). Static G_Ic means 0.52, 0.44 and 0.45 kJ/m^2 (= N/mm), normalized to the high-vacuum group (0.44/0.52 = 0.8462, 0.45/0.52 = 0.8654). The DCB specimens (1 in wide, 6 in long along the fibres, 60 % fibre weight fraction; no fibre volume fraction is given) carry a non-porous FEP film insert at the mid-plane; the paper does not say whether the static G_Ic is the insert or a precrack value, nor initiation or propagation. n_plies = 8 is read from the Fig. 2(d) caption (the insert placed at the panel mid-plane on top of four layers). The mid-section layers around the insert had a higher porosity area fraction than the specimen average (no values given), so the porosity at the crack plane is above the listed means. The 1.77 % and 3.43 % groups give about the same G_Ic (non-monotonic); the paper attributes scatter to void size, shape and location, fibre bridging and resin content. Table 1 also lists the mode I fatigue onset G_Imax at 10^6 cycles (0.010, 0.006, 0.005 kJ/m^2 from high to poor vacuum), not used here."
+}

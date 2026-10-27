@@ -627,3 +627,164 @@ def test_headline_mae_pinned(_all_results):
     # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling.
     assert s['property_weighted_mae'] == pytest.approx(4.495, abs=0.05)
     assert s['point_weighted_mae'] == pytest.approx(3.891, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Delamination plan phase 4.4 — interlaminar toughness datasets (G_Ic,
+# G_IIc), predicted by the porosity-toughness law and reported apart from
+# the strength / modulus headline above.
+# ---------------------------------------------------------------------------
+
+_DATASETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             'validation', 'datasets')
+
+_TOUGHNESS_MATERIAL = {"fiber": "T700", "matrix": "EPON 828 epoxy (EPIKURE 3223)"}
+
+
+def _toughness_dataset(**block):
+    base = {"void_content_pct": [0.5, 2.0], "normalized_values": [1.0, 0.9],
+            "stage": "initiation", "precrack": "insert"}
+    base.update(block)
+    return {"reference": "Synthetic toughness dataset (2026)",
+            "material": dict(_TOUGHNESS_MATERIAL),
+            "baseline_porosity_pct": 0.5,
+            "properties": {"G_Ic": base}}
+
+
+def _schema():
+    with open(SCHEMA_PATH, encoding='utf-8') as f:
+        return json.load(f)
+
+
+def test_hakim_2017_dataset_loads():
+    from validation.validate_all import load_dataset
+    data = load_dataset(os.path.join(_DATASETS_DIR, 'hakim_2017.json'))
+    block = data['properties']['G_Ic']
+    assert block['void_content_pct'] == [1.49, 1.77, 3.43]
+    assert block['absolute_values_N_per_mm'] == [0.52, 0.44, 0.45]
+    assert data['baseline_porosity_pct'] == 1.49
+    assert block['stage'] == 'unspecified' and block['precrack'] == 'unspecified'
+
+
+def test_agius_fox_2015_dataset_loads():
+    from validation.validate_all import load_dataset
+    data = load_dataset(os.path.join(_DATASETS_DIR, 'agius_fox_2015.json'))
+    block = data['properties']['G_IIc']
+    assert block['void_content_pct'] == [0.3, 1.5]
+    assert block['normalized_values'] == [1.0, pytest.approx(1 / 1.21, abs=1e-4)]
+
+
+def test_schema_toughness_blocks():
+    schema = _schema()
+    jsonschema.validate(_toughness_dataset(), schema)
+    # Per-point tags, and values above 1 (toughness rising with voids).
+    jsonschema.validate(_toughness_dataset(stage=["initiation", "propagation"],
+                                           precrack=["insert", "precracked"],
+                                           normalized_values=[1.0, 1.75]), schema)
+    for bad in (dict(stage="onset"), dict(precrack="teflon"),
+                dict(normalized_values=[1.0, 2.5])):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(_toughness_dataset(**bad), schema)
+    for key in ("stage", "precrack"):
+        ds = _toughness_dataset()
+        del ds['properties']['G_Ic'][key]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(ds, schema)
+
+
+def test_schema_material_requirements_depend_on_the_properties():
+    """A toughness-only dataset needs fiber and matrix; any strength or
+    modulus block still needs the volume fraction, plies and layup."""
+    schema = _schema()
+    jsonschema.validate(_toughness_dataset(), schema)
+    mixed = _toughness_dataset()
+    mixed['properties']['ilss'] = {"void_content_pct": [0.5], "normalized_values": [1.0]}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mixed, schema)
+    mixed['material'].update(fiber_volume_fraction=0.6, n_plies=8, ply_angles=[0] * 8)
+    jsonschema.validate(mixed, schema)
+    strength = {"reference": "Synthetic strength dataset (2026)",
+                "material": dict(_TOUGHNESS_MATERIAL),
+                "properties": {"ilss": {"void_content_pct": [0.5], "normalized_values": [1.0]}}}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(strength, schema)
+
+
+def test_toughness_keys_are_mapped():
+    """A toughness key no longer reaches the strength map (it raised
+    KeyError there); it has its own mode map."""
+    from validation.validate_all import _PROPERTY_TO_MODE, _TOUGHNESS_PROPERTY_TO_MODE
+    assert _TOUGHNESS_PROPERTY_TO_MODE == {'G_Ic': 'I', 'G_IIc': 'II'}
+    assert not set(_TOUGHNESS_PROPERTY_TO_MODE) & set(_PROPERTY_TO_MODE)
+
+
+def test_predict_toughness_follows_the_law():
+    import math
+    from validation.validate_all import predict_toughness
+    ds = _toughness_dataset()
+    pred, band = predict_toughness(ds, 'G_Ic', [0.5, 2.0, 4.0])
+    assert pred[0] == 1.0
+    assert pred[1] == pytest.approx(math.exp(-6.2 * 0.015), rel=1e-12)
+    assert pred[2] == pytest.approx(math.exp(-6.2 * 0.035), rel=1e-12)
+    for (lo, hi), p in zip(band, pred, strict=True):
+        assert lo <= p <= hi
+    pred_II, _ = predict_toughness(ds, 'G_IIc', [2.0])
+    assert pred_II[0] == pytest.approx(math.exp(-14.0 * 0.015), rel=1e-12)
+    flat, _ = predict_toughness(ds, 'G_Ic', [0.5, 2.0], toughness_knockdown=None)
+    assert flat == [1.0, 1.0]
+
+
+def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
+    from validation.validate_all import summarize_mae, summarize_toughness_mae
+    hakim = _all_results['hakim_2017']['G_Ic']
+    agius = _all_results['agius_fox_2015']['G_IIc']
+    for entry, mode in ((hakim, 'I'), (agius, 'II')):
+        assert entry['category'] == 'toughness' and entry['mode'] == mode
+        assert entry['uncalibrated'] is True and 'placeholder' in entry['law']
+        assert entry['stage'] == ['unspecified'] * entry['n_points']
+        assert len(entry['predicted_band']) == entry['n_points']
+    # Pinned: exp(-6.2 dVp) and exp(-14 dVp) against the normalized data.
+    assert hakim['mae'] == pytest.approx(6.200, abs=0.01)
+    assert agius['mae'] == pytest.approx(1.147, abs=0.01)
+    tough = summarize_toughness_mae(_all_results)
+    assert tough['n_entries'] == 2 and tough['n_points'] == 5
+    assert tough['property_weighted_mae'] == pytest.approx(3.673, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(4.179, abs=0.01)
+    # The strength / modulus headline does not see them.
+    s = summarize_mae(_all_results)
+    assert (s['n_entries'], s['n_points']) == (35, 239)
+
+
+def test_summaries_split_by_property_key():
+    from validation.validate_all import summarize_mae, summarize_toughness_mae
+    fake = {'paper': {'ilss': {'mae': 2.0, 'n_points': 4},
+                      'G_Ic': {'mae': 10.0, 'n_points': 3}},
+            'other': {'G_IIc': {'mae': 4.0, 'n_points': 1}}}
+    assert summarize_mae(fake)['property_weighted_mae'] == 2.0
+    t = summarize_toughness_mae(fake)
+    assert t['property_weighted_mae'] == 7.0 and t['n_points'] == 4
+    assert summarize_toughness_mae({})['n_entries'] == 0
+
+
+def test_toughness_tag_length_mismatch_is_an_entry_error(tmp_path):
+    from validation.validate_all import _run_one_dataset
+    ds = _toughness_dataset(stage=["initiation"])          # 1 tag for 2 points
+    path = tmp_path / 'bad_tags.json'
+    path.write_text(json.dumps(ds), encoding='utf-8')
+    _, results = _run_one_dataset(str(path))
+    assert results['G_Ic']['error_type'] == 'ValueError'
+    assert 'stage' in results['G_Ic']['error']
+
+
+def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
+    from validation.validate_all import generate_master_report
+    _, md_path = generate_master_report(_all_results, output_dir=str(tmp_path))
+    with open(md_path, encoding='utf-8') as f:
+        text = f.read()
+    head, _, tail = text.partition('## Interlaminar toughness')
+    assert tail, 'toughness section missing'
+    assert 'G_Ic' not in head and 'G_IIc' not in head
+    assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
+    assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
+    assert 'Property-weighted: **4.49%**' in head
+    assert 'not an independent validation' in tail

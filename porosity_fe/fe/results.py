@@ -9,15 +9,24 @@ Split out of ``fe/solver.py`` (IMPROVEMENT_PLAN 5.1);
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
 
+from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..results import FailureResult
 from .element import _DEFAULT_FORMULATION
 from .export import write_vtk, write_vtu
+from .interlaminar import (
+    DelaminationOnset,
+    InterfaceTractions,
+    OnsetCriterion,
+    delamination_onset,
+    interface_tractions,
+)
 from .recovery import NodalAverage, extrapolate_to_nodes
 from .vcct import CrackFront, vcct_energy_release_rates
 
@@ -166,7 +175,10 @@ class FieldResults:
         its coordinates, frame, ``Delta_a`` and tributary width, ``G_I``,
         ``G_II``, ``G_III``, ``G_T`` (N/mm), the mode mixity ``psi`` and,
         when the material has toughness data, the mixed-mode toughness
-        ``G_c`` and the critical load factor ``lambda_c``
+        ``G_c``, knocked down by the porosity ``Vp`` at the node
+        (:class:`~porosity_fe.ToughnessKnockdown`; the law and the
+        ``toughness_uncalibrated`` flag are on the table), and the critical
+        load factor ``lambda_c``
         (:func:`~porosity_fe.vcct_energy_release_rates`). At the applied
         state, thermal residual included. ``None`` without a delaminated
         node pair.
@@ -201,6 +213,18 @@ class FieldResults:
         Whether the contact active set settled within the iteration cap
         (a warning is logged when it did not); ``None`` when contact was
         not enforced.
+    load_point_compliance : float or None
+        Load-point compliance ``C = (F . u) / P^2`` (mm/N) of the fracture
+        tests ('dcb', 'enf', 'mmb'), with ``F`` the applied nodal forces,
+        ``u`` the mechanical displacement and ``P`` the applied load: the
+        displacement of the load point per unit load that does work with
+        ``P``. For the DCB it is the opening of the two hinge lines over the
+        hinge load, for the ENF the mid-span deflection over the load, for
+        the MMB the displacement of the lever's load point (rigid lever)
+        over the lever load. Feed it to
+        :func:`~porosity_fe.compliance_calibration` at several crack lengths
+        for the data reduction of the test standards. ``None`` for the other
+        loading modes and at zero load.
 
     Notes
     -----
@@ -254,6 +278,7 @@ class FieldResults:
     contact_iterations: int | None = None
     contact_pairs: int | None = None
     contact_converged: bool | None = None
+    load_point_compliance: float | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -297,7 +322,12 @@ class FieldResults:
             ``fracture_governing_node``, ``fracture_governing_psi``,
             ``fracture_governing_G_T``, ``crack_front_max_G_T``,
             ``crack_contact``, ``contact_iterations``, ``contact_pairs``,
-            ``contact_converged``), ``None`` without a delamination.
+            ``contact_converged``, ``toughness_knockdown``: the
+            description of the porosity-toughness law, and
+            ``toughness_uncalibrated``), ``None`` without a delamination
+            (the two toughness keys also without toughness data), and
+            ``load_point_compliance`` (``None`` except for the fracture
+            tests).
         """
         kd = float(self.knockdown)
         sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
@@ -327,6 +357,7 @@ class FieldResults:
                 'delta_T': self.delta_T,
                 'residual_max_failure_index': self.residual_max_failure_index,
                 **self._fracture_details(),
+                'load_point_compliance': self.load_point_compliance,
             },
         )
 
@@ -348,6 +379,11 @@ class FieldResults:
             'contact_iterations': self.contact_iterations,
             'contact_pairs': self.contact_pairs,
             'contact_converged': self.contact_converged,
+            'toughness_knockdown': (
+                None if front is None or front.toughness_knockdown is None
+                else front.toughness_knockdown.describe()),
+            'toughness_uncalibrated': (
+                None if front is None else front.toughness_uncalibrated),
         }
 
     def energy_release_rates(self, mesh: CompositeMesh) -> CrackFront | None:
@@ -375,6 +411,58 @@ class FieldResults:
             return None
         return vcct_energy_release_rates(mesh, self.displacement,
                                          self.interface_forces)
+
+    def interface_tractions(self, mesh: CompositeMesh, *,
+                            interfaces: Iterable[int] | None = None
+                            ) -> InterfaceTractions:
+        """Interlaminar traction at the ply interfaces, from both sides.
+
+        :func:`~porosity_fe.interface_tractions` on these results: the
+        traction ``(tau_xz, tau_yz, sigma_zz)`` extrapolated to every ply
+        interface that is a node layer from the element layer below and the
+        one above, their average and their jump.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results.
+        interfaces : iterable of int, optional
+            Only these interfaces; default all that are node layers.
+
+        Returns
+        -------
+        InterfaceTractions
+            One row per interface node.
+        """
+        return interface_tractions(self, mesh, interfaces=interfaces)
+
+    def delamination_onset(self, mesh: CompositeMesh,
+                           material: MaterialProperties, *,
+                           criterion: OnsetCriterion = 'brewer_lagace',
+                           x_avg: float | None = None,
+                           Zc: float | None = None,
+                           interfaces: Iterable[int] | None = None,
+                           interior_margin: float | None = None,
+                           void_shape_radii: tuple | None = None,
+                           ) -> DelaminationOnset:
+        """Stress-based delamination onset at the ply interfaces.
+
+        :func:`~porosity_fe.delamination_onset` on these results: the
+        Brewer-Lagace (or Ye) quadratic criterion on the interface traction
+        averaged over ``x_avg`` (default one ply thickness), with
+        porosity-degraded strengths, and the onset load factor. The
+        arguments are those of :func:`~porosity_fe.delamination_onset`.
+
+        Returns
+        -------
+        DelaminationOnset
+            Per-node onset index and load factor, the critical interface
+            and location, and the interior variant.
+        """
+        return delamination_onset(
+            self, mesh, material, criterion=criterion, x_avg=x_avg, Zc=Zc,
+            interfaces=interfaces, interior_margin=interior_margin,
+            void_shape_radii=void_shape_radii)
 
     def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:
@@ -431,7 +519,8 @@ class FieldResults:
                encoding: Literal['raw', 'base64'] = 'raw',
                nodal: bool = True,
                exploded: bool = False,
-               average: NodalAverage = 'ply') -> None:
+               average: NodalAverage = 'ply',
+               onset: DelaminationOnset | None = None) -> None:
         """Write the hex mesh and FE fields to a binary VTK XML file (``.vtu``).
 
         Opens in ParaView, VisIt, PyVista and meshio. The writer is
@@ -456,7 +545,12 @@ class FieldResults:
           ``G_I``, ``G_II``, ``G_III`` and ``G_T`` (N/mm) at both nodes of
           every front pair and ``NaN`` at every other node (binary VTK XML
           stores ``NaN``; the legacy ASCII file of :meth:`to_vtk` leaves
-          them out, and the JSON export carries the front table).
+          them out, and the JSON export carries the front table);
+        - with ``onset``: ``onset_index``, the stress-based delamination
+          onset index (:attr:`DelaminationOnset.index
+          <porosity_fe.DelaminationOnset.index>`) at every evaluated
+          interface node, both nodes of a duplicated pair, and ``NaN``
+          elsewhere.
 
         Cell data
         ---------
@@ -494,12 +588,17 @@ class FieldResults:
             Averaging of the recovered fields between elements; see
             :func:`~porosity_fe.extrapolate_to_nodes`. ``'none'`` matters
             only with ``exploded=True``.
+        onset : DelaminationOnset, optional
+            Keyword-only. The interface onset of these results
+            (:meth:`delamination_onset`), written as the point field
+            ``onset_index``; default ``None`` writes no onset field.
 
         Raises
         ------
         ValueError
-            For an unknown option, a non-hex mesh, or results that do not
-            match the mesh.
+            For an unknown option, a non-hex mesh, results that do not
+            match the mesh, or an ``onset`` with nodes the mesh does not
+            have.
 
         See Also
         --------
@@ -507,7 +606,7 @@ class FieldResults:
         """
         write_vtu(self, mesh, filename, precision=precision,
                   encoding=encoding, nodal=nodal, exploded=exploded,
-                  average=average)
+                  average=average, onset=onset)
 
     def _nodal(self, field_gp: np.ndarray, mesh: CompositeMesh,
                frame: str, average: NodalAverage,

@@ -20,20 +20,30 @@ point at commit 2686d62. Progress by pull request:
 | 0.1–0.3 | Done: mode maxima, exports, app criterion selector, docs | #209 |
 | 0.4 | Pending your decision (changes `interface` results) | — |
 | 0.5 | Folded into phase 1.1 (optional `tau_13` with today's behaviour as default) | — |
-| 1 | Next | — |
+| 1.1–1.3, 1.5 | Done: optional `sigma_3t` / `tau_13`, interface traction recovery, Brewer–Lagace / Ye onset with load factor, O'Brien free-edge G | #210 |
+| 1.4 | Pending your decision (changes penny results) | — |
+| 1.6 | Done: `FieldResults` methods; on request the JSON `delamination_onset` block (`export_results(..., onset=)`), the VTU `onset_index` field and the app's onset check | #210 |
 | 2.1–2.8 | Done: `Delamination`, duplicated interface nodes and ties, crack-face contact, VCCT, B-K criterion and load factor | #209 |
-| 3 | Next: DCB / ENF / MMB specimens and the NASA benchmarks | — |
-| 4 | Next: porosity–toughness law and toughness datasets | — |
-| 5 | After 3 and 4 | — |
+| 3.1–3.3 | Done: DCB / ENF / MMB builders and loading modes, MMB lever, compliance calibration, NASA benchmarks within 3 % (SLB 4 %, behind a flag) | #210 |
+| 4.1, 4.2, 4.4 | Done: `ToughnessKnockdown` (uncalibrated placeholders, flagged), front toughness from the local porosity, `hakim_2017` and `agius_fox_2015` reported apart | #210 |
+| 4.3 | Partly: `toughness_knockdown_factor` screens without FE; no empirical `LoadingMode` | — |
+| 4.5 | Not started (uncertainty of `b`) | — |
+| 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | #210 |
 | 6 | Deferred (cohesive zones) | — |
 
 Decisions taken with the recommended option because they change no
-existing result: D1 (node duplication and ties), D2, D3, D5, D6, D7, the
-optional `tau_13` default, benchmark materials inside the tests, cohesive
+existing result: D1 (node duplication and ties), D2, D3, D4 (the
+exponential toughness law with flagged placeholder coefficients, on by
+default), D5, D6, D7, the optional `tau_13` default, benchmark materials inside the tests, cohesive
 zones deferred. Still open, because they change existing results: 0.4
 (`interface` profile renormalization), 1.4 (direction-aware degradation /
 transversely isotropic Mori–Tanaka tensor) and unifying the `tau_13`
 strength.
+
+Two corrections to the text below, from the primary sources: the ENF
+benchmark toughness is `G_IIc = 0.78`, `eta = 2.57` (NASA/CR-2011-217305
+Table II; 0.774 and 2.1 are the MMB report's), and the DCB benchmark uses
+T300/1076 elastic constants with the T300/914C toughness.
 
 One change to the design in Phase 2.5 below: only the mode I product is
 clipped at zero; the shear products keep their sign so the front sums to

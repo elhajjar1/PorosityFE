@@ -164,7 +164,11 @@ def _write_json(obj, filename: str | os.PathLike) -> None:
 # (crack-face contact iterations and pairs, the critical load factor and its
 # governing node, and the virtual-crack-closure front table: coordinates,
 # G_I / G_II / G_III / G_T in N/mm, mode mixity, toughness and load factor
-# per front node), null for every undefined or infinite value.
+# per front node), null for every undefined or infinite value. Also 1.3
+# (phase 4), additive: the ``fracture`` block gains ``toughness_knockdown``
+# (a description of the porosity-toughness law that knocked G_c down at
+# each front node's Vp) and ``toughness_uncalibrated`` (true when its
+# placeholder coefficients lowered a toughness), null without toughness.
 JSON_SCHEMA_VERSION = "1.3"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
@@ -197,6 +201,16 @@ _UNITS_NCR = {
     "governing_knockdown": "dimensionless fraction in (0, 1]",
     "measured_Vp_percent": "%",
     "t_ply_mm": "mm",
+}
+#: Units of the ``delamination`` block of a delamination or combined NCR,
+#: added to :data:`_UNITS_NCR` only when the block is written.
+_UNITS_NCR_DELAMINATION = {
+    "fracture_load_factor": "dimensionless multiple of the analysis load",
+    "required_load_factor": "dimensionless multiple of the analysis load",
+    "margin_of_safety": "dimensionless (fracture_load_factor / required_load_factor - 1)",
+    "psi": "dimensionless mode mixity (G_II + G_III) / G_T",
+    "Vp": "dimensionless fraction in [0, 1]",
+    "bk_eta": "dimensionless",
 }
 _UNITS_STREAMLIT_EMPIRICAL = {
     "failure_stress": "MPa",

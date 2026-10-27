@@ -21,7 +21,7 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
-from ._load_cases import _FLEXURE_PROCEDURE
+from ._load_cases import _FLEXURE_PROCEDURE, _FRACTURE_TESTS
 from .assembler import _MESH_TIES, BoundaryHandler, GlobalAssembler, Ties, _fold_tied, _mesh_ties
 from .batch import ElementBatch
 from .flexure import flexural_modulus
@@ -102,7 +102,9 @@ def reactions_and_modulus(
     shear-corrected flexural modulus from the mid-span deflection under
     ``applied_load`` (:func:`~porosity_fe.fe.flexure.flexural_modulus`);
     ``None`` for ILSS, whose short span makes the deflection about half
-    shear (see :attr:`FieldResults.effective_modulus`).
+    shear (see :attr:`FieldResults.effective_modulus`), and for the
+    fracture tests ('dcb', 'enf', 'mmb'), which report the load-point
+    compliance instead (:attr:`FieldResults.load_point_compliance`).
     """
     Ku = K @ u
     tie_set = _mesh_ties(mesh) if ties is _MESH_TIES else ties
@@ -121,7 +123,7 @@ def reactions_and_modulus(
         return reactions, flexural_modulus(
             mesh, assembler.element_batch(), u, applied_load,
             bc_handler.flexure_geometry(), _FLEXURE_PROCEDURE[loading])
-    if loading == 'ilss' or applied_strain == 0.0:
+    if loading == 'ilss' or loading in _FRACTURE_TESTS or applied_strain == 0.0:
         return reactions, None
     volume = mesh.L_x * mesh.L_y * mesh.L_z
     modulus = float(u @ Ku) / (applied_strain ** 2 * volume)

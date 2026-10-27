@@ -10,7 +10,11 @@ Two layers of functionality live here:
 
 * The export payload writers (JSON / CSV) used by the Results / Export tabs.
 * The Nonconformance Report (NCR) builder, plus its JSON / Markdown / PDF
-  serialisers, which support the MRB disposition workflow.
+  serialisers, which support the MRB disposition workflow. An NCR
+  indication is porosity (a recommended disposition path from the void
+  content and the governing knockdown), a delamination (a fracture
+  assessment from an FE solve with toughness data, with no recommended
+  path) or both (:data:`INDICATION_TYPES`).
 
 The module deliberately keeps its top-level imports cheap. ``matplotlib`` is
 only needed by :func:`serialise_ncr_pdf`, so it is imported lazily inside
@@ -22,6 +26,8 @@ from __future__ import annotations
 import csv
 import datetime
 import io
+import math
+import numbers
 import re
 import textwrap
 
@@ -216,9 +222,16 @@ def _serialise_payload_csv(payload: dict) -> str:
 # disposition path* — it never issues a final disposition. The governing
 # (worst-case) knockdown across all modes/models drives the recommendation,
 # because the MRB cares about the most-critical residual strength, not the
-# average.
+# average. A delamination indication gets no recommended path at all: the
+# tool assesses its fracture margin (the FE growth-onset load factor against
+# the required load factor the user enters) and leaves the disposition to
+# the MRB; no published acceptance numbers exist for it.
 
 STRUCTURAL_CLASSES = ("primary", "secondary", "non-structural")
+
+#: NDI indication types of an NCR: porosity alone, a delamination (a planar
+#: interlaminar crack), or a delamination in a porous laminate.
+INDICATION_TYPES = ("porosity", "delamination", "combined")
 
 
 def governing_failure(result: dict) -> dict:
@@ -383,32 +396,397 @@ def recommend_disposition(
     }
 
 
+_DELAMINATION_CRITERIA = (
+    "Released engineering drawing / part specification acceptance limit for "
+    "delaminations and disbonds: size, position and depth of a planar NDI "
+    "indication (governing acceptance limit — verify against the controlled "
+    "drawing).",
+    "Damage-tolerance substantiation: no delamination growth at the "
+    "required load factor (linear virtual-crack-closure growth onset, "
+    "Benzeggagh-Kenane mixed-mode criterion), with interlaminar toughness "
+    "measured for the material system and process.",
+    "NDI acceptance criteria for planar indications (ultrasonic C-scan "
+    "amplitude and time-of-flight) per the applicable NDT specification.",
+    "Quality-system MRB procedure for disposition of nonconforming "
+    "material.",
+)
+
+_DELAMINATION_ACTIONS = (
+    "Confirm the indication by NDI (C-scan amplitude and time-of-flight): "
+    "its planform size and position, its interface depth, and that it is a "
+    "planar delamination rather than porosity.",
+    "Verify the interlaminar toughness used in the analysis (G_Ic, G_IIc, "
+    "B-K eta) against data measured for this material system and process; "
+    "no material preset carries it.",
+    "Confirm the required load factor: it multiplies the same analysis load "
+    "as the predicted fracture load factor, and must come from the "
+    "structural substantiation of the governing load case.",
+    "Assess what the linear growth-onset analysis does not cover: fatigue "
+    "growth, sublaminate buckling under compression, environment, and the "
+    "mesh dependence of the energy release rates at the front.",
+    "Disposition the delamination: this tool recommends no path for it.",
+)
+
+_UNCALIBRATED_ACTION = (
+    "The porosity knockdown of the toughness used uncalibrated placeholder "
+    "coefficients: substantiate the toughness of the porous interface by "
+    "test, or rerun the analysis with calibrated coefficients."
+)
+
+_DELAMINATION_DISCLAIMER = (
+    "PorosityFE does not recommend a disposition for a delamination "
+    "indication. This fracture assessment was produced by an automated MRB "
+    "support tool from a predictive delamination fracture analysis, as "
+    "engineering data for a qualified Material Review Board, which "
+    "dispositions the indication against the governing engineering drawing "
+    "/ specification and the applicable damage-tolerance substantiation."
+)
+
+
+def _check_load_factor(name: str, value, *, allow_inf: bool) -> float:
+    """``value`` as a float load factor (``> 0``; ``inf`` when allowed)."""
+    if value is None:
+        raise ValueError(f"{name} is required for a delamination assessment.")
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a number, got {value!r}.")
+    v = float(value)
+    if math.isnan(v) or v < 0.0 or (v == 0.0 and not allow_inf) or (
+            math.isinf(v) and not allow_inf):
+        bound = "a number >= 0 (inf when nothing drives the front)" if allow_inf \
+            else "a finite number > 0"
+        raise ValueError(f"{name} must be {bound}, got {value!r}.")
+    return v
+
+
+def assess_delamination(
+    fracture_load_factor: float, required_load_factor: float,
+    structural_class: str = "primary", *, toughness_uncalibrated: bool = False,
+) -> dict:
+    """Fracture assessment of a delamination indication for the MRB.
+
+    Reports the **fracture margin** of the delamination: the predicted
+    growth-onset load factor ``lambda_c`` of an FE solve with the
+    delamination (:attr:`FieldResults.fracture_load_factor
+    <porosity_fe.FieldResults.fracture_load_factor>`) against the
+    ``required_load_factor`` the user supplies, with the criteria and the
+    MRB actions that apply. It recommends **no disposition path**: no
+    published acceptance numbers exist for delaminations (they are OEM- and
+    part-specific), so the MRB dispositions the indication. The void
+    content plays no part; porosity enters only through the toughness at
+    the front.
+
+    Parameters
+    ----------
+    fracture_load_factor : float
+        The predicted growth-onset load factor ``lambda_c`` (dimensionless,
+        ``>= 0``; ``inf`` when the analysis load releases no energy at the
+        front).
+    required_load_factor : float
+        The load factor the part must reach without delamination growth, a
+        finite number ``> 0`` that multiplies the **same analysis load** as
+        ``fracture_load_factor`` (for an analysis at 1 % strain and a
+        design strain of 0.4 %, 0.4). It comes from the structural
+        substantiation; there is no default.
+    structural_class : str
+        One of :data:`STRUCTURAL_CLASSES`.
+    toughness_uncalibrated : bool
+        Keyword-only. Whether the toughness behind ``fracture_load_factor``
+        was knocked down by porosity with uncalibrated placeholder
+        coefficients (:attr:`CrackFront.toughness_uncalibrated
+        <porosity_fe.CrackFront.toughness_uncalibrated>`); it adds a
+        required MRB action and a sentence to the statement.
+
+    Returns
+    -------
+    dict
+        ``structural_class``, ``fracture_margin`` (``fracture_load_factor``
+        and ``margin_of_safety = lambda_c / required - 1``, both ``None``
+        when ``lambda_c`` is infinite, ``required_load_factor``,
+        ``toughness_uncalibrated``), ``statement``, ``cited_criteria``,
+        ``required_mrb_actions`` and ``disclaimer``. There is no ``path``.
+
+    Raises
+    ------
+    ValueError
+        If a load factor is missing or invalid, or ``structural_class`` is
+        not one of :data:`STRUCTURAL_CLASSES`.
+    """
+    if structural_class not in STRUCTURAL_CLASSES:
+        raise ValueError(
+            f"Unknown structural_class {structural_class!r}; "
+            f"expected one of {list(STRUCTURAL_CLASSES)}."
+        )
+    lam = _check_load_factor("fracture_load_factor", fracture_load_factor,
+                             allow_inf=True)
+    req = _check_load_factor("required_load_factor", required_load_factor,
+                             allow_inf=False)
+    finite = math.isfinite(lam)
+    margin = {
+        "fracture_load_factor": lam if finite else None,
+        "required_load_factor": req,
+        "margin_of_safety": lam / req - 1.0 if finite else None,
+        "toughness_uncalibrated": bool(toughness_uncalibrated),
+    }
+    if finite:
+        statement = (
+            f"The predicted delamination growth-onset load factor is "
+            f"lambda_c = {lam:.3g}, against a required load factor of "
+            f"{req:.3g} at the same analysis load: fracture margin of safety "
+            f"{margin['margin_of_safety']:+.2f}.")
+    else:
+        statement = (
+            f"The analysis load releases no energy at the delamination front, "
+            f"so the predicted growth-onset load factor is unbounded (required "
+            f"load factor {req:.3g}).")
+    statement += (
+        " The analysis is linear elastic fracture mechanics: growth onset "
+        "under static load, with no fatigue growth or delamination buckling.")
+    if toughness_uncalibrated:
+        statement += (
+            " The toughness at the front was knocked down by the porosity "
+            "there with uncalibrated placeholder coefficients.")
+
+    required_mrb_actions = list(_DELAMINATION_ACTIONS)
+    if toughness_uncalibrated:
+        required_mrb_actions.append(_UNCALIBRATED_ACTION)
+    if structural_class == "primary":
+        required_mrb_actions.append(
+            "Primary structure: obtain customer / DER engineering concurrence "
+            "for the disposition of the delamination."
+        )
+    elif structural_class == "non-structural":
+        required_mrb_actions.append(
+            "Non-structural item: confirm there is no fluid-ingress, "
+            "fatigue, or interface-sealing function affected by the "
+            "delamination."
+        )
+    return {
+        "structural_class": structural_class,
+        "fracture_margin": margin,
+        "statement": statement,
+        "cited_criteria": list(_DELAMINATION_CRITERIA),
+        "required_mrb_actions": required_mrb_actions,
+        "disclaimer": _DELAMINATION_DISCLAIMER,
+    }
+
+
+def _finite_or_none(value) -> float | None:
+    """``value`` as a float, ``None`` when missing or not finite (JSON null)."""
+    if value is None:
+        return None
+    v = float(value)
+    return v if math.isfinite(v) else None
+
+
+def _planform_record(delamination, mesh) -> dict:
+    """Interface depth and planform (mm) of one delamination of ``mesh``.
+
+    The area is that of the planform as given: a strip spans the width of
+    the plate, clipped to its length; a rectangle or ellipse is not clipped.
+    """
+    k = int(delamination.interface)
+    n_plies = int(mesh.material.n_plies)
+    h = float(mesh.L_z)
+    z = (k + 1) * h / n_plies
+    rec = {
+        "interface": k,
+        "between_plies": [k + 1, k + 2],
+        "height_from_bottom_mm": z,
+        "depth_from_top_mm": h - z,
+        "shape": delamination.shape,
+    }
+    if delamination.shape == "strip":
+        x0, x1 = float(delamination.x_start), float(delamination.x_end)
+        rec.update({"x_start_mm": x0, "x_end_mm": x1})
+        length = max(0.0, min(x1, float(mesh.L_x)) - max(x0, 0.0))
+        rec["area_mm2"] = length * float(mesh.L_y)
+    else:
+        (xc, yc), (ax, ay) = delamination.center, delamination.half_size
+        rec.update({"center_x_mm": float(xc), "center_y_mm": float(yc),
+                    "length_x_mm": 2.0 * float(ax), "width_y_mm": 2.0 * float(ay)})
+        rec["area_mm2"] = (math.pi if delamination.shape == "ellipse" else 4.0) \
+            * float(ax) * float(ay)
+    return rec
+
+
+def _governing_front_node(front) -> dict | None:
+    """The front node with the smallest critical load factor, or ``None``."""
+    row = front.governing
+    if row is None:
+        return None
+    return {
+        "interface": int(front.interface[row]),
+        "x_mm": float(front.x[row]),
+        "y_mm": float(front.y[row]),
+        "z_mm": float(front.z[row]),
+        "psi": _finite_or_none(front.psi[row]),
+        "G_T_N_per_mm": float(front.G_T[row]),
+        "G_c_N_per_mm": None if front.G_c is None else _finite_or_none(front.G_c[row]),
+        "Vp": float(front.Vp[row]),
+    }
+
+
+def _delamination_inputs(result: dict) -> tuple:
+    """The FE field, its crack front and the mesh of a delamination NCR.
+
+    Raises
+    ------
+    ValueError
+        Without an FE solve of a mesh with a delamination front, for a
+        fracture test specimen, or without toughness data.
+    """
+    fe = result.get("fe_field")
+    mesh = result.get("mesh")
+    front = None if fe is None else getattr(fe, "crack_front", None)
+    if fe is None or mesh is None or front is None or len(front) == 0:
+        raise ValueError(
+            "A delamination or combined NCR needs an FE solve of a mesh with "
+            "a delamination front (the app's delamination input).")
+    if getattr(mesh, "fracture_geometry", None) is not None:
+        raise ValueError(
+            "The FE solve is a fracture test specimen (DCB, ENF, MMB), not an "
+            "NDI indication; assess a delamination of the part.")
+    if fe.fracture_load_factor is None:
+        raise ValueError(
+            "The FE solve has no fracture load factor: the material has no "
+            "interlaminar toughness (G_Ic, G_IIc, bk_eta), so the delamination "
+            "has no fracture margin.")
+    return fe, front, mesh
+
+
+def _delamination_record(result: dict, indication: str,
+                         assessment: dict) -> dict:
+    """The ``delamination`` block of an NCR record (lengths in mm, toughness
+    and energy release rates in N/mm, load factors dimensionless), with the
+    fracture ``assessment`` of :func:`assess_delamination`."""
+    fe, front, mesh = _delamination_inputs(result)
+    material = result.get("material") or mesh.material
+    law = front.toughness_knockdown
+    decomposition = result.get("fe_decomposition")
+    return {
+        "indication": indication,
+        "delaminations": [_planform_record(d, mesh) for d in mesh.delaminations],
+        "analysis_loading": result.get("fe_loading"),
+        "load_factor_basis": str(fe.load_factor_basis),
+        "toughness_N_per_mm": {
+            "G_Ic": _finite_or_none(material.G_Ic),
+            "G_IIc": _finite_or_none(material.G_IIc),
+            "G_IIIc": _finite_or_none(material.G_IIIc_eff),
+            "bk_eta": _finite_or_none(material.bk_eta),
+        },
+        "toughness_knockdown": None if law is None else law.describe(),
+        "toughness_uncalibrated": front.toughness_uncalibrated,
+        "fracture_load_factor": _finite_or_none(fe.fracture_load_factor),
+        "required_load_factor": assessment["fracture_margin"]["required_load_factor"],
+        "n_front_nodes": len(front),
+        "governing_front_node": _governing_front_node(front),
+        "knockdown_decomposition": (None if decomposition is None
+                                    else decomposition.summary()),
+        "assessment": assessment,
+    }
+
+
+def _planform_text(rec: dict) -> str:
+    """One planform of a ``delamination`` block in words."""
+    if rec["shape"] == "strip":
+        shape = (f"through-width strip from x = {rec['x_start_mm']:.1f} to "
+                 f"{rec['x_end_mm']:.1f} mm")
+    else:
+        shape = (f"{rec['shape']} {rec['length_x_mm']:.1f} x "
+                 f"{rec['width_y_mm']:.1f} mm centred at "
+                 f"({rec['center_x_mm']:.1f}, {rec['center_y_mm']:.1f}) mm")
+    return (f"{shape} (area {rec['area_mm2']:.1f} mm²) at interface "
+            f"{rec['interface']}, between plies {rec['between_plies'][0]} and "
+            f"{rec['between_plies'][1]} from the bottom, "
+            f"{rec['depth_from_top_mm']:.2f} mm below the top surface")
+
+
 def build_ncr_record(result: dict, meta: dict) -> dict:
     """Build an analysis validation summary to attach to an NCR.
 
     This is the technical attachment, not a full NCR form: it carries the
     porosity analysis, the governing knockdown, and a recommended (not
-    final) disposition path. Part/serial/work-order identification lives on
+    final) disposition path for the porosity. Part/serial/work-order identification lives on
     the parent NCR — ``meta`` only needs who prepared it and an optional
     parent-NCR reference. Everything technical is derived from ``result`` so
     the summary cannot drift from what was actually run.
+
+    ``meta["indication"]`` (default ``"porosity"``, :data:`INDICATION_TYPES`)
+    selects the indication type. ``"delamination"`` and ``"combined"`` need
+    ``result`` to hold an FE solve of a part with a delamination front and
+    toughness data (``result["fe_field"]``, ``result["mesh"]``; the app's
+    delamination input) and ``meta["required_load_factor"]``, the load
+    factor the part must reach without delamination growth, as a multiple
+    of the analysis load (see :func:`assess_delamination`). They add a
+    ``delamination`` block: the interface depth and planform, the
+    toughness and its porosity law, the fracture load factor, the governing
+    front node, the knockdown decomposition when
+    ``result["fe_decomposition"]`` holds one, and the fracture
+    ``assessment``. The delamination gets **no recommended path**: for
+    ``"delamination"`` ``recommended_disposition`` is ``None``, and for
+    ``"combined"`` it is the porosity recommendation, which covers the
+    porosity only. A porosity record is unchanged.
     """
     payload = build_export_payload(result)
     cfg = payload["config"]
     worst = governing_failure(result)
     Vp = float(cfg["Vp_percent"])
     structural_class = meta.get("structural_class", "primary")
+    indication = meta.get("indication", "porosity")
+    if indication not in INDICATION_TYPES:
+        raise ValueError(
+            f"Unknown indication {indication!r}; expected one of "
+            f"{list(INDICATION_TYPES)}.")
 
-    disposition = recommend_disposition(
-        Vp, worst["knockdown"], structural_class
-    )
+    delamination = None
+    disposition = None
+    if indication in ("porosity", "combined"):
+        disposition = recommend_disposition(
+            Vp, worst["knockdown"], structural_class
+        )
+    if indication in ("delamination", "combined"):
+        fe, front, _ = _delamination_inputs(result)
+        assessment = assess_delamination(
+            fe.fracture_load_factor, meta.get("required_load_factor"),
+            structural_class,
+            toughness_uncalibrated=bool(front.toughness_uncalibrated))
+        delamination = _delamination_record(result, indication, assessment)
 
     today = datetime.date.today().isoformat()
     layup = meta.get("layup") or "(see analysis configuration)"
 
-    return {
+    porosity_summary = (
+        f"Porosity / void content of {Vp:.2f}% in a "
+        f"{cfg['material']} laminate ({cfg['n_plies']} plies, layup "
+        f"{layup}); {cfg['distribution']} distribution, "
+        f"{cfg['void_shape']} void morphology. Predicted to exceed "
+        f"typical drawing porosity allowables and to knock down "
+        f"residual strength — see engineering analysis."
+    )
+    title = "Composite Porosity Analysis — NCR Validation Summary"
+    summary = porosity_summary
+    if delamination is not None:
+        planforms = "; ".join(_planform_text(rec)
+                              for rec in delamination["delaminations"])
+        delamination_summary = (
+            f"Delamination indication: {planforms}. Assessed on its "
+            f"fracture margin, with no recommended disposition path — see "
+            f"the delamination analysis.")
+        if indication == "delamination":
+            title = "Composite Delamination Analysis — NCR Validation Summary"
+            summary = (
+                f"{delamination_summary} Laminate: {cfg['material']}, "
+                f"{cfg['n_plies']} plies, layup {layup}, analysed with "
+                f"{Vp:.2f}% voids ({cfg['distribution']} distribution, "
+                f"{cfg['void_shape']} void morphology).")
+        else:
+            title = ("Composite Porosity and Delamination Analysis — NCR "
+                     "Validation Summary")
+            summary = f"{porosity_summary} {delamination_summary}"
+
+    record = {
         "summary": {
-            "title": "Composite Porosity Analysis — NCR Validation Summary",
+            "title": title,
             "prepared_by": meta.get("prepared_by", ""),
             "ncr_reference": meta.get("ncr_reference", ""),
             "date": meta.get("date") or today,
@@ -416,14 +794,7 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
             "note": meta.get("note", ""),
         },
         "nonconformance": {
-            "summary": (
-                f"Porosity / void content of {Vp:.2f}% in a "
-                f"{cfg['material']} laminate ({cfg['n_plies']} plies, layup "
-                f"{layup}); {cfg['distribution']} distribution, "
-                f"{cfg['void_shape']} void morphology. Predicted to exceed "
-                f"typical drawing porosity allowables and to knock down "
-                f"residual strength — see engineering analysis."
-            ),
+            "summary": summary,
             "material": cfg["material"],
             "layup": layup,
             "n_plies": cfg["n_plies"],
@@ -442,14 +813,103 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
         },
         "recommended_disposition": disposition,
     }
+    if delamination is not None:
+        record["summary"]["indication"] = indication
+        record["delamination"] = delamination
+    return record
 
 
 def serialise_ncr_json(ncr: dict) -> str:
     """Standard JSON (no NaN / Infinity) of an NCR validation summary."""
     from porosity_fe import FORMAT_NCR
-    from porosity_fe.io import _UNITS_NCR, _dumps_json, _wrap_envelope
-    envelope = _wrap_envelope(FORMAT_NCR, _UNITS_NCR, ncr)
+    from porosity_fe.io import _UNITS_NCR, _UNITS_NCR_DELAMINATION, _dumps_json, _wrap_envelope
+    units = _UNITS_NCR if "delamination" not in ncr \
+        else {**_UNITS_NCR, **_UNITS_NCR_DELAMINATION}
+    envelope = _wrap_envelope(FORMAT_NCR, units, ncr)
     return _dumps_json(envelope)
+
+
+def _delamination_rows(ncr: dict) -> list:
+    """``(field, value)`` rows of the delamination block, for Markdown and PDF."""
+    d = ncr["delamination"]
+    margin = d["assessment"]["fracture_margin"]
+    t = d["toughness_N_per_mm"]
+
+    def num(v, fmt: str = "{:.3g}") -> str:
+        return "n/a" if v is None else fmt.format(v)
+
+    rows = [("Indication type", d["indication"])]
+    for i, rec in enumerate(d["delaminations"], start=1):
+        label = "Planform" if len(d["delaminations"]) == 1 else f"Planform {i}"
+        rows.append((label, _planform_text(rec)))
+    rows += [
+        ("Analysis loading", f"{d['analysis_loading']} "
+                             f"(load factor basis: {d['load_factor_basis']})"),
+        ("Toughness G_Ic / G_IIc / G_IIIc (N/mm)",
+         f"{num(t['G_Ic'])} / {num(t['G_IIc'])} / {num(t['G_IIIc'])}"),
+        ("B-K exponent eta", num(t["bk_eta"])),
+        ("Porosity knockdown of the toughness", d["toughness_knockdown"] or "n/a"),
+        ("Toughness uncalibrated", "yes" if d["toughness_uncalibrated"] else "no"),
+        ("Fracture load factor lambda_c",
+         "unbounded (no energy released at the front)"
+         if d["fracture_load_factor"] is None else num(d["fracture_load_factor"])),
+        ("Required load factor", num(d["required_load_factor"])),
+        ("Fracture margin of safety", num(margin["margin_of_safety"], "{:+.2f}")),
+    ]
+    g = d["governing_front_node"]
+    if g is not None:
+        rows.append(("Governing front node",
+                     f"x = {g['x_mm']:.2f}, y = {g['y_mm']:.2f} mm, psi = "
+                     f"{num(g['psi'], '{:.2f}')}, G_T = {g['G_T_N_per_mm']:.4g} "
+                     f"N/mm, G_c = {num(g['G_c_N_per_mm'], '{:.4g}')} N/mm, "
+                     f"Vp = {g['Vp']:.4f}"))
+    kd = d["knockdown_decomposition"]
+    if kd is not None:
+        rows.append(("Knockdown total / porosity only / delamination only",
+                     f"{num(kd['knockdown_total'], '{:.4f}')} / "
+                     f"{num(kd['knockdown_porosity_only'], '{:.4f}')} / "
+                     f"{num(kd['knockdown_delamination_only'], '{:.4f}')}"))
+    return rows
+
+
+_UNCALIBRATED_NOTE = (
+    "Toughness uncalibrated: the toughness at the front was knocked down by "
+    "the porosity there with uncalibrated placeholder coefficients."
+)
+
+
+_NO_DELAMINATION_PATH = (
+    "No disposition path is recommended for the delamination: the MRB "
+    "dispositions it on the fracture assessment of section 2b against the "
+    "governing acceptance criteria."
+)
+
+
+def _ncr_lists(ncr: dict) -> tuple[list, list]:
+    """The cited criteria and required MRB actions of an NCR record: the
+    porosity recommendation's, then the delamination assessment's, each
+    entry once."""
+    parts = [ncr["recommended_disposition"],
+             ncr.get("delamination", {}).get("assessment")]
+    criteria: list = []
+    actions: list = []
+    for part in parts:
+        if part is None:
+            continue
+        criteria += [c for c in part["cited_criteria"] if c not in criteria]
+        actions += [a for a in part["required_mrb_actions"] if a not in actions]
+    return criteria, actions
+
+
+def _footer(ncr: dict) -> str:
+    """Closing line of the Markdown and PDF attachments."""
+    if ncr["recommended_disposition"] is None:
+        return ("Generated by PorosityFE MRB support tool. This is a "
+                "predictive analysis; it recommends no disposition and does "
+                "not constitute MRB approval.")
+    return ("Generated by PorosityFE MRB support tool. This is a predictive "
+            "analysis and a recommended disposition path; it does not "
+            "constitute MRB approval.")
 
 
 def _per_mode_rows(ea: dict) -> list:
@@ -519,34 +979,59 @@ def serialise_ncr_markdown(ncr: dict) -> str:
         lines.append(f"| {mode} | {model} | {mpa} | {kd} |")
     lines.append("")
 
-    lines.append(
-        "## 3. Recommended Disposition Path "
-        "(for MRB review — NOT a final disposition)"
-    )
-    lines.append("")
-    lines.append(f"**Recommended path:** {dp['path']}")
-    lines.append("")
-    lines.append(f"**Rationale:** {dp['rationale']}")
-    lines.append("")
-    lines.append(f"> {dp['disclaimer']}")
-    lines.append("")
+    if "delamination" in ncr:
+        lines.append("## 2b. Delamination Analysis (fracture margin)")
+        lines.append("")
+        if ncr["delamination"]["toughness_uncalibrated"]:
+            lines.append(f"> **{_UNCALIBRATED_NOTE}**")
+            lines.append("")
+        lines.append("| Field | Value |")
+        lines.append("|---|---|")
+        for field, value in _delamination_rows(ncr):
+            lines.append(f"| {field} | {value} |")
+        lines.append("")
 
+    assessment = ncr.get("delamination", {}).get("assessment")
+    if dp is not None:
+        lines.append(
+            "## 3. Recommended Disposition Path "
+            "(for MRB review — NOT a final disposition)"
+        )
+        lines.append("")
+        scope = " (porosity only)" if assessment is not None else ""
+        lines.append(f"**Recommended path{scope}:** {dp['path']}")
+        lines.append("")
+        lines.append(f"**Rationale:** {dp['rationale']}")
+        lines.append("")
+        if assessment is not None:
+            lines.append(f"**Delamination:** {_NO_DELAMINATION_PATH}")
+            lines.append("")
+        lines.append(f"> {dp['disclaimer']}")
+        lines.append("")
+    else:
+        lines.append("## 3. Disposition (by the MRB)")
+        lines.append("")
+        lines.append(_NO_DELAMINATION_PATH)
+        lines.append("")
+    if assessment is not None:
+        lines.append(f"**Fracture assessment:** {assessment['statement']}")
+        lines.append("")
+        lines.append(f"> {assessment['disclaimer']}")
+        lines.append("")
+
+    criteria, actions = _ncr_lists(ncr)
     lines.append("## 4. Cited Criteria")
     lines.append("")
-    for c in dp["cited_criteria"]:
+    for c in criteria:
         lines.append(f"- {c}")
     lines.append("")
 
     lines.append("## 5. Required MRB Actions")
     lines.append("")
-    for a in dp["required_mrb_actions"]:
+    for a in actions:
         lines.append(f"- [ ] {a}")
     lines.append("")
-    lines.append(
-        "_Generated by PorosityFE MRB support tool. This is a predictive "
-        "analysis and a recommended disposition path; it does not constitute "
-        "MRB approval._"
-    )
+    lines.append(f"_{_footer(ncr)}_")
     lines.append("")
     return "\n".join(lines)
 
@@ -613,32 +1098,55 @@ def _ncr_text_lines(ncr: dict) -> list:
         out.append(f"  {mode:<14}{model:<14}{mpa:>14}{kd:>12}")
     out.append("")
 
-    out.append("3. RECOMMENDED DISPOSITION PATH")
-    out.append("   (for MRB review - NOT a final disposition)")
-    rule()
-    para(f"Recommended path: {dp['path']}")
-    out.append("")
-    para(f"Rationale: {dp['rationale']}")
-    out.append("")
-    para(dp["disclaimer"], indent="  ")
-    out.append("")
+    if "delamination" in ncr:
+        out.append("2b. DELAMINATION ANALYSIS (fracture margin)")
+        rule()
+        if ncr["delamination"]["toughness_uncalibrated"]:
+            para(_UNCALIBRATED_NOTE.upper())
+            out.append("")
+        for field, value in _delamination_rows(ncr):
+            para(f"{field}: {value}", indent="  ")
+        out.append("")
 
+    assessment = ncr.get("delamination", {}).get("assessment")
+    if dp is not None:
+        out.append("3. RECOMMENDED DISPOSITION PATH")
+        out.append("   (for MRB review - NOT a final disposition)")
+        rule()
+        scope = " (porosity only)" if assessment is not None else ""
+        para(f"Recommended path{scope}: {dp['path']}")
+        out.append("")
+        para(f"Rationale: {dp['rationale']}")
+        out.append("")
+        if assessment is not None:
+            para(f"Delamination: {_NO_DELAMINATION_PATH}")
+            out.append("")
+        para(dp["disclaimer"], indent="  ")
+        out.append("")
+    else:
+        out.append("3. DISPOSITION (by the MRB)")
+        rule()
+        para(_NO_DELAMINATION_PATH)
+        out.append("")
+    if assessment is not None:
+        para(f"Fracture assessment: {assessment['statement']}")
+        out.append("")
+        para(assessment["disclaimer"], indent="  ")
+        out.append("")
+
+    criteria, actions = _ncr_lists(ncr)
     out.append("4. CITED CRITERIA")
     rule()
-    for c in dp["cited_criteria"]:
+    for c in criteria:
         para(f"- {c}", indent="  ")
     out.append("")
 
     out.append("5. REQUIRED MRB ACTIONS")
     rule()
-    for a in dp["required_mrb_actions"]:
+    for a in actions:
         para(f"[ ] {a}", indent="  ")
     out.append("")
-    para(
-        "Generated by PorosityFE MRB support tool. This is a predictive "
-        "analysis and a recommended disposition path; it does not constitute "
-        "MRB approval."
-    )
+    para(_footer(ncr))
     return out
 
 

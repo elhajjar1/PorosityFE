@@ -30,11 +30,15 @@ LoadingMode = Literal[
 #: ``'transverse_tension'``): ``'flexure_3pt'`` / ``'flexure_4pt'`` are
 #: three- and four-point bending on roller supports (ASTM D790 / D7264);
 #: ``'thermal'`` is the free-standing thermal / cure residual-stress solve
-#: (needs ``delta_T=`` and lamina CTEs). Source of truth:
+#: (needs ``delta_T=`` and lamina CTEs); ``'dcb'``, ``'enf'`` and
+#: ``'mmb'`` are the delamination fracture tests (ASTM D5528 / D7905 /
+#: D6671) on the specimens of ``CompositeMesh.for_dcb`` / ``for_enf`` /
+#: ``for_mmb``. Source of truth:
 #: ``porosity_fe.fe._load_cases._FE_LOADINGS`` (the ``loading`` dispatch
 #: of ``FESolver.solve``).
 FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss',
-                        'flexure_3pt', 'flexure_4pt', 'thermal']
+                        'flexure_3pt', 'flexure_4pt', 'thermal',
+                        'dcb', 'enf', 'mmb']
 
 #: Hexahedral element formulations accepted by
 #: :class:`~porosity_fe.fe.solver.FESolver` (``formulation=``): ``'hex8i'``

@@ -5,6 +5,100 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Delamination in the app, the CLI and the NCR** (delamination plan,
+  phase 5 and the rest of 1.6). Everything is opt-in: the default app run
+  (its cache key and results), the default CLI output and every existing
+  FE result are unchanged.
+  - `knockdown_decomposition(mesh, material, porosity_field, loading)`
+    returns a `KnockdownDecomposition`: the FE knockdown of a porous,
+    delaminated laminate (`total`) and of its two single-defect variants,
+    the same porosity with every interface pair bonded (`porosity_only`)
+    and the same delamination with no porosity (`delamination_only`), all
+    against the one pristine reference (plan decision D6), with the
+    `dominant` defect. Up to two more solves, never run by
+    `FESolver.solve`; `total=` reuses a solve already run.
+  - `FESolver.export_results(..., onset=..., knockdown_decomposition=...)`
+    writes opt-in `delamination_onset` and `knockdown_decomposition` JSON
+    blocks (strict JSON; schema 1.3, additive), and
+    `FieldResults.to_vtu(..., onset=...)` the point field `onset_index`.
+  - App sidebar: a delamination of the FE mesh (an NDI indication:
+    interface, ellipse / rectangle / through-width strip, position and full
+    size in mm) with the knockdown split by defect; the interlaminar
+    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; no preset carries
+    them) and its porosity knockdown (the placeholder exponential law,
+    none, or your `b_I`, `b_II`); an interface onset check (Brewer-Lagace,
+    with `x_avg`); and the FE-only loading modes `dcb`, `enf` and `mmb`
+    (test planning, with the crack length and the MMB mode ratio that sets
+    the lever). The Results tab's **Defects** block shows the fracture
+    load factor, the governing node and its mode mixity, the front table,
+    G_T and ψ along the front, the knockdown decomposition, the onset with
+    its caveat, and for a specimen the compliance and P_c = λ_c · P at
+    mid-width; a warning shows whenever the toughness knockdown is
+    uncalibrated. The mesh-convergence check is not offered for a
+    delamination or a specimen.
+  - NCR (`porosity_fe.reporting`): `INDICATION_TYPES` (porosity,
+    delamination, combined) and `assess_delamination(fracture_load_factor,
+    required_load_factor, structural_class, *, toughness_uncalibrated)`:
+    the fracture margin of a delamination, λ_c against the required load
+    factor the user enters (no default; both multiples of the analysis
+    load), with its statement, criteria and MRB actions, and **no
+    recommended disposition path**: no published acceptance numbers exist,
+    so the MRB dispositions a delamination. `recommend_disposition` is
+    unchanged and stays porosity only. `build_ncr_record` takes
+    `meta['indication']` and `meta['required_load_factor']` and adds a
+    `delamination` block (interface depth and planform, toughness and its
+    law, λ_c, governing front node, knockdown decomposition, the
+    assessment); for a delamination `recommended_disposition` is `null`,
+    and for a combined indication it is the porosity's path, marked as
+    covering the porosity only. Written by the JSON (schema 1.3, additive),
+    Markdown and PDF serialisers; the app's NCR form offers it.
+  - `porosity-analyze --delamination SPEC` (with `--delam-loading`,
+    `--delam-config`, `--toughness`, `--toughness-knockdown`,
+    `--toughness-b`): an FE screening of the coupon at each porosity
+    level, written to `porosity_delamination_<Vp>.json` (the FE JSON with
+    the `fracture` and `knockdown_decomposition` blocks).
+- **Interlaminar stresses and delamination onset at the ply interfaces**
+  (delamination plan, phase 1.1-1.3 and 1.5). Post-processing and
+  lamination theory only: existing results are unchanged unless the new
+  strengths are set.
+  - `MaterialProperties.sigma_3t` (through-thickness tensile strength
+    `Z_t`) and `tau_13` (`S_13`), in MPa, default `None`, validated
+    positive and finite, perturbable when set; no preset sets them. With
+    `None` every criterion keeps its stand-in: `sigma_2t` for `Z_t`; for
+    `tau_13`, `tau_12` in Tsai-Wu and maximum stress and `tau_ilss` in
+    Hashin. When set, Tsai-Wu, Hashin's delamination mode, maximum stress,
+    their load factors and the interface criteria use them, degraded by
+    the same matrix ratio `r_m` (`fe.failure.degraded_interlaminar_strengths`).
+  - `interface_tractions(results, mesh)` (also `FieldResults.interface_tractions`):
+    the traction `(tau_xz, tau_yz, sigma_zz)` at every ply interface that
+    is a node layer, extrapolated to the shared face from the element
+    layer below and the one above with the trilinear extrapolation of
+    `extrapolate_to_nodes`. `InterfaceTractions` reports both sides, their
+    average and their jump, a resolution indicator; on a delaminated
+    interface only bonded faces count.
+  - `delamination_onset(results, mesh, material)` (also
+    `FieldResults.delamination_onset`): the Brewer-Lagace quadratic
+    criterion on the traction averaged over a square window of side
+    `x_avg` (default one ply thickness; a calibration parameter), with an
+    optional compression term (`Zc`), or Ye's criterion in the ply axes
+    (`criterion='ye'`). Strengths are porosity-degraded at the interface
+    node. `DelaminationOnset` gives the per-node index and onset load
+    factor (closed form, or the quadratic root with a thermal prestress),
+    the critical interface and location, an interior variant and a
+    JSON-ready `summary()`.
+  - `obrien_edge_delamination(material, ply_angles, interfaces, strain)`:
+    O'Brien's free-edge delamination energy release rate
+    `G = (eps^2 t / 2) (E_LAM - E*)` from lamination theory, with or
+    without the bending-extension coupling of the sublaminates
+    (`EdgeDelamination`). It reproduces O'Brien's
+    `[+-30/+-30/90/90bar]s` specimen (NASA TM-81940): `E*/E_LAM` 0.745
+    (0.743) without coupling, 0.693 (0.69) with it, and G = 135 J/m² at
+    his onset strain (his G_c = 137 J/m²).
+  - The failure theory page has a section "Interlaminar stresses and
+    delamination onset": the recovery, the averaging, the criteria, the
+    strength fallbacks and their `tau_13` inconsistency, the load factor,
+    the free-edge G and the limits. The app and the exports carry the
+    interface onset on request (see the entry above).
 - **Failure modes made visible, and the docs say what delamination
   coverage exists** (delamination plan, phase 0). The default Tsai-Wu
   results, the knockdowns and the validation MAE are unchanged.
@@ -116,8 +210,8 @@ All notable changes to PorosityFE will be documented in this file.
     separate mode III toughness; critical load factor
     `sqrt(G_c / G_T)` per node, or, with a thermal residual state, the
     root of the quadratic `G_T(lam) = G_c(psi(lam))` by `brentq`. The
-    toughness hook takes the local porosity and returns the pristine values
-    until the porosity-toughness law (phase 4).
+    toughness hook takes the local porosity; the porosity-toughness law is
+    the phase 4 entry below.
   - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
     (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
     `None` by default; no preset sets them. Without them the solve reports
@@ -147,6 +241,113 @@ All notable changes to PorosityFE will be documented in this file.
     1.003 at the mean radius of the staircase front, with 0.785 to 1.434
     around it. Theory page "Delamination": contact, VCCT, criterion, load
     factor, verification table and toughness data.
+- **Porosity-dependent interlaminar toughness, and toughness validation
+  data** (delamination plan, phase 4). Results without a delaminated node
+  pair are unchanged: on the 27-case quick FE fingerprint every
+  `FieldResults` field and the JSON export are identical, and only
+  `summary().details` gains two `None` keys. The empirical strength results
+  and the validation headline (4.49 % / 3.89 %) are unchanged.
+  - The law (`porosity_fe/toughness.py`): `G_c(Vp) = G_c0 f(Vp)` for each
+    mode, with `ToughnessKnockdown` choosing `f` outside
+    `MaterialProperties`: `'exponential'` (`exp(-b Vp)`, the default),
+    `'linear'` (`max(1 - b Vp, 0)`, coefficients required), `'none'` /
+    `None`, or a callable `f(Vp, mode)`. Coefficients are per unit `Vp`
+    and `>= 0`; mode III follows mode II; the law never raises the
+    toughness, and a callable value outside `[0, 1]` raises.
+    `toughness_knockdown_factor(Vp, mode)` screens without FE.
+  - Placeholder exponents `b_I = 6.2`, `b_II = 14`, **uncalibrated**
+    two-point estimates (decision D4): `b_I` the mean of Olivier et al.
+    2007 (4.97) and Hakim et al. 2017 (7.45), `b_II`
+    from Agius and Fox 2015 (12.7 to 15.9). `Calibration` mirrors them as
+    `TOUGHNESS_B_PLACEHOLDER`. The rise of mode I propagation toughness
+    with voids that some studies report is ignored (conservative).
+  - FE coupling: the toughness at each crack-front node is knocked down by
+    `CrackFront.Vp`, the porosity field at the crack plane (the mean of
+    the pair's two nodes), so interface-clustered voids lower `G_c` where
+    the crack runs. `FESolver.solve`, `fracture_load_factors` and
+    `critical_energy_release_rate` take `toughness_knockdown=` (default
+    `'exponential'`); with zero porosity at the front `G_c` and `lambda_c`
+    are bit-identical to before. On an end-notched flexure beam with 2 %
+    mean porosity, a mid-plane cluster puts 4.8 % at the front and lowers
+    `G_c` from 0.585 to 0.395 N/mm against uniform porosity.
+  - Flags: `CrackFront.toughness_knockdown` and `toughness_uncalibrated`
+    (true when a placeholder lowered a toughness), the same keys in
+    `summary().details` and the JSON `fracture` block (schema 1.3,
+    additive), and one INFO line per process at the first such use.
+  - Validation: the dataset schema gains `G_Ic` and `G_IIc` blocks (N/mm),
+    each tagged with its stage (initiation / propagation / unspecified)
+    and starter crack (insert / precracked / unspecified); a
+    toughness-only dataset needs only fiber and matrix.
+    `validation/validate_all.py` maps the keys (they raised `KeyError`),
+    predicts them with the law (`predict_toughness`) and summarizes them
+    apart (`summarize_toughness_mae`, a report section and a
+    `validate_porosity` summary line); `summarize_mae` leaves them out.
+    New datasets `hakim_2017` (static `G_Ic` at 1.49, 1.77 and 3.43 %
+    voids, Table 1) and `agius_fox_2015` (`G_IIc` ratio from the
+    abstract): toughness MAE 3.67 % property-weighted, 4.18 %
+    point-weighted, a consistency check since the placeholders come in
+    part from the same studies. Carraro et al. 2015 give values only in
+    figures and are not included.
+  - Docs: theory page "Delamination", section "Porosity and toughness"
+    (the law, local porosity, sources and calibration status, limits);
+    README Validation and Limitations; CLI page.
+- **Fracture specimens: DCB, ENF and MMB, verified against the NASA
+  benchmarks** (delamination plan, phase 3). Existing results are
+  unchanged: on the quick FE fingerprint every existing `FieldResults`
+  field and the JSON export are identical, and `summary().details` only
+  gains the `load_point_compliance` key (`None`).
+  - `CompositeMesh.for_dcb`, `for_enf` and `for_mmb` build the
+    double-cantilever-beam (ASTM D5528), end-notched-flexure (D7905) and
+    mixed-mode-bending (D6671) specimens: the insert as a through-width
+    `Delamination` strip at the mid-plane (or `interface=`) open at the
+    loaded end; the hinges, supports, load lines and crack tip on node
+    lines; and a public `FractureSpecimenGeometry` recorded as
+    `mesh.fracture_geometry`. The default dimensions are the plan's reading
+    of the standards, whose text was not available: check them against
+    the purchased editions.
+  - The in-plane mesh is graded towards the front (plan decision D5): six
+    elements of exactly `element_length` either side of it, then 25 %
+    growth up to `max_element_length`. The node lines are the new
+    `CompositeMesh.x_grid` (`None`, evenly spaced, everywhere else);
+    `nx=` gives a uniform grid that must align the key positions.
+    `plane_strain=True` holds `u_y = 0`, the counterpart of a 2-D
+    plane-strain model.
+  - Loading modes `'dcb'` (equal and opposite hinge line loads, six
+    statically determinate constraints at the far end), `'enf'`
+    (three-point bending on `roller_supports`, crack-face contact) and
+    `'mmb'` (the forces of the statically determinate MMB lever, on
+    rollers), force controlled by `applied_load`, through
+    `BoundaryHandler.fracture_bcs`; `line_load(..., face='z_min')` loads
+    the bottom face. New `FieldResults.load_point_compliance` (mm/N, these
+    modes only; also in the JSON `stiffness` block). `effective_modulus` is
+    `None`; the knockdown keeps the reference rule (bonded, pore-free
+    specimen).
+  - MMB lever relations `mmb_lever_length` and `mmb_mode_ratio`: Reeder
+    and Crews' split into DCB and ENF parts with crack-length corrected
+    beam theory. They give 40.90 and 27.02 mm for `G_II / G_T` = 0.5 and
+    0.8 on the NASA specimen, where Krueger used 41.3 and 27.3 mm.
+  - Data reduction: `compliance_calibration` (public, with
+    `ComplianceCalibration`) fits compliance against crack length by
+    D5528 modified beam theory, D5528 compliance calibration or the D7905
+    cubic fit, and gives `G = P^2 / (2 b) dC/da` of the fit.
+  - `refinement_study` runs the three modes on uniform grids aligned with
+    the key positions (`specimen=` for the dimensions) and adds
+    `load_point_compliance` and `fracture_load_factor` to their reported
+    quantities.
+  - Verified against Krueger's NASA benchmarks with the reports'
+    materials, geometry and toughness (`tests/test_fracture_specimens.py`,
+    12 element layers, mid-width onset): DCB T300/1076
+    (NASA/TM-2008-215123) critical opening 0.7289 mm against 0.75 mm
+    (−2.8 %); ENF IM7/8552 (NASA/CR-2011-217305) 1523.0 N in plane strain
+    and 1537.6 N in 3-D against 1526 N; MMB IM7/8552
+    (NASA/CR-2012-217562) 383.5 and 738.0 N in plane strain and 377.0 and
+    732.0 N in 3-D against 385 and 751 N. The multidirectional SLB
+    (C12K/R6376, TM-2008-215123; `POROSITY_FE_FRACTURE_BENCH=1`) gives a
+    critical deflection 4.0 % above the report's with the specimen
+    dimensions of its Fig. 3, but 7.0 % above with the 2.0 mm arms and
+    34.0 mm crack its FE model figures label. Theory page "Delamination":
+    specimens, loads, the MMB lever relations with their sources, the
+    benchmark table, the mesh study and mesh guidance.
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled

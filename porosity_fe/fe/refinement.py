@@ -28,6 +28,7 @@ import numpy as np
 from scipy.optimize import brentq
 
 from .._types import FEFormulation, FELoadingMode
+from ..fracture_specimens import _aligned_multiple
 from ..materials import MaterialProperties
 from ..mesh import (
     _D2344_ELEMENTS_PER_THICKNESS,
@@ -57,6 +58,15 @@ QUANTITY_KINDS: dict[str, str] = {
     'interior_first_ply_failure_load_factor': 'interior extremum',
 }
 
+#: Quantities added for the fracture tests ('dcb', 'enf', 'mmb'): the
+#: load-point compliance (``'global'``) and the critical load factor of the
+#: insert's front (``'front extremum'``: the minimum over the front nodes,
+#: which can sit on the node where the front meets a free side face).
+FRACTURE_QUANTITY_KINDS: dict[str, str] = {
+    'load_point_compliance': 'global',
+    'fracture_load_factor': 'front extremum',
+}
+
 #: Short column labels for the text tables.
 _LABELS = {
     'knockdown': 'KD',
@@ -65,7 +75,12 @@ _LABELS = {
     'first_ply_failure_load_factor': 'FPF',
     'interior_max_failure_index': 'int. FI',
     'interior_first_ply_failure_load_factor': 'int. FPF',
+    'load_point_compliance': 'C mm/N',
+    'fracture_load_factor': 'lambda_c',
 }
+
+#: Every quantity a level can hold, with its kind.
+_ALL_KINDS = {**QUANTITY_KINDS, **FRACTURE_QUANTITY_KINDS}
 
 #: Interior counterpart of each domain extremum.
 _INTERIOR_OF = {
@@ -106,6 +121,13 @@ _ILSS_NX_MULTIPLE = 6
 _ILSS_BASE_NX = int(_D2344_LENGTH_TO_THICKNESS * _D2344_ELEMENTS_PER_THICKNESS)
 _ILSS_BASE_NY = int(_D2344_WIDTH_TO_THICKNESS * _D2344_ELEMENTS_PER_THICKNESS)
 
+#: Fracture-test levels (``CompositeMesh.for_dcb`` / ``for_enf`` /
+#: ``for_mmb``) are uniform grids along ``x`` whose node lines hold the
+#: loads, supports and crack tip; the default coarsest level has elements
+#: of about half the specimen thickness.
+_FRACTURE_BUILDERS = {'dcb': 'for_dcb', 'enf': 'for_enf', 'mmb': 'for_mmb'}
+_FRACTURE_BASE_ELEMENTS_PER_THICKNESS = 2
+
 
 # ----------------------------------------------------------------------
 # Result dataclasses
@@ -139,6 +161,11 @@ class RefinementLevel:
         ``None`` where the solve does not define them (``effective_modulus``
         for ``'ilss'``, interior values without interior elements) or where
         they are not finite (``knockdown`` of a thermal solve).
+    load_point_compliance, fracture_load_factor : float or None
+        The fracture tests' quantities (``FRACTURE_QUANTITY_KINDS``):
+        :attr:`~porosity_fe.FieldResults.load_point_compliance` (mm/N) and
+        :attr:`~porosity_fe.FieldResults.fracture_load_factor` (``None``
+        without toughness data); ``None`` for the other loadings.
     """
 
     resolution: tuple[int, int, int]
@@ -153,6 +180,8 @@ class RefinementLevel:
     first_ply_failure_load_factor: float | None
     interior_max_failure_index: float | None
     interior_first_ply_failure_load_factor: float | None
+    load_point_compliance: float | None = None
+    fracture_load_factor: float | None = None
 
     @property
     def mesh(self) -> str:
@@ -160,9 +189,10 @@ class RefinementLevel:
         return "x".join(str(n) for n in self.resolution)
 
     def value(self, quantity: str) -> float | None:
-        """The value of one of the reported quantities (see ``QUANTITY_KINDS``)."""
-        if quantity not in QUANTITY_KINDS:
-            raise KeyError(f"Unknown quantity {quantity!r}; use one of {list(QUANTITY_KINDS)}.")
+        """The value of one of the reported quantities (see ``QUANTITY_KINDS``
+        and ``FRACTURE_QUANTITY_KINDS``)."""
+        if quantity not in _ALL_KINDS:
+            raise KeyError(f"Unknown quantity {quantity!r}; use one of {list(_ALL_KINDS)}.")
         return getattr(self, quantity)
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,7 +205,7 @@ class RefinementLevel:
             'solve_time_s': _finite_or_none(self.solve_time_s),
             'estimated_memory_gb': _finite_or_none(self.estimated_memory_gb),
         }
-        for name in QUANTITY_KINDS:
+        for name in _ALL_KINDS:
             out[name] = _finite_or_none(getattr(self, name))
         return out
 
@@ -189,7 +219,8 @@ class QuantityConvergence:
     name : str
         The quantity (a :class:`~porosity_fe.FieldResults` attribute).
     kind : str
-        ``'global'``, ``'domain extremum'`` or ``'interior extremum'``.
+        ``'global'``, ``'domain extremum'``, ``'interior extremum'`` or
+        (``fracture_load_factor``) ``'front extremum'``.
     values : tuple of float or None
         Value per level, coarse to fine.
     relative_changes : tuple of float or None
@@ -304,7 +335,8 @@ class RefinementStudy:
     levels : tuple of RefinementLevel
         Coarse to fine.
     convergence : dict of str to QuantityConvergence
-        Keyed by quantity name, in report order.
+        Keyed by quantity name, in report order: ``QUANTITY_KINDS``, then
+        for the fracture tests ``FRACTURE_QUANTITY_KINDS``.
     """
 
     loading: str
@@ -423,6 +455,14 @@ class RefinementStudy:
                     f"to the half-disc under the load), or meshes still too coarse "
                     f"for the trend. Do not read these as mesh-converged "
                     f"values.")
+        lam = conv.get('fracture_load_factor')
+        if lam is not None and lam.converged is False:
+            notes.append(
+                "fracture_load_factor is the smallest critical load factor over "
+                "the front nodes; where it sits on the node at a free side face "
+                "(the corner singularity of the front, e.g. in the ENF) it "
+                "depends on the mesh. Read the front table (FieldResults."
+                "crack_front) away from the side faces.")
         kd = conv['knockdown']
         if kd.behavior != 'unavailable':
             loss = 1.0 - float(kd.values[-1] or 0.0)
@@ -555,7 +595,7 @@ def _three_level_trend(values: Sequence[float], sizes: Sequence[float],
 def _assess(name: str, values: Sequence[float | None], sizes: Sequence[float],
             tol: float) -> QuantityConvergence:
     """Per-quantity convergence record for :func:`refinement_study`."""
-    kind = QUANTITY_KINDS[name]
+    kind = _ALL_KINDS[name]
     vals = tuple(_finite_or_none(v) for v in values)
     if any(v is None for v in vals):
         return QuantityConvergence(
@@ -688,7 +728,11 @@ def _peak_factorizations(loading: str, solver: str, field: PorosityField) -> int
     and an iterative one at the pristine reference's, if it needs one.
     """
     if solver == 'direct':
-        return 1
+        # A fracture test's crack-face contact loop keeps its latest active
+        # set's factorization next to the load case's.
+        return 2 if loading in _FRACTURE_BUILDERS else 1
+    if loading in _FRACTURE_BUILDERS:
+        return 1          # the pristine reference of the delaminated specimen
     porous = field.Vp > 0.0 or bool(field.discrete_voids)
     return 1 if (porous and loading != 'thermal') else 0
 
@@ -770,6 +814,7 @@ def refinement_study(
     max_elements: int | None = None,
     max_memory_gb: float | None = None,
     allow_unresolved_layup: bool = False,
+    specimen: Mapping[str, Any] | None = None,
     verbose: bool = False,
 ) -> RefinementStudy:
     """Solve one FE load case on refined meshes and assess mesh convergence.
@@ -806,7 +851,7 @@ def refinement_study(
         The porosity field, or the specimen-average void volume fraction
         ``Vp`` (a fraction in ``[0, 1]``) to build one from with
         ``porosity_config``. A field must have been built for ``material``.
-    loading : {'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt', 'thermal'}
+    loading : {'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt', 'thermal', 'dcb', 'enf', 'mmb'}
         Load case, as :meth:`FESolver.solve`.
     porosity_config : dict, optional
         :class:`~porosity_fe.PorosityField` keyword arguments
@@ -822,7 +867,11 @@ def refinement_study(
         default is the :meth:`~porosity_fe.CompositeMesh.for_ilss` specimen
         mesh, ``(24, 8, material.n_plies)``, and for the flexure modes the
         :meth:`~porosity_fe.CompositeMesh.for_flexure` specimen mesh
-        (``(48, 4, 24)`` for the 24-ply presets).
+        (``(48, 4, 24)`` for the 24-ply presets). For the fracture tests a
+        uniform grid along ``x`` with elements of about half the specimen
+        thickness (``nx`` the next multiple that keeps the loads, supports
+        and crack tip on node lines), the builder's default ``ny`` and
+        ``nz = n_plies``.
     factors : sequence of float, optional
         Refinement factors of the levels relative to ``base_resolution``,
         strictly increasing (default ``(1, 1.5, 2)``). Three or more levels
@@ -881,6 +930,12 @@ def refinement_study(
     allow_unresolved_layup : bool
         Accept levels whose ``nz`` does not resolve the layup
         (:meth:`CompositeMesh.layup_discrepancies`); they raise by default.
+    specimen : dict, optional
+        Fracture tests only: keyword arguments of the specimen builder
+        (:meth:`~porosity_fe.CompositeMesh.for_dcb`, ``for_enf`` or
+        ``for_mmb``) other than the mesh ones, e.g. ``crack_length``,
+        ``span``, ``width``, ``lever_length``, ``interface``,
+        ``plane_strain``. Default: the builder's defaults.
     verbose : bool
         Log the plan and per-level progress at INFO level (DEBUG otherwise).
 
@@ -914,6 +969,17 @@ def refinement_study(
     explicit ``resolutions`` that break it raise. The span is the same at
     every level; the unloaded overhangs take whole elements and can differ
     slightly in length.
+
+    For ``'dcb'``, ``'enf'`` and ``'mmb'`` every level is the fracture
+    specimen (:meth:`~porosity_fe.CompositeMesh.for_dcb`, ``for_enf``,
+    ``for_mmb`` with ``specimen``) on a uniform grid along ``x`` with the
+    level's ``nx``, which must put the loads, supports and crack tip on node
+    lines: a multiple of the smallest such count (5 for the default DCB, 10
+    for the ENF, 4 for the MMB). Generated levels round it up, explicit
+    ``resolutions`` that break it raise. These studies add the
+    load-point compliance and the critical load factor of the front
+    (``FRACTURE_QUANTITY_KINDS``) to the reported quantities; the element
+    length at the front is the uniform ``dx`` of the level.
 
     Examples
     --------
@@ -949,6 +1015,38 @@ def refinement_study(
                          f"got {interior_margin!r}.")
     _check_delta_T(loading, delta_T, material)
     field = _resolve_porosity(material, porosity, porosity_config)
+    fracture = loading in _FRACTURE_BUILDERS
+    if specimen is not None and not fracture:
+        raise ValueError(f"specimen= applies to the fracture tests ('dcb', 'enf', "
+                         f"'mmb'), not loading={loading!r}.")
+    spec = dict(specimen or {})
+    mesh_keys = {'nx', 'ny', 'nz', 'ply_angles', 'element_length'} & set(spec)
+    if mesh_keys:
+        raise ValueError(f"specimen= holds the specimen's dimensions, not its mesh: "
+                         f"remove {sorted(mesh_keys)} (the study sets nx, ny, nz, "
+                         f"ply_angles).")
+    nx_unit, fracture_ny, fracture_length = 1, 1, 0.0
+    if fracture:
+        # A probe of the specimen (graded default mesh) gives its key
+        # positions and default ny; the levels are uniform along x.
+        probe = getattr(CompositeMesh, _FRACTURE_BUILDERS[loading])(
+            field, material, ply_angles=ply_angles, **spec)
+        geom = probe.fracture_geometry
+        assert geom is not None
+        points = [0.0, geom.crack_tip_x, float(probe.L_x), geom.load_end]
+        if geom.span is not None:
+            points += [geom.load_end + geom.span, geom.load_end + 0.5 * geom.span]
+        unit = _aligned_multiple(points, float(probe.L_x), CompositeMesh._MAX_ELEMENTS_PER_AXIS)
+        if unit is None:
+            raise ValueError(
+                f"refinement_study: no uniform grid of at most "
+                f"{CompositeMesh._MAX_ELEMENTS_PER_AXIS} elements puts the loads, "
+                f"supports and crack tip of this {loading!r} specimen on node lines; "
+                f"round its dimensions.")
+        nx_unit = unit
+        fracture_ny = probe.ny
+        fracture_length = float(probe.L_x)
+        del probe
 
     # --- plan the levels ------------------------------------------------
     if resolutions is not None:
@@ -968,18 +1066,27 @@ def refinement_study(
                 f"refinement_study: {loading!r} levels are ASTM D7264 "
                 f"specimens, so each nx must be even to keep mid-span on a "
                 f"node line; got {[r[0] for r in plan]}.")
+        if fracture and any(r[0] % nx_unit for r in plan):
+            raise ValueError(
+                f"refinement_study: {loading!r} levels are uniform along x with "
+                f"the loads, supports and crack tip on node lines, so each nx "
+                f"must be a multiple of {nx_unit}; got {[r[0] for r in plan]}.")
     else:
         if refine not in ('in_plane', 'all'):
             raise ValueError(f"refine must be 'in_plane' or 'all', got {refine!r}.")
         if base_resolution is None and loading == 'ilss':
             # The CompositeMesh.for_ilss default specimen mesh.
             base = (_ILSS_BASE_NX, _ILSS_BASE_NY, material.n_plies)
+        elif base_resolution is None and fracture:
+            dx = float(material.total_thickness) / _FRACTURE_BASE_ELEMENTS_PER_THICKNESS
+            nx0 = nx_unit * max(1, math.ceil(fracture_length / (dx * nx_unit) - 1e-9))
+            base = (nx0, fracture_ny, material.n_plies)
         elif base_resolution is None and loading in _FLEXURE_PROCEDURE:
             # The CompositeMesh.for_flexure default specimen mesh.
-            specimen = CompositeMesh.for_flexure(field, material,
-                                                 ply_angles=ply_angles)
-            base = (specimen.nx, specimen.ny, specimen.nz)
-            del specimen
+            flex_mesh = CompositeMesh.for_flexure(field, material,
+                                                  ply_angles=ply_angles)
+            base = (flex_mesh.nx, flex_mesh.ny, flex_mesh.nz)
+            del flex_mesh
         elif base_resolution is None:
             # The production resolution, but nz = n_plies even above its cap:
             # a study must resolve the layup, and the memory guard applies.
@@ -998,6 +1105,9 @@ def refinement_study(
             plan = [(m * math.ceil(nx / m), ny, nz) for nx, ny, nz in plan]
         elif loading in _FLEXURE_PROCEDURE:
             plan = [(nx + nx % 2, ny, nz) for nx, ny, nz in plan]
+        elif fracture:
+            m = nx_unit
+            plan = [(m * math.ceil(nx / m), ny, nz) for nx, ny, nz in plan]
         refine_label = refine
     if len(plan) < 2:
         raise ValueError("A refinement study needs at least two levels.")
@@ -1053,6 +1163,10 @@ def refinement_study(
         elif loading in _FLEXURE_PROCEDURE:
             mesh = CompositeMesh.for_flexure(field, material, nx=res[0], ny=res[1],
                                              nz=res[2], ply_angles=ply_angles)
+        elif fracture:
+            mesh = getattr(CompositeMesh, _FRACTURE_BUILDERS[loading])(
+                field, material, nx=res[0], ny=res[1], nz=res[2],
+                ply_angles=ply_angles, **spec)
         else:
             mesh = CompositeMesh(field, material, nx=res[0], ny=res[1], nz=res[2],
                                  ply_angles=ply_angles)
@@ -1087,6 +1201,8 @@ def refinement_study(
             interior_max_failure_index=_finite_or_none(out.interior_max_failure_index),
             interior_first_ply_failure_load_factor=_finite_or_none(
                 out.interior_first_ply_failure_load_factor),
+            load_point_compliance=_finite_or_none(out.load_point_compliance),
+            fracture_load_factor=_finite_or_none(out.fracture_load_factor),
         )
         del out, fe, mesh
         gc.collect()
@@ -1097,8 +1213,9 @@ def refinement_study(
             _fmt(level.interior_max_failure_index))
 
     sizes = [lv.element_size for lv in levels]
+    names = list(QUANTITY_KINDS) + (list(FRACTURE_QUANTITY_KINDS) if fracture else [])
     convergence = {name: _assess(name, [lv.value(name) for lv in levels], sizes, tol)
-                   for name in QUANTITY_KINDS}
+                   for name in names}
     assert margin is not None
     return RefinementStudy(
         loading=loading, refine=refine_label, refined_axes=refined_axes,
