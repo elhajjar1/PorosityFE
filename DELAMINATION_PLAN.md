@@ -20,15 +20,15 @@ point at commit 2686d62. Progress by pull request:
 | 0.1–0.3 | Done: mode maxima, exports, app criterion selector, docs | #209 |
 | 0.4 | Pending your decision (changes `interface` results) | — |
 | 0.5 | Folded into phase 1.1 (optional `tau_13` with today's behaviour as default) | — |
-| 1.1–1.3, 1.5 | Done: optional `sigma_3t` / `tau_13`, interface traction recovery, Brewer–Lagace / Ye onset with load factor, O'Brien free-edge G | next PR |
+| 1.1–1.3, 1.5 | Done: optional `sigma_3t` / `tau_13`, interface traction recovery, Brewer–Lagace / Ye onset with load factor, O'Brien free-edge G | #210 |
 | 1.4 | Pending your decision (changes penny results) | — |
-| 1.6 | Done: `FieldResults` methods; on request the JSON `delamination_onset` block (`export_results(..., onset=)`), the VTU `onset_index` field and the app's onset check | next PR |
+| 1.6 | Done: `FieldResults` methods; on request the JSON `delamination_onset` block (`export_results(..., onset=)`), the VTU `onset_index` field and the app's onset check | #210 |
 | 2.1–2.8 | Done: `Delamination`, duplicated interface nodes and ties, crack-face contact, VCCT, B-K criterion and load factor | #209 |
-| 3.1–3.3 | Done: DCB / ENF / MMB builders and loading modes, MMB lever, compliance calibration, NASA benchmarks within 3 % (SLB 4 %, behind a flag) | next PR |
-| 4.1, 4.2, 4.4 | Done: `ToughnessKnockdown` (uncalibrated placeholders, flagged), front toughness from the local porosity, `hakim_2017` and `agius_fox_2015` reported apart | next PR |
+| 3.1–3.3 | Done: DCB / ENF / MMB builders and loading modes, MMB lever, compliance calibration, NASA benchmarks within 3 % (SLB 4 %, behind a flag) | #210 |
+| 4.1, 4.2, 4.4 | Done: `ToughnessKnockdown` (uncalibrated placeholders, flagged), front toughness from the local porosity, `hakim_2017` and `agius_fox_2015` reported apart | #210 |
 | 4.3 | Partly: `toughness_knockdown_factor` screens without FE; no empirical `LoadingMode` | — |
 | 4.5 | Not started (uncertainty of `b`) | — |
-| 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | next PR |
+| 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | #210 |
 | 6 | Deferred (cohesive zones) | — |
 
 Decisions taken with the recommended option because they change no
