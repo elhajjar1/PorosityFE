@@ -457,9 +457,93 @@ class _ConstraintReduction:
         return u
 
 
+#: Master-slave ties ``(tied, master, offset)`` of
+#: :meth:`_ConstraintReduction.from_constraints`.
+Ties = tuple[np.ndarray, np.ndarray, np.ndarray]
+
+#: Default of a ``ties=`` argument that means "the mesh's bonded ties"
+#: (:func:`_mesh_ties`), so ``None`` can mean "no ties".
+_MESH_TIES = object()
+
+
+def _mesh_ties(mesh: CompositeMesh) -> Ties | None:
+    """Ties of the bonded part of a mesh's delaminated interfaces.
+
+    ``u[duplicate] = u[original]`` for every bonded duplicated node pair
+    (:meth:`CompositeMesh.bonded_ties`), with zero offsets; ``None`` when
+    the mesh has none, so a mesh without delaminations keeps the
+    Dirichlet-only reduction bit for bit. Duck-typed: a mesh-like object
+    without ``bonded_ties`` has no ties.
+    """
+    bonded_ties = getattr(mesh, 'bonded_ties', None)
+    if bonded_ties is None:
+        return None
+    slaves, masters = bonded_ties()
+    if slaves.size == 0:
+        return None
+    return slaves, masters, np.zeros(slaves.size, dtype=float)
+
+
+def _ties_token(ties: Ties | None) -> bytes:
+    """Bytes identifying a tie topology (empty without ties), for cache keys."""
+    if ties is None:
+        return b''
+    h = hashlib.blake2b(digest_size=16)
+    for arr in ties[:2]:
+        h.update(np.ascontiguousarray(arr, dtype=np.intp).tobytes())
+    return h.digest()
+
+
+def _fold_tied(residual: np.ndarray, ties: Ties | None) -> np.ndarray:
+    """``residual`` with each tied DOF's entry moved onto its master.
+
+    At a converged solve the residual ``K u - F`` of a tied (slave) DOF is
+    the force its tie carries, and its master's holds the opposite share
+    of the same node's equilibrium, so the support reaction of a node
+    with tied duplicates is the sum over the original and the duplicates.
+    Returns a new array with that sum at the masters and zero at the
+    slaves; ``residual`` itself when there are no ties.
+    """
+    if ties is None:
+        return residual
+    tied, masters = ties[0], ties[1]
+    out = np.array(residual, dtype=float, copy=True)
+    np.add.at(out, masters, out[tied])
+    out[tied] = 0.0
+    return out
+
+
+def _tied_node_mask(mesh: CompositeMesh) -> np.ndarray | None:
+    """Nodes that follow another node through a bonded tie, or ``None``.
+
+    Boolean ``(n_nodes,)``: the duplicate of every bonded duplicated node
+    pair. ``None`` when there is none (a mesh without delaminations).
+    """
+    pairs = getattr(mesh, 'interface_node_pairs', None)
+    if pairs is None:
+        return None
+    _, duplicates = pairs()
+    if duplicates.size == 0:
+        return None
+    bonded = mesh.bonded_pairs()
+    if not bonded.any():
+        return None
+    mask = np.zeros(np.asarray(mesh.nodes).shape[0], dtype=bool)
+    mask[duplicates[bonded]] = True
+    return mask
+
+
 
 class BoundaryHandler:
     """Handles boundary conditions for the porosity FE model.
+
+    Every builder prescribes the nodes it selects on a face or line except
+    the duplicates of a bonded delaminated interface
+    (:meth:`CompositeMesh.bonded_ties`): those follow their original nodes
+    through the ties, and prescribing them as well would constrain a
+    degree of freedom twice. The original nodes and the delaminated
+    (untied) duplicates on the face are prescribed. Without delaminations
+    nothing is left out.
 
     Parameters
     ----------
@@ -473,6 +557,18 @@ class BoundaryHandler:
     def nodes_on_face(self, face: str) -> np.ndarray:
         """Return node indices on the specified face."""
         return self.mesh.nodes_on_face(face)
+
+    def _prescribable(self, nodes: np.ndarray) -> np.ndarray:
+        """``nodes`` without tied duplicates (see the class docstring);
+        ``nodes`` itself when the mesh has none."""
+        tied = _tied_node_mask(self.mesh)
+        if tied is None:
+            return nodes
+        return nodes[~tied[nodes]]
+
+    def _face_nodes(self, face: str) -> np.ndarray:
+        """Nodes of ``face`` that a boundary condition may prescribe."""
+        return self._prescribable(self.mesh.nodes_on_face(face))
 
     def compression_bcs(self, applied_strain: float = -0.01
                         ) -> tuple[dict[int, float], np.ndarray]:
@@ -502,21 +598,21 @@ class BoundaryHandler:
         constrained: dict[int, float] = {}
 
         # Fix ux on x_min
-        for nid in self.mesh.nodes_on_face('x_min'):
+        for nid in self._face_nodes('x_min'):
             constrained[3 * int(nid)] = 0.0
 
         # Prescribe ux on x_max
-        for nid in self.mesh.nodes_on_face('x_max'):
+        for nid in self._face_nodes('x_max'):
             constrained[3 * int(nid)] = prescribed_disp
 
         # Fix uy on y_min (symmetry)
-        for nid in self.mesh.nodes_on_face('y_min'):
+        for nid in self._face_nodes('y_min'):
             constrained[3 * int(nid) + 1] = 0.0
 
         # Fix uz on one corner node (rigid body)
-        xmin_nodes = self.mesh.nodes_on_face('x_min')
-        ymin_nodes = self.mesh.nodes_on_face('y_min')
-        zmin_nodes = self.mesh.nodes_on_face('z_min')
+        xmin_nodes = self._face_nodes('x_min')
+        ymin_nodes = self._face_nodes('y_min')
+        zmin_nodes = self._face_nodes('z_min')
         corner = np.intersect1d(np.intersect1d(xmin_nodes, ymin_nodes), zmin_nodes)
         if corner.size > 0:
             constrained[3 * int(corner[0]) + 2] = 0.0
@@ -566,7 +662,7 @@ class BoundaryHandler:
 
         # ±x faces: u = gamma/2 * y_node,  v = gamma/2 * x_node
         for face in ('x_min', 'x_max'):
-            for nid in self.mesh.nodes_on_face(face):
+            for nid in self._face_nodes(face):
                 nid = int(nid)
                 x_n = float(nodes[nid, 0])
                 y_n = float(nodes[nid, 1])
@@ -575,7 +671,7 @@ class BoundaryHandler:
 
         # ±y faces: u = gamma/2 * y_node,  v = gamma/2 * x_node
         for face in ('y_min', 'y_max'):
-            for nid in self.mesh.nodes_on_face(face):
+            for nid in self._face_nodes(face):
                 nid = int(nid)
                 x_n = float(nodes[nid, 0])
                 y_n = float(nodes[nid, 1])
@@ -583,9 +679,9 @@ class BoundaryHandler:
                 constrained[3 * nid + 1] = (gamma / 2.0) * x_n   # uy
 
         # Fix uz at one corner to prevent rigid-body translation in z
-        xmin_nodes = self.mesh.nodes_on_face('x_min')
-        ymin_nodes = self.mesh.nodes_on_face('y_min')
-        zmin_nodes = self.mesh.nodes_on_face('z_min')
+        xmin_nodes = self._face_nodes('x_min')
+        ymin_nodes = self._face_nodes('y_min')
+        zmin_nodes = self._face_nodes('z_min')
         corner = np.intersect1d(np.intersect1d(xmin_nodes, ymin_nodes), zmin_nodes)
         if corner.size > 0:
             constrained[3 * int(corner[0]) + 2] = 0.0
@@ -738,7 +834,7 @@ class BoundaryHandler:
                 f"got {list(support_x)!r}.")
         lines = []
         for x in xs:
-            line = self.face_line_nodes('z_min', x)
+            line = self._prescribable(self.face_line_nodes('z_min', x))
             if line.size == 0:
                 raise ValueError(
                     f"No bottom-face node line at x = {x:g} mm for a roller "
@@ -813,7 +909,7 @@ class BoundaryHandler:
             raise ValueError(f"total_load must be finite, got {total_load!r}.")
         if not math.isfinite(w) or w < 0.0:
             raise ValueError(f"width must be a finite length >= 0, got {width!r}.")
-        top = self.mesh.nodes_on_face('z_max')
+        top = self._face_nodes('z_max')
         grid = np.unique(self.mesh.nodes[top, 0])
         weights = _hat_weights(grid, float(x), w, self._line_tolerance())
 
@@ -821,7 +917,7 @@ class BoundaryHandler:
         for xi, wx in zip(grid, weights, strict=True):
             if wx == 0.0:
                 continue
-            line = self.face_line_nodes('z_max', float(xi))
+            line = self._prescribable(self.face_line_nodes('z_max', float(xi)))
             y = self.mesh.nodes[line, 1]
             wy = np.zeros(line.size)
             if line.size == 1:
@@ -927,7 +1023,7 @@ class BoundaryHandler:
         RuntimeError
             If a support corner cannot be located on the mesh.
         """
-        faces = {f: self.mesh.nodes_on_face(f)
+        faces = {f: self._face_nodes(f)
                  for f in ('x_min', 'x_max', 'y_min', 'y_max', 'z_min')}
 
         def corner(fx: str, fy: str) -> int:

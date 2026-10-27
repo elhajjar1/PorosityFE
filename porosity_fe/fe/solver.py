@@ -26,6 +26,7 @@ The pre-split names other modules and the tests import from here
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 import os
 import time
@@ -41,7 +42,7 @@ from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
-from . import _constrained_solve, _knockdown, _postprocess, _thermal, failure
+from . import _constrained_solve, _contact, _fracture, _knockdown, _postprocess, _thermal, failure
 from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
 from ._knockdown import _stiffness_measure
 from ._load_cases import _check_delta_T as _check_delta_T
@@ -49,7 +50,15 @@ from ._load_cases import _minres_deprecation as _minres_deprecation
 from ._load_cases import _resolve_applied_strain as _resolve_applied_strain
 from ._load_cases import apply_boundary_conditions, check_solve_arguments, interior_mask
 from ._thermal import _ThermalUnitSolution
-from .assembler import BoundaryHandler, GlobalAssembler, _ConstraintReduction
+from .assembler import (
+    _MESH_TIES,
+    BoundaryHandler,
+    GlobalAssembler,
+    Ties,
+    _ConstraintReduction,
+    _mesh_ties,
+    _ties_token,
+)
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
@@ -145,6 +154,18 @@ class FESolver:
     not a multiple of ``n_plies``) analyzes a different laminate. The
     constructor logs a warning, once per mesh, naming the element layup
     and what it loses (see :meth:`CompositeMesh.layup_discrepancies`).
+
+    On a mesh with explicit delaminations (``CompositeMesh(...,
+    delaminations=...)``) every loading mode ties the bonded part of each
+    duplicated interface (:meth:`CompositeMesh.bonded_ties`), prescribes
+    no tied duplicate on a face, and measures the knockdown against the
+    laminate with no porosity, voids or delamination. It keeps the crack
+    faces from interpenetrating (frictionless contact, ``crack_contact``),
+    reports the virtual-crack-closure energy release rates along the front
+    (:attr:`FieldResults.crack_front`) and, when the material has
+    interlaminar toughness, the load factor at which the delamination
+    starts to grow (:attr:`FieldResults.fracture_load_factor`); see the
+    theory page "Delamination".
     """
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime
@@ -191,6 +212,15 @@ class FESolver:
         # the CTEs and the linear solver are unchanged:
         # (K, key, _ThermalUnitSolution).
         self._thermal_cache: tuple | None = None
+        # The one free-DOF system (and LU) of the crack-face contact loop's
+        # latest active set, kept apart from _lu_cache so the intermediate
+        # active sets never evict the load cases' systems; see
+        # _contact_solve.
+        self._contact_lu_cache: OrderedDict[bytes, tuple] = OrderedDict()
+        # The contact active set each recent load case settled on (prescribed
+        # DOFs, bonded ties and load parts -> bool per pair), the warm start
+        # of its next contact solve.
+        self._contact_warm: OrderedDict[bytes, np.ndarray] = OrderedDict()
 
     @property
     def formulation(self) -> FEFormulation:
@@ -212,7 +242,8 @@ class FESolver:
               *,
               delta_T: float | None = None,
               allow_unresolved_layup: bool = False,
-              interior_margin: float | None = None) -> FieldResults:
+              interior_margin: float | None = None,
+              crack_contact: bool = True) -> FieldResults:
         """Solve the static FE problem.
 
         Parameters
@@ -343,6 +374,26 @@ class FESolver:
             (in the ``x``-``z`` plane) and from the side faces; both
             default to ``h / 2`` (see
             :attr:`FieldResults.interior_max_failure_index`).
+        crack_contact : bool
+            Keyword-only, default ``True``. On a mesh with a delaminated
+            node pair, enforce frictionless contact between the crack faces
+            (zero initial gap): an active set of normal-only ties on the
+            delaminated pairs, re-solved until no pair penetrates and none
+            carries a tensile contact force (at most
+            :attr:`_CONTACT_MAX_ITERATIONS` solves; a warning if the set
+            still changes). Only the ties change between solves, never
+            ``K``. With ``delta_T`` the contact is that of the total
+            (residual plus mechanical) state, and both solves use its
+            active set. ``False`` lets the faces interpenetrate (the
+            behaviour before contact existed). Recorded as
+            :attr:`FieldResults.crack_contact` with the iterations and the
+            number of pairs in contact. No effect without a delaminated
+            pair. On a delaminated mesh the solve also reports the
+            virtual-crack-closure energy release rates along the front
+            (:attr:`FieldResults.crack_front`) and, when the material has
+            toughness data, the critical load factor
+            (:attr:`FieldResults.fracture_load_factor`); see the theory page
+            "Delamination".
 
         Returns
         -------
@@ -408,20 +459,34 @@ class FESolver:
 
         # 2. Build BCs and the force vector for the requested loading mode.
         constrained: dict[int, float] | None = None
+        F = np.zeros(0)
         if not thermal_only:
             constrained, F = self._apply_boundary_conditions(
                 loading, applied_strain, applied_load, verbose=verbose)
 
-        # Free-standing thermal (residual) state, scaled from the cached
-        # unit-delta_T solution; its factorization is freed before the
-        # mechanical one is built.
+        # A delaminated mesh ties its bonded pairs; with crack-face contact
+        # the loop adds the normal ties of the pairs in contact and solves
+        # the thermal and mechanical states with them.
+        delaminated = _knockdown._is_delaminated(self.mesh)
+        ties = _mesh_ties(self.mesh)
+        contact: _contact.ContactState | None = None
+        u_mech: np.ndarray | None = None
         thermal: _ThermalUnitSolution | None = None
-        residual_global: np.ndarray | None = None
-        residual_local: np.ndarray | None = None
-        if dT is not None:
+        if delaminated and crack_contact:
+            thermal, u_mech, contact = self._contact_solve(
+                K, F, constrained, dT, solver=solver, rtol=rtol, verbose=verbose)
+            ties = contact.ties
+        elif dT is not None:
+            # Free-standing thermal (residual) state, scaled from the cached
+            # unit-delta_T solution; its factorization is freed before the
+            # mechanical one is built.
             thermal = self._thermal_unit_solution(
                 K, solver=solver, rtol=rtol, verbose=verbose,
                 next_constrained=constrained)
+        residual_global: np.ndarray | None = None
+        residual_local: np.ndarray | None = None
+        if thermal is not None:
+            assert dT is not None
             residual_global = dT * thermal.stress_global
             residual_local = self._rotate_to_local(residual_global)
 
@@ -440,15 +505,17 @@ class FESolver:
             basis = 'delta_T'
         else:
             assert constrained is not None
-            # 3-4. Eliminate the prescribed DOFs and solve the reduced system.
-            u, _rel_res = self._solve_constrained(
-                K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
-
-            if verbose:
-                t2 = time.perf_counter()
-                logger.info(
-                    "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
-                t1 = t2
+            if u_mech is None:
+                # 3-4. Eliminate the prescribed DOFs and solve the reduced
+                #      system.
+                u_mech, _rel_res = self._solve_constrained(
+                    K, F, constrained, solver=solver, rtol=rtol, verbose=verbose)
+                if verbose:
+                    t2 = time.perf_counter()
+                    logger.info(
+                        "  Solve time: %.2f s, residual: %.4e", t2 - t1, _rel_res)
+                    t1 = t2
+            u = u_mech
 
             # 5. Recover stresses and strains (global + local frames).
             if verbose:
@@ -465,7 +532,7 @@ class FESolver:
                                             applied_load), pristine)
             reactions, effective_modulus = self._reactions_and_modulus(
                 loading, K, u, F, applied_strain, constrained,
-                applied_load=applied_load)
+                applied_load=applied_load, ties=ties)
             load_stress = stress_local
             prestress_local = residual_local
             basis = 'mechanical'
@@ -488,6 +555,24 @@ class FESolver:
             criterion, stress_local=stress_local, load_stress_local=load_stress,
             prestress_local=prestress_local, residual_local=residual_local,
             interior=interior, thermal_only=thermal_only, delta_T=dT)
+
+        # Delamination: interface forces, virtual crack closure along the
+        # front and the critical load factor, from the unfolded residuals.
+        fracture: _fracture.FractureOutputs | None = None
+        if ties is not None:
+            thermal_part = None
+            if thermal is not None:
+                assert dT is not None and thermal.residual is not None
+                thermal_part = (dT * thermal.u, dT * thermal.residual)
+            if thermal_only:
+                assert thermal_part is not None
+                fracture = _fracture.fracture_outputs(
+                    self.mesh, self.material, ties, load=thermal_part)
+            else:
+                assert u_mech is not None
+                fracture = _fracture.fracture_outputs(
+                    self.mesh, self.material, ties,
+                    load=(u_mech, K @ u_mech - F), prestress=thermal_part)
 
         displacement = u.reshape(-1, 3)
 
@@ -522,6 +607,17 @@ class FESolver:
             cte_local=(None if thermal is None else
                        (float(thermal.alpha_local[0]), float(thermal.alpha_local[1]),
                         float(thermal.alpha_local[2]))),
+            failure_mode_maxima=fm.mode_maxima,
+            per_element_mode_failure_index=fm.per_element_mode_fi,
+            crack_front=None if fracture is None else fracture.crack_front,
+            fracture_load_factor=None if fracture is None else fracture.load_factor,
+            fracture_governing_node=(None if fracture is None
+                                     else fracture.governing_node),
+            interface_forces=None if fracture is None else fracture.interface_forces,
+            crack_contact=bool(crack_contact) if delaminated else None,
+            contact_iterations=None if contact is None else contact.iterations,
+            contact_pairs=None if contact is None else contact.n_pairs,
+            contact_converged=None if contact is None else contact.converged,
         )
 
     # Steps of solve(). The work is done in the private step modules; tests
@@ -547,18 +643,113 @@ class FESolver:
     #: solver keeps; see :meth:`_free_dof_system`.
     _LU_CACHE_SIZE = 2
 
+    #: Cap on the linear solves of the crack-face contact loop
+    #: (``solve(crack_contact=True)``).
+    _CONTACT_MAX_ITERATIONS = 30
+
     def _solve_constrained(
         self, K: scipy.sparse.spmatrix, F: np.ndarray, constrained: dict[int, float],
         *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, verbose: bool = False,
+        ties: Ties | None | object = _MESH_TIES,
+        system: _constrained_solve.FreeDofSystem | None = None,
     ) -> tuple[np.ndarray, float]:
         """Impose the Dirichlet BCs exactly and solve ``K u = F``: the full
         ``u`` and the relative residual of the reduced system
         (``_constrained_solve.solve_constrained``), direct solves with this
-        solver's cached factorizations (:meth:`_free_dof_system`)."""
+        solver's cached factorizations (:meth:`_free_dof_system`, or
+        ``system``). ``ties`` default to the bonded interface of a
+        delaminated mesh (:meth:`CompositeMesh.bonded_ties`)."""
+        tie_set = _mesh_ties(self.mesh) if ties is _MESH_TIES else ties
+        assert tie_set is None or isinstance(tie_set, tuple)
         return _constrained_solve.solve_constrained(
-            K, F, constrained, system=self._free_dof_system, solver=solver,
+            K, F, constrained,
+            system=self._free_dof_system if system is None else system,
+            ties=tie_set, solver=solver,
             rtol=rtol, verbose=verbose, max_restarts=self._MINRES_MAX_RESTARTS)
+
+    def _contact_solve(
+        self, K: scipy.sparse.spmatrix, F: np.ndarray,
+        constrained: dict[int, float] | None, delta_T: float | None, *,
+        solver: Literal['direct', 'cg', 'minres'] = 'direct',
+        rtol: float = 1e-9, verbose: bool = False,
+    ) -> tuple[_ThermalUnitSolution | None, np.ndarray | None, _contact.ContactState]:
+        """Solve with frictionless crack-face contact (``_contact``).
+
+        The contact is that of the total state: the thermal residual state
+        (``delta_T`` times the unit solution) plus the mechanical solve
+        (``constrained is None`` for ``loading='thermal'``), both solved
+        with the bonded ties and the normal ties of the active pairs. The
+        first solve has no pair active and uses :attr:`_lu_cache`, like a
+        solve without contact; every later active set is factorized in
+        :attr:`_contact_lu_cache`, which holds one system, so at most one
+        factorization more than without contact is alive and the load
+        cases' systems are never evicted by intermediate sets. The loop
+        starts from the active set the same load case (prescribed DOFs,
+        bonded ties, thermal and mechanical parts) settled on last time on
+        this solver, so repeating a solve, or changing only the load
+        magnitude or the porosity, typically takes one solve, and none
+        when the last set's system is still in the cache. The active set
+        the loop converges to does not depend on where it starts (up to
+        pairs whose opening and contact force are both within round-off of
+        zero).
+
+        Returns the unit thermal solution (or ``None``), the mechanical
+        displacement (or ``None``) and the contact state.
+        """
+        scratch = functools.partial(_constrained_solve.free_dof_system,
+                                    self._contact_lu_cache, max_entries=1)
+        prescribed = dict(constrained or {})
+        if delta_T is not None:
+            prescribed.update(self.bc_handler.free_bcs()[0])
+        parts: dict[str, object] = {}
+
+        def state(ties: Ties | None, with_contact: bool
+                  ) -> tuple[np.ndarray, np.ndarray]:
+            system = scratch if with_contact else None
+            u = np.zeros(K.shape[0])
+            r = np.zeros(K.shape[0])
+            if delta_T is not None:
+                th = self._thermal_unit_solution(
+                    K, solver=solver, rtol=rtol, verbose=verbose,
+                    next_constrained=constrained, ties=ties, system=system)
+                assert th.residual is not None
+                parts['thermal'] = th
+                u = u + delta_T * th.u
+                r = r + delta_T * th.residual
+            if constrained is not None:
+                u_m, _ = self._solve_constrained(
+                    K, F, constrained, solver=solver, rtol=rtol,
+                    verbose=verbose, ties=ties, system=system)
+                parts['mechanical'] = u_m
+                u = u + u_m
+                r = r + (K @ u_m - F)
+            return u, r
+
+        base = _mesh_ties(self.mesh)
+        h = hashlib.blake2b(digest_size=16)
+        h.update(np.array(sorted(prescribed), dtype=np.int64).tobytes())
+        h.update(_ties_token(base))
+        h.update(bytes([constrained is None, delta_T is None]))
+        warm_key = h.digest()
+        rel_tol = 1e-9 if solver == 'direct' else max(1e-9, 100.0 * rtol)
+        _, _, contact = _contact.solve_with_contact(
+            state, self.mesh, prescribed, base,
+            max_iterations=self._CONTACT_MAX_ITERATIONS, rel_tol=rel_tol,
+            initial=self._contact_warm.get(warm_key))
+        self._contact_warm[warm_key] = contact.active
+        self._contact_warm.move_to_end(warm_key)
+        while len(self._contact_warm) > 4:
+            self._contact_warm.popitem(last=False)
+        if verbose:
+            logger.info("  Crack-face contact: %d pairs after %d solves%s",
+                        contact.n_pairs, contact.iterations,
+                        "" if contact.converged else " (not converged)")
+        thermal = parts.get('thermal')
+        u_mech = parts.get('mechanical')
+        assert thermal is None or isinstance(thermal, _ThermalUnitSolution)
+        assert u_mech is None or isinstance(u_mech, np.ndarray)
+        return thermal, u_mech, contact
 
     def _free_dof_system(
         self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
@@ -583,14 +774,15 @@ class FESolver:
     def _reactions_and_modulus(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
         F: np.ndarray, applied_strain: float, constrained: dict[int, float],
-        *, applied_load: float = -10.0,
+        *, applied_load: float = -10.0, ties: Ties | None | object = _MESH_TIES,
     ) -> tuple[np.ndarray, float | None]:
         """Nodal reactions and the effective modulus
-        (``_postprocess.reactions_and_modulus``)."""
+        (``_postprocess.reactions_and_modulus``); ``ties`` are those of the
+        solve, by default the mesh's bonded ties."""
         return _postprocess.reactions_and_modulus(
             loading, K, u, F, applied_strain, constrained,
             applied_load=applied_load, mesh=self.mesh,
-            assembler=self.assembler, bc_handler=self.bc_handler)
+            assembler=self.assembler, bc_handler=self.bc_handler, ties=ties)
 
     def _rotate_to_local(self, field_global: np.ndarray, *,
                          strain: bool = False) -> np.ndarray:
@@ -604,19 +796,27 @@ class FESolver:
         solver: Literal['direct', 'cg', 'minres'] = 'direct',
         rtol: float = 1e-9, verbose: bool = False,
         next_constrained: dict[int, float] | None = None,
+        ties: Ties | None | object = _MESH_TIES,
+        system: _constrained_solve.FreeDofSystem | None = None,
     ) -> _ThermalUnitSolution:
         """Free-standing thermal solve for ``delta_T = 1`` K, cached.
 
         ``_thermal.unit_solution``, cached on ``K`` (which changes with the
-        mesh, porosity, material and formulation), the CTEs and the linear
-        solver. Every ``delta_T`` rescales the cached solution, so the 3-2-1
-        system leaves the LU cache as soon as it is solved instead of being
-        held next to the mechanical factorization, unless
-        ``next_constrained``, the constrained set of the solve that follows,
-        is the same set.
+        mesh, porosity, material and formulation), the CTEs, the linear
+        solver and the bonded ties of a delaminated mesh (which change with
+        :attr:`CompositeMesh.delaminations` while ``K`` does not). Every
+        ``delta_T`` rescales the cached solution, so the 3-2-1 system leaves
+        the LU cache as soon as it is solved instead of being held next to
+        the mechanical factorization, unless ``next_constrained``, the
+        constrained set of the solve that follows, is the same set.
+        ``ties`` default to the mesh's bonded ties (the crack-face contact
+        loop passes its own); ``system`` replaces :meth:`_free_dof_system`
+        (the contact loop's own cache, which needs no clean-up).
         """
         alpha_local = self.material.cte_vector()
-        key = (tuple(alpha_local.tolist()), solver, float(rtol))
+        tie_set = _mesh_ties(self.mesh) if ties is _MESH_TIES else ties
+        assert tie_set is None or isinstance(tie_set, tuple)
+        key = (tuple(alpha_local.tolist()), solver, float(rtol), _ties_token(tie_set))
         cached = self._thermal_cache
         if cached is not None and cached[0] is K and cached[1] == key:
             return cached[2]
@@ -624,15 +824,19 @@ class FESolver:
         supports = self.bc_handler.free_bcs()
         sol = _thermal.unit_solution(
             K, self.assembler.element_batch(), self.mesh, supports,
-            alpha_local, verbose=verbose,
+            alpha_local, verbose=verbose, ties=tie_set,
             solve=functools.partial(self._solve_constrained, solver=solver,
-                                    rtol=rtol, verbose=verbose))
+                                    rtol=rtol, verbose=verbose, ties=tie_set,
+                                    system=system))
         self._thermal_cache = (K, key, sol)
-        thermal_key = _ConstraintReduction.from_constraints(
-            K.shape[0], supports[0]).key
-        if next_constrained is None or thermal_key != \
-                _ConstraintReduction.from_constraints(K.shape[0], next_constrained).key:
-            self._lu_cache.pop(thermal_key, None)
+        if system is None:
+            thermal_key = _ConstraintReduction.from_constraints(
+                K.shape[0], supports[0], ties=tie_set).key
+            next_key = None if next_constrained is None else \
+                _ConstraintReduction.from_constraints(
+                    K.shape[0], next_constrained, ties=tie_set).key
+            if thermal_key != next_key:
+                self._lu_cache.pop(thermal_key, None)
         return sol
 
     def _pristine_stiffness_measure(self, loading: str) -> float:
@@ -742,6 +946,12 @@ class FESolver:
           ``thermal``): no element is far enough from the lateral faces.
         * ``stiffness.effective_modulus_MPa``: no single modulus (ILSS
           bend, ``loading='thermal'``).
+        * In the ``fracture`` block of a delaminated mesh:
+          ``fracture_load_factor`` and the front's ``G_c_N_per_mm`` and
+          ``lambda_c`` without toughness data or where infinite (no energy
+          released), ``governing_*`` without a governing node, ``psi``
+          where ``G_T = 0``, ``front`` without a front, and the contact
+          counts when ``crack_contact=False``.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.

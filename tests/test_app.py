@@ -133,6 +133,12 @@ class TestConfigToKey:
         k3 = app._config_to_key(_thermal_cfg(thermal_mode="combined"))
         assert len({k1, k2, k3, app._config_to_key(_base_cfg())}) == 4
 
+    def test_failure_criterion_defaults_to_tsai_wu_and_enters_the_key(self):
+        key = dict(app._config_to_key(_base_cfg()))
+        assert key["failure_criterion"] == "tsai_wu"
+        assert app._config_to_key(_base_cfg(failure_criterion="hashin")) != \
+            app._config_to_key(_base_cfg())
+
 
 class TestRunAnalysis:
     def test_compression_returns_full_result(self, comp_result):
@@ -1161,3 +1167,72 @@ class TestConvergenceCheck:
         cfg, res = seen[0]
         assert cfg["angles"] == [0.0, 90.0, 90.0, 0.0] and cfg["nx"] == 7
         assert res == ((7, 4, 6), (11, 6, 6))
+
+
+
+# ----------------------------------------------------------------------
+# FE failure block (criterion selector, governing mode, mode maxima)
+# ----------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def ilss_by_criterion():
+    """ILSS on the D2344 specimen with each FE failure criterion."""
+    return {c: app.run_analysis(_base_cfg(loading_mode="ilss", failure_criterion=c))
+            for c in ("tsai_wu", "hashin", "max_stress")}
+
+
+class TestFEFailureSummary:
+    def test_criterion_reaches_the_solver(self, ilss_by_criterion):
+        for crit, result in ilss_by_criterion.items():
+            assert result["fe_field"].failure_criterion == crit
+
+    def test_tsai_wu_has_no_mode_table(self, ilss_by_criterion):
+        rows, modes, caption = app.fe_failure_summary(ilss_by_criterion["tsai_wu"])
+        values = {label: value for label, value, _ in rows}
+        assert values["Criterion"] == "Tsai-Wu"
+        assert values["Governing mode"] == "not separated (Tsai-Wu)"
+        fe = ilss_by_criterion["tsai_wu"]["fe_field"]
+        assert values["Max FI (domain)"] == f"{fe.max_failure_index:.4g}"
+        assert modes == []
+        assert "Pick Hashin" in caption
+
+    def test_hashin_shows_delamination_onset(self, ilss_by_criterion):
+        result = ilss_by_criterion["hashin"]
+        fe = result["fe_field"]
+        rows, modes, caption = app.fe_failure_summary(result)
+        values = {label: value for label, value, _ in rows}
+        governing = max(fe.failure_mode_maxima, key=fe.failure_mode_maxima.get)
+        assert values["Governing mode"] == app._MODE_LABELS[governing]
+        assert [m["Mode"] for m in modes] == list(app._MODE_LABELS.values())
+        delam = next(m for m in modes if m["Mode"] == "Delamination onset")
+        assert delam["Max over model"] == \
+            f"{fe.failure_mode_maxima['delamination']:.4g}"
+        assert "no explicit delamination" in caption
+
+    def test_max_stress_has_no_delamination_row_value(self, ilss_by_criterion):
+        rows, modes, caption = app.fe_failure_summary(ilss_by_criterion["max_stress"])
+        delam = next(m for m in modes if m["Mode"] == "Delamination onset")
+        assert delam["Max over model"] == "n/a"
+        assert dict((label, value) for label, value, _ in rows)[
+            "Governing mode"] != "Delamination onset"
+        assert "no delamination mode" in caption
+
+    def test_load_factor_row_and_thermal_runs(self, ilss_by_criterion, combined_results):
+        rows, _, caption = app.fe_failure_summary(ilss_by_criterion["tsai_wu"])
+        assert rows[-1][0] == "FPF load factor (interior)"
+        assert "First-ply failure over the whole model at" in caption
+        # With a thermal load its own block reports the load factors.
+        comb, _ = combined_results
+        rows, _, _ = app.fe_failure_summary(comb)
+        assert all(label != "FPF load factor (interior)" for label, _, _ in rows)
+
+    def test_none_without_an_fe_field(self, comp_result):
+        assert app.fe_failure_summary({**comp_result, "fe_field": None}) is None
+
+    def test_convergence_check_uses_the_criterion(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app, "refinement_study",
+                            lambda m, p, ld, **kw: calls.append(kw) or "study")
+        app.run_convergence_check(_base_cfg(failure_criterion="hashin"),
+                                  [(4, 2, 4), (6, 3, 4)])
+        assert calls[0]["failure_criterion"] == "hashin"

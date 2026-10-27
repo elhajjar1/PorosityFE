@@ -22,6 +22,7 @@ Materials and porosity
 
    MaterialProperties
    VoidGeometry
+   Delamination
    PorosityField
    CompositeMesh
    FlexureGeometry
@@ -82,6 +83,24 @@ Finite-element solver
    RefinementStudy
    RefinementLevel
    QuantityConvergence
+
+Delamination fracture mechanics
+-------------------------------
+
+Energy release rates along the front of an explicit
+:class:`Delamination` by virtual crack closure, the mixed-mode toughness and
+the critical load factor; :meth:`FESolver.solve` fills
+:attr:`FieldResults.crack_front` with them. Energy release rates and
+toughness in N/mm (1 N/mm = 1 kJ/m²). See :doc:`theory/delamination`.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   CrackFront
+   vcct_energy_release_rates
+   fracture_load_factors
+   critical_energy_release_rate
 
 Laminate theory and transforms
 ------------------------------

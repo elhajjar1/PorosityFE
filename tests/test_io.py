@@ -426,6 +426,28 @@ class TestFEExportVTU:
         with pytest.raises(ValueError, match='do not match'):
             r.to_vtu(other, tmp_path / 'bad.vtu')
 
+    def test_failure_index_fields(self, solved, tmp_path):
+        # 'failure_index' is written whatever the criterion, with the legacy
+        # 'tsai_wu_index' alias; the separating criteria add one field per mode.
+        from porosity_fe.fe.failure import MODE_KEYS
+        mesh, r = solved
+        path = tmp_path / 'tw.vtu'
+        r.to_vtu(mesh, path)
+        cd = _read_vtu(path)['cell_data']
+        np.testing.assert_array_equal(cd['failure_index'], r.per_element_failure_index)
+        np.testing.assert_array_equal(cd['tsai_wu_index'], r.per_element_failure_index)
+        assert not any(k.startswith('failure_index_') for k in cd)
+        pf = PorosityField(mesh.material, 0.03)
+        m2 = CompositeMesh(pf, mesh.material, nx=6, ny=2, nz=6, ply_angles='QI')
+        h = FESolver(m2, mesh.material, pf, failure_criterion='hashin').solve(
+            'compression', applied_strain=-0.001)
+        path = tmp_path / 'hashin.vtu'
+        h.to_vtu(m2, path)
+        cd = _read_vtu(path)['cell_data']
+        for k in MODE_KEYS:
+            np.testing.assert_array_equal(cd[f'failure_index_{k}'],
+                                          h.per_element_mode_failure_index[k])
+
     def test_export_results_fmt_vtu(self, solved, tmp_path):
         mesh, r = solved
         path = tmp_path / 'via_export.vtu'

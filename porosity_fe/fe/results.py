@@ -19,6 +19,7 @@ from ..results import FailureResult
 from .element import _DEFAULT_FORMULATION
 from .export import write_vtk, write_vtu
 from .recovery import NodalAverage, extrapolate_to_nodes
+from .vcct import CrackFront, vcct_energy_release_rates
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +55,15 @@ class FieldResults:
         ``per_element_failure_index``. One of ``'tsai_wu'`` (default for
         back-compat), ``'hashin'``, or ``'max_stress'``.
     failure_mode_indices : dict or None
-        Per-mode breakdown of the maximum failure index across the model with
-        keys ``'fiber_t'``, ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``,
-        ``'shear'``, ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode entries are
-        ``NaN`` (the polynomial does not separate modes; ``null`` in the
-        JSON export); for ``max_stress`` the unused entries are zero. Lets
-        the GUI and JSON exporter report the dominant failure mode, not
-        just severity.
+        Per-mode breakdown **at the Gauss point of the maximum failure
+        index** (not each mode's own maximum, see
+        :attr:`failure_mode_maxima`), with keys ``'fiber_t'``,
+        ``'fiber_c'``, ``'matrix_t'``, ``'matrix_c'``, ``'shear'``,
+        ``'delamination'`` (plus ``'max_fi'``). For Tsai-Wu the per-mode
+        entries are ``NaN`` (the polynomial does not separate modes;
+        ``null`` in the JSON export); for ``max_stress`` the unused entries
+        are zero. Lets the GUI and JSON exporter report the governing
+        failure mode, not just severity.
     reaction_forces : np.ndarray or None
         Shape (n_nodes, 3) nodal reaction forces (N): ``K u - F`` at the
         constrained DOFs and exactly zero at the free DOFs. A load applied
@@ -142,6 +145,62 @@ class FieldResults:
     cte_local : tuple of float or None
         Lamina CTEs ``(alpha_1, alpha_2, alpha_3)`` (1/K) used with
         ``delta_T``; ``None`` without it.
+    failure_mode_maxima : dict or None
+        Maximum over the whole model of each separate mode of the
+        ``'hashin'`` and ``'max_stress'`` criteria (keys as
+        :attr:`failure_mode_indices` without ``'max_fi'``), so a mode that
+        does not govern is still visible. The ``'delamination'`` entry is
+        the stress-based delamination-initiation index: Hashin's
+        interlaminar mode evaluated at the ply Gauss points, which sit
+        inside the plies, not on the interfaces; there is no explicit
+        delamination in the model. ``None`` for Tsai-Wu, which does not
+        separate modes.
+    per_element_mode_failure_index : dict or None
+        Per-element maximum over the Gauss points of each mode, one
+        ``(n_elem,)`` array per key of :attr:`failure_mode_maxima`
+        (written to the VTK/VTU exports as ``failure_index_<mode>``);
+        ``None`` for Tsai-Wu.
+    crack_front : CrackFront or None
+        Virtual-crack-closure table of the delamination front of a mesh
+        with an explicit :class:`~porosity_fe.Delamination`: per front node
+        its coordinates, frame, ``Delta_a`` and tributary width, ``G_I``,
+        ``G_II``, ``G_III``, ``G_T`` (N/mm), the mode mixity ``psi`` and,
+        when the material has toughness data, the mixed-mode toughness
+        ``G_c`` and the critical load factor ``lambda_c``
+        (:func:`~porosity_fe.vcct_energy_release_rates`). At the applied
+        state, thermal residual included. ``None`` without a delaminated
+        node pair.
+    fracture_load_factor : float or None
+        Smallest ``lambda_c`` over the front: the multiplier on the load
+        named by :attr:`load_factor_basis` at which the delamination starts
+        to grow (Benzeggagh-Kenane criterion,
+        :func:`~porosity_fe.fracture_load_factors`); ``inf`` when the load
+        releases no energy at the front. ``None`` without a front or
+        without toughness data (``MaterialProperties.G_Ic``, ``G_IIc``,
+        ``bk_eta``).
+    fracture_governing_node : int or None
+        Original node id of the front node with the smallest ``lambda_c``
+        (``None`` when :attr:`fracture_load_factor` is ``None`` or
+        infinite).
+    interface_forces : np.ndarray or None
+        ``(n_pairs, 3)`` force (N, global axes) the lower crack face exerts
+        on the upper one at every duplicated interface node pair
+        (:meth:`CompositeMesh.interface_node_pairs` order): the tie force of
+        a bonded pair, the normal contact force of a pair in contact, zero
+        for an open pair. ``None`` without duplicated interface nodes.
+    crack_contact : bool or None
+        Whether crack-face contact was enforced (``FESolver.solve(...,
+        crack_contact=...)``); ``None`` without a delaminated node pair.
+    contact_iterations : int or None
+        Linear solves of the contact active-set loop (1 when no crack-face
+        pair came into contact); ``None`` when contact was not enforced.
+    contact_pairs : int or None
+        Delaminated node pairs in contact at the solution; ``None`` when
+        contact was not enforced.
+    contact_converged : bool or None
+        Whether the contact active set settled within the iteration cap
+        (a warning is logged when it did not); ``None`` when contact was
+        not enforced.
 
     Notes
     -----
@@ -185,6 +244,16 @@ class FieldResults:
     interior_first_ply_failure_load_factor: float | None = None
     load_factor_basis: str = 'mechanical'
     cte_local: tuple[float, float, float] | None = None
+    failure_mode_maxima: dict[str, float] | None = None
+    per_element_mode_failure_index: dict[str, np.ndarray] | None = None
+    crack_front: CrackFront | None = None
+    fracture_load_factor: float | None = None
+    fracture_governing_node: int | None = None
+    interface_forces: np.ndarray | None = None
+    crack_contact: bool | None = None
+    contact_iterations: int | None = None
+    contact_pairs: int | None = None
+    contact_converged: bool | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -223,7 +292,12 @@ class FieldResults:
             ``failure_stress``, FE-criterion-tagged ``model`` and a
             ``details`` dict carrying ``max_failure_index``,
             ``failure_criterion`` and ``failure_mode_indices`` for
-            downstream consumers that need the richer field-result data.
+            downstream consumers that need the richer field-result data,
+            and the delamination keys (``fracture_load_factor``,
+            ``fracture_governing_node``, ``fracture_governing_psi``,
+            ``fracture_governing_G_T``, ``crack_front_max_G_T``,
+            ``crack_contact``, ``contact_iterations``, ``contact_pairs``,
+            ``contact_converged``), ``None`` without a delamination.
         """
         kd = float(self.knockdown)
         sigma_ref = float(sigma_pristine) if sigma_pristine is not None else 1.0
@@ -239,6 +313,10 @@ class FieldResults:
                     dict(self.failure_mode_indices)
                     if self.failure_mode_indices is not None else None
                 ),
+                'failure_mode_maxima': (
+                    dict(self.failure_mode_maxima)
+                    if self.failure_mode_maxima is not None else None
+                ),
                 'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
                 'effective_modulus': self.effective_modulus,
                 'formulation': self.formulation,
@@ -248,8 +326,55 @@ class FieldResults:
                     self.interior_first_ply_failure_load_factor,
                 'delta_T': self.delta_T,
                 'residual_max_failure_index': self.residual_max_failure_index,
+                **self._fracture_details(),
             },
         )
+
+    def _fracture_details(self) -> dict:
+        """Delamination keys of :meth:`summary` (``None`` values without one)."""
+        front = self.crack_front
+        row = None if front is None else front.governing
+        return {
+            'fracture_load_factor': self.fracture_load_factor,
+            'fracture_governing_node': self.fracture_governing_node,
+            'fracture_governing_psi': (
+                None if row is None else float(front.psi[row])),  # type: ignore[union-attr]
+            'fracture_governing_G_T': (
+                None if row is None else float(front.G_T[row])),  # type: ignore[union-attr]
+            'crack_front_max_G_T': (
+                None if front is None or len(front) == 0
+                else float(np.max(front.G_T))),
+            'crack_contact': self.crack_contact,
+            'contact_iterations': self.contact_iterations,
+            'contact_pairs': self.contact_pairs,
+            'contact_converged': self.contact_converged,
+        }
+
+    def energy_release_rates(self, mesh: CompositeMesh) -> CrackFront | None:
+        """Recompute the virtual-crack-closure table from these results.
+
+        :func:`~porosity_fe.vcct_energy_release_rates` on
+        :attr:`displacement` and :attr:`interface_forces`, without toughness
+        (``G_c`` and ``lambda_c`` are ``None``; see
+        :func:`~porosity_fe.fracture_load_factors`). Equal to
+        :attr:`crack_front` without them.
+
+        Parameters
+        ----------
+        mesh : CompositeMesh
+            The mesh that produced these results, with its delaminations as
+            solved.
+
+        Returns
+        -------
+        CrackFront or None
+            ``None`` when the results have no interface forces (no
+            duplicated interface nodes) or the mesh has no front.
+        """
+        if self.interface_forces is None:
+            return None
+        return vcct_energy_release_rates(mesh, self.displacement,
+                                         self.interface_forces)
 
     def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:
@@ -272,7 +397,12 @@ class FieldResults:
         - element-averaged ``von_mises`` and the six global stress
           (``sigma_xx`` .. ``tau_xy``) and strain (``eps_xx`` .. ``gamma_xy``)
           components (Gauss points reduced by mean),
-        - ``tsai_wu_index`` (max-over-GP per element, if available),
+        - ``failure_index`` (max-over-GP per element of the solve's
+          criterion, if available) and its legacy alias ``tsai_wu_index``
+          (the same array whatever the criterion),
+        - for ``'hashin'`` and ``'max_stress'``, ``failure_index_<mode>``
+          per mode (``fiber_t``, ``fiber_c``, ``matrix_t``, ``matrix_c``,
+          ``shear``, ``delamination``),
         - ``Vp_elem`` (mean nodal porosity over the 8 corners),
         - ``ply_id``, ``ply_angle_deg``, ``is_void`` and ``knockdown`` where
           available (``knockdown`` only when finite: it is ``nan`` for
@@ -321,13 +451,19 @@ class FieldResults:
           ``eps_xx_nodal`` .. ``gamma_xy_nodal`` (global frame, engineering
           shear strain) and ``von_mises_nodal``;
         - with ``exploded=True``: ``node_id``, the original node of each
-          point.
+          point;
+        - on a delaminated mesh with a front (:attr:`crack_front`):
+          ``G_I``, ``G_II``, ``G_III`` and ``G_T`` (N/mm) at both nodes of
+          every front pair and ``NaN`` at every other node (binary VTK XML
+          stores ``NaN``; the legacy ASCII file of :meth:`to_vtk` leaves
+          them out, and the JSON export carries the front table).
 
         Cell data
         ---------
         The :meth:`to_vtk` cell fields: element-mean ``von_mises``,
         ``sigma_xx`` .. ``tau_xy``, ``eps_xx`` .. ``gamma_xy``,
-        ``tsai_wu_index``, ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
+        ``failure_index`` (and ``tsai_wu_index``, ``failure_index_<mode>``),
+        ``Vp_elem``, ``ply_id``, ``ply_angle_deg``,
         ``is_void`` and ``knockdown`` where available, and the
         ``residual_*_local`` fields of a thermal load.
 

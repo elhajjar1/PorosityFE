@@ -21,6 +21,11 @@ neighbouring elements:
    elements form their own groups. Each element keeps its own
    ``(8, k)`` corner values, so the field stays discontinuous across
    interfaces.
+3. **Delaminated interfaces.** A bonded duplicated node is the same
+   material point as its original, so the two are averaged as one node and
+   both report the result. The two nodes of a delaminated pair are the two
+   crack faces: the original takes the elements below the crack, the
+   duplicate those above.
 
 See also ``docs/theory/fe.md`` (Stress recovery).
 """
@@ -41,6 +46,21 @@ _N_GP, _, _, _ = _gauss_point_tables()
 #: Row ``n`` gives the value at element node ``n`` (VTK hexahedron order)
 #: from the ``G = 8`` Gauss-point values in :func:`gauss_points_hex` order.
 _GP_TO_NODE = np.linalg.inv(_N_GP)
+
+
+def _bonded_node_map(mesh: CompositeMesh) -> np.ndarray | None:
+    """Node each node is averaged as: its original for a bonded duplicate,
+    itself otherwise; ``None`` when the mesh has no bonded duplicate."""
+    pairs = getattr(mesh, 'interface_node_pairs', None)
+    if pairs is None:
+        return None
+    originals, duplicates = pairs()
+    if duplicates.size == 0:
+        return None
+    bonded = mesh.bonded_pairs()
+    node_map = np.arange(int(np.asarray(mesh.nodes).shape[0]), dtype=np.int64)
+    node_map[duplicates[bonded]] = originals[bonded]
+    return node_map
 
 
 def _element_groups(mesh: CompositeMesh, average: str) -> np.ndarray:
@@ -117,6 +137,10 @@ def extrapolate_to_nodes(field_gp: np.ndarray, mesh: CompositeMesh, *,
         average over the ply **above** it (the ``mesh.ply_ids``
         convention) and a node shared by void and solid elements reports
         the solid elements' average. ``NaN`` for a node no element uses.
+        On a delaminated interface (:meth:`CompositeMesh.bonded_pairs`) a
+        bonded pair reports the same value at both nodes, as one node
+        would; a delaminated pair reports the face below the crack at the
+        original node and the face above at the duplicate.
     corner : np.ndarray
         ``(n_elem, 8)`` or ``(n_elem, 8, k)``: per-element corner values
         in VTK hexahedron node order (``mesh.elements``), averaged over the
@@ -169,8 +193,11 @@ def extrapolate_to_nodes(field_gp: np.ndarray, mesh: CompositeMesh, *,
     labels = _element_groups(mesh, 'all' if average == 'all' else 'ply')
     uniq_labels, gidx = np.unique(labels, return_inverse=True)
     n_groups = len(uniq_labels)
+    # A bonded duplicate is averaged as its original (one material point).
+    node_map = _bonded_node_map(mesh)
+    averaged = elements if node_map is None else node_map[elements]
     # One bucket per (node, group): sorted by node, then by group label.
-    key = elements * n_groups + gidx.reshape(-1, 1)
+    key = averaged * n_groups + gidx.reshape(-1, 1)
     buckets, inverse = np.unique(key.ravel(), return_inverse=True)
     inverse = inverse.ravel()
     counts = np.bincount(inverse, minlength=len(buckets)).astype(float)
@@ -185,6 +212,8 @@ def extrapolate_to_nodes(field_gp: np.ndarray, mesh: CompositeMesh, *,
     last = np.flatnonzero(np.r_[bucket_node[1:] != bucket_node[:-1], True])
     nodal = np.full((n_nodes, k), np.nan)
     nodal[bucket_node[last]] = means[last]
+    if node_map is not None:
+        nodal = nodal[node_map]
 
     corner = corner_raw if average == 'none' else \
         means[inverse].reshape(n_elem, 8, k)

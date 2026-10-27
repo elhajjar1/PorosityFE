@@ -22,7 +22,7 @@ from ..mesh import CompositeMesh
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from ._load_cases import _FLEXURE_PROCEDURE
-from .assembler import BoundaryHandler, GlobalAssembler
+from .assembler import _MESH_TIES, BoundaryHandler, GlobalAssembler, Ties, _fold_tied, _mesh_ties
 from .batch import ElementBatch
 from .flexure import flexural_modulus
 
@@ -80,13 +80,19 @@ def reactions_and_modulus(
     loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
     F: np.ndarray, applied_strain: float, constrained: dict[int, float],
     *, applied_load: float, mesh: CompositeMesh, assembler: GlobalAssembler,
-    bc_handler: BoundaryHandler,
+    bc_handler: BoundaryHandler, ties: Ties | None | object = _MESH_TIES,
 ) -> tuple[np.ndarray, float | None]:
     """Nodal reactions and the effective modulus.
 
     Reactions are ``K u - F`` at the constrained DOFs (including any
     load applied there, which the support carries) and exactly zero at
-    the free DOFs, where ``K u - F`` is only the solver residual.
+    the free DOFs, where ``K u - F`` is only the solver residual. On a
+    delaminated mesh the residual of each tied duplicate (the force its
+    tie carries) is first folded onto its original node, so a supported
+    original reports the reaction of the whole bonded node and the
+    duplicates none. ``ties`` are those of the solve (by default the
+    mesh's bonded ties; a pair in crack-face contact adds a normal tie, whose
+    force is folded the same way).
 
     For the displacement-controlled modes only the prescribed boundary
     moves work through the reactions, so ``u^T K u = sum(R_i u_i)`` is
@@ -99,7 +105,9 @@ def reactions_and_modulus(
     shear (see :attr:`FieldResults.effective_modulus`).
     """
     Ku = K @ u
-    residual = Ku - F
+    tie_set = _mesh_ties(mesh) if ties is _MESH_TIES else ties
+    assert tie_set is None or isinstance(tie_set, tuple)
+    residual = _fold_tied(Ku - F, tie_set)
     is_fixed = np.zeros(residual.size, dtype=bool)
     is_fixed[np.fromiter(constrained.keys(), dtype=np.intp,
                          count=len(constrained))] = True
@@ -131,6 +139,8 @@ class FailureMetrics:
     residual_max_fi: float | None
     interior_max_fi: float | None
     interior_load_factor: float | None
+    mode_maxima: dict[str, float] | None = None
+    per_element_mode_fi: dict[str, np.ndarray] | None = None
 
 
 def failure_metrics(
@@ -154,14 +164,21 @@ def failure_metrics(
     The per-element failure index is the max over Gauss points (0.0 for
     skipped void elements), ``max_fi`` its overall maximum, and the mode
     breakdown has ``NaN`` entries for Tsai-Wu, which does not separate
-    modes (:func:`porosity_fe.fe.failure.evaluate_failure`).
+    modes (:func:`porosity_fe.fe.failure.evaluate_failure`). For the
+    criteria that do, ``per_element_mode_fi`` holds each mode's
+    per-element maximum and ``mode_maxima`` its maximum over the model
+    (``None`` for Tsai-Wu).
     """
-    def evaluate(stress: np.ndarray) -> tuple[float, np.ndarray, dict[str, float]]:
+    def evaluate(stress: np.ndarray, mode_fields: dict | None = None
+                 ) -> tuple[float, np.ndarray, dict[str, float]]:
         return failure.evaluate_failure(
             stress, mesh.porosity, mesh.elements, material, void_shape_radii,
-            criterion, void_elements=mesh.void_elements)
+            criterion, void_elements=mesh.void_elements, mode_fields=mode_fields)
 
-    max_fi, per_elem_fi, mode_indices = evaluate(stress_local)
+    mode_fields: dict[str, np.ndarray] = {}
+    max_fi, per_elem_fi, mode_indices = evaluate(stress_local, mode_fields)
+    mode_maxima = ({k: float(v.max()) if v.size else 0.0
+                    for k, v in mode_fields.items()} if mode_fields else None)
     lam_elem = failure._element_load_factors(
         load_stress_local, mesh.porosity, mesh.elements, material,
         void_shape_radii, criterion, void_elements=mesh.void_elements,
@@ -187,4 +204,6 @@ def failure_metrics(
         load_factor=load_factor, residual_max_fi=residual_max_fi,
         interior_max_fi=float(per_elem_fi[interior].max()) if has_interior else None,
         interior_load_factor=float(lam_elem[interior].min()) if has_interior else None,
+        mode_maxima=mode_maxima,
+        per_element_mode_fi=mode_fields or None,
     )

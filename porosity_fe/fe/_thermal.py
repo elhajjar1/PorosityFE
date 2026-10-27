@@ -18,6 +18,7 @@ import scipy.sparse
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from .assembler import _MESH_TIES, Ties, _fold_tied, _mesh_ties
 from .batch import ElementBatch, assemble_load_vector, thermal_stress_moduli
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -29,6 +30,9 @@ class _ThermalUnitSolution:
 
     ``strain_global`` is the total strain ``B u`` (plus the hex8i
     internal-mode part) and ``stress_global = C strain - beta``.
+    ``residual`` is ``K u - F`` before the tie forces are folded (the force
+    each tie carries, for the virtual crack closure of a delaminated mesh);
+    ``None`` on a mesh without ties.
     """
 
     u: np.ndarray
@@ -36,6 +40,7 @@ class _ThermalUnitSolution:
     stress_global: np.ndarray
     reactions: np.ndarray
     alpha_local: np.ndarray
+    residual: np.ndarray | None = None
 
 
 def check_layup_for_thermal(mesh: CompositeMesh, material: MaterialProperties,
@@ -85,7 +90,7 @@ def unit_solution(
     supports: tuple[dict[int, float], np.ndarray], alpha_local: np.ndarray, *,
     solve: Callable[[scipy.sparse.spmatrix, np.ndarray, dict[int, float]],
                     tuple[np.ndarray, float]],
-    verbose: bool = False,
+    verbose: bool = False, ties: Ties | None | object = _MESH_TIES,
 ) -> _ThermalUnitSolution:
     """Free-standing thermal solve for ``delta_T = 1`` K.
 
@@ -101,6 +106,10 @@ def unit_solution(
     The supports are statically determinate, so the reactions must
     vanish; a reaction above ``1e-6`` of the largest nodal thermal
     force is logged as a warning (it would point to a support bug).
+    On a delaminated mesh ``solve`` ties the bonded interface (and the
+    pairs in crack-face contact), and the residual of each tied DOF is
+    folded onto its master before the reactions are read; ``ties`` are
+    those of ``solve``, by default the mesh's bonded ties.
     """
     beta = thermal_stress_moduli(batch, mesh, alpha_local)
     F_th = assemble_load_vector(batch, batch.thermal_loads(beta), mesh.n_dof)
@@ -113,7 +122,10 @@ def unit_solution(
     strain = batch.strains(u) + batch.incompatible_mode_strains(beta)
     stress = batch.stresses(strain) - beta
 
-    residual = K @ u - F
+    tie_set = _mesh_ties(mesh) if ties is _MESH_TIES else ties
+    assert tie_set is None or isinstance(tie_set, tuple)
+    unfolded = K @ u - F
+    residual = _fold_tied(unfolded, tie_set)
     fixed = np.fromiter(constrained.keys(), dtype=np.intp,
                         count=len(constrained))
     reactions = np.zeros_like(residual)
@@ -127,4 +139,5 @@ def unit_solution(
             "no load; check the boundary conditions.", r_max, f_max)
     return _ThermalUnitSolution(
         u=u, strain_global=strain, stress_global=stress,
-        reactions=reactions.reshape(-1, 3), alpha_local=alpha_local)
+        reactions=reactions.reshape(-1, 3), alpha_local=alpha_local,
+        residual=None if tie_set is None else unfolded)

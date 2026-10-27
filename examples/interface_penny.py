@@ -1,12 +1,13 @@
 """Interface-concentrated porosity with penny-shaped voids.
 
-Demonstrates the worst-case morphology for interlaminar shear strength
-(ILSS): porosity peaked at every ply-to-ply interface (``distribution =
-'interface'``) and shaped as oblate ``penny`` voids (high aspect ratio,
-elevated stress-concentration factor). Penny voids amplify the through-
-thickness stress concentration much more than spherical voids of the same
-``Vp``. Saves the through-thickness porosity profile (a comb of peaks at
-each interface) as a PNG.
+Porosity peaked at every ply-to-ply interface (``distribution =
+'interface'``) and shaped as oblate ``penny`` voids (aspect ratio 10).
+The empirical knockdowns printed here depend only on the mean ``Vp``, so
+they equal those of uniform spherical voids at the same ``Vp``; the void
+shape and the interface peaks act only in the FE solver (see
+``distribution_comparison.py``). This is smeared porosity, not a
+delamination. Saves the through-thickness porosity profile (a comb of
+peaks at each interface) as a PNG.
 
 Run from the repo root::
 

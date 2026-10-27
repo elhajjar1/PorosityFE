@@ -70,6 +70,15 @@ def _normalize_uq_spec(material: MaterialProperties,
                 f"Use one of {sorted(valid)}."
             )
 
+    def _check_set(name: str) -> None:
+        if getattr(material, name) is None:
+            # The optional toughness fields: a draw scales a set value.
+            raise ValueError(
+                f"Material field {name!r} is None, so it cannot be "
+                f"perturbed; set a nominal value first (e.g. with "
+                f"dataclasses.replace)."
+            )
+
     for name, cov in (covs or {}).items():
         _check_field(name)
         cov = float(cov)
@@ -79,6 +88,7 @@ def _normalize_uq_spec(material: MaterialProperties,
                 f"got {cov!r}."
             )
         if cov > 0.0:
+            _check_set(name)
             resolved[name] = ('lognormal', cov)
 
     for name, ds in (spec or {}).items():
@@ -101,6 +111,7 @@ def _normalize_uq_spec(material: MaterialProperties,
                 f"number, got {params!r}."
             )
         if params > 0.0:
+            _check_set(name)
             resolved[name] = (dist, params)
         else:
             resolved.pop(name, None)

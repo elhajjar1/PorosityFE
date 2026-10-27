@@ -1,9 +1,9 @@
 """FE stiffness knockdown: porous over pristine structural stiffness.
 
 The structural stiffness measure of a linear solve, the pristine reference
-solve of the same mesh with no porosity or voids, and the module-level cache
-of those references, shared across solvers so a porosity sweep on one mesh
-solves each reference once. Split out of ``fe/solver.py``
+solve of the same mesh with no porosity, voids or delamination, and the
+module-level cache of those references, shared across solvers so a porosity
+sweep on one mesh solves each reference once. Split out of ``fe/solver.py``
 (IMPROVEMENT_PLAN 5.1); :class:`FESolver <porosity_fe.fe.solver.FESolver>`
 keeps ``_pristine_stiffness_measure`` as a thin wrapper and calls it before
 it assembles the porous model, so the reference's factorization is freed
@@ -33,7 +33,7 @@ from ._load_cases import (
     _FORCE_CONTROLLED,
     apply_boundary_conditions,
 )
-from .assembler import BoundaryHandler, GlobalAssembler
+from .assembler import BoundaryHandler, GlobalAssembler, _mesh_ties, _ties_token
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -59,12 +59,27 @@ def _stiffness_measure(loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
 
 
 def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
-    """Shallow copy of ``mesh`` with zero porosity and no void elements."""
+    """Shallow copy of ``mesh`` with zero porosity, no void elements and no
+    delamination.
+
+    A delaminated mesh keeps its duplicated interface nodes, and with no
+    delaminations left every duplicated pair is bonded
+    (:meth:`CompositeMesh.bonded_pairs`): the same structure as the mesh
+    without delaminations, solved on the same nodes.
+    """
     pristine = copy.copy(mesh)
     pristine.porosity = np.zeros_like(mesh.porosity)
     pristine.void_elements = np.zeros(0, dtype=np.intp)
     pristine.void_element_set = set()
+    if getattr(mesh, 'delaminations', ()):
+        pristine.delaminations = ()
     return pristine
+
+
+def _is_delaminated(mesh: CompositeMesh) -> bool:
+    """Whether ``mesh`` has a delaminated (untied) interface node pair."""
+    bonded_pairs = getattr(mesh, 'bonded_pairs', None)
+    return bonded_pairs is not None and not bool(np.all(bonded_pairs()))
 
 
 def needs_pristine_reference(mesh: CompositeMesh, loading: str,
@@ -72,14 +87,16 @@ def needs_pristine_reference(mesh: CompositeMesh, loading: str,
                              applied_load: float) -> bool:
     """Whether :func:`knockdown` needs the pristine reference of ``loading``.
 
-    Not for ``'thermal'`` (no stiffness measure), a pristine mesh (the
-    knockdown is exactly 1) or a zero load. ``applied_strain`` is the
-    resolved strain of the displacement-controlled modes.
+    Not for ``'thermal'`` (no stiffness measure), a pristine mesh (no
+    porosity, voids or delaminated node pair: the knockdown is exactly 1)
+    or a zero load. ``applied_strain`` is the resolved strain of the
+    displacement-controlled modes.
     """
     if loading == 'thermal':
         return False
     porosity = np.asarray(mesh.porosity, dtype=float)
-    if not np.any(porosity > 0.0) and np.size(mesh.void_elements) == 0:
+    if not np.any(porosity > 0.0) and np.size(mesh.void_elements) == 0 \
+            and not _is_delaminated(mesh):
         return False
     return (applied_load if loading in _FORCE_CONTROLLED
             else applied_strain) != 0.0
@@ -109,16 +126,21 @@ def pristine_stiffness_measure(
     porosity_field: PorosityField, formulation: FEFormulation,
     bc_handler: BoundaryHandler,
 ) -> float:
-    """:func:`_stiffness_measure` of ``mesh`` with no porosity or voids, cached.
+    """:func:`_stiffness_measure` of ``mesh`` with no porosity, voids or
+    delamination, cached.
 
     The reference is a direct solve of the same loading and boundary
     conditions on :func:`_pristine_mesh`, at the default strain or load
-    (the measure does not depend on its magnitude). Its assembly and
-    factorization are local to this call and freed on return. Cached in
-    :data:`_PRISTINE_MEASURE_CACHE` by loading (tension and compression
-    share one), mesh nodes, connectivity and ply angles, every material
-    field, the element formulation and, for the bends, the support and load
-    lines.
+    (the measure does not depend on its magnitude). On a delaminated mesh
+    every duplicated interface pair is tied in it, so it is the undamaged
+    laminate (plan decision D6) and does not change with the delamination
+    size. Its assembly and factorization are local to this call and freed
+    on return. Cached in :data:`_PRISTINE_MEASURE_CACHE` by loading
+    (tension and compression share one), mesh nodes, connectivity and ply
+    angles, every material field, the element formulation, for the bends
+    the support and load lines and, on a mesh with duplicated interface
+    nodes, the tie set of the reference (all pairs bonded), so it never
+    shares an entry with a solve of other ties.
     """
     # Tension and compression share one linear pristine problem.
     key_loading = 'compression' if loading == 'tension' else loading
@@ -136,6 +158,15 @@ def pristine_stiffness_measure(
         # Nor are the short-beam supports and loading band. The shallow
         # pristine mesh copy below carries the same ilss_geometry.
         key += (bc_handler.ilss_geometry(),)
+    pairs = getattr(mesh, 'interface_node_pairs', None)
+    if pairs is not None and pairs()[0].size:
+        # The reference ties every duplicated pair: key on that tie set,
+        # not on the mesh's delaminations.
+        originals, duplicates = pairs()
+        comp = np.arange(3)
+        key += (('ties', _ties_token(((3 * duplicates[:, None] + comp).ravel(),
+                                      (3 * originals[:, None] + comp).ravel(),
+                                      np.zeros(0)))),)
     cached = _PRISTINE_MEASURE_CACHE.get(key)
     if cached is not None:
         _PRISTINE_MEASURE_CACHE.move_to_end(key)
@@ -150,7 +181,8 @@ def pristine_stiffness_measure(
         BoundaryHandler(pristine), key_loading, strain, load)
     K0 = assembler.stiffness()
     system = functools.partial(free_dof_system, OrderedDict(), max_entries=1)
-    u0, _ = solve_constrained(K0, F, constrained, system=system)
+    u0, _ = solve_constrained(K0, F, constrained, system=system,
+                              ties=_mesh_ties(pristine))
     measure = _stiffness_measure(key_loading, K0, u0, strain, load)
 
     _PRISTINE_MEASURE_CACHE[key] = measure

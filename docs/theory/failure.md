@@ -94,12 +94,39 @@ $$
 
 The reported index is the maximum over the five modes.
 
+```{note}
+The delamination mode is a stress-based *initiation* screen and nothing
+more. It is evaluated at the ply Gauss points, which sit about
+$0.21\,t_\text{ply}$ inside each ply with one element per ply, not on the
+interfaces, and without the averaging distance of the original criterion.
+It knows nothing of an explicit delamination ({doc}`delamination`), whose
+growth is judged by energy release rates instead. There is no
+through-thickness tensile strength input, so
+$Y_t$ (from $\sigma_{2t}$) stands in for $Z_t$, and $S_{23}$ is the
+apparent short-beam strength $\tau_\text{ilss}$. Both are degraded by the
+same in-plane $r_m$ as the other matrix strengths, whatever the void shape.
+```
+
+## Reported modes
+
+`FieldResults.failure_mode_indices` is the breakdown of the modes **at the
+Gauss point of the overall maximum**. `FieldResults.failure_mode_maxima`
+is each mode's own maximum over the model, so a mode that does not govern,
+such as delamination onset in a compression solve, is still visible. The
+VTK and VTU exports write each mode's per-element maximum as
+`failure_index_<mode>` next to `failure_index`, and the JSON export writes
+`failure.mode_maxima`. Both are `None` (`null`) for Tsai-Wu. The web app's
+Results tab shows the governing mode and, for Hashin and maximum stress,
+the per-mode maxima.
+
 ## Maximum stress
 
 Each component is compared with its allowable: $\sigma_1$ against $X_t$ or
 $X_c$; the worse of $\sigma_2$ and $\sigma_3$ against $Y_t$ or $Y_c$;
 $\lvert\tau_{12}\rvert$ and $\lvert\tau_{13}\rvert$ against $S_{12}$; and
 $\lvert\tau_{23}\rvert$ against $S_{23}$. The index is the largest ratio.
+The interlaminar components fall into the matrix and shear modes, so the
+`delamination` entry is always 0.
 
 ## First-ply-failure load factor
 

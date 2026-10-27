@@ -5,6 +5,148 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Failure modes made visible, and the docs say what delamination
+  coverage exists** (delamination plan, phase 0). The default Tsai-Wu
+  results, the knockdowns and the validation MAE are unchanged.
+  - `FieldResults.failure_mode_maxima`: each separate mode's maximum over
+    the model, for Hashin and maximum stress (`None` for Tsai-Wu).
+    - `failure_mode_indices` is the breakdown at the Gauss point of the
+      overall maximum only, so a mode that does not govern used to be
+      invisible: for example, Hashin's delamination-onset mode in a
+      compression solve.
+    - `FieldResults.per_element_mode_failure_index` holds each mode's
+      per-element maximum.
+    - `porosity_fe.fe.failure.evaluate_failure` takes an optional
+      `mode_fields=` dict to fill. `MODE_KEYS` lists the modes.
+  - Exports:
+    - VTK/VTU write `failure_index` (the criterion's index) and, for Hashin
+      and maximum stress, `failure_index_<mode>` per mode. The legacy
+      `tsai_wu_index` stays as an alias, written whatever the criterion.
+    - JSON schema 1.3 adds `failure.mode_maxima` and the interlaminar
+      components `sigma_33`, `tau_23` and `tau_13` to the `stress_local`
+      summary, which carried only the in-plane ones.
+  - App:
+    - A sidebar "FE failure criterion" selector: Tsai-Wu (default), Hashin
+      or maximum stress. It also applies to the convergence check.
+    - A Results-tab **FE failure** block: domain and interior maximum
+      index, the interior first-ply-failure load factor, the governing
+      mode, and each mode's maximum for Hashin and maximum stress.
+      Maximum stress has no delamination mode, so its row reads n/a.
+  - Docs:
+    - The README limitation now says what exists: Hashin's stress-based
+      delamination-onset index at the ply Gauss points, and no explicit
+      delamination, energy release rate or growth.
+    - The README states the 3D Tsai-Wu polynomial the code evaluates,
+      instead of the in-plane one labelled "Full 3D".
+    - `examples/interface_penny.py` no longer calls interface penny
+      porosity the "worst-case ILSS morphology": its empirical knockdowns
+      depend only on the mean `Vp`.
+    - The README and the porosity theory page note two things about the
+      FE knockdown of interface penny porosity at 3 %. Most of its
+      reduction is the penny shape: uniform penny voids give 0.9846, and
+      interface penny voids 0.9819. And with one element layer per ply
+      the `interface` profile's FE volume average is 0.0354, not 0.03.
+    - The failure theory page describes the delamination mode's limits and
+      the reported mode quantities.
+- **Explicit delaminations in the FE model** (delamination plan, phase
+  2.1-2.3). Results without a delamination are unchanged bit for bit.
+  - `Delamination` (public): a crack at ply interface `k`, between ply `k`
+    and ply `k + 1` from the bottom, with a `'strip'` (through the width,
+    `x_start` to `x_end`), `'rectangle'` or `'ellipse'` planform (`center`,
+    `half_size`, mm). The region is open: nodes on its boundary stay
+    bonded and form the crack front; a strip or rectangle edge on the plate
+    edge opens to it. Several delaminations at one interface act as their
+    union.
+  - `CompositeMesh(..., delaminations=...)`, also on `for_flexure` and
+    `for_ilss`, duplicates the node plane of every delaminated interface
+    at the end of `generate_mesh()`: the copies follow the structured
+    nodes, whose ids are unchanged, and the element layer above is rewired
+    to them. Needs `nz` a multiple of `n_plies`. New
+    `n_structured_nodes`, `delaminated_interfaces`,
+    `interface_node_pairs()`, `bonded_pairs()`, `bonded_ties()` and
+    `crack_front_pairs()`. Replacing `mesh.delaminations` at the same
+    interfaces changes only the ties, so a crack grows without reassembly.
+  - `FESolver` ties each bonded duplicate to its original, in every loading
+    mode, direct or CG, and in the thermal unit solve; the LU and thermal
+    caches are keyed on the tie set. Boundary conditions prescribe the
+    original nodes and the delaminated duplicates on a face, never a tied
+    duplicate. Reactions fold each tie force onto its original. The
+    knockdown's pristine reference has every pair bonded (no porosity,
+    voids or delamination), so a delamination alone gives a knockdown
+    below 1; its cache key holds that tie set.
+  - `extrapolate_to_nodes` averages a bonded pair as one node and reports
+    the two crack faces of a delaminated pair separately. The
+    flexural-modulus deflection and the structured section helpers read
+    the structured nodes.
+  - Verified: with every pair bonded the solution equals the undelaminated
+    one within 5e-11 relative in every loading mode and both formulations; on a
+    16-ply UD double-cantilever beam the compliance is 0.983 of
+    root-rotation-corrected beam theory and the energy release rate from
+    the compliance derivative is 0.311 N/mm, 0.989 of beam theory. Theory
+    page "Delamination".
+- **Crack-face contact, energy release rates and a growth criterion for
+  explicit delaminations** (delamination plan, phase 2.4-2.8). Results
+  without a delaminated node pair are unchanged: on the 132-case FE
+  fingerprint every existing `FieldResults` field and the JSON export are
+  identical, and only `summary().details` gains the new (`None`) keys.
+  - Crack-face contact: `FESolver.solve(..., crack_contact=True)` (the
+    default) holds the delaminated pairs that would interpenetrate with
+    normal-only ties, frictionless from a zero gap, by a primal-dual active
+    set (at most 30 solves, a warning if it does not settle). Only the ties
+    change, never `K`; the intermediate active sets are factorized in a
+    separate one-entry cache, and a load case's last set is the warm start
+    of its next solve. With `delta_T` the contact is that of the total
+    state. `crack_contact=False` lets the faces overlap, as before.
+  - Virtual crack closure (`porosity_fe/fe/vcct.py`, public
+    `vcct_energy_release_rates` and `CrackFront`): `G_I`, `G_II`, `G_III`,
+    `G_T` (N/mm) and the mode mixity at every front node, from the tie
+    force of the front pair (read before the reactions fold it) and the
+    opening of the pair one element behind (Krueger's 8-node brick
+    formulas). The growth direction is exactly `+-x` on a straight front
+    and one of eight grid directions on a staircase; the tributary width
+    is half at a plate edge.
+    - A negative mode I product (closed faces) counts as zero.
+    - The shear products keep their sign, so the front sums to the
+      energy the extension releases. On a QI short-beam specimen the
+      mode III product changes sign across the width: zeroing the
+      negative ones over-predicted `G` by 4–7 % against the compliance
+      derivative, while the signed sum is within 1.1 %.
+  - Growth criterion (public `critical_energy_release_rate`,
+    `fracture_load_factors`): Benzeggagh-Kenane, with Reeder's term for a
+    separate mode III toughness; critical load factor
+    `sqrt(G_c / G_T)` per node, or, with a thermal residual state, the
+    root of the quadratic `G_T(lam) = G_c(psi(lam))` by `brentq`. The
+    toughness hook takes the local porosity and returns the pristine values
+    until the porosity-toughness law (phase 4).
+  - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
+    (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
+    `None` by default; no preset sets them. Without them the solve reports
+    the energy release rates only. The theory page lists sourced values.
+  - New optional `FieldResults` fields `crack_front`,
+    `fracture_load_factor`, `fracture_governing_node`, `interface_forces`,
+    `crack_contact`, `contact_iterations`, `contact_pairs` and
+    `contact_converged`, also in `summary().details`;
+    `FieldResults.energy_release_rates(mesh)` recomputes the front table.
+  - Exports: a `fracture` block in the FE JSON (schema 1.3, additive,
+    `null` for undefined or infinite values) and `G_I` to `G_T` point data
+    on the front nodes in the VTU (`NaN` elsewhere; not in the legacy VTK).
+  - Verified (`tests/test_vcct.py`): on the 16-ply UD double-cantilever
+    beam VCCT `G_I` is 0.9991 of the centred compliance derivative (0.959
+    of the one-element forward one) and 0.988 of corrected beam theory,
+    with `G_II / G_I` and `G_III / G_I` below 1e-24; the one-step VCCT
+    energy is 0.9938 of the centred energy release; `G_I` is uniform
+    across the width without Poisson coupling and converges under
+    refinement (0.9792, 0.9878, 0.9931 of beam theory at 2, 1 and 0.5 mm).
+    End-notched flexure with contact gives `G_II` 0.9983 of the centred
+    compliance derivative and `G_I` about 1e-6 of `G_T`, while without
+    contact the faces overlap. A single-leg beam's mode mix is 0.3897
+    against 0.3936 from corrected beam theory. The load factor is checked
+    by hand, under load scaling, with a prestress and through a thermal
+    solve. A penny crack in an isotropic block (`h = a/8`) gives a front
+    mean of `G_T` 1.061 of `(1 - nu^2) K_I^2 / E` at the nominal radius and
+    1.003 at the mean radius of the staircase front, with 0.785 to 1.434
+    around it. Theory page "Delamination": contact, VCCT, criterion, load
+    factor, verification table and toughness data.
 - **Flexure modes and a mesh-convergence check in the app.** Empirical
   results and the existing loading modes are unchanged.
   - The loading choices gain `flexure_3pt` and `flexure_4pt`, labelled

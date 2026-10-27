@@ -476,9 +476,29 @@ def test_fe_json_tsai_wu_mode_indices_are_null(fe_tsai_wu, tmp_path):
 
 @pytest.mark.parametrize("criterion", ["hashin", "max_stress"])
 def test_fe_json_separating_criteria_write_numbers(fe_tsai_wu, criterion, tmp_path):
+    import jsonschema
+
     r = fe_tsai_wu[criterion]
-    modes = _export_fe(r, tmp_path / "fe.json")["failure"]["mode_indices"]
+    doc = _export_fe(r, tmp_path / "fe.json")
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    modes = doc["failure"]["mode_indices"]
     assert modes == {k: float(v) for k, v in r.failure_mode_indices.items()}
+    # Schema 1.3: each mode's maximum over the model.
+    assert doc["failure"]["mode_maxima"] == r.failure_mode_maxima
+    assert max(doc["failure"]["mode_maxima"].values()) == pytest.approx(
+        doc["failure"]["max_failure_index"], rel=1e-12)
+
+
+def test_fe_json_interlaminar_stress_summary(fe_tsai_wu, tmp_path):
+    r = fe_tsai_wu["tsai_wu"]
+    doc = _export_fe(r, tmp_path / "fe.json")
+    assert doc["failure"]["mode_maxima"] is None
+    local = doc["stress_local"]
+    assert list(local) == ["sigma_11", "sigma_22", "sigma_33", "tau_23",
+                           "tau_13", "tau_12"]
+    for i, name in enumerate(local):
+        component = r.stress_local[:, :, i]
+        assert local[name]["max"] == pytest.approx(float(component.max()), rel=1e-12)
 
 
 def test_fe_json_thermal_exports_are_standard(fe_thermal, tmp_path):

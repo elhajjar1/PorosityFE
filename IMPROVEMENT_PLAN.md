@@ -32,7 +32,7 @@ polish, (5) architecture cleanups, and (6) CI/packaging/docs/hygiene. Items are
 tagged **[S]**mall (≤ half day), **[M]**edium (1–3 days), **[L]**arge (multi-day
 / design needed).
 
-## Status (2026-10-22)
+## Status (2026-10-26)
 
 The sections below are kept as written on 2026-07-16 (file:line references
 point at that tree). What has landed since, by pull request:
@@ -51,7 +51,8 @@ point at that tree). What has landed since, by pull request:
 | #205 | Production mesh resolves every ply; MINRES deprecated; 2-entry LU cache; 3.6 periodic unit-cell check of Mori-Tanaka; 6.2 (generated validation reports untracked) |
 | #206 | 3.6 ILSS as a true ASTM D2344 short beam (`CompositeMesh.for_ilss`, `short_beam_shear`) |
 | #207 | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
-| #208 (open) | 3.6 flexure interior region; `for_flexure(nx=)`; `refinement_study` and the app's convergence check on the D7264 specimen |
+| #208 | 3.6 flexure interior region; `for_flexure(nx=)`; `refinement_study` and the app's convergence check on the D7264 specimen |
+| #209 (open) | Delamination plan ([`DELAMINATION_PLAN.md`](DELAMINATION_PLAN.md)) phases 0 and 2: failure-mode maxima and the app's criterion selector; explicit `Delamination`, crack-face contact, VCCT, B-K criterion and fracture load factor |
 
 ---
 

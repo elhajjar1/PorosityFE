@@ -576,3 +576,49 @@ class TestThermalExpansionFields:
         assert res_a.knockdown == res_b.knockdown
         np.testing.assert_array_equal(res_a.stress_local, res_b.stress_local)
         np.testing.assert_array_equal(res_a.displacement, res_b.displacement)
+
+
+class TestInterlaminarToughnessFields:
+    """Optional G_Ic, G_IIc, G_IIIc (N/mm) and the B-K exponent (delamination
+    plan, phase 2.6): None by default, positive and finite when set."""
+
+    BASE = MATERIALS['T800_epoxy']
+    TOUGH = dict(G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)   # IM7/8552, plan Appendix A
+
+    @pytest.mark.parametrize('name', ['G_Ic', 'G_IIc', 'G_IIIc', 'bk_eta'])
+    @pytest.mark.parametrize('value', [0.0, -0.1, float('nan'), float('inf'), True, 'x'])
+    def test_invalid_values_raise(self, name, value):
+        with pytest.raises(ValueError, match=name):
+            dataclasses.replace(self.BASE, **{name: value})
+
+    def test_defaults_and_effective_values(self):
+        assert not self.BASE.has_toughness and self.BASE.G_IIIc_eff is None
+        mat = dataclasses.replace(self.BASE, **self.TOUGH)
+        assert mat.has_toughness and mat.G_IIIc_eff == self.TOUGH['G_IIc']
+        assert dataclasses.replace(mat, G_IIIc=1.0).G_IIIc_eff == 1.0
+        assert not dataclasses.replace(mat, bk_eta=None).has_toughness
+        assert all(m.G_Ic is None and m.bk_eta is None for m in MATERIALS.values())
+
+    def test_perturbable_only_when_set(self):
+        from collections import OrderedDict
+
+        from porosity_fe.uq import _normalize_uq_spec
+        for name in ('G_Ic', 'G_IIc', 'G_IIIc', 'bk_eta'):
+            assert name in MaterialProperties.PERTURBABLE_FIELDS
+        with pytest.raises(ValueError, match='is None'):
+            _normalize_uq_spec(self.BASE, {'G_Ic': 0.1}, None)
+        with pytest.raises(ValueError, match='is None'):
+            _normalize_uq_spec(self.BASE, None, {'bk_eta': ('normal', 0.1)})
+        assert _normalize_uq_spec(self.BASE, {'G_Ic': 0.0}, None) == OrderedDict()
+        mat = dataclasses.replace(self.BASE, **self.TOUGH)
+        spec = _normalize_uq_spec(mat, {'G_Ic': 0.1}, None)
+        drawn = mat.perturb({'G_Ic': 1.0}, spec)
+        assert drawn.G_Ic > mat.G_Ic and drawn.G_IIc == mat.G_IIc
+
+    def test_json_round_trip(self):
+        import json
+
+        from porosity_fe.io import _json_default
+        mat = dataclasses.replace(self.BASE, G_IIIc=0.9, **self.TOUGH)
+        block = json.loads(json.dumps({'m': mat}, default=_json_default))['m']
+        assert MaterialProperties(**block) == mat
