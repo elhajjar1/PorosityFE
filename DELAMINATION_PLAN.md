@@ -28,7 +28,7 @@ point at commit 2686d62. Progress by pull request:
 | 4.1, 4.2, 4.4 | Done: `ToughnessKnockdown` (uncalibrated placeholders, flagged), front toughness from the local porosity, `hakim_2017` and `agius_fox_2015` reported apart | next PR |
 | 4.3 | Partly: `toughness_knockdown_factor` screens without FE; no empirical `LoadingMode` | — |
 | 4.5 | Not started (uncertainty of `b`) | — |
-| 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with the fracture-margin disposition, `porosity-analyze --delamination`, docs | next PR |
+| 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | next PR |
 | 6 | Deferred (cohesive zones) | — |
 
 Decisions taken with the recommended option because they change no

@@ -420,12 +420,13 @@ applied state is held for every $\lambda$ (see
   coupon at each porosity level, written to `porosity_delamination_<Vp>.json`
   with the `fracture` and `knockdown_decomposition` blocks ({doc}`../cli`).
 - The NCR summary (`porosity_fe.reporting`) takes the indication types
-  porosity, delamination and combined. A delamination is dispositioned on
-  its fracture margin, $\lambda_c$ against the required load factor the
-  user enters (both multiples of the analysis load), never on the void
-  content; no published acceptance numbers exist, so there is no other
-  threshold. A combined indication takes the more severe of the porosity
-  and delamination paths.
+  porosity, delamination and combined. A delamination gets a fracture
+  assessment (`assess_delamination`): $\lambda_c$ against the required load
+  factor the user enters (both multiples of the analysis load), the margin
+  of safety, and the criteria and MRB actions that apply. It gets **no
+  recommended disposition path**: no published acceptance numbers exist,
+  so the MRB dispositions it. For a combined indication the recommended
+  path is the porosity's and covers the porosity only.
 
 ## Verification
 

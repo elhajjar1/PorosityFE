@@ -1236,9 +1236,9 @@ def delamination_text(delamination: Delamination) -> str:
 
 
 def ncr_delamination_available(result: dict) -> bool:
-    """Whether the NCR can disposition ``result``'s delamination on a
-    fracture margin: a delamination of the part (not a fracture specimen)
-    with a front and a fracture load factor."""
+    """Whether the NCR can assess ``result``'s delamination on a fracture
+    margin: a delamination of the part (not a fracture specimen) with a
+    front and a fracture load factor."""
     fe = result.get("fe_field")
     return (result.get("delamination") is not None and fe is not None
             and _crack_front(result) is not None
@@ -3363,15 +3363,18 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         "disposition path for the MRB — it is not a full NCR form and "
         "does not issue a final disposition. Part/serial/work-order "
         "identification stays on the parent NCR."
+        + (" A delamination gets a fracture assessment and no recommended "
+           "path: the MRB dispositions it."
+           if ncr_delamination_available(result) else "")
     )
 
-    # A delamination of the part with a fracture load factor can be
-    # dispositioned on its fracture margin (porosity alone otherwise).
+    # A delamination of the part with a fracture load factor gets a fracture
+    # assessment, never a recommended path (the porosity alone otherwise).
     delamination_ncr = ncr_delamination_available(result)
     if result.get("delamination") is not None and not delamination_ncr:
         st.caption(
             "The delamination has no fracture load factor (no toughness "
-            "data), so this summary can disposition the porosity only.")
+            "data), so this summary covers the porosity only.")
 
     with st.form("ncr_form"):
         c1, c2 = st.columns(2)
@@ -3403,10 +3406,12 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
                     "Indication type", options=list(INDICATION_TYPES),
                     index=list(INDICATION_TYPES).index("combined"),
                     key="ncr_indication",
-                    help=("porosity: bins on the void content and knockdown. "
-                          "delamination: the fracture margin λ_c against the "
-                          "required load factor, never the void content. "
-                          "combined: both, the more severe path governs."),
+                    help=("porosity: a recommended path from the void "
+                          "content and knockdown. delamination: a fracture "
+                          "assessment, λ_c against the required load factor, "
+                          "with no recommended path: the MRB dispositions it. "
+                          "combined: both; the recommended path covers the "
+                          "porosity only."),
                 )
             with c4:
                 required = st.number_input(
@@ -3431,8 +3436,8 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
     if not make_ncr:
         return
     if indication != "porosity" and required is None:
-        st.error("Enter the required load factor to disposition the "
-                 "delamination on its fracture margin.")
+        st.error("Enter the required load factor to assess the "
+                 "delamination's fracture margin.")
         return
 
     meta = {
@@ -3448,11 +3453,20 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         meta["required_load_factor"] = float(required)
     ncr = build_ncr_record(result, meta)
     dp = ncr["recommended_disposition"]
-    st.warning(
-        f"**Recommended disposition path:** {dp['path']}  \n"
-        f"{dp['rationale']}"
-    )
-    st.info(dp["disclaimer"])
+    assessment = ncr.get("delamination", {}).get("assessment")
+    if dp is not None:
+        scope = " (porosity only)" if assessment is not None else ""
+        st.warning(
+            f"**Recommended disposition path{scope}:** {dp['path']}  \n"
+            f"{dp['rationale']}"
+        )
+        st.info(dp["disclaimer"])
+    if assessment is not None:
+        st.warning(
+            f"**Delamination: no recommended disposition path.** "
+            f"{assessment['statement']}"
+        )
+        st.info(assessment["disclaimer"])
 
     ncr_md = serialise_ncr_markdown(ncr)
     stem = (

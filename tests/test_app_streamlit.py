@@ -444,7 +444,7 @@ class TestDefectsPanel:
         assert labels.count("Download PNG") == 5          # + the front plot
         assert any("Delamination: through-width strip" in s.value for s in at.success)
 
-    def test_ncr_dispositions_the_delamination(self):
+    def test_ncr_assesses_the_delamination_without_a_path(self):
         at = _delamination_run(_fresh_app())
         assert at.selectbox(key="ncr_indication").value == "combined"
         _button(at, "Generate summary").click().run()
@@ -453,9 +453,17 @@ class TestDefectsPanel:
         at.number_input(key="ncr_required_load_factor").set_value(0.5)
         _button(at, "Generate summary").click().run()
         assert not at.exception
-        assert any("Recommended disposition path" in w.value
-                   and "fracture margin" in w.value for w in at.warning)
+        assert not any("Recommended disposition path" in w.value for w in at.warning)
+        assert any("no recommended disposition path" in w.value
+                   and "fracture margin of safety" in w.value for w in at.warning)
+        assert any("does not recommend a disposition" in i.value for i in at.info)
         assert len(at.get("download_button")) == 11       # 5 PNG + 3 + 3
+        # Combined: the porosity's path, labelled as covering the porosity only.
+        at.selectbox(key="ncr_indication").set_value("combined")
+        _button(at, "Generate summary").click().run()
+        assert any("Recommended disposition path (porosity only)" in w.value
+                   for w in at.warning)
+        assert any("no recommended disposition path" in w.value for w in at.warning)
 
     def test_inputs_that_block_the_run(self):
         at = _small_mesh(_fresh_app())
@@ -499,7 +507,7 @@ class TestDefectsPanel:
         assert float(metrics["Compliance C (mm/N)"]) > 0.0
         assert any(h.value == "Defects: delamination and interface onset"
                    for h in at.subheader)
-        # The NCR cannot disposition a test specimen.
+        # The NCR does not assess a test specimen.
         assert not any(c.label == "Indication type" for c in at.selectbox)
 
     def test_mmb_lever_caption(self):

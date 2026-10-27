@@ -37,18 +37,21 @@ All notable changes to PorosityFE will be documented in this file.
     uncalibrated. The mesh-convergence check is not offered for a
     delamination or a specimen.
   - NCR (`porosity_fe.reporting`): `INDICATION_TYPES` (porosity,
-    delamination, combined) and `recommend_disposition(..., *, indication,
-    fracture_load_factor, required_load_factor, toughness_uncalibrated)`. A
-    delamination is dispositioned on its fracture margin, λ_c against the
-    required load factor the user enters (no default, no other threshold:
-    no published acceptance numbers exist), never on the void content; a
-    combined indication takes the more severe of the two paths. The
-    positional porosity call is unchanged. `build_ncr_record` takes
+    delamination, combined) and `assess_delamination(fracture_load_factor,
+    required_load_factor, structural_class, *, toughness_uncalibrated)`:
+    the fracture margin of a delamination, λ_c against the required load
+    factor the user enters (no default; both multiples of the analysis
+    load), with its statement, criteria and MRB actions, and **no
+    recommended disposition path**: no published acceptance numbers exist,
+    so the MRB dispositions a delamination. `recommend_disposition` is
+    unchanged and stays porosity only. `build_ncr_record` takes
     `meta['indication']` and `meta['required_load_factor']` and adds a
     `delamination` block (interface depth and planform, toughness and its
-    law, λ_c, governing front node, knockdown decomposition), written by
-    the JSON (schema 1.3, additive), Markdown and PDF serialisers; the
-    app's NCR form offers it.
+    law, λ_c, governing front node, knockdown decomposition, the
+    assessment); for a delamination `recommended_disposition` is `null`,
+    and for a combined indication it is the porosity's path, marked as
+    covering the porosity only. Written by the JSON (schema 1.3, additive),
+    Markdown and PDF serialisers; the app's NCR form offers it.
   - `porosity-analyze --delamination SPEC` (with `--delam-loading`,
     `--delam-config`, `--toughness`, `--toughness-knockdown`,
     `--toughness-b`): an FE screening of the coupon at each porosity
