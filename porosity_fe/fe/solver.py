@@ -31,7 +31,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import scipy.sparse
@@ -42,13 +42,14 @@ from .._types import FEFormulation, FELoadingMode
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
+from ..toughness import ToughnessKnockdownSpec, _resolve_toughness_knockdown
 from . import _constrained_solve, _contact, _fracture, _knockdown, _postprocess, _thermal, failure
 from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
 from ._knockdown import _stiffness_measure
+from ._load_cases import _FRACTURE_TESTS, apply_boundary_conditions, check_solve_arguments, interior_mask
 from ._load_cases import _check_delta_T as _check_delta_T
 from ._load_cases import _minres_deprecation as _minres_deprecation
 from ._load_cases import _resolve_applied_strain as _resolve_applied_strain
-from ._load_cases import apply_boundary_conditions, check_solve_arguments, interior_mask
 from ._thermal import _ThermalUnitSolution
 from .assembler import (
     _MESH_TIES,
@@ -62,6 +63,10 @@ from .assembler import (
 from .element import _DEFAULT_FORMULATION
 from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
+
+if TYPE_CHECKING:
+    from .decomposition import KnockdownDecomposition
+    from .interlaminar import DelaminationOnset
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -164,8 +169,10 @@ class FESolver:
     reports the virtual-crack-closure energy release rates along the front
     (:attr:`FieldResults.crack_front`) and, when the material has
     interlaminar toughness, the load factor at which the delamination
-    starts to grow (:attr:`FieldResults.fracture_load_factor`); see the
-    theory page "Delamination".
+    starts to grow (:attr:`FieldResults.fracture_load_factor`), with the
+    toughness knocked down by the porosity at each front node
+    (``solve(..., toughness_knockdown=...)``); see the theory page
+    "Delamination".
     """
 
     #: Supported failure criteria for :meth:`solve`. Used both at runtime
@@ -243,14 +250,16 @@ class FESolver:
               delta_T: float | None = None,
               allow_unresolved_layup: bool = False,
               interior_margin: float | None = None,
-              crack_contact: bool = True) -> FieldResults:
+              crack_contact: bool = True,
+              toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+              ) -> FieldResults:
         """Solve the static FE problem.
 
         Parameters
         ----------
         loading : str
             'compression', 'tension', 'shear', 'ilss', 'flexure_3pt',
-            'flexure_4pt' or 'thermal'.
+            'flexure_4pt', 'thermal', 'dcb', 'enf' or 'mmb'.
             ``'ilss'`` is the ASTM D2344 short-beam-shear test on the
             specimen of :meth:`CompositeMesh.for_ilss` (supports ``4 h``
             apart under a ``6 h x 2 h`` beam, on rollers, the load spread
@@ -272,6 +281,22 @@ class FESolver:
             statically determinate 3-2-1 supports
             (:meth:`BoundaryHandler.free_bcs`): the cure residual stress.
             ``applied_strain`` and ``applied_load`` are ignored for it.
+            ``'dcb'``, ``'enf'`` and ``'mmb'`` are the delamination
+            fracture tests (ASTM D5528, D7905, D6671) on the specimens of
+            :meth:`CompositeMesh.for_dcb`, :meth:`CompositeMesh.for_enf` and
+            :meth:`CompositeMesh.for_mmb`, whose
+            :attr:`CompositeMesh.fracture_geometry` they need (another mesh
+            raises :class:`ValueError` before assembly): hinge loads on the
+            two arms (DCB), three-point bending on rollers (ENF), or the
+            loads of the MMB lever on rollers
+            (:meth:`BoundaryHandler.fracture_bcs`). They report the
+            energy release rates along the insert's front
+            (:attr:`FieldResults.crack_front`), the critical load factor
+            when the material has toughness data, and the load-point
+            compliance (:attr:`FieldResults.load_point_compliance`);
+            ``effective_modulus`` is ``None`` and the knockdown is the
+            compliance of the bonded, pore-free specimen over the solved
+            one's (see the theory page "Delamination").
         applied_strain : float, optional
             Applied nominal strain (negative for compression). Used by the
             displacement-controlled modes ('compression', 'tension',
@@ -282,9 +307,12 @@ class FESolver:
             contradicts ``'compression'`` / ``'tension'`` logs a warning.
         applied_load : float
             Total load (N, negative = downward) of the force-controlled
-            modes: the mid-span load of ``'ilss'`` (ASTM D2344) and
-            ``'flexure_3pt'``, the sum of the two loads of
-            ``'flexure_4pt'``. Ignored for the other modes.
+            modes: the mid-span load of ``'ilss'`` (ASTM D2344),
+            ``'flexure_3pt'`` and ``'enf'``, the sum of the two loads of
+            ``'flexure_4pt'``, the lever load of ``'mmb'`` (negative presses
+            the lever down, so the hinge opens the crack). For ``'dcb'`` it
+            is the hinge load on each arm and only its magnitude is used: the
+            arms are always pulled apart. Ignored for the other modes.
         verbose : bool
             Print progress information.
         failure_criterion : {'tsai_wu', 'hashin', 'max_stress'}, optional
@@ -394,6 +422,22 @@ class FESolver:
             toughness data, the critical load factor
             (:attr:`FieldResults.fracture_load_factor`); see the theory page
             "Delamination".
+        toughness_knockdown : ToughnessKnockdown, str, callable or None
+            Keyword-only. How the porosity at each crack-front node knocks
+            down the material's interlaminar toughness before the critical
+            load factor is computed (:class:`~porosity_fe.ToughnessKnockdown`):
+            the default ``'exponential'`` is ``G_c = G_c0 exp(-b Vp)`` with
+            the uncalibrated placeholders ``b_I = 6.2`` and
+            ``b_II = b_III = 14`` per unit ``Vp``, flagged as
+            ``crack_front.toughness_uncalibrated`` (and in
+            ``summary().details`` and the JSON ``fracture`` block) where they
+            lower a toughness. ``None`` keeps the pristine toughness; a
+            :class:`~porosity_fe.ToughnessKnockdown` sets other
+            coefficients or the linear law, and a callable ``f(Vp, mode)``
+            is used as the factor. Without porosity at the front the
+            toughness is the pristine one whatever the law. No effect
+            without a delaminated pair or without toughness data; an
+            invalid value raises before anything is assembled.
 
         Returns
         -------
@@ -411,7 +455,11 @@ class FESolver:
             a finite number, the material has no CTEs, or the mesh does not
             resolve the layup (unless ``allow_unresolved_layup``). If
             ``interior_margin`` is negative or not finite. For ``'ilss'``,
-            if the mesh has no :attr:`CompositeMesh.ilss_geometry`.
+            if the mesh has no :attr:`CompositeMesh.ilss_geometry`; for
+            ``'dcb'``, ``'enf'`` and ``'mmb'``, if it is not that test's
+            specimen (:attr:`CompositeMesh.fracture_geometry`). If
+            ``toughness_knockdown`` names an unknown law or has invalid
+            coefficients (:class:`TypeError` if it is of the wrong type).
         RuntimeError
             If the iterative solver fails to converge to ``rtol``, if the
             direct solve produces non-finite values / a residual above
@@ -425,6 +473,8 @@ class FESolver:
                               supported_criteria=self.SUPPORTED_FAILURE_CRITERIA,
                               penalty_factor=penalty_factor, diag_scale=diag_scale)
         thermal_only = loading == 'thermal'
+        knockdown_law = _resolve_toughness_knockdown(toughness_knockdown)
+        compliance: float | None = None
         dT = _check_delta_T(loading, delta_T, self.material)
         if dT is not None:
             _thermal.check_layup_for_thermal(self.mesh, self.material,
@@ -533,6 +583,9 @@ class FESolver:
             reactions, effective_modulus = self._reactions_and_modulus(
                 loading, K, u, F, applied_strain, constrained,
                 applied_load=applied_load, ties=ties)
+            if loading in _FRACTURE_TESTS and applied_load != 0.0:
+                # Work-conjugate displacement of the load over the load.
+                compliance = float(F @ u) / float(applied_load) ** 2
             load_stress = stress_local
             prestress_local = residual_local
             basis = 'mechanical'
@@ -567,12 +620,14 @@ class FESolver:
             if thermal_only:
                 assert thermal_part is not None
                 fracture = _fracture.fracture_outputs(
-                    self.mesh, self.material, ties, load=thermal_part)
+                    self.mesh, self.material, ties, load=thermal_part,
+                    toughness_knockdown=knockdown_law)
             else:
                 assert u_mech is not None
                 fracture = _fracture.fracture_outputs(
                     self.mesh, self.material, ties,
-                    load=(u_mech, K @ u_mech - F), prestress=thermal_part)
+                    load=(u_mech, K @ u_mech - F), prestress=thermal_part,
+                    toughness_knockdown=knockdown_law)
 
         displacement = u.reshape(-1, 3)
 
@@ -618,6 +673,7 @@ class FESolver:
             contact_iterations=None if contact is None else contact.iterations,
             contact_pairs=None if contact is None else contact.n_pairs,
             contact_converged=None if contact is None else contact.converged,
+            load_point_compliance=compliance,
         )
 
     # Steps of solve(). The work is done in the private step modules; tests
@@ -890,7 +946,10 @@ class FESolver:
                        filename: str | os.PathLike,
                        fmt: str = 'json',
                        mesh: CompositeMesh | None = None,
-                       include_raw: bool = False) -> None:
+                       include_raw: bool = False, *,
+                       onset: DelaminationOnset | None = None,
+                       knockdown_decomposition: KnockdownDecomposition | None = None,
+                       ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
         With ``fmt='json'`` (the default, unchanged legacy behavior) this
@@ -925,6 +984,23 @@ class FESolver:
             arrays so a full audit can re-derive the per-key summary
             statistics. Default ``False`` so existing outputs are not
             bloated (#55).
+        onset : DelaminationOnset, optional
+            Keyword-only. The stress-based interface onset of these results
+            (:meth:`FieldResults.delamination_onset`). With ``fmt='json'``
+            its :meth:`~porosity_fe.DelaminationOnset.summary` is written as
+            a ``delamination_onset`` block (the criterion, ``x_avg_mm``,
+            the maximum index, the critical interface and location, the
+            onset load factors and the maximum index of each interface);
+            with ``fmt='vtu'`` the per-node index is written as the point
+            field ``onset_index`` (see :meth:`FieldResults.to_vtu`). Ignored
+            for ``fmt='vtk'``. ``None`` (default) writes neither.
+        knockdown_decomposition : KnockdownDecomposition, optional
+            Keyword-only. The knockdown of these results split by defect
+            (:func:`~porosity_fe.knockdown_decomposition`), written with
+            ``fmt='json'`` as a ``knockdown_decomposition`` block
+            (``knockdown_total``, ``knockdown_porosity_only``,
+            ``knockdown_delamination_only``, ``dominant``). ``None``
+            (default) writes none.
 
         Notes
         -----
@@ -950,8 +1026,15 @@ class FESolver:
           ``fracture_load_factor`` and the front's ``G_c_N_per_mm`` and
           ``lambda_c`` without toughness data or where infinite (no energy
           released), ``governing_*`` without a governing node, ``psi``
-          where ``G_T = 0``, ``front`` without a front, and the contact
-          counts when ``crack_contact=False``.
+          where ``G_T = 0``, ``front`` without a front, the contact
+          counts when ``crack_contact=False``, and ``toughness_knockdown``
+          and ``toughness_uncalibrated`` without toughness data.
+        * In the ``delamination_onset`` block (with ``onset``): ``Zc_MPa``
+          without a compression term, the maximum indices, the critical
+          interface and location where no node was evaluated, the onset
+          load factors where infinite (the load drives no node to onset) or
+          none was evaluated, and an interface's entry of
+          ``interface_max_index`` where none of its nodes was evaluated.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
@@ -959,4 +1042,5 @@ class FESolver:
         ``None``.
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
-                        include_raw=include_raw)
+                        include_raw=include_raw, onset=onset,
+                        knockdown_decomposition=knockdown_decomposition)

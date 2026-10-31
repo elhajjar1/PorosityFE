@@ -76,6 +76,8 @@ from .cli import _DynamicStdoutHandler as _DynamicStdoutHandler  # noqa: F401, E
 from .cli import _vp_label as _vp_label  # noqa: F401, E402
 from .cli import main as main  # noqa: F401, E402
 from .delamination import Delamination as Delamination  # noqa: F401, E402
+from .edge_delamination import EdgeDelamination as EdgeDelamination  # noqa: F401, E402
+from .edge_delamination import obrien_edge_delamination as obrien_edge_delamination  # noqa: F401, E402
 from .empirical import Calibration as Calibration  # noqa: F401, E402
 from .empirical import EmpiricalSolver as EmpiricalSolver  # noqa: F401, E402
 from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
@@ -83,22 +85,33 @@ from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
 from .fatigue import FatigueModel as FatigueModel  # noqa: F401, E402
 from .fe import BoundaryHandler as BoundaryHandler  # noqa: F401, E402
 from .fe import CrackFront as CrackFront  # noqa: F401, E402
+from .fe import DelaminationOnset as DelaminationOnset  # noqa: F401, E402
 from .fe import FESolver as FESolver  # noqa: F401, E402
 from .fe import FieldResults as FieldResults  # noqa: F401, E402
 from .fe import GlobalAssembler as GlobalAssembler  # noqa: F401, E402
 from .fe import Hex8Element as Hex8Element  # noqa: F401, E402
+from .fe import InterfaceTractions as InterfaceTractions  # noqa: F401, E402
+from .fe import KnockdownDecomposition as KnockdownDecomposition  # noqa: F401, E402
 from .fe import QuantityConvergence as QuantityConvergence  # noqa: F401, E402
 from .fe import RefinementLevel as RefinementLevel  # noqa: F401, E402
 from .fe import RefinementStudy as RefinementStudy  # noqa: F401, E402
 from .fe import ShortBeamShear as ShortBeamShear  # noqa: F401, E402
 from .fe import critical_energy_release_rate as critical_energy_release_rate  # noqa: F401, E402
+from .fe import delamination_onset as delamination_onset  # noqa: F401, E402
 from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
 from .fe import fracture_load_factors as fracture_load_factors  # noqa: F401, E402
+from .fe import interface_tractions as interface_tractions  # noqa: F401, E402
+from .fe import knockdown_decomposition as knockdown_decomposition  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
+from .fracture_specimens import ComplianceCalibration as ComplianceCalibration  # noqa: F401, E402
+from .fracture_specimens import FractureSpecimenGeometry as FractureSpecimenGeometry  # noqa: F401, E402
+from .fracture_specimens import compliance_calibration as compliance_calibration  # noqa: F401, E402
+from .fracture_specimens import mmb_lever_length as mmb_lever_length  # noqa: F401, E402
+from .fracture_specimens import mmb_mode_ratio as mmb_mode_ratio  # noqa: F401, E402
 from .gauss import gauss_points_1d as gauss_points_1d  # noqa: F401, E402
 from .gauss import gauss_points_hex as gauss_points_hex  # noqa: F401, E402
 from .homogenization import _MT_CACHE_MAXSIZE as _MT_CACHE_MAXSIZE  # noqa: F401, E402
@@ -138,6 +151,8 @@ from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
 from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
 from .results import ConfigResult as ConfigResult  # noqa: F401, E402
 from .results import FailureResult as FailureResult  # noqa: F401, E402
+from .toughness import ToughnessKnockdown as ToughnessKnockdown  # noqa: F401, E402
+from .toughness import toughness_knockdown_factor as toughness_knockdown_factor  # noqa: F401, E402
 from .transforms import rotate_stiffness_3d as rotate_stiffness_3d  # noqa: F401, E402
 from .transforms import rotation_matrix_3d as rotation_matrix_3d  # noqa: F401, E402
 from .transforms import strain_transformation_3d as strain_transformation_3d  # noqa: F401, E402
@@ -220,6 +235,24 @@ __all__ = [
     "vcct_energy_release_rates",
     "fracture_load_factors",
     "critical_energy_release_rate",
+    "KnockdownDecomposition",
+    "knockdown_decomposition",
+    # Porosity-dependent interlaminar toughness
+    "ToughnessKnockdown",
+    "toughness_knockdown_factor",
+    # Interlaminar stresses, delamination onset and free-edge delamination
+    "InterfaceTractions",
+    "interface_tractions",
+    "DelaminationOnset",
+    "delamination_onset",
+    "EdgeDelamination",
+    "obrien_edge_delamination",
+    # Fracture specimens (DCB, ENF, MMB) and their data reduction
+    "FractureSpecimenGeometry",
+    "mmb_lever_length",
+    "mmb_mode_ratio",
+    "ComplianceCalibration",
+    "compliance_calibration",
     # Visualization
     "FEVisualizer",
     # IO

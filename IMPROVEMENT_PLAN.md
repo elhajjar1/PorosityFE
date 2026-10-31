@@ -52,7 +52,8 @@ point at that tree). What has landed since, by pull request:
 | #206 | 3.6 ILSS as a true ASTM D2344 short beam (`CompositeMesh.for_ilss`, `short_beam_shear`) |
 | #207 | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
 | #208 | 3.6 flexure interior region; `for_flexure(nx=)`; `refinement_study` and the app's convergence check on the D7264 specimen |
-| #209 (open) | Delamination plan ([`DELAMINATION_PLAN.md`](DELAMINATION_PLAN.md)) phases 0 and 2: failure-mode maxima and the app's criterion selector; explicit `Delamination`, crack-face contact, VCCT, B-K criterion and fracture load factor |
+| #209 | Delamination plan ([`DELAMINATION_PLAN.md`](DELAMINATION_PLAN.md)) phases 0 and 2: failure-mode maxima and the app's criterion selector; explicit `Delamination`, crack-face contact, VCCT, B-K criterion and fracture load factor |
+| #210 (open) | Delamination plan phases 1, 3, 4 and 5: interface onset and O'Brien free-edge G; DCB / ENF / MMB specimens against the NASA benchmarks; porosity-dependent toughness and toughness datasets; the app's Defects panel, knockdown by defect, the NCR's delamination assessment (no recommended path), `porosity-analyze --delamination` |
 
 ---
 

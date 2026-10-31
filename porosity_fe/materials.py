@@ -128,6 +128,26 @@ class MaterialProperties:
         ``G_c = G_Ic + (G_IIc - G_Ic) psi^eta`` (dimensionless), fitted to
         mixed-mode bending data. ``None`` (default) means not supplied.
         Positive and finite.
+    sigma_3t : float, optional
+        Through-thickness (interlaminar) tensile strength ``Z_t``, in MPa.
+        ``None`` (default) keeps the historical stand-in ``sigma_2t``
+        (transverse isotropy) wherever a criterion checks ``sigma_33`` in
+        tension. When set, every FE criterion uses it for ``sigma_33`` in
+        tension: Tsai-Wu (its direction-3 terms ``F_3``, ``F_33`` and the
+        interactions built on ``F_33``), Hashin's delamination mode,
+        maximum stress and the interface onset criteria
+        (:func:`~porosity_fe.delamination_onset`). The compressive
+        allowable of ``sigma_33`` stays ``sigma_2c``. Degraded by the same
+        porosity ratio ``r_m`` as the other matrix strengths. Positive and
+        finite.
+    tau_13 : float, optional
+        Interlaminar shear strength ``S_13`` (the ``1-3`` plane of the ply),
+        in MPa. ``None`` (default) keeps each criterion's historical
+        stand-in, which differ: Tsai-Wu and maximum stress check
+        ``tau_13`` against ``tau_12``, Hashin's delamination mode and the
+        interface onset criteria against ``tau_ilss``. When set, every
+        criterion uses it for ``tau_13``. Degraded by ``r_m``. Positive and
+        finite.
 
     Attributes
     ----------
@@ -157,6 +177,9 @@ class MaterialProperties:
     G_Ic, G_IIc, G_IIIc, bk_eta : float or None
         Interlaminar toughness (N/mm) and the B-K exponent; ``None`` when
         not supplied (see :attr:`has_toughness`).
+    sigma_3t, tau_13 : float or None
+        Interlaminar tensile and shear strengths (MPa); ``None`` when not
+        supplied (each criterion then falls back as described above).
     total_thickness : float
         Read-only property: ``t_ply * n_plies`` (mm). Used as ``L_z`` by
         :class:`CompositeMesh`.
@@ -253,6 +276,13 @@ class MaterialProperties:
     G_IIc: float | None = None          # Mode II toughness (N/mm)
     G_IIIc: float | None = None         # Mode III toughness (N/mm)
     bk_eta: float | None = None         # B-K exponent (dimensionless)
+
+    # Interlaminar strengths (MPa) for the FE criteria (delamination plan,
+    # phase 1.1). Optional, no preset values: None keeps every criterion's
+    # historical stand-in (Z_t = sigma_2t; S_13 = tau_12 for Tsai-Wu and
+    # maximum stress, tau_ilss for Hashin and the interface criteria).
+    sigma_3t: float | None = None       # Through-thickness tensile Z_t (MPa)
+    tau_13: float | None = None         # Interlaminar shear S_13 (MPa)
 
     # A CTE magnitude at or above this (1/K) is taken to be ppm/K passed by
     # mistake: polymer-matrix plies sit roughly between -5e-6 and 6e-5 /K.
@@ -425,6 +455,7 @@ class MaterialProperties:
 
         self._validate_thermal_fields()
         self._validate_toughness_fields()
+        self._validate_interlaminar_strengths()
 
     @staticmethod
     def _is_real_number(value) -> bool:
@@ -496,6 +527,18 @@ class MaterialProperties:
                 raise ValueError(
                     f"MaterialProperties.{name} must be None or a positive "
                     f"finite number ({unit}), got {value!r}."
+                )
+
+    def _validate_interlaminar_strengths(self) -> None:
+        """Check the optional interlaminar strengths ``sigma_3t`` and ``tau_13`` (MPa)."""
+        for name in ('sigma_3t', 'tau_13'):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not self._is_real_number(value) or float(value) <= 0.0:
+                raise ValueError(
+                    f"MaterialProperties.{name} must be None or a positive "
+                    f"finite strength (MPa), got {value!r}."
                 )
 
     @property
@@ -672,11 +715,16 @@ class MaterialProperties:
     # perturbable: they are positive, and the FE fracture criterion reads
     # them. A draw needs a set value (a None field cannot be perturbed;
     # _normalize_uq_spec rejects it), and a None G_IIIc follows G_IIc.
+    #
+    # The interlaminar strengths (sigma_3t, tau_13) are perturbable on the
+    # same terms: positive, read by the FE criteria, and only when set (a
+    # None field keeps its fallback and cannot be drawn).
     PERTURBABLE_FIELDS = (
         'E11', 'E22', 'E33', 'G12', 'G13', 'G23',
         'sigma_1c', 'sigma_1t', 'sigma_2t', 'sigma_2c', 'tau_12', 'tau_ilss',
         'matrix_modulus', 'fiber_modulus', 'fiber_volume_fraction',
         'G_Ic', 'G_IIc', 'G_IIIc', 'bk_eta',
+        'sigma_3t', 'tau_13',
     )
 
     def _perturbed_value(self, name: str, unit_draw: float,

@@ -2,7 +2,9 @@
 """CLI entry point for the porosity validation suite.
 
 Runs model predictions against all bundled experimental datasets and
-generates an aggregated MAE report (PNG plot + Markdown table).
+generates an aggregated MAE report (PNG plot + Markdown table). The
+interlaminar toughness datasets (G_Ic, G_IIc) are reported in their own
+section and summary line, apart from the strength / modulus headline MAE.
 
 Usage:
     validate_porosity                    # uses bundled datasets, writes to cwd
@@ -166,6 +168,7 @@ def main(argv=None) -> int:
             generate_master_report,
             run_all_datasets,
             summarize_mae,
+            summarize_toughness_mae,
         )
     except ImportError as e:
         print(f"ERROR: Cannot import validation module: {e}", file=sys.stderr)
@@ -231,6 +234,23 @@ def main(argv=None) -> int:
         )
         print(f"Best MAE:            {summary['best_mae']:.2f}%")
         print(f"Worst MAE:           {summary['worst_mae']:.2f}%")
+
+    # Exploratory and uncalibrated: never folded into the headline above.
+    toughness = summarize_toughness_mae(results)
+    if toughness['n_entries']:
+        print()
+        print("Interlaminar toughness (exploratory; uncalibrated placeholder "
+              "law, not in the overall MAE):")
+        print(
+            f"  Toughness MAE (property-weighted): "
+            f"{toughness['property_weighted_mae']:.2f}%  "
+            f"(n={toughness['n_entries']} paper-property entries)"
+        )
+        print(
+            f"  Toughness MAE (point-weighted):    "
+            f"{toughness['point_weighted_mae']:.2f}%  "
+            f"(n={toughness['n_points']} individual data points)"
+        )
 
     return 0
 

@@ -17,6 +17,7 @@ from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
 from .results import FailureResult
+from .toughness import _TOUGHNESS_B_PLACEHOLDER
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -133,6 +134,18 @@ class Calibration:
     # ------------------------------------------------------------------
     FATIGUE_B_QI: dict[str, float]
     FATIGUE_KD_FLOOR: float
+
+    # ------------------------------------------------------------------
+    # Porosity -> interlaminar toughness (delamination plan, phase 4) —
+    # mirrored from :mod:`porosity_fe.toughness`, the implementation site
+    # (``_TOUGHNESS_LAWS``, :class:`~porosity_fe.ToughnessKnockdown`).
+    # ------------------------------------------------------------------
+    #: Uncalibrated placeholder exponents ``b`` (per unit ``Vp``) of the
+    #: default toughness law ``G_c = G_c0 exp(-b Vp)``, by fracture mode
+    #: (``'I'``, ``'II'``; mode III follows mode II). Two-point literature
+    #: estimates; the same object as the toughness module's table. No
+    #: empirical strength mode uses it.
+    TOUGHNESS_B_PLACEHOLDER: dict[str, float] = _TOUGHNESS_B_PLACEHOLDER
 
     # ------------------------------------------------------------------
     # Layup scaling (IMPROVEMENT_PLAN 2.7; replaces the f_md / 0.5 rule)

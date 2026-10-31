@@ -1,6 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Porosity Validation Dataset",
+  "description": "One peer-reviewed study of a property against void content. Strength and modulus blocks are normalized to the baseline group; the interlaminar toughness blocks (G_Ic, G_IIc; N/mm = kJ/m^2) carry the test stage and the starter-crack type, and are validated apart from the strength headline. A dataset with only toughness blocks needs only fiber and matrix in its material block; any other block needs fiber_volume_fraction, n_plies and ply_angles as well, which the strength and modulus predictions use.",
   "type": "object",
   "required": ["reference", "material", "properties"],
   "properties": {
@@ -9,11 +10,15 @@
     "data_source": {"type": "string"},
     "material": {
       "type": "object",
-      "required": ["fiber", "matrix", "fiber_volume_fraction", "n_plies", "ply_angles"],
+      "required": ["fiber", "matrix"],
       "properties": {
         "fiber": {"type": "string"},
         "matrix": {"type": "string"},
         "fiber_volume_fraction": {"type": "number", "minimum": 0.3, "maximum": 0.8},
+        "fiber_weight_fraction": {
+          "type": "number", "minimum": 0.3, "maximum": 0.9,
+          "description": "Fiber weight fraction, when the source gives it instead of the volume fraction (toughness-only datasets)."
+        },
         "n_plies": {"type": "integer", "minimum": 1},
         "ply_angles": {"type": "array", "items": {"type": "number"}},
         "layup_name": {"type": "string"}
@@ -47,9 +52,57 @@
             "absolute_uncertainty_MPa": {"type": "array", "items": {"type": ["number", "null"]}},
             "digitization_method": {"type": "string", "enum": ["tabulated", "webplotdigitizer", "direct"]}
           }
+        },
+        "^(G_Ic|G_IIc)$": {
+          "type": "object",
+          "description": "Interlaminar fracture toughness against void content: G_Ic (mode I, e.g. DCB) or G_IIc (mode II, e.g. ENF). normalized_values is G_c / G_c(baseline group); values above 1 (toughness rising with voids, as propagation values can) are allowed. stage and precrack tag every point, as one string or one entry per point.",
+          "required": ["void_content_pct", "normalized_values", "stage", "precrack"],
+          "properties": {
+            "test_standard": {"type": "string"},
+            "test_config": {
+              "type": "object",
+              "properties": {
+                "loading_direction_deg": {"type": "number"},
+                "temperature_C": {"type": "number"},
+                "humidity": {"type": "string"},
+                "n_specimens_per_point": {"type": "integer"},
+                "specimen_width_mm": {"type": "number"},
+                "specimen_length_mm": {"type": "number"}
+              }
+            },
+            "stage": {
+              "description": "initiation (growth onset from the starter crack), propagation (along the R-curve or its plateau), or unspecified when the source does not say.",
+              "oneOf": [
+                {"type": "string", "enum": ["initiation", "propagation", "unspecified"]},
+                {"type": "array", "items": {"type": "string", "enum": ["initiation", "propagation", "unspecified"]}}
+              ]
+            },
+            "precrack": {
+              "description": "Starter crack the value was measured from: the film insert, a precrack grown from it (mode I or mode II), or unspecified when the source does not say.",
+              "oneOf": [
+                {"type": "string", "enum": ["insert", "precracked", "unspecified"]},
+                {"type": "array", "items": {"type": "string", "enum": ["insert", "precracked", "unspecified"]}}
+              ]
+            },
+            "void_content_pct": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 15}},
+            "void_content_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
+            "normalized_values": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 2.0}},
+            "normalized_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
+            "absolute_values_N_per_mm": {"type": "array", "items": {"type": ["number", "null"]}},
+            "absolute_uncertainty_N_per_mm": {"type": "array", "items": {"type": ["number", "null"]}},
+            "digitization_method": {"type": "string", "enum": ["tabulated", "webplotdigitizer", "direct"]}
+          }
         }
       }
     },
     "notes": {"type": "string"}
+  },
+  "if": {
+    "properties": {"properties": {"propertyNames": {"pattern": "^(G_Ic|G_IIc)$"}}}
+  },
+  "else": {
+    "properties": {
+      "material": {"required": ["fiber_volume_fraction", "n_plies", "ply_angles"]}
+    }
   }
 }

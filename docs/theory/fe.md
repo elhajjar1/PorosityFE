@@ -167,6 +167,9 @@ results from before the change bit for bit.
 | `flexure_3pt` | force | roller supports: $u_z = 0$ on the bottom-face node lines at the two supports, plus $u_x$ at one node and $u_y$ at two (no horizontal reaction); `applied_load` as a consistent line load across the top face at mid-span; see [Flexure](#flexure) |
 | `flexure_4pt` | force | the same rollers; half of `applied_load` on each of two top-face lines `load_span` apart, centred on mid-span |
 | `thermal` | temperature change `delta_T` | statically determinate 3-2-1 supports on $z_\text{min}$ only, so the laminate is free; see {doc}`thermal` |
+| `dcb` | force | double-cantilever beam on the {meth}`CompositeMesh.for_dcb <porosity_fe.CompositeMesh.for_dcb>` specimen: $\lvert P\rvert$ up on the top face and down on the bottom face at the hinge line, six statically determinate constraints at the far end; see {doc}`delamination` |
+| `enf` | force | end-notched flexure on the {meth}`CompositeMesh.for_enf <porosity_fe.CompositeMesh.for_enf>` specimen: the `flexure_3pt` rollers at its supports, `applied_load` at mid-span, crack-face contact |
+| `mmb` | force | mixed-mode bending on the {meth}`CompositeMesh.for_mmb <porosity_fe.CompositeMesh.for_mmb>` specimen: rollers under the lower arm's hinge and at the far end, the lever's hinge and saddle forces for the lever load `applied_load` |
 
 Prescribed displacements are imposed exactly by eliminating the
 constrained degrees of freedom. With $f$ the free and $c$ the constrained
@@ -663,7 +666,15 @@ is an ASTM D7264 specimen (`CompositeMesh.for_flexure` with the level's
 `nx`, default base the specimen's own mesh, $48 \times 4 \times 24$ for the
 24-ply presets) whose $n_x$ is even; the span is the same on every level,
 only the unloaded overhangs can change length by part of an element, and
-the interior margin is again $h/2$.
+the interior margin is again $h/2$. For `dcb`, `enf` and `mmb` every
+level is the fracture specimen (`CompositeMesh.for_dcb`, `for_enf`,
+`for_mmb`, with the builder's dimensions from `specimen=`) on a uniform
+grid along $x$ whose $n_x$ is a multiple of the smallest count that puts
+the loads, supports and crack tip on node lines (5, 10 and 4 for the
+default specimens; default base elements of half the specimen thickness),
+and the study adds the load-point compliance and the critical load factor
+of the front (`fracture_load_factor`, the minimum over the front nodes) to
+the reported quantities.
 The interior quantities use one `interior_margin` for every level (by
 default the coarsest level's $\max(h, 2\Delta x, 2\Delta y)$); the
 solver's own default shrinks with the elements, which would let the

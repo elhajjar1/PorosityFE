@@ -102,6 +102,72 @@ toughness in N/mm (1 N/mm = 1 kJ/m²). See :doc:`theory/delamination`.
    fracture_load_factors
    critical_energy_release_rate
 
+The FE knockdown of a porous, delaminated laminate is measured against the
+laminate with neither defect; :func:`knockdown_decomposition` adds the
+knockdowns of the porosity alone and of the delamination alone against the
+same reference (two more solves, never run by :meth:`FESolver.solve`), so
+the user sees which defect drives the loss.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   knockdown_decomposition
+   KnockdownDecomposition
+
+The toughness at each front node is the material's, knocked down by the
+porosity there: :class:`ToughnessKnockdown` selects the law
+(``FESolver.solve(..., toughness_knockdown=...)``; the default exponential
+law has uncalibrated placeholder coefficients), and
+:func:`toughness_knockdown_factor` evaluates it without FE.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   ToughnessKnockdown
+   toughness_knockdown_factor
+
+The fracture specimens: :meth:`CompositeMesh.for_dcb`,
+:meth:`CompositeMesh.for_enf` and :meth:`CompositeMesh.for_mmb` build the
+double-cantilever-beam, end-notched-flexure and mixed-mode-bending
+specimens (ASTM D5528, D7905 and D6671) and record their
+:class:`FractureSpecimenGeometry`; the ``'dcb'``, ``'enf'`` and ``'mmb'``
+loading modes of :meth:`FESolver.solve` load them. The MMB lever relations
+and the compliance-based data reduction of the test standards:
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   FractureSpecimenGeometry
+   mmb_lever_length
+   mmb_mode_ratio
+   compliance_calibration
+   ComplianceCalibration
+
+Interlaminar stresses and delamination onset
+--------------------------------------------
+
+The interlaminar traction recovered at the ply interfaces from a solve,
+the stress-based onset criteria on it (Brewer-Lagace, Ye) with their load
+factor, and O'Brien's closed-form energy release rate of a free-edge
+delamination. Post-processing and lamination theory only: nothing the solve
+computes changes. Stresses and strengths in MPa, energy release rates in
+N/mm. See :doc:`theory/failure` (Interlaminar stresses and delamination
+onset).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   interface_tractions
+   InterfaceTractions
+   delamination_onset
+   DelaminationOnset
+   obrien_edge_delamination
+   EdgeDelamination
+
 Laminate theory and transforms
 ------------------------------
 

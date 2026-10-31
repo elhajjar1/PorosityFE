@@ -3,8 +3,9 @@
 Energy release rates along the front of a :class:`~porosity_fe.Delamination`
 from the tie forces of the bonded front pairs and the openings of the pairs
 one element behind (Krueger 2004, the 8-node brick formulas), the mixed-mode
-Benzeggagh-Kenane toughness and the critical load factor. The duplicated
-interface nodes, the bonded ties and the front come from
+Benzeggagh-Kenane toughness, knocked down by the porosity at each front node
+(:class:`~porosity_fe.ToughnessKnockdown`), and the critical load factor. The
+duplicated interface nodes, the bonded ties and the front come from
 :class:`~porosity_fe.CompositeMesh`; :meth:`FESolver.solve
 <porosity_fe.FESolver.solve>` fills :attr:`FieldResults.crack_front
 <porosity_fe.FieldResults.crack_front>` with the table built here. See the
@@ -27,6 +28,13 @@ import scipy.optimize
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..toughness import (
+    ToughnessKnockdown,
+    ToughnessKnockdownSpec,
+    _log_uncalibrated_once,
+    _placeholder_applied,
+    _resolve_toughness_knockdown,
+)
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -102,10 +110,13 @@ class CrackFront:
     psi : np.ndarray
         Mode mixity ``(G_II + G_III) / G_T``; ``NaN`` where ``G_T = 0``.
     Vp : np.ndarray
-        Porosity (fraction) at the front node, for a porosity-dependent
-        toughness (unused so far: the toughness is the pristine one).
+        Porosity (fraction) at the crack plane under the front node: the
+        mean of :attr:`CompositeMesh.porosity
+        <porosity_fe.CompositeMesh.porosity>` at the pair's two nodes, the
+        porosity field sampled on the interface. The toughness is knocked
+        down at it (:class:`~porosity_fe.ToughnessKnockdown`).
     G_c : np.ndarray or None
-        Mixed-mode toughness at the node's ``psi``
+        Mixed-mode toughness at the node's ``psi`` and ``Vp``
         (:func:`critical_energy_release_rate`, N/mm); ``None`` without
         toughness data.
     lambda_c : np.ndarray or None
@@ -113,6 +124,14 @@ class CrackFront:
         reaches ``G_c`` (``inf`` where the load releases no energy);
         ``None`` without toughness data. See
         :func:`fracture_load_factors`.
+    toughness_knockdown : ToughnessKnockdown or None
+        The porosity law that gave ``G_c``; ``None`` without toughness
+        data.
+    toughness_uncalibrated : bool or None
+        ``True`` when an uncalibrated placeholder coefficient of that law
+        lowered the toughness (the default exponential law and some front
+        node with ``Vp > 0``); ``False`` otherwise, ``None`` without
+        toughness data.
 
     See Also
     --------
@@ -140,6 +159,8 @@ class CrackFront:
     Vp: np.ndarray
     G_c: np.ndarray | None = None
     lambda_c: np.ndarray | None = None
+    toughness_knockdown: ToughnessKnockdown | None = None
+    toughness_uncalibrated: bool | None = None
 
     def __len__(self) -> int:
         return int(self.node.size)
@@ -377,8 +398,16 @@ def _evaluate(geometry: _FrontGeometry, mesh: CompositeMesh,
         direction=geometry.direction, delta_a=geometry.delta_a,
         width=geometry.width, force_local=force_local,
         opening_local=opening_local, G_I=G_I, G_II=G_II, G_III=G_III,
-        G_T=G_T, psi=psi,
-        Vp=np.asarray(mesh.porosity, dtype=float)[geometry.node])
+        G_T=G_T, psi=psi, Vp=_front_porosity(mesh, geometry))
+
+
+def _front_porosity(mesh: CompositeMesh, geometry: _FrontGeometry) -> np.ndarray:
+    """Porosity at the crack plane of every front pair: the mean of the
+    mesh porosity at its original and duplicate node. The duplicate holds a
+    copy of the original's value, so this is the porosity field sampled at
+    the interface node."""
+    porosity = np.asarray(mesh.porosity, dtype=float)
+    return 0.5 * (porosity[geometry.node] + porosity[geometry.duplicate])
 
 
 def _pair_forces(mesh: CompositeMesh, nodal_forces: np.ndarray,
@@ -490,78 +519,35 @@ def vcct_energy_release_rates(mesh: CompositeMesh, displacement: np.ndarray,
     return _evaluate(geometry, mesh, displacement, pair_forces)
 
 
-def _interface_toughness(material: MaterialProperties, Vp: np.ndarray
+def _interface_toughness(material: MaterialProperties, Vp: np.ndarray,
+                         knockdown: ToughnessKnockdown
                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Mode I, II and III toughness (N/mm) at interface porosity ``Vp``.
 
-    The hook of a porosity-dependent toughness (delamination plan, phase
-    4): it returns the pristine values of ``material`` at every ``Vp`` for
-    now. ``material.has_toughness`` must be true.
+    The pristine values of ``material`` times the porosity factor of
+    ``knockdown`` for each mode (``G_IIIc`` takes the mode III factor, which
+    follows mode II by default); exactly the pristine values where
+    ``Vp = 0``. Logs the uncalibrated-placeholder INFO line once per process
+    when a placeholder lowers a value. ``material.has_toughness`` must be
+    true.
     """
     Vp = np.asarray(Vp, dtype=float)
     assert material.G_Ic is not None and material.G_IIc is not None
     G_IIIc = material.G_IIIc_eff
     assert G_IIIc is not None
-    return (np.full(Vp.shape, float(material.G_Ic)),
-            np.full(Vp.shape, float(material.G_IIc)),
-            np.full(Vp.shape, G_IIIc))
+    if _placeholder_applied(knockdown, Vp):
+        _log_uncalibrated_once(knockdown)
+    return (np.full(Vp.shape, float(material.G_Ic)) * knockdown.factor(Vp, 'I'),
+            np.full(Vp.shape, float(material.G_IIc)) * knockdown.factor(Vp, 'II'),
+            np.full(Vp.shape, G_IIIc) * knockdown.factor(Vp, 'III'))
 
 
-def critical_energy_release_rate(material: MaterialProperties,
-                                 G_I: np.ndarray | float,
-                                 G_II: np.ndarray | float,
-                                 G_III: np.ndarray | float = 0.0, *,
-                                 Vp: np.ndarray | float = 0.0) -> np.ndarray:
-    """Mixed-mode toughness ``G_c`` (N/mm) at the mode mix of ``(G_I, G_II, G_III)``.
-
-    Benzeggagh-Kenane (1996), with Reeder's (2006) term for a separate mode
-    III toughness::
-
-        psi = (G_II + G_III) / G_T
-        G_c = G_Ic + (G_IIc - G_Ic) psi^eta
-              + (G_IIIc - G_IIc) (G_III / (G_II + G_III)) psi^eta
-
-    which is plain B-K when ``G_IIIc = G_IIc`` (the default,
-    ``material.G_IIIc = None``): ``G_Ic`` in pure mode I (``psi = 0``),
-    ``G_IIc`` in pure mode II and ``G_IIIc`` in pure mode III. ``psi`` is
-    clipped to ``[0, 1]``.
-
-    Parameters
-    ----------
-    material : MaterialProperties
-        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``
-        (:attr:`MaterialProperties.has_toughness`).
-    G_I, G_II, G_III : array_like
-        Energy release rates (N/mm), broadcast together; only their ratios
-        matter.
-    Vp : array_like
-        Interface porosity (fraction) at each point. Accepted for the
-        porosity-toughness coupling to come (delamination plan, phase 4);
-        it does not change the result yet: the toughness is the pristine
-        one.
-
-    Returns
-    -------
-    np.ndarray
-        ``G_c`` (N/mm); ``NaN`` where ``G_T = 0`` (no mode mix).
-
-    Raises
-    ------
-    ValueError
-        If the material has no toughness data.
-    """
-    if not material.has_toughness:
-        raise ValueError(
-            "The mixed-mode toughness needs MaterialProperties.G_Ic, G_IIc "
-            "and bk_eta (N/mm, N/mm, dimensionless); "
-            f"got G_Ic={material.G_Ic!r}, G_IIc={material.G_IIc!r}, "
-            f"bk_eta={material.bk_eta!r}.")
-    G_I, G_II, G_III, Vp = np.broadcast_arrays(
-        np.asarray(G_I, dtype=float), np.asarray(G_II, dtype=float),
-        np.asarray(G_III, dtype=float), np.asarray(Vp, dtype=float))
-    G_Ic, G_IIc, G_IIIc = _interface_toughness(material, Vp)
-    assert material.bk_eta is not None
-    eta = float(material.bk_eta)
+def _bk_toughness(toughness: tuple[np.ndarray, np.ndarray, np.ndarray], eta: float,
+                  G_I: np.ndarray, G_II: np.ndarray, G_III: np.ndarray) -> np.ndarray:
+    """Benzeggagh-Kenane ``G_c`` with Reeder's mode III term, from the
+    pure-mode toughness ``(G_Ic, G_IIc, G_IIIc)`` and the mode mix of
+    ``(G_I, G_II, G_III)`` (all broadcast); ``NaN`` where ``G_T = 0``."""
+    G_Ic, G_IIc, G_IIIc = toughness
     shear = G_II + G_III
     G_T = G_I + shear
     with np.errstate(invalid='ignore', divide='ignore'):
@@ -574,26 +560,106 @@ def critical_energy_release_rate(material: MaterialProperties,
     return np.where(G_T > 0.0, G_c, np.nan)
 
 
+def _check_toughness(material: MaterialProperties, what: str) -> float:
+    """``material.bk_eta``, after checking that the toughness inputs exist."""
+    if not material.has_toughness:
+        raise ValueError(
+            f"{what} needs MaterialProperties.G_Ic, G_IIc "
+            "and bk_eta (N/mm, N/mm, dimensionless); "
+            f"got G_Ic={material.G_Ic!r}, G_IIc={material.G_IIc!r}, "
+            f"bk_eta={material.bk_eta!r}.")
+    assert material.bk_eta is not None
+    return float(material.bk_eta)
+
+
+def critical_energy_release_rate(material: MaterialProperties,
+                                 G_I: np.ndarray | float,
+                                 G_II: np.ndarray | float,
+                                 G_III: np.ndarray | float = 0.0, *,
+                                 Vp: np.ndarray | float = 0.0,
+                                 toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+                                 ) -> np.ndarray:
+    """Mixed-mode toughness ``G_c`` (N/mm) at the mode mix of ``(G_I, G_II, G_III)``.
+
+    Benzeggagh-Kenane (1996), with Reeder's (2006) term for a separate mode
+    III toughness::
+
+        psi = (G_II + G_III) / G_T
+        G_c = G_Ic + (G_IIc - G_Ic) psi^eta
+              + (G_IIIc - G_IIc) (G_III / (G_II + G_III)) psi^eta
+
+    which is plain B-K when ``G_IIIc = G_IIc`` (the default,
+    ``material.G_IIIc = None``): ``G_Ic`` in pure mode I (``psi = 0``),
+    ``G_IIc`` in pure mode II and ``G_IIIc`` in pure mode III. ``psi`` is
+    clipped to ``[0, 1]``. Each pure-mode toughness is the material's
+    pristine value knocked down by the porosity ``Vp`` (``G_Ic f_I(Vp)``,
+    ``G_IIc f_II(Vp)``, ``G_IIIc f_III(Vp)``; see
+    :class:`~porosity_fe.ToughnessKnockdown`); ``eta`` does not change.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``
+        (:attr:`MaterialProperties.has_toughness`).
+    G_I, G_II, G_III : array_like
+        Energy release rates (N/mm), broadcast together; only their ratios
+        matter.
+    Vp : array_like
+        Interface porosity (fraction in ``[0, 1]``) at each point; ``0``
+        (the default) gives the pristine toughness.
+    toughness_knockdown : ToughnessKnockdown, str, callable or None
+        The porosity law (:class:`~porosity_fe.ToughnessKnockdown`):
+        default ``'exponential'`` with the uncalibrated placeholders
+        ``b_I = 6.2`` and ``b_II = b_III = 14`` per unit ``Vp``; ``None``
+        for the pristine toughness at every ``Vp``. The placeholders log
+        one INFO line per process the first time they lower a toughness.
+
+    Returns
+    -------
+    np.ndarray
+        ``G_c`` (N/mm); ``NaN`` where ``G_T = 0`` (no mode mix).
+
+    Raises
+    ------
+    ValueError
+        If the material has no toughness data, ``Vp`` is not a fraction in
+        ``[0, 1]`` or the law is invalid.
+    """
+    eta = _check_toughness(material, "The mixed-mode toughness")
+    law = _resolve_toughness_knockdown(toughness_knockdown)
+    G_I, G_II, G_III, Vp = np.broadcast_arrays(
+        np.asarray(G_I, dtype=float), np.asarray(G_II, dtype=float),
+        np.asarray(G_III, dtype=float), np.asarray(Vp, dtype=float))
+    return _bk_toughness(_interface_toughness(material, Vp, law), eta,
+                         G_I, G_II, G_III)
+
+
 def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
-                    D_M: np.ndarray, area: float, material: MaterialProperties,
-                    Vp: float) -> float:
+                    D_M: np.ndarray, area: float,
+                    toughness: tuple[np.ndarray, np.ndarray, np.ndarray],
+                    eta: float) -> float:
     """Critical factor ``lam`` of one node under ``u = u_T + lam u_M``.
 
-    Each mode's closure work is quadratic in ``lam``; the smallest positive
-    root of ``G_T(lam) - G_c(psi(lam))`` is bracketed on a geometric grid
-    and refined with :func:`scipy.optimize.brentq`. 0 when the prestress
-    alone reaches the toughness; ``inf`` when no load drives the node.
+    ``toughness`` is the node's pure-mode toughness ``(G_Ic, G_IIc,
+    G_IIIc)``, already knocked down by its porosity. Each mode's closure
+    work is quadratic in ``lam``; the smallest positive root of ``G_T(lam)
+    - G_c(psi(lam))`` is bracketed on a geometric grid and refined with
+    :func:`scipy.optimize.brentq`. 0 when the prestress alone reaches the
+    toughness; ``inf`` when no load drives the node.
     """
     def rates(lam: float) -> np.ndarray:
         return _clip_mode_I(-(F_T + lam * F_M) * (D_T + lam * D_M) / (2.0 * area))
+
+    def G_c_at(g: np.ndarray) -> float:
+        return float(_bk_toughness(toughness, eta, np.asarray(g[1]),
+                                   np.asarray(g[0]), np.asarray(g[2])))
 
     def excess(lam: float) -> float:
         g = rates(lam)
         G_T = float(g.sum())
         if G_T <= 0.0:
             return -math.inf
-        G_c = float(critical_energy_release_rate(material, g[1], g[0], g[2], Vp=Vp))
-        return G_T - G_c
+        return G_T - G_c_at(g)
 
     if excess(0.0) >= 0.0:
         return 0.0
@@ -602,7 +668,7 @@ def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
         return math.inf
     # Mechanical estimate as the scale of the grid; it brackets the root
     # well inside 1e-6 .. 1e6 of it.
-    G_c_M = float(critical_energy_release_rate(material, g_M[1], g_M[0], g_M[2], Vp=Vp))
+    G_c_M = G_c_at(g_M)
     scale = math.sqrt(G_c_M / float(g_M.sum()))
     grid = scale * np.geomspace(1e-6, 1e6, 241)
     prev, f_prev = 0.0, excess(0.0)
@@ -626,7 +692,9 @@ def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
 
 
 def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
-                          prestress: CrackFront | None = None) -> CrackFront:
+                          prestress: CrackFront | None = None,
+                          toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+                          ) -> CrackFront:
     """Mixed-mode toughness and critical load factor at every front node.
 
     Without ``prestress`` every quantity scales with the load: the energy
@@ -645,6 +713,9 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
     prestress alone reaches the toughness. The contact zone of the applied
     state is held for every ``lam``, an approximation (see the theory page).
 
+    The toughness at each node is the material's, knocked down by the
+    porosity at the node (``front.Vp``) with ``toughness_knockdown``.
+
     Parameters
     ----------
     front : CrackFront
@@ -653,31 +724,36 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
         Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``.
     prestress : CrackFront, optional
         The fixed part, on the same front nodes.
+    toughness_knockdown : ToughnessKnockdown, str, callable or None
+        The porosity law (:class:`~porosity_fe.ToughnessKnockdown`):
+        default ``'exponential'`` with the uncalibrated placeholders;
+        ``None`` for the pristine toughness.
 
     Returns
     -------
     CrackFront
-        With ``G_c`` and ``lambda_c`` filled; with ``prestress`` the energy
+        With ``G_c``, ``lambda_c``, ``toughness_knockdown`` and
+        ``toughness_uncalibrated`` filled; with ``prestress`` the energy
         release rates are those of the sum (``lam = 1``).
 
     Raises
     ------
     ValueError
-        If the material has no toughness data, or ``prestress`` is on other
-        nodes.
+        If the material has no toughness data, ``prestress`` is on other
+        nodes, or the law is invalid.
     """
-    if not material.has_toughness:
-        raise ValueError(
-            "The critical load factor needs MaterialProperties.G_Ic, G_IIc "
-            "and bk_eta.")
+    eta = _check_toughness(material, "The critical load factor")
+    law = _resolve_toughness_knockdown(toughness_knockdown)
+    record = _toughness_record(law, front.Vp)
     if prestress is None:
         G_c = critical_energy_release_rate(
-            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp)
+            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp,
+            toughness_knockdown=law)
         with np.errstate(invalid='ignore', divide='ignore'):
             lam = np.where(front.G_T > 0.0,
                            np.sqrt(G_c / np.where(front.G_T > 0.0, front.G_T, 1.0)),
                            np.inf)
-        return dataclasses.replace(front, G_c=G_c, lambda_c=lam)
+        return dataclasses.replace(front, G_c=G_c, lambda_c=lam, **record)
     if prestress.node.shape != front.node.shape or \
             not np.array_equal(prestress.node, front.node):
         raise ValueError("prestress must be a CrackFront on the same front nodes.")
@@ -686,12 +762,21 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
     opening = prestress.opening_local + front.opening_local
     G_I, G_II, G_III = _rates(force, opening, area)
     G_T, psi = _mixity(G_I, G_II, G_III)
+    toughness = _interface_toughness(material, front.Vp, law)
     lam = np.array([
         _thermal_factor(prestress.force_local[i], prestress.opening_local[i],
                         front.force_local[i], front.opening_local[i],
-                        float(area[i]), material, float(front.Vp[i]))
+                        float(area[i]),
+                        (toughness[0][i], toughness[1][i], toughness[2][i]), eta)
         for i in range(len(front))], dtype=float)
-    G_c = critical_energy_release_rate(material, G_I, G_II, G_III, Vp=front.Vp)
+    G_c = _bk_toughness(toughness, eta, G_I, G_II, G_III)
     return dataclasses.replace(
         front, force_local=force, opening_local=opening, G_I=G_I, G_II=G_II,
-        G_III=G_III, G_T=G_T, psi=psi, G_c=G_c, lambda_c=lam)
+        G_III=G_III, G_T=G_T, psi=psi, G_c=G_c, lambda_c=lam, **record)
+
+
+def _toughness_record(law: ToughnessKnockdown, Vp: np.ndarray) -> dict:
+    """The ``toughness_knockdown`` and ``toughness_uncalibrated`` fields of
+    a :class:`CrackFront` whose ``G_c`` came from ``law`` at ``Vp``."""
+    return {'toughness_knockdown': law,
+            'toughness_uncalibrated': _placeholder_applied(law, Vp)}

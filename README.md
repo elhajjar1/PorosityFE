@@ -29,6 +29,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Six material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
+- **Delamination as a separate defect**: an explicit interlaminar crack with VCCT energy release rates, a mixed-mode growth load factor, a porosity-dependent toughness (uncalibrated placeholder law), the knockdown split by defect, the DCB / ENF / MMB fracture specimens and an NCR fracture-margin disposition (app, CLI and Python API)
 - **Tsai-Wu failure criterion**: Full 3D multiaxial strength evaluation
 
 ## Visualizations
@@ -73,7 +74,7 @@ pytest tests/ -v
 streamlit run app.py
 ```
 Opens a browser UI at http://localhost:8501 with sidebar inputs (material, layup,
-porosity, loading mode, FE thermal load, mesh) and tabs for the porosity profile, mesh,
+porosity, loading mode, FE thermal load, delamination and toughness, mesh) and tabs for the porosity profile, mesh,
 knockdown bar chart, FE stress maps, and result downloads (including the FE
 field as a `.vtu` file for ParaView).
 
@@ -95,10 +96,42 @@ The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
 governing mode, with each mode's maximum for Hashin and maximum stress.
-Hashin's delamination-onset mode is the app's only delamination check: it
-has no input for an explicit delamination yet, which the Python API
-supports with energy release rates and a growth criterion (see
-[Limitations](#limitations)).
+
+Delamination inputs are opt-in and leave the default run unchanged:
+
+- **Delamination (FE)**: an explicit delamination of the FE mesh, as an NDI
+  indication gives it: the interface (between ply k and k + 1 from the
+  bottom, 0-based), an ellipse, rectangle or through-width strip, and its
+  position and full size in mm on the 50 × 20 mm coupon (or on the ILSS
+  or flexure specimen). By default the knockdown is also split into a
+  porosity-only and a delamination-only part (two more FE solves).
+- **Interlaminar toughness (FE)**: `G_Ic`, `G_IIc`, optionally `G_IIIc`
+  (N/mm) and the Benzeggagh-Kenane exponent η. No material preset carries
+  them; without them the FE reports the energy release rates only. The
+  porosity knockdown of the toughness is the placeholder exponential law
+  (uncalibrated), none, or your own `b_I`, `b_II`.
+- **Interface delamination onset (Brewer-Lagace)** for any FE solve, with
+  the averaging length `x_avg` (one ply thickness by default).
+- The loading modes `dcb`, `enf` and `mmb` solve the ASTM D5528, D7905 and
+  D6671 fracture specimens for test planning, with the crack length and
+  the MMB mode ratio (which sets the lever length) as inputs.
+
+The Results tab's **Defects** block then gives the fracture load factor λ_c
+(the multiple of the analysis load at which the delamination starts to
+grow), its governing node and mode mixity ψ, the front table (G_I, G_II,
+G_III, G_T, ψ, the porosity and the toughness G_c, λ_c at each front node)
+with a plot of G_T and ψ along the front, the knockdown decomposition, the
+interface onset (largest index, critical interface and location, onset load
+factor; free-edge values depend on the mesh and on `x_avg`), and for a
+specimen the compliance and the critical load P_c = λ_c · P at mid-width. A
+warning shows whenever the toughness knockdown used the uncalibrated
+placeholders. The NCR form then offers the indication type
+(porosity, delamination or combined) and asks for the required load factor
+(see [Inputs and Conventions](#delamination-and-toughness-inputs)). A
+delamination gets a fracture assessment (λ_c against that factor, the
+margin of safety, the criteria and MRB actions) and **no recommended
+disposition path**: the MRB dispositions it. For a combined indication the
+recommended path covers the porosity only.
 The Results tab has an optional **Mesh convergence check**: it solves the
 analysis again on two or three in-plane refinements of its mesh (the
 coupon, or the D2344 or D7264 specimen; `refinement_study`), lists the
@@ -122,6 +155,15 @@ Community Cloud.
 porosity-analyze
 ```
 Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
+
+An opt-in FE delamination screening of the coupon adds, at each porosity
+level, the fracture results and the knockdown split by defect
+(`porosity_delamination_<Vp>.json`; three FE solves per level):
+
+```bash
+porosity-analyze --vp 0.02 --delamination ellipse:11:25:10:12:8 \
+    --toughness 0.212 0.774 2.1
+```
 
 ### Uncertainty propagation
 
@@ -416,6 +458,7 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
 | `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
+| `porosity_delamination_*.json` | FE delamination screening: fracture results and knockdown decomposition (`--delamination`) |
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView.
 
@@ -461,6 +504,20 @@ fractions of the value: `0.10` means 10 % of `Vp`, not 10 percentage points.
 library never infers it from `T_stress_free`. Thermal solves also need a
 mesh that resolves every ply (`nz` a multiple of `n_plies`); see
 [docs/theory/thermal.md](docs/theory/thermal.md).
+
+### Delamination and toughness inputs
+
+| Input | Unit and convention | Example |
+|---|---|---|
+| `Delamination(interface=k, ...)` | interface k lies between ply k and ply k + 1 counted from the bottom, 0-based (the mid-plane of an n-ply laminate is n/2 − 1) | `Delamination.ellipse(11, center=(25, 10), half_size=(6, 4))` |
+| Planform sizes | mm. The Python API takes half-sizes (`half_size`); the app and `--delamination` take the full length and width, as an NDI indication reports them | app: length 12, width 8 |
+| `MaterialProperties(G_Ic=..., G_IIc=..., G_IIIc=..., bk_eta=...)` | toughness in N/mm (= kJ/m²), `bk_eta` dimensionless; no preset sets them | `G_Ic=0.212` (212 J/m²) |
+| `ToughnessKnockdown(b_I=..., b_II=...)` | per unit `Vp` (a fraction), so `exp(-b Vp)` | `b_I=6.2` |
+| `delamination_onset(..., x_avg=...)` | mm (default one ply thickness) | `x_avg=0.183` |
+| `assess_delamination(lam, required_load_factor)`, the NCR's `meta['required_load_factor']` | dimensionless multiple of the **analysis load**, the same load λ_c multiplies; there is no default | for a 1 % strain analysis and a 0.4 % design strain, `0.4` |
+
+`Vp` stays a fraction everywhere here; the app's front table shows the
+porosity at the crack plane in percent for display only.
 
 ### Per-ply vs. specimen-average porosity
 
@@ -652,8 +709,9 @@ is the default) and must lie in `[-1, 0]` for a closed envelope.
 ## Validation
 
 PorosityFE is validated against **13 peer-reviewed experimental datasets**
-covering carbon/epoxy, IM7/toughened epoxy, T300/epoxy systems, and
-CF/PEEK thermoplastic. Validation is automated via `validate_porosity`
+of strength and modulus, covering carbon/epoxy, IM7/toughened epoxy,
+T300/epoxy systems, and CF/PEEK thermoplastic, plus 2 exploratory
+interlaminar toughness datasets reported separately (below). Validation is automated via `validate_porosity`
 CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
 or in-process via `validation/validate_all.py`.
 
@@ -679,13 +737,16 @@ Overall MAE:
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 
+**Interlaminar toughness (exploratory, not in the headline).** Two more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1) and Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: MAE 6.20 % and 1.15 % (3.67 % property-weighted, 4.18 % point-weighted, 5 points). The placeholders come in part from these same studies, so this is a consistency check, not a validation; the headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Carraro et al. 2015 report R-curves only in figures and are not included.
+
 ## Limitations
 
 - Empirical models are calibrated for porosity levels up to ~5% (`Vp ≲ 0.05`); higher values are extrapolated and flagged with a warning
 - FE solver is linear static, with analytical stiffness degradation (not full nonlinear FE)
 - Thermal residual stress is linear thermoelastic under a uniform effective `delta_T` (FE path only); chemical shrinkage, viscoelastic relaxation and moisture swelling are not modelled, and only `AS4_3501_6_epoxy` ships with lamina CTEs
 - Fatigue (log-linear S-N at R = 0.1) and hygrothermal knockdowns are screening-level, empirical path only
-- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`). The FE solve keeps its faces from interpenetrating (frictionless contact), reports the VCCT energy release rates G_I, G_II and G_III along the front (`FieldResults.crack_front`) and, when the material has interlaminar toughness (`G_Ic`, `G_IIc`, `bk_eta`; no preset has them), the Benzeggagh-Kenane load factor at which growth starts (`FieldResults.fracture_load_factor`). It is linear fracture mechanics: growth onset only, no propagation, cohesive zone or delamination buckling. Planform fronts are staircases on the structured grid, so G scatters from node to node; porosity does not change the toughness yet, and the app has no delamination input. Initiation from an intact interface is screened only by the stress-based delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, interlaminar normal and shear stress at the ply Gauss points against the porosity-degraded `sigma_2t` and `tau_ilss`; see `FieldResults.failure_mode_maxima`). Interface-clustered `penny` porosity is smeared porosity, not a delamination
+- Delamination: an explicit delamination can be placed at a ply interface (`Delamination`, `CompositeMesh(..., delaminations=...)`). The FE solve keeps its faces from interpenetrating (frictionless contact), reports the VCCT energy release rates G_I, G_II and G_III along the front (`FieldResults.crack_front`) and, when the material has interlaminar toughness (`G_Ic`, `G_IIc`, `bk_eta`; no preset has them), the Benzeggagh-Kenane load factor at which growth starts (`FieldResults.fracture_load_factor`). It is linear fracture mechanics: growth onset only, no propagation, cohesive zone or delamination buckling. The DCB, ENF and MMB fracture specimens (`CompositeMesh.for_dcb` / `for_enf` / `for_mmb`, loading modes `'dcb'`, `'enf'`, `'mmb'`) reproduce the onset loads of Krueger's NASA benchmarks within 3 % (the reports' models are geometrically nonlinear, these linear); the multidirectional single-leg-bending benchmark matches its critical deflection to 4 % with the report's specimen dimensions but only to 7 % with those of its FE model figures, and the builders' default dimensions are a reading of ASTM D5528, D7905 and D6671 that was not checked against the standards. Planform fronts are staircases on the structured grid, so G scatters from node to node. `knockdown_decomposition` splits the FE knockdown into a porosity-only and a delamination-only part against the same pristine reference (two more solves); in a linear analysis an embedded delamination under in-plane load costs almost no stiffness, so its effect is in the fracture load factor. The app (sidebar "Delamination (FE)", Results tab "Defects") and `porosity-analyze --delamination` expose all of this, and the NCR summary reports a delamination's fracture margin (λ_c against a required load factor the user enters) with no recommended disposition path: no published acceptance numbers exist, so the MRB dispositions it. Initiation from an intact interface is screened by stress-based criteria only: the delamination mode of the FE Hashin criterion (`failure_criterion='hashin'`, at the ply Gauss points; see `FieldResults.failure_mode_maxima`) and the Brewer-Lagace (or Ye) criterion on the interface tractions averaged over one ply thickness (`delamination_onset`, `interface_tractions`), with an onset load factor. Both use porosity-degraded strengths: `sigma_2t` stands in for the through-thickness tensile strength and `tau_ilss` for the interlaminar shear strength unless `sigma_3t` and `tau_13` are set (no preset sets them); the free-edge stress they see is singular, so the averaged value depends on the averaging length and the mesh. Free-edge delamination has O'Brien's closed-form energy release rate (`obrien_edge_delamination`). The interface onset is in the app (opt-in) and, on request, in the JSON (`export_results(..., onset=...)`) and VTU (`to_vtu(..., onset=...)`) exports. Interface-clustered `penny` porosity is smeared porosity, not a delamination
+- Porosity and interlaminar toughness: the toughness at each crack-front node is knocked down by the porosity at the crack plane (`FESolver.solve(..., toughness_knockdown=...)`, `ToughnessKnockdown`; `toughness_knockdown_factor` for screening without FE), so interface-clustered voids lower `G_c` where the crack runs. The default law `G_c = G_c0 exp(-b Vp)` has **uncalibrated** placeholder coefficients (`b_I = 6.2`, `b_II = b_III = 14` per unit `Vp`, two-point estimates from three studies, data up to `Vp = 0.05`); every result they change carries `toughness_uncalibrated = True`. The law never raises the toughness, so it ignores the rise of mode I propagation toughness with voids (fibre bridging) that some studies report. Pass your own coefficients, the linear law, a callable, or `None` for the pristine toughness
 - **Flexural strength** was removed from the validation database in v1.1.1
   because 3-point bend failure involves mixed compression + interlaminar
   shear mechanisms that the Judd-Wright mode proxy cannot capture reliably

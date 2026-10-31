@@ -16,6 +16,7 @@ from typing import Literal
 
 import numpy as np
 
+from ..fracture_specimens import _FRACTURE_TEST_NAMES
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from . import flexure, short_beam
@@ -28,15 +29,20 @@ _DEFAULT_APPLIED_STRAIN = {'compression': -0.01, 'tension': 0.01, 'shear': 0.01}
 #: Loading modes :meth:`FESolver.solve` accepts (see :data:`FELoadingMode`).
 _FE_LOADINGS: tuple[str, ...] = (
     'compression', 'tension', 'shear', 'ilss', 'flexure_3pt', 'flexure_4pt',
-    'thermal')
+    'thermal', 'dcb', 'enf', 'mmb')
 
 #: Flexure loading modes and their :class:`FlexureGeometry` procedure.
 _FLEXURE_PROCEDURE: dict[str, Literal['3pt', '4pt']] = {
     'flexure_3pt': '3pt', 'flexure_4pt': '4pt'}
 
+#: Delamination fracture tests (:mod:`porosity_fe.fracture_specimens`):
+#: loaded by ``applied_load`` on the specimen of
+#: :attr:`CompositeMesh.fracture_geometry`.
+_FRACTURE_TESTS = frozenset(_FRACTURE_TEST_NAMES)
+
 #: Force-controlled modes: loaded by ``applied_load``, stiffness measured as
 #: inverse compliance.
-_FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE})
+_FORCE_CONTROLLED = frozenset({'ilss', *_FLEXURE_PROCEDURE, *_FRACTURE_TESTS})
 
 
 def _minres_deprecation(caller: str) -> str:
@@ -169,8 +175,12 @@ def interior_mask(loading: str, mesh: CompositeMesh,
     the span clear of a half-disc around each support and load line and of
     the side faces (:func:`~porosity_fe.fe.flexure.interior_element_mask`).
     Otherwise the elements at least ``margin`` from the lateral faces
-    (:func:`_interior_element_mask`).
+    (:func:`_interior_element_mask`); for the fracture tests ('dcb',
+    'enf', 'mmb') after checking that the mesh is that test's specimen
+    (raises :class:`ValueError` otherwise).
     """
+    if loading in _FRACTURE_TESTS:
+        bc_handler.fracture_geometry(loading)
     if loading == 'ilss':
         return short_beam.interior_element_mask(
             mesh, bc_handler.ilss_geometry(), margin)
@@ -194,7 +204,10 @@ def apply_boundary_conditions(
     :attr:`CompositeMesh.ilss_geometry`) and flexure modes use
     ``applied_load``; ``'thermal'`` returns the 3-2-1 supports of
     :meth:`BoundaryHandler.free_bcs` with a zero force vector (the thermal
-    load is built by :func:`porosity_fe.fe._thermal.unit_solution`).
+    load is built by :func:`porosity_fe.fe._thermal.unit_solution`). The
+    fracture tests ('dcb', 'enf', 'mmb') use
+    :meth:`BoundaryHandler.fracture_bcs` on the mesh's
+    :attr:`CompositeMesh.fracture_geometry` with ``applied_load``.
 
     Returns
     -------
@@ -221,6 +234,9 @@ def apply_boundary_conditions(
     if loading in _FLEXURE_PROCEDURE:
         return bc_handler.flexure_bcs(
             applied_load, procedure=_FLEXURE_PROCEDURE[loading])
+    if loading in _FRACTURE_TESTS:
+        return bc_handler.fracture_bcs(
+            applied_load, geometry=bc_handler.fracture_geometry(loading))
     raise ValueError(
         f"Unknown loading '{loading}'. "
         f"Use one of {'/'.join(_FE_LOADINGS)}."
