@@ -69,6 +69,7 @@ from ._types import FELoadingMode as FELoadingMode  # noqa: F401, E402
 from ._types import KnockdownModel as KnockdownModel  # noqa: F401, E402
 from ._types import LoadingMode as LoadingMode  # noqa: F401, E402
 from ._types import MeshFace as MeshFace  # noqa: F401, E402
+from ._types import PorosityDegradation as PorosityDegradation  # noqa: F401, E402
 from .cli import DEFAULT_POROSITY_LEVELS as DEFAULT_POROSITY_LEVELS  # noqa: F401, E402
 from .cli import _build_arg_parser as _build_arg_parser  # noqa: F401, E402
 from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401, E402
@@ -280,6 +281,7 @@ __all__ = [
     "KnockdownModel",
     "LoadingMode",
     "MeshFace",
+    "PorosityDegradation",
     # Version
     "__version__",
 ]

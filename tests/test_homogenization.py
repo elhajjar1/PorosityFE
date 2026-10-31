@@ -539,3 +539,141 @@ class TestCLTDegradation:
             self.material, self.layup, Vp=0.05
         )['Ef_x']
         assert f_high < f_low
+
+
+class TestDirectionalDegradation:
+    """``porosity_degradation='directional'`` (issue #212, delamination plan
+    1.4): the transversely isotropic Mori-Tanaka tensor is kept, each ply
+    constant is degraded from its own matrix direction, and the default
+    ``'isotropic'`` projection is unchanged."""
+
+    PENNY = (3.0, 3.0, 0.3)
+    CYL = (3.0, 1.0, 1.0)
+    SPHERE = (1.0, 1.0, 1.0)
+    #: Seven void shapes: the three presets, the penny normal to the fibres,
+    #: the cylinder across them, a thinner penny and a triaxial ellipsoid.
+    SHAPES = (SPHERE, PENNY, CYL, (0.3, 3.0, 3.0), (1.0, 3.0, 1.0),
+              (1.0, 1.0, 0.1), (2.0, 1.0, 0.5))
+
+    @staticmethod
+    def _ratios(mat, Vp, radii, mapping):
+        """Retention of the six engineering moduli, ``[E11, E22, E33, G23,
+        G13, G12]``, and of ``nu12`` and ``nu13``."""
+        from porosity_fe.homogenization import _degraded_composite_stiffness
+        S = np.linalg.inv(_degraded_composite_stiffness(
+            Vp, radii, mat, porosity_degradation=mapping))
+        S0 = np.linalg.inv(mat.get_stiffness_matrix())
+        moduli = [(1.0 / S[i, i]) / (1.0 / S0[i, i]) for i in range(6)]
+        nu12 = (-S[0, 1] / S[0, 0]) / (-S0[0, 1] / S0[0, 0])
+        nu13 = (-S[0, 2] / S[0, 0]) / (-S0[0, 2] / S0[0, 0])
+        return np.array(moduli), nu12, nu13
+
+    def test_default_is_the_isotropic_projection(self):
+        """Not passing the option is the ``'isotropic'`` mapping, bit for bit."""
+        mat = MATERIALS['T800_epoxy']
+        for radii in self.SHAPES:
+            for Vp in (0.01, 0.03, 0.1):
+                C = _degraded_composite_stiffness(Vp, radii, mat)
+                C_iso = _degraded_composite_stiffness(
+                    Vp, radii, mat, porosity_degradation='isotropic')
+                np.testing.assert_array_equal(C, C_iso)
+
+    def test_spherical_voids_agree_to_round_off(self):
+        """For spheres the Mori-Tanaka tensor is isotropic, so reading its
+        directions and projecting it give the same constants."""
+        for mat in MATERIALS.values():
+            for Vp in (1e-3, 0.03, 0.1, 0.5):
+                C_iso = _degraded_composite_stiffness(Vp, self.SPHERE, mat)
+                C_dir = _degraded_composite_stiffness(
+                    Vp, self.SPHERE, mat, porosity_degradation='directional')
+                np.testing.assert_allclose(C_dir, C_iso, rtol=1e-12, atol=0.0)
+
+    def test_penny_numbers_t800(self):
+        """The numbers of issue #212 at Vp = 0.03: the penny in the ply plane
+        weakens E33, G13 and G23 and barely E22 and G12 under the directional
+        mapping, where the projection spreads the loss over every direction."""
+        mat = MATERIALS['T800_epoxy']
+        iso, _, _ = self._ratios(mat, 0.03, self.PENNY, 'isotropic')
+        d, nu12, nu13 = self._ratios(mat, 0.03, self.PENNY, 'directional')
+        # [E11, E22, E33, G23, G13, G12]
+        np.testing.assert_allclose(iso[1:], [0.885, 0.885, 0.899, 0.899, 0.899], atol=6e-4)
+        np.testing.assert_allclose(d[1:], [0.968, 0.741, 0.847, 0.847, 0.968], atol=6e-4)
+        assert d[2] < d[1] and d[4] < d[5]
+        assert d[3] == pytest.approx(d[4], rel=1e-12)       # G23 = G13 for a penny
+        assert d[0] > 0.999 and iso[0] > 0.998              # E11 fibre-dominated
+        assert 0.99 < nu12 < 1.0 and 1.0 < nu13 < 1.01
+
+    def test_cylindrical_void_runs_along_the_fibres(self):
+        """A cylinder along x1 leaves the plane transverse to it isotropic:
+        E22 = E33, G12 = G13, and G23 (the shear in that plane) is the
+        softer one."""
+        mat = MATERIALS['T800_epoxy']
+        d, _, _ = self._ratios(mat, 0.03, self.CYL, 'directional')
+        assert d[1] == pytest.approx(d[2], rel=1e-12)
+        assert d[4] == pytest.approx(d[5], rel=1e-12)
+        assert d[3] < d[5]
+
+    @pytest.mark.parametrize('radii', SHAPES)
+    def test_positive_definite_for_every_preset(self, radii):
+        """No preset reaches the Cholesky check for the seven shapes from
+        Vp = 1e-4 to the 0.99 clamp; the stiffness stays finite and SPD."""
+        for mat in MATERIALS.values():
+            for Vp in (1e-4, 1e-3, 0.01, 0.05, 0.1, 0.3, 0.6, 0.9, 0.985, 0.99):
+                C = _degraded_composite_stiffness(
+                    Vp, radii, mat, porosity_degradation='directional')
+                assert np.all(np.isfinite(C))
+                assert np.all(np.linalg.eigvalsh(0.5 * (C + C.T)) > 0.0), (mat, Vp)
+
+    def test_non_physical_compliance_raises(self):
+        """A penny normal to the transverse in-plane axis collapses E22 while
+        E33 stays; with nu23 held the compliance stops being SPD at high Vp,
+        which is reported, not inverted."""
+        mat = MATERIALS['T800_epoxy']
+        with pytest.raises(ValueError, match='not positive definite'):
+            _degraded_composite_stiffness(0.6, (3.0, 0.3, 3.0), mat,
+                                          porosity_degradation='directional')
+        # The same shape at a calibrated porosity, and the isotropic
+        # projection at the same high porosity, are fine.
+        _degraded_composite_stiffness(0.05, (3.0, 0.3, 3.0), mat,
+                                      porosity_degradation='directional')
+        _degraded_composite_stiffness(0.6, (3.0, 0.3, 3.0), mat)
+
+    def test_unknown_mapping_is_rejected(self):
+        mat = MATERIALS['T800_epoxy']
+        with pytest.raises(ValueError, match="Unknown porosity_degradation 'anisotropic'"):
+            _degraded_composite_stiffness(0.03, self.PENNY, mat,
+                                          porosity_degradation='anisotropic')
+        # The early returns do not validate: Vp = 0 and Vp > 0.99 never
+        # reach the mapping.
+        np.testing.assert_array_equal(
+            _degraded_composite_stiffness(0.0, self.PENNY, mat,
+                                          porosity_degradation='directional'),
+            mat.get_stiffness_matrix())
+
+    def test_kachanov_penny_crack_limit(self):
+        """Aligned oblate voids at a fixed crack density ``rho = N a^3``
+        converge, as the aspect ratio ``gamma = c / a -> 0``, to the parallel
+        penny-crack compliance of Kachanov (1992, Appl. Mech. Rev. 45(8))
+        and Budiansky & O'Connell (1976): ``dS33 = 16 (1 - nu^2) rho / (3 E)``,
+        ``dS44 = dS55 = 32 (1 - nu^2) rho / (3 (2 - nu) E)`` (engineering
+        shear), and no in-plane change. Mori-Tanaka equals the
+        non-interacting result in compliance as ``Vp -> 0``."""
+        mat = MATERIALS['T800_epoxy']
+        E, nu = mat.matrix_modulus, mat.matrix_poisson
+        C_m = mat.get_isotropic_matrix_stiffness()
+        S_m = np.linalg.inv(C_m)
+        rho = 0.05
+        d33 = 16.0 * (1.0 - nu ** 2) * rho / (3.0 * E)
+        d55 = 32.0 * (1.0 - nu ** 2) * rho / (3.0 * (2.0 - nu) * E)
+        in_plane = []
+        for gamma in (1e-2, 1e-3, 1e-4):
+            Vp = 4.0 / 3.0 * np.pi * rho * gamma
+            C = _mt_effective_stiffness(C_m, Vp, (1.0, 1.0, gamma), nu)
+            dS = np.linalg.inv(C) - S_m
+            assert dS[2, 2] / d33 == pytest.approx(1.0, abs=0.015)
+            assert dS[4, 4] / d55 == pytest.approx(1.0, abs=0.025)
+            assert dS[3, 3] == pytest.approx(dS[4, 4], rel=1e-9)
+            in_plane.append(max(abs(dS[0, 0] / S_m[0, 0]), abs(dS[5, 5] / S_m[5, 5])))
+        # The in-plane change is of order Vp and vanishes with gamma.
+        assert in_plane[0] < 3e-3 and in_plane[1] < in_plane[0] / 5 \
+            and in_plane[2] < in_plane[1] / 5
