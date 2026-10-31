@@ -403,11 +403,13 @@ def _evaluate(geometry: _FrontGeometry, mesh: CompositeMesh,
 
 def _front_porosity(mesh: CompositeMesh, geometry: _FrontGeometry) -> np.ndarray:
     """Porosity at the crack plane of every front pair: the mean of the
-    mesh porosity at its original and duplicate node. The duplicate holds a
-    copy of the original's value, so this is the porosity field sampled at
-    the interface node."""
-    porosity = np.asarray(mesh.porosity, dtype=float)
-    return 0.5 * (porosity[geometry.node] + porosity[geometry.duplicate])
+    porosity field at its original and duplicate node
+    (:meth:`CompositeMesh.field_porosity`, without the ``'interface'``
+    renormalization of the stiffness field). The duplicate holds a copy of
+    the original's value, so this is the field sampled at the interface
+    node."""
+    return 0.5 * (mesh.field_porosity(geometry.node)
+                  + mesh.field_porosity(geometry.duplicate))
 
 
 def _pair_forces(mesh: CompositeMesh, nodal_forces: np.ndarray,

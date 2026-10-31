@@ -371,22 +371,25 @@ mode = compression, FE Tsai-Wu, Vp_mean = 3 %
   uniform               0.9924
   clustered (midplane)  0.9925
   clustered (surface)   0.9928
-  interface             0.9819   (penny voids, sharpest local field)
+  interface             0.9842   (penny voids)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`, on a
 12 x 4 x 24 mesh with one element layer per ply; exact values depend on
-mesh resolution. The interface case is clearly
-the lowest; the uniform and clustered cases differ by less than 0.1
-percentage point, so their order can change with the mesh.)
+mesh resolution. The interface case is the lowest; the uniform and
+clustered cases differ by less than 0.1 percentage point, so their order
+can change with the mesh.)
 
-Most of the interface case's lower knockdown is the penny shape, not the
-location of the voids. Uniform penny voids at 3 % give 0.9846. On a mesh with
-one element layer per ply the nodes also sit on the interface peaks, so the
-FE volume average of the `interface` profile is 0.0354, not 0.03; uniform
-penny voids at 0.0354 give 0.9824. Clustering at the interfaces adds only
-about 0.0005 on top of that. Interface penny porosity remains smeared
-porosity, not a delamination.
+The interface case's lower knockdown is almost all the penny shape, not
+the location of the voids: uniform penny voids at 3 % give 0.9846, so
+clustering them at the interfaces adds only about 0.0004. The mesh scales
+the sampled `interface` profile so its FE volume average is the requested
+`Vp` (`CompositeMesh.porosity_renormalization`): on one element layer per
+ply the nodes sit on the profile's narrow peaks, and unscaled the average
+would be 0.0354 for 0.03 (the scale is 0.848 there). The crack-front
+toughness and the interface onset strengths read the unscaled field on the
+interface plane (`CompositeMesh.field_porosity`). Interface penny porosity
+remains smeared porosity, not a delamination.
 
 ### Guidance
 

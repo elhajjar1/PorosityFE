@@ -370,9 +370,17 @@ class TestFECoupling:
     def test_front_porosity_is_the_field_at_the_crack_plane(self, enf):
         for case in ('uniform', 'clustered', 'interface'):
             front, pf, mesh = enf[case]['r'].crack_front, enf[case]['pf'], enf[case]['mesh']
-            np.testing.assert_array_equal(front.Vp, pf.local_porosity(front.x, front.y, front.z))
-            np.testing.assert_array_equal(front.Vp, mesh.porosity[front.duplicate])
+            np.testing.assert_allclose(front.Vp, pf.local_porosity(front.x, front.y, front.z),
+                                       rtol=1e-14, atol=0)
+            np.testing.assert_array_equal(front.Vp, mesh.field_porosity(front.duplicate))
             assert np.allclose(front.z, 8 * MAT.t_ply)
+        # The 'interface' stiffness field is scaled to its FE volume average
+        # (plan item 0.4); the front reads the field on the crack plane.
+        mesh = enf['interface']['mesh']
+        front = enf['interface']['r'].crack_front
+        assert mesh.porosity_renormalization < 1.0
+        np.testing.assert_allclose(mesh.porosity[front.duplicate],
+                                   front.Vp * mesh.porosity_renormalization, rtol=1e-14)
 
     @pytest.mark.parametrize('case', ['uniform', 'clustered', 'interface'])
     def test_G_c_follows_the_law_at_the_front(self, enf, case):

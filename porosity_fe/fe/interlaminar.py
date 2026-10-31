@@ -673,7 +673,6 @@ def _assemble_rows(mesh: CompositeMesh, grid: _Grid,
     """Row identifiers of the interface nodes of ``layers``."""
     per_layer = (grid.nx + 1) * (grid.ny + 1)
     X, Y = np.meshgrid(grid.xs, grid.ys)
-    porosity = np.asarray(mesh.porosity, dtype=float)
     iface, node, x, y, z, vp = [], [], [], [], [], []
     for k, layer in layers:
         ids = layer * per_layer + np.arange(per_layer)
@@ -682,7 +681,9 @@ def _assemble_rows(mesh: CompositeMesh, grid: _Grid,
         x.append(X.ravel())
         y.append(Y.ravel())
         z.append(np.full(per_layer, grid.zs[layer]))
-        vp.append(porosity[ids])
+        # The field on the interface plane, not the renormalized stiffness
+        # field (CompositeMesh.field_porosity).
+        vp.append(mesh.field_porosity(ids))
     return {'layers': layers, 'interface': np.concatenate(iface),
             'node': np.concatenate(node), 'x': np.concatenate(x),
             'y': np.concatenate(y), 'z': np.concatenate(z),

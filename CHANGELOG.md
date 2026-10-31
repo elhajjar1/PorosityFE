@@ -1093,6 +1093,25 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The `interface` porosity profile is scaled to its requested mean in the
+  FE** (delamination plan, item 0.4, #211; this changes results). The FE
+  interpolates nodal porosity trilinearly, so its volume average is the
+  trapezoid integral over the node layers. The `interface` Gaussians are
+  narrow (`sigma = 0.35 t_ply`); with one element layer per ply the nodes
+  sit on their peaks and that average was 18 % above the requested `Vp`
+  (0.0354 for 0.03 on the 24-ply presets). `CompositeMesh` now scales the
+  sampled distributed part of an `interface` profile so its FE volume
+  average is exactly `Vp` (`CompositeMesh.porosity_renormalization`: 0.848
+  on one layer per ply, within 0.1 % of 1 on finer meshes); discrete voids
+  are added after. On the 24-ply T800/epoxy coupon (12 x 4 x 24, 3 %,
+  compression) the FE knockdown of interface penny voids goes from 0.9819
+  to 0.9842 (uniform penny 0.9846) and of interface spherical voids from
+  0.9908 to 0.9921 (uniform 0.9924). The point values on an interface
+  plane keep reading the unscaled field (`CompositeMesh.field_porosity`):
+  the toughness at a crack front and the interface onset strengths do not
+  change. `uniform` and `clustered` fields, the empirical results and the
+  validation MAE do not change; the per-node empirical knockdown map (a
+  plot) follows the scaled nodal field.
 - **`fe/solver.py` split into focused modules, and lower FE peak memory
   (IMPROVEMENT_PLAN 5.1).** No result changes: every `FieldResults` field
   (reactions and mode indices included) and the JSON export are bit

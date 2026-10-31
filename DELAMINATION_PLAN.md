@@ -18,7 +18,7 @@ point at commit 2686d62. Progress by pull request:
 | Phase | State | PR |
 |---|---|---|
 | 0.1–0.3 | Done: mode maxima, exports, app criterion selector, docs | #209 |
-| 0.4 | Pending your decision (changes `interface` results) | — |
+| 0.4 | Done (your decision, #211): the mesh scales the sampled `interface` profile to its requested FE volume average (`porosity_renormalization`, 0.848 on one layer per ply); crack-plane point values read the unscaled field (`field_porosity`). Changes `interface` FE results | next PR |
 | 0.5 | Folded into phase 1.1 (optional `tau_13` with today's behaviour as default) | — |
 | 1.1–1.3, 1.5 | Done: optional `sigma_3t` / `tau_13`, interface traction recovery, Brewer–Lagace / Ye onset with load factor, O'Brien free-edge G | #210 |
 | 1.4 | Pending your decision (changes penny results) | — |
@@ -35,10 +35,11 @@ Decisions taken with the recommended option because they change no
 existing result: D1 (node duplication and ties), D2, D3, D4 (the
 exponential toughness law with flagged placeholder coefficients, on by
 default), D5, D6, D7, the optional `tau_13` default, benchmark materials inside the tests, cohesive
-zones deferred. Still open, because they change existing results: 0.4
-(`interface` profile renormalization), 1.4 (direction-aware degradation /
-transversely isotropic Mori–Tanaka tensor) and unifying the `tau_13`
-strength.
+zones deferred. Your decisions on the items that change existing results:
+0.4 renormalize the `interface` profile (done, #211; it changes `interface`
+FE results), 1.4 direction-aware degradation as an opt-in option, default
+off (#212), and the `tau_13` stand-ins kept per criterion (no unification).
+4.5 (the uncertainty band of the fracture load factor) is #213.
 
 Two corrections to the text below, from the primary sources: the ENF
 benchmark toughness is `G_IIc = 0.78`, `eta = 2.57` (NASA/CR-2011-217305

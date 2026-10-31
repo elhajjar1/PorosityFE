@@ -802,12 +802,15 @@ mode II at the front):
 |---|---|---|---|
 | `'uniform'`, no knockdown (`None`) | 0.020 | 0.774 | 3.160 |
 | `'uniform'` | 0.020 | 0.585 | 2.747 |
-| `'interface'` (Gaussians at every ply interface) | 0.025 | 0.544 | 2.649 |
+| `'interface'` (Gaussians at every ply interface) | 0.025 | 0.544 | 2.650 |
 | `'clustered'` at the mid-plane | 0.048 | 0.395 | 2.255 |
 
-The field values come from the profiles as they are normalized today, so
-the local $V_p$ of the `'interface'` profile depends on plan item 0.4 (its
-renormalization). A discrete {class}`~porosity_fe.VoidGeometry` that
+The front reads the porosity field itself on the crack plane
+({meth}`CompositeMesh.field_porosity <porosity_fe.CompositeMesh.field_porosity>`),
+not the stiffness field the mesh scales so the FE volume average of the
+`'interface'` profile is the requested $V_p$ (plan item 0.4), so the local
+$V_p$ of that profile, about $1.25\,V_p$ on an interface, does not depend
+on the mesh. A discrete {class}`~porosity_fe.VoidGeometry` that
 contains a front node sets $V_p = 1$ there, far beyond the data.
 
 **Calibration status: uncalibrated.** No published $G_c(V_p)$ relation
