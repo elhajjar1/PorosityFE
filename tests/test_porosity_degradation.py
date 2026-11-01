@@ -448,13 +448,17 @@ class TestFEThreading:
         # stiffness is ill-conditioned: the stiffness matrices differ by
         # about 1e-15, the scalar results by about 1e-13, the fields by up
         # to 1e-10 of their maximum, and the free-standing thermal solve
-        # (3-2-1 supports on a 0.5 mm plate) by up to 2e-8.
+        # (3-2-1 supports on a 0.5 mm plate) by up to 2e-8. Under the
+        # prestress the residual stress takes most of the strength, so the
+        # first-ply-failure factor (about 0.06) is a small difference of
+        # large terms: 2e-11 relative on macOS. The scalars therefore take
+        # the fields' tolerance; the penny effect they guard is 1e-2.
         thermal = loading == 'thermal'
         _assert_results_close(a, b, mesh, rtol=1e-7 if thermal else 1e-9, thermal=thermal)
         for name in ('knockdown', 'max_failure_index', 'first_ply_failure_load_factor'):
             x, y = getattr(a, name), getattr(b, name)
             if np.isfinite(x):
-                assert y == pytest.approx(x, rel=1e-11), name
+                assert y == pytest.approx(x, rel=1e-9), name
             else:
                 assert repr(x) == repr(y), name           # nan (thermal) or inf
 
