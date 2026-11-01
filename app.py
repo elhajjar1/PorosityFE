@@ -128,15 +128,25 @@ _CFG_KEYS = (
 #: (N/mm) and its porosity knockdown law (``"exponential"`` with the
 #: placeholders, ``"none"``, or ``"user"`` with ``toughness_b = [b_I,
 #: b_II]``), the interface onset check and its averaging length (mm), and
-#: the crack length (mm) and MMB mode ratio of a fracture specimen. Unlike
+#: the crack length (mm) and MMB mode ratio of a fracture specimen, and the
+#: CoVs of the λ_c uncertainty band (``fracture_uq``, one per
+#: :data:`_FRACTURE_UQ_FIELDS` entry; ``None`` for no band). Unlike
 #: :data:`_CFG_KEYS`, each enters the cache key only when it differs from
 #: its default, so a config without them keeps the key (and the cached
 #: result) it had before they existed.
 _CFG_OPTIONAL_KEYS = (
     "delamination", "knockdown_split", "G_Ic", "G_IIc", "G_IIIc", "bk_eta",
     "toughness_law", "toughness_b", "onset", "onset_x_avg",
-    "crack_length", "mmb_mode_ratio",
+    "crack_length", "mmb_mode_ratio", "fracture_uq",
 )
+
+#: Inputs the app's λ_c uncertainty band can scatter, in the order of
+#: ``cfg["fracture_uq"]`` (coefficients of variation, fractions): the
+#: toughness and B-K exponent, and the porosity-toughness coefficients.
+_FRACTURE_UQ_FIELDS = ("G_Ic", "G_IIc", "bk_eta", "b_I", "b_II")
+#: Draws of the band (Latin hypercube, seed 0): it re-evaluates λ_c on the
+#: front of the one FE solve, so a few thousand cost milliseconds.
+_FRACTURE_UQ_SAMPLES = 2000
 
 #: Config fields that an older config dict may lack, and the value that
 #: absence means (no thermal load, the Tsai-Wu criterion, no delamination,
@@ -148,7 +158,8 @@ _CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
                  "G_Ic": None, "G_IIc": None, "G_IIIc": None, "bk_eta": None,
                  "toughness_law": "exponential", "toughness_b": None,
                  "onset": False, "onset_x_avg": None,
-                 "crack_length": None, "mmb_mode_ratio": None}
+                 "crack_length": None, "mmb_mode_ratio": None,
+                 "fracture_uq": None}
 
 #: FE failure criteria offered in the sidebar: key -> label.
 _CRITERION_LABELS = {
@@ -350,7 +361,7 @@ def run_analysis(cfg: dict) -> dict:
     fe_thermal, fe_mechanical_fpf, fe_nz_suggestion, fe_specimen,
     fe_short_beam, fe_flexure, fe_solve_time_s, delamination,
     fe_decomposition, fe_decomposition_error, fe_decomposition_time_s,
-    fe_onset, fe_onset_error.
+    fe_onset, fe_onset_error, fe_fracture_uq, fe_fracture_uq_error.
 
     ``mesh`` is the mesh of the FE solve. For ``loading_mode="ilss"`` (with
     a mechanical load) that is the ASTM D2344 short-beam specimen of
@@ -397,7 +408,12 @@ def run_analysis(cfg: dict) -> dict:
     ``cfg["onset"]`` the stress-based interface onset of the FE solve is
     added (:meth:`FieldResults.delamination_onset`, averaging length
     ``cfg["onset_x_avg"]``, default one ply; ``fe_onset``, or the reason in
-    ``fe_onset_error``). All are ``None`` when not requested.
+    ``fe_onset_error``). With ``cfg["fracture_uq"]`` (the CoVs of
+    :data:`_FRACTURE_UQ_FIELDS`, fractions) the uncertainty band on the
+    fracture load factor from toughness scatter is added
+    (:meth:`FieldResults.fracture_load_factor_uncertainty`, no further
+    solve; ``fe_fracture_uq``, or the reason in ``fe_fracture_uq_error``).
+    All are ``None`` when not requested.
 
     ``cfg["thermal_mode"]`` (``"off"`` when absent) selects the FE thermal
     load: ``"combined"`` adds the cure residual stress at
@@ -416,7 +432,9 @@ def run_analysis(cfg: dict) -> dict:
         For an unknown material or ``thermal_mode``, a thermal mode without
         a finite ``delta_T``, a ``delamination`` that is not a
         :class:`Delamination`, an unknown ``toughness_law``, ``"user"``
-        without both coefficients, or invalid toughness values.
+        without both coefficients, invalid toughness values, or a
+        ``fracture_uq`` that is not one CoV (finite, ``>= 0``) per
+        :data:`_FRACTURE_UQ_FIELDS` entry.
     """
     if cfg["material_name"] not in MATERIALS:
         raise ValueError(
@@ -437,6 +455,7 @@ def run_analysis(cfg: dict) -> dict:
             f"thermal_mode={thermal_mode!r} needs a finite delta_T in K "
             f"(negative for a cool-down); got {delta_T!r}. There is no default."
         )
+    fracture_uq_covs = _fracture_uq_covs(cfg)
     material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
         material, t_ply=cfg["t_ply"], n_plies=cfg["n_plies"],
@@ -547,6 +566,20 @@ def run_analysis(cfg: dict) -> dict:
                 mesh, material, x_avg=cfg.get("onset_x_avg"))
         except ValueError as exc:
             fe_onset_error = str(exc)
+    fe_fracture_uq = fe_fracture_uq_error = None
+    if fracture_uq_covs is not None and fe_field is not None:
+        if fe_field.fracture_load_factor is None:
+            fe_fracture_uq_error = (
+                "the λ_c band needs a delamination front and the toughness "
+                "(G_Ic, G_IIc and η)")
+        else:
+            try:
+                # No solve: the band re-evaluates λ_c on this front.
+                fe_fracture_uq = fe_field.fracture_load_factor_uncertainty(
+                    material, covs=fracture_uq_covs,
+                    n_samples=_FRACTURE_UQ_SAMPLES, method="lhs", seed=0)
+            except ValueError as exc:
+                fe_fracture_uq_error = str(exc)
 
     fe_thermal = None
     fe_mechanical_fpf = None
@@ -592,7 +625,28 @@ def run_analysis(cfg: dict) -> dict:
         "fe_decomposition_time_s": fe_decomposition_time_s,
         "fe_onset": fe_onset,
         "fe_onset_error": fe_onset_error,
+        "fe_fracture_uq": fe_fracture_uq,
+        "fe_fracture_uq_error": fe_fracture_uq_error,
     }
+
+
+def _fracture_uq_covs(cfg: dict) -> dict[str, float] | None:
+    """The ``covs`` of the λ_c band of ``cfg`` (``None`` without one): the
+    non-zero entries of ``cfg["fracture_uq"]`` by :data:`_FRACTURE_UQ_FIELDS`
+    name. Nothing scatters unless entered, so an all-zero entry is no band."""
+    value = cfg.get("fracture_uq")
+    if value is None:
+        return None
+    values = list(value)
+    if len(values) != len(_FRACTURE_UQ_FIELDS) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and v >= 0.0 for v in values):
+        raise ValueError(
+            f"cfg['fracture_uq'] must hold one CoV (a finite fraction >= 0) "
+            f"per input {list(_FRACTURE_UQ_FIELDS)}; got {value!r}.")
+    covs = {name: float(v) for name, v in zip(_FRACTURE_UQ_FIELDS, values, strict=True)
+            if v > 0.0}
+    return covs or None
 
 
 def _toughness_fields(cfg: dict) -> dict:
@@ -1346,6 +1400,92 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
         "plies of different angles the G_I / G_II split depends on Δa: compare "
         "G_T, and refine nx and ny (Expert mode) to check it.")
     return rows, " ".join(parts), bool(front.toughness_uncalibrated)
+
+
+def fe_fracture_uq_summary(result: dict, compare: float | None = None
+                           ) -> tuple[list[tuple[str, str, str]], str] | None:
+    """Metric rows and a caption of the λ_c uncertainty band; ``None`` when
+    it was not requested.
+
+    The rows give the nominal λ_c and the p5 / p50 / p95 of the draws and,
+    with ``compare`` (a load factor the user enters), the share of the
+    draws below it: an estimate under the entered CoVs, not a disposition.
+    """
+    band = result.get("fe_fracture_uq")
+    error = result.get("fe_fracture_uq_error")
+    if band is None and error is None:
+        return None
+    if band is None:
+        return [], f"The λ_c uncertainty band was not computed: {error}."
+    pct = band.percentiles
+    rows = [
+        ("λ_c nominal", _fmt_value(band.nominal, "{:.3g}"),
+         "The deterministic fracture load factor of the solve."),
+        ("λ_c p5", _fmt_value(pct["p5"], "{:.3g}"),
+         "5th percentile of the smallest λ_c over the front, over the draws."),
+        ("λ_c p50", _fmt_value(pct["p50"], "{:.3g}"), "Median of the draws."),
+        ("λ_c p95", _fmt_value(pct["p95"], "{:.3g}"), "95th percentile of the draws."),
+    ]
+    if compare is not None:
+        rows.append((
+            f"Draws below {compare:g}", f"{100.0 * band.probability_below(compare):.1f} %",
+            "Share of the draws whose λ_c is below the entered factor: an "
+            "estimate under the entered CoVs only, not a disposition."))
+    scattered = ", ".join(f"{name} {params:g}" for name, (_dist, params) in band.spec.items())
+    nominal_row = int(np.argmin(band.nominal_per_node))
+    share = float(band.governing_fraction[nominal_row])
+    caption = (
+        f"{band.n_samples} Latin-hypercube draws (seed 0) of the toughness "
+        f"inputs, lognormal with CoV {scattered}, each re-evaluating λ_c at the "
+        f"{band.n_front_nodes} front nodes on this solve's energy release "
+        f"rates; no further FE solve. The nominal governing node governs "
+        f"{100.0 * share:.0f} % of the draws. Not covered: porosity, stiffness, "
+        f"geometry, load, mesh and model-form uncertainty, and correlation "
+        f"between the inputs (the draws are independent). The share below a "
+        f"factor is information for the MRB, not a disposition: the tool "
+        f"recommends no disposition for a delamination.")
+    if band.toughness_uncalibrated:
+        caption += (" The draws are centred on the uncalibrated placeholder "
+                    "toughness knockdown.")
+    return rows, caption
+
+
+def plot_fracture_uq(result: dict, compare: float | None = None):
+    """Histogram of the λ_c draws with the p5-p95 band, the median, the
+    nominal value and, with ``compare``, the entered factor."""
+    band = result.get("fe_fracture_uq")
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    finite = (np.asarray(band.samples)[np.isfinite(band.samples)]
+              if band is not None else np.empty(0))
+    if finite.size == 0:
+        ax.text(0.5, 0.5, "No finite fracture load factor in the draws.",
+                transform=ax.transAxes, ha="center", va="center", color="0.5")
+        ax.set_axis_off()
+        return fig
+    pct = band.percentiles
+    ax.hist(finite, bins=40, color="0.7", edgecolor="0.4")
+    if math.isfinite(pct["p5"]) and math.isfinite(pct["p95"]):
+        ax.axvspan(pct["p5"], pct["p95"], color="tab:blue", alpha=0.15,
+                   label=f"p5-p95: {pct['p5']:.3g}-{pct['p95']:.3g}")
+    if math.isfinite(pct["p50"]):
+        ax.axvline(pct["p50"], color="tab:blue", linewidth=2,
+                   label=f"p50: {pct['p50']:.3g}")
+    if math.isfinite(band.nominal):
+        ax.axvline(band.nominal, color="k", linestyle="--",
+                   label=f"nominal: {band.nominal:.3g}")
+    if compare is not None:
+        ax.axvline(compare, color="tab:red", linewidth=1.5,
+                   label=f"{compare:g}: {100.0 * band.probability_below(compare):.1f} % below")
+    ax.set_xlabel("Fracture load factor λ_c")
+    ax.set_ylabel("Draws")
+    _set_titles(ax, "Fracture load factor: toughness scatter",
+                f"{band.n_samples} draws · CoV "
+                + ", ".join(f"{k} {v[1]:g}" for k, v in band.spec.items()))
+    ax.ticklabel_format(axis="x", style="plain", useOffset=False)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0.0,
+              frameon=False)
+    fig.tight_layout()
+    return fig
 
 
 #: Line colours of the front plot: G_T, ψ.
@@ -2616,8 +2756,53 @@ def _build_toughness_inputs() -> tuple[dict, str | None]:
             st.info(problem)
         else:
             fields["toughness_b"] = [float(b_I), float(b_II)]
+    if all(given):
+        fields["fracture_uq"] = _build_fracture_uq_inputs(law)
     return {k: (float(v) if isinstance(v, (int, float)) else v)
             for k, v in fields.items()}, problem
+
+
+#: Sidebar labels of the λ_c band's CoVs, by :data:`_FRACTURE_UQ_FIELDS`.
+_FRACTURE_UQ_LABELS = {"G_Ic": "CoV of G_Ic", "G_IIc": "CoV of G_IIc",
+                       "bk_eta": "CoV of η", "b_I": "CoV of b_I",
+                       "b_II": "CoV of b_II"}
+
+
+def _build_fracture_uq_inputs(law: str) -> list[float] | None:
+    """The opt-in λ_c uncertainty band: one CoV (a fraction) per
+    :data:`_FRACTURE_UQ_FIELDS` entry, or ``None`` when it is off or
+    nothing scatters (there is no default CoV)."""
+    on = st.checkbox(
+        "λ_c uncertainty band (toughness scatter)", value=False, key="frac_uq_on",
+        help=("Re-evaluates the fracture load factor for "
+              f"{_FRACTURE_UQ_SAMPLES} draws of the toughness inputs on the "
+              "front of the one FE solve (the analysis is linear, so no "
+              "further solve)."))
+    if not on:
+        return None
+    st.caption(
+        "Coefficients of variation as fractions (0.05 = 5 %), lognormal. "
+        "Nothing scatters unless you enter it: there is no default. Measured "
+        "scatter is scarce; for IM7/8552, G_Ic 0.015 to 0.055 (Czabaj and "
+        "Ratcliffe) and precracked G_IIc 0.065 to 0.076 (O'Brien et al.). "
+        "See the theory page, Uncertainty propagation.")
+    no_b = law == "none"
+    columns = st.columns(2)
+    covs = []
+    for i, name in enumerate(_FRACTURE_UQ_FIELDS):
+        disabled = no_b and name.startswith("b_")
+        with columns[i % 2]:
+            value = st.number_input(
+                _FRACTURE_UQ_LABELS[name], min_value=0.0, max_value=1.0, value=0.0,
+                step=0.01, format="%.3f", key=f"frac_uq_{name}", disabled=disabled,
+                help=("No coefficient to scatter without a porosity knockdown."
+                      if disabled else "Coefficient of variation, a fraction."))
+        covs.append(0.0 if disabled else float(value))
+    if not any(covs):
+        st.info("Enter a CoV for at least one input: nothing scatters until "
+                "you do.")
+        return None
+    return covs
 
 
 def _build_sidebar_inputs() -> dict | None:
@@ -3206,6 +3391,7 @@ def _build_defect_results(result: dict) -> None:
         st.dataframe(fe_front_rows(result), hide_index=True,
                      use_container_width=True)
         _show_figure(plot_front(result), "delamination_front", "dl_png_front")
+    _build_fracture_uq_block(result)
     if split is not None:
         st.markdown("**Knockdown by defect**")
         rows, caption = split
@@ -3218,6 +3404,28 @@ def _build_defect_results(result: dict) -> None:
         if table:
             st.dataframe(table, hide_index=True, use_container_width=True)
         st.caption(caption)
+
+
+def _build_fracture_uq_block(result: dict) -> None:
+    """The λ_c uncertainty band of the Defects block (nothing when it was
+    not requested)."""
+    if fe_fracture_uq_summary(result) is None:
+        return
+    st.markdown("**λ_c uncertainty band (toughness scatter)**")
+    compare = None
+    if result.get("fe_fracture_uq") is not None:
+        compare = st.number_input(
+            "Compare with a load factor (share of draws below)", min_value=0.001,
+            max_value=1e6, value=None, step=0.1, format="%.3f",
+            key="frac_uq_compare", placeholder="e.g. your required load factor",
+            help=("A multiple of the analysis load, like λ_c. The share is an "
+                  "estimate under the entered CoVs, not a disposition."))
+    rows, caption = fe_fracture_uq_summary(result, compare)
+    _metric_row(rows)
+    st.caption(caption)
+    if result.get("fe_fracture_uq") is not None:
+        _show_figure(plot_fracture_uq(result, compare), "lambda_c_band",
+                     "dl_png_lambda_band")
 
 
 def _build_uq_expander(result: dict):
