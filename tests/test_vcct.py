@@ -615,6 +615,81 @@ class TestThermalLoadFactor:
             assert _openings(mesh, r).min() >= -1e-9 * scale
         assert solved[True][2].contact_pairs != solved[True][0].contact_pairs
 
+    def test_combined_solve_keeps_its_parts(self, solved):
+        """The front of a combined solve carries its mechanical and residual
+        parts, which give its load factor exactly; a single-part front has
+        none."""
+        mesh = solved['mesh']
+        mech, thermal, combined = solved[False]
+        front = combined.crack_front
+        moving, fixed = front.parts
+        assert moving.G_c is None and fixed.lambda_c is None
+        np.testing.assert_allclose(moving.G_T, mech.energy_release_rates(mesh).G_T,
+                                   rtol=1e-9)
+        np.testing.assert_allclose(fixed.G_T, thermal.energy_release_rates(mesh).G_T,
+                                   rtol=1e-9)
+        np.testing.assert_array_equal(
+            fracture_load_factors(moving, self.MAT, prestress=fixed).lambda_c,
+            front.lambda_c)
+        np.testing.assert_allclose(moving.force_local + fixed.force_local,
+                                   front.force_local, rtol=1e-12, atol=1e-15)
+        assert mech.crack_front.parts is None and thermal.crack_front.parts is None
+        assert solved[True][2].crack_front.parts is not None
+        # fracture_load_factors records the parts it was given.
+        out = fracture_load_factors(moving, self.MAT, prestress=fixed)
+        assert out.parts[0] is moving and out.parts[1] is fixed
+        assert fracture_load_factors(front, self.MAT).parts is None
+
+    def test_batch_root_matches_the_scalar_root(self, solved):
+        """The vectorised prestress root over many toughness sets equals the
+        per-node brentq root of fracture_load_factors on each set (1e-11),
+        including the nodes the prestress alone fails (0) and a node the
+        load does not drive (inf)."""
+        from porosity_fe.fe import vcct
+        moving, fixed = solved[False][2].crack_front.parts
+        mat = self.MAT
+        law = vcct._resolve_toughness_knockdown(None)
+        tough = vcct._interface_toughness(mat, moving.Vp, law)
+        rng = np.random.default_rng(1)
+        m = 40
+        f_I, f_II = np.exp(0.3 * rng.standard_normal((2, m, 1)))
+        eta = mat.bk_eta * np.exp(0.1 * rng.standard_normal((m, 1)))
+        lam = vcct._thermal_factors_batch(
+            fixed, moving, (f_I * tough[0], f_II * tough[1], f_II * tough[2]), eta)
+        assert lam.shape == (m, len(moving))
+        for i in range(m):
+            mat_i = dataclasses.replace(mat, G_Ic=mat.G_Ic * float(f_I[i, 0]),
+                                        G_IIc=mat.G_IIc * float(f_II[i, 0]),
+                                        bk_eta=float(eta[i, 0]))
+            expected = fracture_load_factors(moving, mat_i, prestress=fixed).lambda_c
+            np.testing.assert_allclose(lam[i], expected, rtol=1e-11)
+        # One set at the nominal toughness and a scalar eta.
+        nominal = vcct._thermal_factors_batch(
+            fixed, moving, tuple(t[None, :] for t in tough), mat.bk_eta)
+        np.testing.assert_allclose(nominal[0], solved[False][2].crack_front.lambda_c,
+                                   rtol=1e-12)
+        # A prestress that alone reaches the toughness gives 0, and a node
+        # the load does not drive gives inf, as the scalar root does.
+        big = dataclasses.replace(fixed, force_local=40.0 * fixed.force_local,
+                                  opening_local=40.0 * fixed.opening_local)
+        idle_force = moving.force_local.copy()
+        idle_force[0] = 0.0
+        idle = dataclasses.replace(moving, force_local=idle_force)
+        for pre, mov in ((big, moving), (fixed, idle)):
+            got = vcct._thermal_factors_batch(pre, mov, tuple(t[None, :] for t in tough),
+                                              mat.bk_eta)[0]
+            want = fracture_load_factors(mov, mat, prestress=pre).lambda_c
+            assert np.array_equal(got == 0.0, want == 0.0)
+            assert np.array_equal(np.isinf(got), np.isinf(want))
+            ok = np.isfinite(want) & (want > 0.0)
+            np.testing.assert_allclose(got[ok], want[ok], rtol=1e-11)
+        assert np.all(vcct._thermal_factors_batch(
+            big, moving, tuple(t[None, :] for t in tough), mat.bk_eta) == 0.0)
+        with pytest.raises(ValueError, match='broadcast'):
+            vcct._thermal_factors_batch(fixed, moving,
+                                        (np.ones((2, 2, len(moving))), tough[1], tough[2]),
+                                        mat.bk_eta)
+
 
 # --------------------------------------------------------------------------
 # Penny-shaped crack in an isotropic block

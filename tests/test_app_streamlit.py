@@ -465,6 +465,43 @@ class TestDefectsPanel:
                    for w in at.warning)
         assert any("no recommended disposition path" in w.value for w in at.warning)
 
+    def test_fracture_uncertainty_band(self):
+        """The opt-in λ_c band: offered once the toughness is in, off by
+        default (the key of before), nothing scatters until a CoV is
+        entered; the Defects block shows p5 / p50 / p95, the histogram and
+        the share of draws below an entered factor."""
+        _BAND = "λ_c uncertainty band (toughness scatter)"
+        at = _small_mesh(_fresh_app())
+        _select(at, "Loading mode", "tension")
+        at.checkbox(key="delam_on").check().run()
+        at.number_input(key="delam_interface").set_value(0).run()
+        at.selectbox(key="delam_shape").set_value("strip").run()
+        assert not any(c.label == _BAND for c in at.checkbox)
+        _enter_toughness(at)
+        assert at.checkbox(key="frac_uq_on").value is False
+        at.checkbox(key="frac_uq_on").check().run()
+        assert any("nothing scatters until" in i.value for i in at.info)
+        at.number_input(key="frac_uq_G_Ic").set_value(0.05).run()
+        at.number_input(key="frac_uq_G_IIc").set_value(0.07).run()
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        result = at.session_state["result"]
+        band = result["fe_fracture_uq"]
+        assert result["config"]["fracture_uq"] == [0.05, 0.07, 0.0, 0.0, 0.0]
+        assert band.nominal == result["fe_field"].fracture_load_factor
+        metrics = {m.label: m.value for m in at.metric}
+        for p in ("p5", "p50", "p95"):
+            assert metrics[f"λ_c {p}"] == f"{band.percentiles[p]:.3g}"
+        assert any("not a disposition" in c.value for c in at.caption)
+        labels = [b.proto.label for b in at.get("download_button")]
+        assert labels.count("Download PNG") == 6          # + the front, the band
+        compare = round(band.percentiles["p50"], 3)
+        at.number_input(key="frac_uq_compare").set_value(compare).run()
+        metrics = {m.label: m.value for m in at.metric}
+        assert metrics[f"Draws below {compare:g}"] == \
+            f"{100.0 * band.probability_below(compare):.1f} %"
+        assert not at.exception
+
     def test_inputs_that_block_the_run(self):
         at = _small_mesh(_fresh_app())
         at.checkbox(key="delam_on").check().run()

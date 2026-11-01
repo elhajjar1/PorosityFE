@@ -41,7 +41,9 @@ implementation; assembly runs on batched arrays). At each Gauss point:
 1. $V_p$ is interpolated from the element's nodes, then clamped to
    $[0, 0.99]$.
 2. The degraded ply stiffness is computed from $V_p$
-   ({doc}`micromechanics`).
+   ({doc}`micromechanics`), by default with the isotropic projection of the
+   Mori-Tanaka tensor, or with its directions kept
+   (`FESolver(..., porosity_degradation='directional')`, opt-in).
 3. The stiffness is rotated into the ply angle.
 
 Void elements get a near-zero isotropic stiffness.

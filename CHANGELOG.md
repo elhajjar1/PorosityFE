@@ -5,6 +5,81 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Uncertainty band on the delamination load factor** (delamination plan
+  4.5, #213). Opt-in: no existing result, export or cached app run changes.
+  - `fracture_load_factor_uncertainty(front, material, *, prestress=None,
+    toughness_knockdown='exponential', covs=None, spec=None,
+    n_samples=1000, method='monte_carlo', seed=None, percentiles=(5, 50,
+    95), required_load_factor=None)` and
+    `FieldResults.fracture_load_factor_uncertainty(material, ...)` (the
+    solve's law, prestress and load-factor basis) sample `G_Ic`, `G_IIc`,
+    `G_IIIc`, `bk_eta`, `b_I`, `b_II`, `b_III` and re-evaluate λ_c at every
+    front node per draw on the energy release rates of the one FE solve
+    (linear analysis: no further solve). With a thermal prestress each
+    draw takes its own root, vectorised, matching `fracture_load_factors(...,
+    prestress=)` to about 1e-13. **No default CoV**: nothing scatters
+    unless named; scattering stiffness or porosity raises (it would need a
+    solve per draw). Unset `G_IIIc` / `b_III` follow `G_IIc` / `b_II`.
+  - `FractureLoadFactorBand`: the nominal value, draws per node and over
+    the front, statistics and percentiles, `governing_fraction` per node,
+    `probability_below(r)` / `probability_below_required` (an estimate
+    under the entered scatter, not a disposition), the inputs,
+    `load_factor_basis` and a strict-JSON `summary()`, written by
+    `FESolver.export_results(..., fracture_uncertainty=band)` as an opt-in
+    `fracture_uncertainty` block (schema 1.3, additive).
+  - `CrackFront.parts`: a combined thermal + mechanical solve, and
+    `fracture_load_factors(..., prestress=)`, keep the two parts of the
+    front so the factor can be re-evaluated.
+  - The sampling code moves to `porosity_fe._sampling`, shared with
+    `propagate_uncertainty`, whose seeded outputs are bit identical.
+  - App: an opt-in "λ_c uncertainty band" with CoVs for `G_Ic`, `G_IIc`,
+    η, `b_I` and `b_II` (the optional config key `fracture_uq`; the default
+    cache key is unchanged), showing p5 / p50 / p95, a histogram and the
+    share of draws below a factor you enter.
+  - The theory page "Uncertainty propagation" documents the method, the
+    few measured CoVs as starting points, the verification and what the
+    band does not cover (porosity, stiffness, geometry, load, mesh and
+    model form; input correlations).
+- **Opt-in direction-aware porosity degradation in the FE path**
+  (delamination plan 1.4, #212; off by default, so no existing result
+  changes: the 132-case fingerprint shows no difference, and spherical
+  voids give the same results under either option).
+  - `FESolver(..., porosity_degradation='isotropic' | 'directional')`,
+    keyword-only next to `formulation`, and the new `PorosityDegradation`
+    type alias. `'isotropic'` (default) is today's isotropic projection of
+    the Mori-Tanaka tensor. `'directional'` keeps the transversely isotropic
+    tensor of the porous matrix, read in each ply's axes (a penny lies in the
+    ply plane, a cylindrical void runs along the fibres), and degrades each
+    ply constant from its own matrix direction: `E33` from `E*_3`, `G13` and
+    `G23` from `C*_55` and `C*_44`, `nu13` from `nu*_13`; a ply compliance
+    that is not positive definite raises `ValueError` (only a flat void
+    normal to the transverse in-plane axis reaches it, at `Vp >= 0.4`).
+  - Strengths under `'directional'`: `Z_t` (`sigma_3t` or `sigma_2t`) by
+    `r_m sqrt(rho_33/rho_22)`, `S_13` (`tau_13` or the criterion's stand-in)
+    by `r_m sqrt(rho_55/rho_66)`, `S_23` by `r_m sqrt(rho_44/rho_66)`, with
+    `rho_kk = C*_kk / C_m,kk`; relative to `r_m` so spheres keep it. For
+    every criterion, load factor, interior metric and the interface onset.
+  - T800/epoxy, penny voids, `Vp = 0.03`, isotropic -> directional: `E22`
+    0.885 -> 0.968, `E33` 0.885 -> 0.741, `G12` 0.899 -> 0.968, `G13 = G23`
+    0.899 -> 0.847; `Z_t` 0.935 -> 0.800, `S_13 = S_23` 0.935 -> 0.873.
+    Production meshes, uniform penny porosity at 3 %: ILSS knockdown 0.930
+    -> 0.876, compression knockdown 0.985 -> 0.995, ILSS Hashin
+    first-ply-failure factor -13 %, ILSS interface onset factor 338 -> 309.
+    Verified against the parallel penny-crack limit (Kachanov 1992,
+    Budiansky & O'Connell 1976).
+  - Held by `GlobalAssembler` (in its stiffness cache key, so direct, CG and
+    thermal solves see it; the pristine reference is shared), and taken by
+    `Hex8Element`, `build_element_batch`, the `fe.failure` functions,
+    `delamination_onset` / `FieldResults.delamination_onset`,
+    `refinement_study` (recorded in `to_dict()`) and
+    `knockdown_decomposition`.
+  - Not recorded on `FieldResults` or in the JSON export (that changes every
+    fingerprint; to do with the baseline update): pass the same value to
+    `delamination_onset`. Uncalibrated against measured out-of-plane
+    constants of porous laminates, not in the app or CLI, and the empirical
+    solver and CLT helpers keep the isotropic projection. For crowded
+    pennies (local `Vp` near 0.1) Mori-Tanaka's `C33`, `C44` are 7-10 % too
+    stiff and the projection no longer softens that.
 - **Delamination in the app, the CLI and the NCR** (delamination plan,
   phase 5 and the rest of 1.6). Everything is opt-in: the default app run
   (its cache key and results), the default CLI output and every existing
@@ -1093,6 +1168,25 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The `interface` porosity profile is scaled to its requested mean in the
+  FE** (delamination plan, item 0.4, #211; this changes results). The FE
+  interpolates nodal porosity trilinearly, so its volume average is the
+  trapezoid integral over the node layers. The `interface` Gaussians are
+  narrow (`sigma = 0.35 t_ply`); with one element layer per ply the nodes
+  sit on their peaks and that average was 18 % above the requested `Vp`
+  (0.0354 for 0.03 on the 24-ply presets). `CompositeMesh` now scales the
+  sampled distributed part of an `interface` profile so its FE volume
+  average is exactly `Vp` (`CompositeMesh.porosity_renormalization`: 0.848
+  on one layer per ply, within 0.1 % of 1 on finer meshes); discrete voids
+  are added after. On the 24-ply T800/epoxy coupon (12 x 4 x 24, 3 %,
+  compression) the FE knockdown of interface penny voids goes from 0.9819
+  to 0.9842 (uniform penny 0.9846) and of interface spherical voids from
+  0.9908 to 0.9921 (uniform 0.9924). The point values on an interface
+  plane keep reading the unscaled field (`CompositeMesh.field_porosity`):
+  the toughness at a crack front and the interface onset strengths do not
+  change. `uniform` and `clustered` fields, the empirical results and the
+  validation MAE do not change; the per-node empirical knockdown map (a
+  plot) follows the scaled nodal field.
 - **`fe/solver.py` split into focused modules, and lower FE peak memory
   (IMPROVEMENT_PLAN 5.1).** No result changes: every `FieldResults` field
   (reactions and mode indices included) and the JSON export are bit

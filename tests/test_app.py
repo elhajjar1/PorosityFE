@@ -1297,7 +1297,7 @@ class TestDefectConfigKey:
         ("knockdown_split", True), ("G_Ic", 0.2), ("G_IIc", 0.7), ("G_IIIc", 0.8),
         ("bk_eta", 2.0), ("toughness_law", "none"), ("toughness_b", [5.0, 12.0]),
         ("onset", True), ("onset_x_avg", 0.5), ("crack_length", 40.0),
-        ("mmb_mode_ratio", 0.8),
+        ("mmb_mode_ratio", 0.8), ("fracture_uq", [0.05, 0.07, 0.0, 0.0, 0.0]),
     ])
     def test_each_defect_field_enters_the_key_when_set(self, field, value):
         key = app._config_to_key(_base_cfg(**{field: value}))
@@ -1429,6 +1429,67 @@ class TestDefectAnalysis:
             app.run_analysis(_delam_cfg(toughness_law="linear"))
         with pytest.raises(ValueError, match="must be a Delamination"):
             app.run_analysis(_base_cfg(delamination=("strip", 0, 20.0, 30.0)))
+
+    def test_fracture_uncertainty_band(self, delam_result):
+        """The opt-in λ_c band: CoVs per _FRACTURE_UQ_FIELDS, no further
+        solve, the same band as the library's on that solve."""
+        assert delam_result["fe_fracture_uq"] is None
+        assert delam_result["fe_fracture_uq_error"] is None
+        assert app.fe_fracture_uq_summary(delam_result) is None
+        covs = [0.05, 0.07, 0.1, 0.2, 0.0]
+        r = app.run_analysis(_delam_cfg(knockdown_split=False, onset=False,
+                                        fracture_uq=covs))
+        band, fe = r["fe_fracture_uq"], r["fe_field"]
+        assert r["fe_fracture_uq_error"] is None
+        assert band.nominal == fe.fracture_load_factor
+        assert band.n_samples == app._FRACTURE_UQ_SAMPLES and band.method == "lhs"
+        assert band.spec == {"G_Ic": ("lognormal", 0.05), "G_IIc": ("lognormal", 0.07),
+                             "bk_eta": ("lognormal", 0.1), "b_I": ("lognormal", 0.2)}
+        again = fe.fracture_load_factor_uncertainty(
+            r["material"], covs={"G_Ic": 0.05, "G_IIc": 0.07, "bk_eta": 0.1, "b_I": 0.2},
+            n_samples=app._FRACTURE_UQ_SAMPLES, method="lhs", seed=0)
+        np.testing.assert_array_equal(band.samples, again.samples)
+        rows, caption = app.fe_fracture_uq_summary(r)
+        values = {label: v for label, v, _ in rows}
+        assert values["λ_c p50"] == f"{band.percentiles['p50']:.3g}"
+        assert values["λ_c nominal"] == f"{fe.fracture_load_factor:.3g}"
+        assert "not a disposition" in caption and "no further FE solve" in caption
+        assert "uncalibrated placeholder" in caption
+        rows, _ = app.fe_fracture_uq_summary(r, compare=band.percentiles["p50"])
+        share = dict((label, v) for label, v, _ in rows)
+        key = f"Draws below {band.percentiles['p50']:g}"
+        assert share[key] == f"{100.0 * band.probability_below(band.percentiles['p50']):.1f} %"
+        fig = app.plot_fracture_uq(r, compare=1.0)
+        labels = fig.axes[0].get_legend_handles_labels()[1]
+        assert any(lab.startswith("p50") for lab in labels)
+        assert any(lab.startswith("nominal") for lab in labels)
+        assert any("below" in lab for lab in labels)
+        plt.close(fig)
+        # The FE results are those of the run without the band.
+        plain = app.run_analysis(_delam_cfg(knockdown_split=False, onset=False))
+        assert plain["fe_field"].fracture_load_factor == fe.fracture_load_factor
+
+    def test_fracture_uncertainty_band_inputs(self):
+        # Nothing entered: no band, and no error.
+        r = app.run_analysis(_delam_cfg(knockdown_split=False, onset=False,
+                                        fracture_uq=[0.0] * 5))
+        assert r["fe_fracture_uq"] is None and r["fe_fracture_uq_error"] is None
+        # Without toughness there is no load factor to put a band on.
+        no_tough = {k: None for k in _TOUGHNESS}
+        r = app.run_analysis(_delam_cfg(knockdown_split=False, onset=False,
+                                        fracture_uq=[0.05, 0, 0, 0, 0], **no_tough))
+        assert r["fe_fracture_uq"] is None
+        assert "needs a delamination front and the toughness" in r["fe_fracture_uq_error"]
+        rows, caption = app.fe_fracture_uq_summary(r)
+        assert rows == [] and caption.startswith("The λ_c uncertainty band was not computed")
+        # Without a porosity knockdown there is no b to scatter.
+        r = app.run_analysis(_delam_cfg(knockdown_split=False, onset=False,
+                                        toughness_law="none",
+                                        fracture_uq=[0, 0, 0, 0.1, 0]))
+        assert r["fe_fracture_uq"] is None and "no coefficient" in r["fe_fracture_uq_error"]
+        for bad in ([0.1, 0.1], [0.1, -0.1, 0, 0, 0], [0.1, math.nan, 0, 0, 0]):
+            with pytest.raises(ValueError, match="fracture_uq"):
+                app.run_analysis(_delam_cfg(fracture_uq=bad))
 
     def test_unresolved_layup_is_skipped_with_the_nz_fix(self):
         r = app.run_analysis(_delam_cfg(nz=6))

@@ -38,7 +38,8 @@ import scipy.sparse
 import scipy.sparse.linalg
 
 from .._ply_angles import _resolve_ply_angles
-from .._types import FEFormulation, FELoadingMode
+from .._types import FEFormulation, FELoadingMode, PorosityDegradation
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
@@ -65,6 +66,7 @@ from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
 
 if TYPE_CHECKING:
+    from ..uq import FractureLoadFactorBand
     from .decomposition import KnockdownDecomposition
     from .interlaminar import DelaminationOnset
 
@@ -141,6 +143,38 @@ class FESolver:
         :attr:`FieldResults.formulation` and in the JSON export; the
         stiffness and pristine-reference caches are keyed on it. Unknown
         values raise :class:`ValueError`.
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Keyword-only. How the local porosity degrades the ply stiffness and
+        strengths (see :data:`PorosityDegradation`). ``'isotropic'``
+        (default) projects the Mori-Tanaka tensor of the porous matrix onto
+        an isotropic one before the Halpin-Tsai ratios and scales every
+        matrix strength by the in-plane ratio ``r_m``, so a flat (penny)
+        void weakens ``E33``, ``G13``, ``G23``, ``Z_t`` and ``S_13`` no
+        more than ``E22`` and ``Y_t``; every existing result uses it.
+        ``'directional'`` keeps the transversely isotropic Mori-Tanaka
+        tensor, degrades each ply constant from its own matrix direction
+        and scales ``Z_t``, ``S_13`` and ``S_23`` by their own stiffness
+        ratios relative to the in-plane one (delamination plan 1.4; theory
+        pages on micromechanics and failure). For spherical voids, the
+        default shape, the two agree to round-off. For penny voids in the
+        ply plane at ``Vp = 0.03`` (T800/epoxy) the directional mapping
+        takes ``E33`` to 0.74 of pristine instead of 0.885, ``G13`` and
+        ``G23`` to 0.85 instead of 0.90, ``Z_t`` to 0.80 instead of 0.935
+        and ``S_13 = S_23`` to 0.87, while ``E22`` and ``G12`` recover to
+        0.97; on the production mesh the ILSS knockdown drops from 0.930 to
+        0.876 and the compression knockdown rises from 0.985 to 0.995 (flat
+        voids parallel to the load). Held by :attr:`assembler` and part of
+        its stiffness cache key, so direct, CG and thermal solves all see
+        it; the pristine reference is shared (``Vp = 0`` is identical).
+        Threaded to the failure criteria, the load factors and the interior
+        metrics; pass the same value to
+        :func:`~porosity_fe.delamination_onset`, which is post-processing
+        and cannot read it from the results (the option is not recorded on
+        :class:`FieldResults` or in the JSON export). Not calibrated
+        against measured out-of-plane constants of porous laminates, and
+        for crowded pennies (local ``Vp`` near 0.1) the Mori-Tanaka
+        out-of-plane stiffness is 7-10 % too stiff with no projection to
+        soften it. Unknown values raise :class:`ValueError`.
 
     Notes
     -----
@@ -185,6 +219,8 @@ class FESolver:
                  failure_criterion: Literal[
                      'tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu',
                  *, formulation: FEFormulation = _DEFAULT_FORMULATION,
+                 porosity_degradation: PorosityDegradation =
+                 _DEFAULT_POROSITY_DEGRADATION,
                  ) -> None:
         self.mesh = mesh
         self.material = material
@@ -201,7 +237,8 @@ class FESolver:
         # different angles, so the solve sees a different laminate.
         mesh._log_layup_warning()
         self.assembler = GlobalAssembler(mesh, material, porosity_field,
-                                         formulation=formulation)
+                                         formulation=formulation,
+                                         porosity_degradation=porosity_degradation)
         self.bc_handler = BoundaryHandler(mesh)
         if failure_criterion not in self.SUPPORTED_FAILURE_CRITERIA:
             raise ValueError(
@@ -236,6 +273,16 @@ class FESolver:
         Held by :attr:`assembler`, whose stiffness cache is keyed on it.
         """
         return self.assembler.formulation
+
+    @property
+    def porosity_degradation(self) -> PorosityDegradation:
+        """Porosity degradation mapping, ``'isotropic'`` or ``'directional'``
+        (read-only; see :data:`PorosityDegradation`).
+
+        Held by :attr:`assembler`, whose stiffness cache is keyed on it;
+        the failure criteria and load factors of :meth:`solve` follow it.
+        """
+        return self.assembler.porosity_degradation
 
     def solve(self, loading: FELoadingMode = 'compression',
               applied_strain: float | None = None,
@@ -607,7 +654,8 @@ class FESolver:
             self.mesh, self.material, self.porosity_field.void_shape_radii,
             criterion, stress_local=stress_local, load_stress_local=load_stress,
             prestress_local=prestress_local, residual_local=residual_local,
-            interior=interior, thermal_only=thermal_only, delta_T=dT)
+            interior=interior, thermal_only=thermal_only, delta_T=dT,
+            porosity_degradation=self.porosity_degradation)
 
         # Delamination: interface forces, virtual crack closure along the
         # front and the critical load factor, from the unfolded residuals.
@@ -911,7 +959,8 @@ class FESolver:
                             ) -> tuple[float, float, float, float, float, float]:
         """Porosity-degraded ply strengths; see :func:`failure.degraded_strengths`."""
         return failure.degraded_strengths(
-            self.material, self.porosity_field.void_shape_radii, elem_Vp)
+            self.material, self.porosity_field.void_shape_radii, elem_Vp,
+            porosity_degradation=self.porosity_degradation)
 
     def _evaluate_failure(self, stress_local: np.ndarray,
                           criterion: str = 'tsai_wu'
@@ -920,7 +969,8 @@ class FESolver:
         return failure.evaluate_failure(
             stress_local, self.mesh.porosity, self.mesh.elements,
             self.material, self.porosity_field.void_shape_radii, criterion,
-            void_elements=self.mesh.void_elements)
+            void_elements=self.mesh.void_elements,
+            porosity_degradation=self.porosity_degradation)
 
     def _evaluate_tsai_wu(self, s_all: np.ndarray,
                           strengths: tuple[float, float, float, float, float, float],
@@ -949,6 +999,7 @@ class FESolver:
                        include_raw: bool = False, *,
                        onset: DelaminationOnset | None = None,
                        knockdown_decomposition: KnockdownDecomposition | None = None,
+                       fracture_uncertainty: FractureLoadFactorBand | None = None,
                        ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1001,6 +1052,16 @@ class FESolver:
             (``knockdown_total``, ``knockdown_porosity_only``,
             ``knockdown_delamination_only``, ``dominant``). ``None``
             (default) writes none.
+        fracture_uncertainty : FractureLoadFactorBand, optional
+            Keyword-only. The uncertainty band on the fracture load factor
+            of these results
+            (:meth:`FieldResults.fracture_load_factor_uncertainty`),
+            written with ``fmt='json'`` as a ``fracture_uncertainty``
+            block (its :meth:`~porosity_fe.FractureLoadFactorBand.summary`:
+            the nominal value, the statistics and percentiles of the
+            draws, the inputs and their scatter, the share of draws each
+            front node governs, and the share below the required load
+            factor when one was given). ``None`` (default) writes none.
 
         Notes
         -----
@@ -1035,6 +1096,12 @@ class FESolver:
           load factors where infinite (the load drives no node to onset) or
           none was evaluated, and an interface's entry of
           ``interface_max_index`` where none of its nodes was evaluated.
+        * In the ``fracture_uncertainty`` block (with
+          ``fracture_uncertainty``): ``nominal``, an entry of
+          ``nominal_per_node`` and the statistics and percentiles where
+          infinite (no energy released), ``seed`` when unseeded, and
+          ``required_load_factor`` and ``probability_below_required``
+          without a required load factor.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
@@ -1043,4 +1110,5 @@ class FESolver:
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw, onset=onset,
-                        knockdown_decomposition=knockdown_decomposition)
+                        knockdown_decomposition=knockdown_decomposition,
+                        fracture_uncertainty=fracture_uncertainty)

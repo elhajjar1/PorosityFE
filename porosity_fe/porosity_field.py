@@ -247,7 +247,11 @@ class PorosityField:
 
     def local_porosity(self, x, y, z) -> np.ndarray:
         x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
-        Vp_dist = self._distributed_porosity(z)
+        return self._with_discrete_voids(self._distributed_porosity(z), x, y, z)
+
+    def _with_discrete_voids(self, Vp_dist: np.ndarray, x, y, z) -> np.ndarray:
+        """``Vp_dist`` with the discrete voids added (``1`` inside one),
+        clipped at 1."""
         Vp_discrete = np.zeros_like(Vp_dist)
         for void in self.discrete_voids:
             Vp_discrete = np.maximum(Vp_discrete,

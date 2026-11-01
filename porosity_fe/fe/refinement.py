@@ -27,8 +27,9 @@ from typing import Any, Literal, get_args
 import numpy as np
 from scipy.optimize import brentq
 
-from .._types import FEFormulation, FELoadingMode
+from .._types import FEFormulation, FELoadingMode, PorosityDegradation
 from ..fracture_specimens import _aligned_multiple
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION, _check_porosity_degradation
 from ..materials import MaterialProperties
 from ..mesh import (
     _D2344_ELEMENTS_PER_THICKNESS,
@@ -337,6 +338,9 @@ class RefinementStudy:
     convergence : dict of str to QuantityConvergence
         Keyed by quantity name, in report order: ``QUANTITY_KINDS``, then
         for the fracture tests ``FRACTURE_QUANTITY_KINDS``.
+    porosity_degradation : str
+        Porosity degradation mapping of every level (``'isotropic'`` or
+        ``'directional'``, :data:`porosity_fe.PorosityDegradation`).
     """
 
     loading: str
@@ -352,6 +356,7 @@ class RefinementStudy:
     delta_T: float | None
     levels: tuple[RefinementLevel, ...]
     convergence: dict[str, QuantityConvergence]
+    porosity_degradation: str = _DEFAULT_POROSITY_DEGRADATION
 
     @property
     def resolutions(self) -> tuple[tuple[int, int, int], ...]:
@@ -401,7 +406,9 @@ class RefinementStudy:
         lines = [
             f"Mesh refinement study: loading={self.loading!r}, "
             f"formulation={self.formulation!r}, criterion={self.failure_criterion!r}, "
-            f"{refine.get(self.refine, self.refine)} (refined axes: "
+            + (f"porosity_degradation={self.porosity_degradation!r}, "
+               if self.porosity_degradation != _DEFAULT_POROSITY_DEGRADATION else "")
+            + f"{refine.get(self.refine, self.refine)} (refined axes: "
             f"{', '.join(self.refined_axes)}), Vp={self.void_volume_fraction:g}"
             + (f", delta_T={self.delta_T:g} K" if self.delta_T is not None else ""),
             f"interior quantities leave out {self.interior_margin:.3g} mm "
@@ -488,6 +495,7 @@ class RefinementStudy:
             'refine': self.refine,
             'refined_axes': list(self.refined_axes),
             'formulation': self.formulation,
+            'porosity_degradation': self.porosity_degradation,
             'failure_criterion': self.failure_criterion,
             'tol': _finite_or_none(self.tol),
             'interior_margin_mm': _finite_or_none(self.interior_margin),
@@ -803,6 +811,7 @@ def refinement_study(
     resolutions: Sequence[tuple[int, int, int]] | None = None,
     refine: RefineMode = 'in_plane',
     formulation: FEFormulation | None = None,
+    porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION,
     failure_criterion: Literal['tsai_wu', 'hashin', 'max_stress'] = 'tsai_wu',
     applied_strain: float | None = None,
     applied_load: float = -10.0,
@@ -891,6 +900,10 @@ def refinement_study(
         approximate).
     formulation : {'hex8i', 'hex8'}, optional
         Element formulation; ``None`` (default) uses the solver default.
+    porosity_degradation : {'isotropic', 'directional'}
+        Porosity degradation mapping of every level, as
+        :class:`~porosity_fe.FESolver`; default ``'isotropic'``. Recorded
+        on the study and in :meth:`RefinementStudy.to_dict`.
     failure_criterion : {'tsai_wu', 'hashin', 'max_stress'}
         Criterion of the failure quantities.
     applied_strain, applied_load, delta_T : float, optional
@@ -995,6 +1008,7 @@ def refinement_study(
     if formulation not in ELEMENT_FORMULATIONS:
         raise ValueError(f"Unknown formulation {formulation!r}; use one of "
                          f"{list(ELEMENT_FORMULATIONS)}.")
+    _check_porosity_degradation(porosity_degradation)
     if failure_criterion not in FESolver.SUPPORTED_FAILURE_CRITERIA:
         raise ValueError(f"Unknown failure_criterion {failure_criterion!r}; use one "
                          f"of {list(FESolver.SUPPORTED_FAILURE_CRITERIA)}.")
@@ -1177,7 +1191,8 @@ def refinement_study(
             margin = max(mesh.L_z, 2.0 * mesh.L_x / mesh.nx, 2.0 * mesh.L_y / mesh.ny)
         size = float(np.prod([dims[a] / res[a] for a in axes]) ** (1.0 / len(axes)))
         fe = FESolver(mesh, material, field, ply_angles=ply_angles,
-                      failure_criterion=failure_criterion, formulation=formulation)
+                      failure_criterion=failure_criterion, formulation=formulation,
+                      porosity_degradation=porosity_degradation)
         quiet = warnings.catch_warnings() if solver == 'minres' \
             else contextlib.nullcontext()
         with quiet:
@@ -1224,4 +1239,5 @@ def refinement_study(
         applied_strain=None if applied_strain is None else float(applied_strain),
         applied_load=float(applied_load),
         delta_T=None if delta_T is None else float(delta_T),
-        levels=tuple(levels), convergence=convergence)
+        levels=tuple(levels), convergence=convergence,
+        porosity_degradation=porosity_degradation)

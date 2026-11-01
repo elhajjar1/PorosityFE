@@ -70,6 +70,8 @@ def fracture_outputs(
     FractureOutputs
         The front table at the applied state (``load`` plus
         ``prestress``), its smallest critical load factor and that node.
+        With ``prestress`` the table's ``parts`` are the two parts'
+        tables (``(moving, fixed)``).
     """
     u, r = load
     if prestress is not None:
@@ -97,7 +99,10 @@ def fracture_outputs(
         G_c = vcct.critical_energy_release_rate(
             material, front.G_I, front.G_II, front.G_III, Vp=front.Vp,
             toughness_knockdown=law)
+        # The two parts stay on the table, so the factor can be
+        # re-evaluated for other toughness values without a solve.
         front = dataclasses.replace(front, G_c=G_c, lambda_c=lam,
+                                    parts=(moving, fixed),
                                     **vcct._toughness_record(law, front.Vp))
     row = front.governing
     return FractureOutputs(

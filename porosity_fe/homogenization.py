@@ -6,6 +6,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from ._types import PorosityDegradation
 from .materials import MaterialProperties
 from .transforms import rotate_stiffness_3d
 from .void_geometry import VOID_SHAPES
@@ -219,14 +220,96 @@ def _mt_effective_stiffness_cached(C_m_00: float, C_m_33: float, Vp: float,
     return _mori_tanaka_voids(C_m, S, Vp)
 
 
+#: Porosity degradation mappings accepted by ``porosity_degradation=`` (see
+#: :data:`porosity_fe.PorosityDegradation`). ``'isotropic'`` projects the
+#: Mori-Tanaka tensor of the porous matrix onto an isotropic one before the
+#: Halpin-Tsai ratios; ``'directional'`` keeps it transversely isotropic and
+#: degrades each ply constant from its own matrix direction.
+POROSITY_DEGRADATIONS: tuple[str, ...] = ('isotropic', 'directional')
+
+#: Mapping used when ``porosity_degradation=`` is not given, by
+#: :class:`~porosity_fe.fe.solver.FESolver`, ``GlobalAssembler``,
+#: ``build_element_batch``, ``Hex8Element`` and the failure criteria
+#: alike: the historical isotropic projection.
+_DEFAULT_POROSITY_DEGRADATION: PorosityDegradation = 'isotropic'
+
+
+def _check_porosity_degradation(porosity_degradation: str) -> str:
+    """Return ``porosity_degradation`` if it is supported, else raise ``ValueError``."""
+    if porosity_degradation not in POROSITY_DEGRADATIONS:
+        raise ValueError(
+            f"Unknown porosity_degradation {porosity_degradation!r}. "
+            f"Use one of {list(POROSITY_DEGRADATIONS)}."
+        )
+    return porosity_degradation
+
+
+def _isotropic_matrix_constants(C_eff: np.ndarray, nu_m: float
+                                ) -> tuple[float, float, float]:
+    """``(E_m*, G_m*, nu_m*)`` of the isotropic (Voigt-average) projection
+    of the Mori-Tanaka tensor ``C_eff`` (``porosity_degradation='isotropic'``).
+
+    For spherical voids ``C_eff`` is isotropic and this returns its Lame
+    constants exactly; cylindrical / penny voids give an anisotropic
+    ``C_eff``, whose directions the projection averages away. ``E_m*`` and
+    ``G_m*`` are floored at 1 MPa.
+    """
+    bulk_eff = (np.trace(C_eff[:3, :3])
+                + 2.0 * (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])) / 9.0
+    mu_eff = (np.trace(C_eff[:3, :3])
+              - (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])
+              + 3.0 * np.trace(C_eff[3:, 3:])) / 15.0
+    lam_eff = bulk_eff - 2.0 * mu_eff / 3.0
+    denom = lam_eff + mu_eff
+    G_m_eff = max(mu_eff, 1.0)
+    E_m_eff = mu_eff * (3.0 * lam_eff + 2.0 * mu_eff) / denom if denom > 1e-12 else 1.0
+    E_m_eff = max(E_m_eff, 1.0)
+    nu_m_eff = lam_eff / (2.0 * denom) if denom > 1e-12 else nu_m
+    return E_m_eff, G_m_eff, nu_m_eff
+
+
+def _directional_matrix_constants(C_eff: np.ndarray, nu_m: float
+                                  ) -> tuple[float, float, float, float,
+                                             float, float, float, float]:
+    """Engineering constants of the porous matrix read from the Mori-Tanaka
+    tensor ``C_eff`` direction by direction
+    (``porosity_degradation='directional'``).
+
+    From the normal block of the compliance ``S* = inv(C*[:3, :3])``:
+    ``E*_i = 1 / S*_ii``, ``nu*_12 = -S*_12 / S*_11``,
+    ``nu*_13 = -S*_13 / S*_11``; the shear moduli are the shear diagonal,
+    ``G*_23, G*_13, G*_12 = C*_44, C*_55, C*_66``. Returns ``(E*_1, E*_2,
+    E*_3, G*_23, G*_13, G*_12, nu*_12, nu*_13)`` in the void's axes, which
+    are the ply's material axes: ``a_1`` along the fibres, ``a_3`` through
+    the thickness. Moduli are floored at 1 MPa; a Poisson's ratio that
+    cannot be read (singular compliance) falls back to ``nu_m``.
+    """
+    try:
+        S = np.linalg.inv(C_eff[:3, :3])
+    except np.linalg.LinAlgError:
+        S = np.linalg.pinv(C_eff[:3, :3])
+    E = [1.0 / S[i, i] if S[i, i] > 1e-300 else 1.0 for i in range(3)]
+    E = [max(e, 1.0) if np.isfinite(e) else 1.0 for e in E]
+    ok = S[0, 0] > 1e-300
+    nu12 = float(-S[0, 1] / S[0, 0]) if ok else nu_m
+    nu13 = float(-S[0, 2] / S[0, 0]) if ok else nu_m
+    G = [max(float(C_eff[k, k]), 1.0) for k in (3, 4, 5)]
+    return (E[0], E[1], E[2], G[0], G[1], G[2],
+            nu12 if np.isfinite(nu12) else nu_m,
+            nu13 if np.isfinite(nu13) else nu_m)
+
+
 def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
-                                  mat: MaterialProperties) -> np.ndarray:
+                                  mat: MaterialProperties, *,
+                                  porosity_degradation: PorosityDegradation =
+                                  _DEFAULT_POROSITY_DEGRADATION) -> np.ndarray:
     """Build porosity-degraded composite stiffness via component-wise micromechanics.
 
     Rather than applying a single scalar degradation ratio, this function:
-    1. Uses Mori-Tanaka to get degraded matrix modulus E_m* and G_m*
-    2. Re-applies rule-of-mixtures with degraded matrix to get degraded
-       composite engineering constants (E11*, E22*, G12*, etc.)
+    1. Uses Mori-Tanaka to get degraded matrix constants (E_m*, G_m*, nu_m*)
+    2. Re-applies rule-of-mixtures / Halpin-Tsai with the degraded matrix to
+       get degradation *ratios* of the composite engineering constants
+       (E11*, E22*, G12*, etc.), applied to the measured ply constants
     3. Builds the full 6x6 stiffness from those degraded constants.
 
     This correctly captures that porosity (matrix voids) barely affects
@@ -237,19 +320,47 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     Vp : float
         Local void volume fraction (0 to 1).
     void_shape_radii : tuple
-        (a1, a2, a3) for Eshelby tensor.
+        (a1, a2, a3) for Eshelby tensor, in the ply's material axes: ``a1``
+        along the fibres, ``a2`` transverse in the ply plane, ``a3``
+        through the thickness (a penny void lies in the ply plane, a
+        cylindrical one runs along the fibres).
     mat : MaterialProperties
         Material with constituent properties (E_f, E_m, V_f, etc.).
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Keyword-only. ``'isotropic'`` (default) takes the isotropic
+        (Voigt-average) projection of the Mori-Tanaka tensor, so one
+        ``E_m*``, ``G_m*`` and ``nu_m*`` degrade every ply constant:
+        ``E33`` by the ratio of ``E22``, ``G13`` and ``G23`` by that of
+        ``G12``, ``nu13`` by that of ``nu12``. ``'directional'`` keeps the
+        transversely isotropic Mori-Tanaka tensor and degrades each ply
+        constant from its own matrix direction: ``E11`` by rule of mixtures
+        with ``E*_1``; ``E22`` and ``E33`` by Halpin-Tsai (``xi = 2``) with
+        ``E*_2`` and ``E*_3``; ``G12``, ``G13`` and ``G23`` by Halpin-Tsai
+        (``xi = 1``) with their own matrix shear modulus; ``nu12`` and
+        ``nu13`` by rule of mixtures with ``nu*_12`` and ``nu*_13``;
+        ``nu23`` unchanged. For spherical voids the Mori-Tanaka tensor is
+        isotropic and the two mappings agree to round-off; for penny
+        (oblate) and cylindrical voids only ``'directional'`` weakens the
+        out-of-plane constants more than the in-plane ones (see the theory
+        page on micromechanics).
 
     Returns
     -------
     np.ndarray
         Shape (6, 6) degraded composite stiffness in material coordinates.
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``porosity_degradation``, or (``'directional'``
+        only) when the degraded ply compliance is not positive definite,
+        which no preset reaches for any void shape at ``Vp <= 0.99``.
     """
     if Vp < 1e-12:
         return mat.get_stiffness_matrix()
     if Vp > 0.99:
         return np.zeros((6, 6))
+    _check_porosity_degradation(porosity_degradation)
 
     E_m = mat.matrix_modulus
     nu_m = mat.matrix_poisson
@@ -262,22 +373,17 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     C_m = mat.get_isotropic_matrix_stiffness()
     C_eff = _mt_effective_stiffness(C_m, Vp, void_shape_radii, nu_m)
 
-    # Degraded matrix moduli from the isotropic (Voigt-average) projection
-    # of the Mori-Tanaka tensor. For spherical voids C_eff is isotropic and
-    # this returns its Lame constants exactly; cylindrical / penny voids
-    # give an anisotropic C_eff, where reading single entries such as
-    # C[3,3] and C[0,1] would pick one plane's values arbitrarily.
-    bulk_eff = (np.trace(C_eff[:3, :3])
-                + 2.0 * (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])) / 9.0
-    mu_eff = (np.trace(C_eff[:3, :3])
-              - (C_eff[0, 1] + C_eff[0, 2] + C_eff[1, 2])
-              + 3.0 * np.trace(C_eff[3:, 3:])) / 15.0
-    lam_eff = bulk_eff - 2.0 * mu_eff / 3.0
-    denom = lam_eff + mu_eff
-    G_m_eff = max(mu_eff, 1.0)
-    E_m_eff = mu_eff * (3.0 * lam_eff + 2.0 * mu_eff) / denom if denom > 1e-12 else 1.0
-    E_m_eff = max(E_m_eff, 1.0)
-    nu_m_eff = lam_eff / (2.0 * denom) if denom > 1e-12 else nu_m
+    # The porous matrix constants each ply constant is degraded from:
+    # (E*_1, E*_2, E*_3, G*_23, G*_13, G*_12, nu*_12, nu*_13). The isotropic
+    # projection uses one E_m*, G_m* and nu_m* for every direction.
+    if porosity_degradation == 'directional':
+        (E1_eff, E2_eff, E3_eff, G23_eff, G13_eff, G12_eff,
+         nu12_eff, nu13_eff) = _directional_matrix_constants(C_eff, nu_m)
+    else:
+        E_m_eff, G_m_eff, nu_m_eff = _isotropic_matrix_constants(C_eff, nu_m)
+        E1_eff = E2_eff = E3_eff = E_m_eff
+        G23_eff = G13_eff = G12_eff = G_m_eff
+        nu12_eff = nu13_eff = nu_m_eff
 
     # --- Step 2: Compute degradation RATIOS via micromechanics ---
     # Use Halpin-Tsai with pristine and degraded matrix to get ratios,
@@ -289,10 +395,10 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
 
     # E11 ratio (Rule of Mixtures — fiber-dominated, barely affected)
     E11_rom_prist = Vf * E_f + Vm * E_m
-    E11_rom_deg = Vf * E_f + Vm * E_m_eff
+    E11_rom_deg = Vf * E_f + Vm * E1_eff
     r_E11 = E11_rom_deg / E11_rom_prist  # ~0.999 for 5% porosity
 
-    # E22 ratio (Halpin-Tsai — matrix-dominated, strongly affected)
+    # E22, E33 ratios (Halpin-Tsai — matrix-dominated, strongly affected)
     xi_HT = 2.0
     def _halpin_tsai(Ef, Em, xi, vf):
         ratio = Ef / Em
@@ -300,34 +406,38 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
         return Em * (1.0 + xi * eta * vf) / (1.0 - eta * vf)
 
     E22_HT_prist = _halpin_tsai(E_f, E_m, xi_HT, Vf)
-    E22_HT_deg = _halpin_tsai(E_f, E_m_eff, xi_HT, Vf)
-    r_E22 = E22_HT_deg / E22_HT_prist
+    r_E22 = _halpin_tsai(E_f, E2_eff, xi_HT, Vf) / E22_HT_prist
+    r_E33 = _halpin_tsai(E_f, E3_eff, xi_HT, Vf) / E22_HT_prist
 
-    # G12 ratio (Halpin-Tsai — matrix-dominated)
+    # G12, G13, G23 ratios (Halpin-Tsai — matrix-dominated). The same
+    # Halpin-Tsai form (xi = 1, fiber G_f) for all three: with the
+    # isotropic projection the three ratios are equal by construction (a
+    # G23-specific xi would change results without data to calibrate it
+    # against); the directional mapping separates them through the matrix
+    # shear moduli only.
     xi_G = 1.0
     G12_HT_prist = _halpin_tsai(G_f, G_m, xi_G, Vf)
-    G12_HT_deg = _halpin_tsai(G_f, G_m_eff, xi_G, Vf)
-    r_G12 = G12_HT_deg / G12_HT_prist
+    r_G12 = _halpin_tsai(G_f, G12_eff, xi_G, Vf) / G12_HT_prist
+    r_G13 = _halpin_tsai(G_f, G13_eff, xi_G, Vf) / G12_HT_prist
+    r_G23 = _halpin_tsai(G_f, G23_eff, xi_G, Vf) / G12_HT_prist
 
-    # G23 ratio: the same Halpin-Tsai form (xi = 1, fiber G_f) as G12, so
-    # the two ratios are equal by construction. A G23-specific xi would
-    # change results without data to calibrate it against.
-    r_G23 = r_G12
-
-    # nu12 ratio (Rule of Mixtures — weakly affected)
+    # nu12, nu13 ratios (Rule of Mixtures — weakly affected)
     nu12_rom_prist = Vf * nu_f + Vm * nu_m
-    nu12_rom_deg = Vf * nu_f + Vm * nu_m_eff
-    r_nu12 = nu12_rom_deg / nu12_rom_prist if abs(nu12_rom_prist) > 1e-12 else 1.0
+    if abs(nu12_rom_prist) > 1e-12:
+        r_nu12 = (Vf * nu_f + Vm * nu12_eff) / nu12_rom_prist
+        r_nu13 = (Vf * nu_f + Vm * nu13_eff) / nu12_rom_prist
+    else:
+        r_nu12 = r_nu13 = 1.0
 
     # --- Step 3: Apply ratios to actual measured properties ---
     E11_deg = mat.E11 * r_E11
     E22_deg = mat.E22 * r_E22
-    E33_deg = mat.E33 * r_E22  # same as E22 (transverse isotropy)
+    E33_deg = mat.E33 * r_E33  # the ratio of E22 for 'isotropic'
     G12_deg = mat.G12 * r_G12
-    G13_deg = mat.G13 * r_G12  # same as G12
+    G13_deg = mat.G13 * r_G13  # the ratio of G12 for 'isotropic'
     G23_deg = mat.G23 * r_G23
     nu12_deg = mat.nu12 * r_nu12
-    nu13_deg = mat.nu13 * r_nu12
+    nu13_deg = mat.nu13 * r_nu13  # the ratio of nu12 for 'isotropic'
     nu23_deg = mat.nu23  # weakly affected, keep constant
 
     # --- Step 4: Build compliance matrix from degraded constants ---
@@ -341,6 +451,28 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
     S[3, 3] = 1.0 / G23_deg
     S[4, 4] = 1.0 / G13_deg
     S[5, 5] = 1.0 / G12_deg
+
+    if porosity_degradation == 'directional':
+        # The directional constants are read from different directions of
+        # one tensor, so check that they still make a physical (positive
+        # definite) compliance before it is inverted. With nu23 held at its
+        # pristine value this needs nu23^2 < E22* / E33*, which only a flat
+        # void normal to the transverse in-plane axis (radii like
+        # (3, 0.3, 3), a transverse-crack shape) breaks, at Vp >= 0.4; the
+        # three preset shapes pass for every preset up to Vp = 0.99.
+        try:
+            np.linalg.cholesky(S)
+        except np.linalg.LinAlgError:
+            raise ValueError(
+                f"porosity_degradation='directional' gives a ply compliance "
+                f"that is not positive definite at Vp={Vp:.4g} for void "
+                f"shape radii {tuple(void_shape_radii)}: E11={E11_deg:.4g}, "
+                f"E22={E22_deg:.4g}, E33={E33_deg:.4g} MPa, nu12="
+                f"{nu12_deg:.4g}, nu13={nu13_deg:.4g}, nu23={nu23_deg:.4g} "
+                f"(nu23 is held at its pristine value, so the void must not "
+                f"weaken E22 past nu23^2 E33). Use porosity_degradation="
+                f"'isotropic' for this void shape at this porosity."
+            ) from None
 
     return np.linalg.inv(S)
 

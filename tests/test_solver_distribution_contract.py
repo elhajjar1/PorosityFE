@@ -55,13 +55,13 @@ def _per_node_porosity(distribution):
     return np.asarray(mesh.porosity)
 
 
-def _fe_max_failure_index(distribution):
+def _fe_max_failure_index(distribution, nz=24):
     pf = PorosityField(MATERIAL, VP, distribution=distribution)
     # nz=24 gives each of the 24 plies its own element layer (an nz that merges
     # plies analyzes a different laminate) and resolves the through-thickness
     # clustering; the thin elements raise a benign mesh-distortion heads-up
     # that is irrelevant to this contract.
-    mesh = CompositeMesh(pf, MATERIAL, nx=3, ny=2, nz=24)
+    mesh = CompositeMesh(pf, MATERIAL, nx=3, ny=2, nz=nz)
     solver = FESolver(mesh, MATERIAL, pf)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -107,10 +107,22 @@ def test_fe_failure_index_depends_on_distribution():
     # index (observed ~0.3%); fp noise on this deterministic solve is ~1e-10.
     assert spread > 1e-3
 
-    # Concentrating porosity (clustered / interface) creates a worse local
-    # hot-spot than a uniform field of the same mean Vp.
+    # Concentrating porosity creates a worse local hot-spot than a uniform
+    # field of the same mean Vp.
     assert fi['clustered'] > fi['uniform']
-    assert fi['interface'] > fi['uniform']
+
+
+def test_fe_sees_interface_clustering_once_the_mesh_resolves_it():
+    """The ``interface`` Gaussians (sigma = 0.35 t_ply) are narrower than a
+    ply. With one element layer per ply the FE field, scaled to its
+    requested mean (plan item 0.4), is constant inside every interior ply,
+    so the hot spot is gone; its earlier lead over uniform came from the
+    18 % of excess porosity the nodes sampled on the peaks. Four layers per
+    ply resolve the peaks, and the hot spot comes back, small: the porosity
+    sits in thin layers that the in-plane compression index barely sees."""
+    resolved = {d: _fe_max_failure_index(d, nz=96) for d in ('uniform', 'interface')}
+    assert resolved['interface'] > resolved['uniform']
+    assert resolved['interface'] / resolved['uniform'] < 1.002
 
 
 def test_empirical_blind_but_fe_sensitive_on_the_same_contrast():

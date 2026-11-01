@@ -26,7 +26,8 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from .._types import FEFormulation, FELoadingMode
+from .._types import FEFormulation, FELoadingMode, PorosityDegradation
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..porosity_field import PorosityField
@@ -146,6 +147,7 @@ def knockdown_decomposition(
     allow_unresolved_layup: bool = False,
     crack_contact: bool = True,
     formulation: FEFormulation = _DEFAULT_FORMULATION,
+    porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION,
     solver: Literal['direct', 'cg'] = 'direct',
     rtol: float = 1e-9,
     total: FieldResults | None = None,
@@ -182,6 +184,9 @@ def knockdown_decomposition(
         crack-face pairs in contact.
     formulation : {'hex8i', 'hex8'}
         Element formulation, as :class:`~porosity_fe.FESolver`.
+    porosity_degradation : {'isotropic', 'directional'}
+        Porosity degradation mapping, as :class:`~porosity_fe.FESolver`,
+        for all three solves (the same value as ``total``'s solve).
     total : FieldResults, optional
         The solve of ``mesh`` with the same arguments, when it has already
         been run: its :attr:`~porosity_fe.FieldResults.knockdown` is used
@@ -213,7 +218,8 @@ def knockdown_decomposition(
             "decompose; use a mechanical loading mode.")
     def solve(variant: CompositeMesh) -> float:
         result = FESolver(variant, material, porosity_field,
-                          formulation=formulation).solve(
+                          formulation=formulation,
+                          porosity_degradation=porosity_degradation).solve(
             loading, applied_strain=applied_strain, applied_load=applied_load,
             solver=solver, rtol=rtol, delta_T=delta_T,
             allow_unresolved_layup=allow_unresolved_layup,

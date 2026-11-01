@@ -33,16 +33,29 @@ The mean $\langle f \rangle$ is evaluated on 1000 points.
 
 Because every profile is renormalized to the same mean, the empirical
 solver (which uses only $\bar V_p$) gives the same answer for all three.
-The FE solver samples $V_p$ at every node and does see the difference, with
-one caveat for `interface`. With one element layer per ply
+The FE solver samples $V_p$ at every node and does see the difference.
+
+The FE interpolates the nodal values trilinearly, so its volume average of
+a profile is the trapezoid integral over the node layers. The `interface`
+Gaussians are narrow, and with one element layer per ply
 ($n_z = n_\text{plies}$) every interface is a node layer, so the nodes
-sample the Gaussian peaks, and the FE volume average comes out above the
-requested mean: 0.0354 for $\bar V_p = 0.03$ on the 24-ply presets. Part of
-the lower FE knockdown of interface porosity is this, and most of the rest
+sample the peaks and that average would come out 18 % above the requested
+mean (0.0354 for $\bar V_p = 0.03$ on the 24-ply presets). The mesh
+therefore scales the sampled `interface` profile so its FE volume average
+is exactly $\bar V_p$; the factor is
+{attr}`CompositeMesh.porosity_renormalization <porosity_fe.CompositeMesh.porosity_renormalization>`,
+0.848 on one layer per ply and within 0.1 % of 1 on finer meshes. The
+`clustered` profile is resolved and is not scaled (its FE average is within
+0.2 % of $\bar V_p$). Point values on an interface plane, the toughness at
+a crack front and the interface onset strengths, read the unscaled field
+there ({meth}`CompositeMesh.field_porosity <porosity_fe.CompositeMesh.field_porosity>`),
+about $1.25\,\bar V_p$, so they do not depend on the mesh.
+
+With that, the lower FE knockdown of interface penny porosity is almost all
 the void shape: at 3 %, on a $12 \times 4 \times 24$ mesh, the compression
-knockdowns are 0.9924 for uniform spherical voids, 0.9846 for uniform
-penny voids, 0.9824 for uniform penny voids at 0.0354, and 0.9819 for
-interface penny voids.
+knockdowns are 0.9924 for uniform spherical voids, 0.9921 for interface
+spherical voids, 0.9846 for uniform penny voids and 0.9842 for interface
+penny voids.
 
 ## Void shapes
 

@@ -132,6 +132,16 @@ class CrackFront:
         lowered the toughness (the default exponential law and some front
         node with ``Vp > 0``); ``False`` otherwise, ``None`` without
         toughness data.
+    parts : (CrackFront, CrackFront) or None
+        The two parts of a front under a prestress, ``(moving, fixed)``:
+        the part the load factor scales (the mechanical load) and the
+        fixed part (the thermal residual state), each a table on the same
+        front nodes without toughness; this table is their sum (``lam =
+        1``). Set by :func:`fracture_load_factors` with ``prestress`` and
+        by a combined solve (``delta_T`` with a mechanical load), ``None``
+        for a front with a single part. Kept so the load factor can be
+        re-evaluated for other toughness values without a solve
+        (:func:`~porosity_fe.fracture_load_factor_uncertainty`).
 
     See Also
     --------
@@ -161,6 +171,7 @@ class CrackFront:
     lambda_c: np.ndarray | None = None
     toughness_knockdown: ToughnessKnockdown | None = None
     toughness_uncalibrated: bool | None = None
+    parts: tuple[CrackFront, CrackFront] | None = None
 
     def __len__(self) -> int:
         return int(self.node.size)
@@ -403,11 +414,13 @@ def _evaluate(geometry: _FrontGeometry, mesh: CompositeMesh,
 
 def _front_porosity(mesh: CompositeMesh, geometry: _FrontGeometry) -> np.ndarray:
     """Porosity at the crack plane of every front pair: the mean of the
-    mesh porosity at its original and duplicate node. The duplicate holds a
-    copy of the original's value, so this is the porosity field sampled at
-    the interface node."""
-    porosity = np.asarray(mesh.porosity, dtype=float)
-    return 0.5 * (porosity[geometry.node] + porosity[geometry.duplicate])
+    porosity field at its original and duplicate node
+    (:meth:`CompositeMesh.field_porosity`, without the ``'interface'``
+    renormalization of the stiffness field). The duplicate holds a copy of
+    the original's value, so this is the field sampled at the interface
+    node."""
+    return 0.5 * (mesh.field_porosity(geometry.node)
+                  + mesh.field_porosity(geometry.duplicate))
 
 
 def _pair_forces(mesh: CompositeMesh, nodal_forces: np.ndarray,
@@ -634,6 +647,12 @@ def critical_energy_release_rate(material: MaterialProperties,
                          G_I, G_II, G_III)
 
 
+#: Geometric grid that brackets the prestress root, ``scale`` times these
+#: (12 % steps over twelve decades), in :func:`_thermal_factor` and
+#: :func:`_thermal_factors_batch`.
+_ROOT_GRID = np.geomspace(1e-6, 1e6, 241)
+
+
 def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
                     D_M: np.ndarray, area: float,
                     toughness: tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -670,7 +689,7 @@ def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
     # well inside 1e-6 .. 1e6 of it.
     G_c_M = G_c_at(g_M)
     scale = math.sqrt(G_c_M / float(g_M.sum()))
-    grid = scale * np.geomspace(1e-6, 1e6, 241)
+    grid = scale * _ROOT_GRID
     prev, f_prev = 0.0, excess(0.0)
     for lam in grid:
         f = excess(float(lam))
@@ -689,6 +708,113 @@ def _thermal_factor(F_T: np.ndarray, D_T: np.ndarray, F_M: np.ndarray,
                                                xtol=1e-14 * float(lam), rtol=1e-12))
         prev, f_prev = float(lam), f
     return math.inf
+
+
+def _rates_at(F_P: np.ndarray, D_P: np.ndarray, F_M: np.ndarray, D_M: np.ndarray,
+              area: np.ndarray, lam: np.ndarray
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(G_I, G_II, G_III)`` of every front node at ``u = u_P + lam u_M``.
+
+    ``F_P, D_P, F_M, D_M`` are the ``(n, 3)`` local forces and openings of
+    the fixed and moving parts, ``area`` the ``(n,)`` tributary areas and
+    ``lam`` an array of factors whose last axis is the ``n`` nodes (one row
+    per draw, say). The mode I product is clipped at zero, the shear ones
+    signed, as in :func:`_rates`; each output has the shape of ``lam``.
+    """
+    lam = np.asarray(lam, dtype=float)[..., None]
+    work = _clip_mode_I(-(F_P + lam * F_M) * (D_P + lam * D_M) / (2.0 * area[:, None]))
+    return work[..., 1], work[..., 0], work[..., 2]
+
+
+def _thermal_factors_batch(prestress: CrackFront, front: CrackFront,
+                           toughness: tuple[np.ndarray, np.ndarray, np.ndarray],
+                           eta: float | np.ndarray, *,
+                           max_bisections: int = 128) -> np.ndarray:
+    """Critical factors of every front node for a batch of toughness values.
+
+    The vectorised :func:`_thermal_factor`: ``toughness`` holds the
+    pure-mode toughness ``(G_Ic, G_IIc, G_IIIc)`` of ``m`` toughness sets
+    at the ``n`` front nodes, each broadcastable to ``(m, n)``, and ``eta``
+    is a float or an ``(m, 1)`` array; the front is ``prestress + lam *
+    front`` for every set. Returns ``(m, n)``: the smallest positive root
+    of ``G_T(lam) = G_c(psi(lam))`` per node and set, 0 where the prestress
+    alone reaches the toughness and ``inf`` where the load drives no
+    energy.
+
+    The root is bracketed on the same geometric grid as
+    :func:`_thermal_factor` and then refined by bisection on the sign of
+    ``G_T - G_c`` until the bracket is a few ULP wide (``max_bisections``
+    halvings at most), instead of :func:`scipy.optimize.brentq`; the two
+    agree to brentq's tolerance (about 1e-12 relative). One toughness set
+    at the nominal values reproduces :func:`fracture_load_factors` to that
+    tolerance, not bit for bit.
+    """
+    F_P, D_P = prestress.force_local, prestress.opening_local
+    F_M, D_M = front.force_local, front.opening_local
+    area = front.area
+    n = len(front)
+    G_Ic, G_IIc, G_IIIc = (np.asarray(t, dtype=float) for t in toughness)
+    # A scalar eta stays a float: ``psi ** eta`` then takes the same path
+    # as the scalar root.
+    eta_b: float | np.ndarray = (float(eta) if np.ndim(eta) == 0
+                                 else np.asarray(eta, dtype=float))
+    shape = np.broadcast_shapes(G_Ic.shape, G_IIc.shape, G_IIIc.shape,
+                                np.shape(eta_b), (1, n))
+    if len(shape) != 2 or shape[1] != n:
+        raise ValueError(
+            f"toughness arrays must broadcast to (m, {n}) (one row per set, "
+            f"one column per front node); got {shape}.")
+    tough = (G_Ic, G_IIc, G_IIIc)
+
+    def excess(lam: np.ndarray) -> np.ndarray:
+        """``G_T(lam) - G_c(psi(lam))``; ``-inf`` where ``G_T = 0``."""
+        G_I, G_II, G_III = _rates_at(F_P, D_P, F_M, D_M, area, lam)
+        G_T = G_I + G_II + G_III
+        with np.errstate(invalid='ignore'):
+            G_c = _bk_toughness(tough, eta_b, G_I, G_II, G_III)
+            return np.where(G_T > 0.0, G_T - G_c, -np.inf)
+
+    out = np.full(shape, np.inf)
+    # The prestress alone reaches the toughness: the root is 0.
+    at_zero = excess(np.zeros(shape)) >= 0.0
+    out[at_zero] = 0.0
+    # The scale of the grid is the mechanical estimate sqrt(G_c / G_T) of
+    # the moving part alone; nodes it does not drive stay at inf.
+    G_I_M, G_II_M, G_III_M = _rates(F_M, D_M, area)
+    G_T_M = G_I_M + G_II_M + G_III_M
+    with np.errstate(invalid='ignore', divide='ignore'):
+        G_c_M = _bk_toughness(tough, eta_b, G_I_M, G_II_M, G_III_M)
+        scale = np.sqrt(G_c_M / np.where(G_T_M > 0.0, G_T_M, 1.0))
+    active = ~at_zero & np.broadcast_to(G_T_M > 0.0, shape)
+    scale = np.where(active, scale, 1.0)
+    lo = np.zeros(shape)
+    hi = np.full(shape, np.inf)
+    found = np.zeros(shape, dtype=bool)
+    for g in _ROOT_GRID:
+        lam = scale * g
+        f = excess(lam)
+        hit = active & ~found & (f >= 0.0)
+        hi[hit] = lam[hit]
+        found |= hit
+        pending = active & ~found
+        lo[pending] = lam[pending]
+        if not pending.any():
+            break
+    # Bisect on the sign in every bracket at once. Brentq would reach the
+    # same root; the sign alone also covers a bracket whose lower end has
+    # G_T = 0 (excess -inf), as the scalar version's fallback does. An
+    # entry without a bracket stays finite (and unused) so the products
+    # never meet inf * 0.
+    hi[~found] = lo[~found]
+    for _ in range(max_bisections):
+        mid = 0.5 * (lo + hi)
+        up = excess(mid) >= 0.0
+        hi = np.where(found & up, mid, hi)
+        lo = np.where(found & ~up, mid, lo)
+        if not np.any(found & (hi - lo > 4.0 * np.finfo(float).eps * hi)):
+            break
+    out[found] = hi[found]
+    return out
 
 
 def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
@@ -734,7 +860,9 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
     CrackFront
         With ``G_c``, ``lambda_c``, ``toughness_knockdown`` and
         ``toughness_uncalibrated`` filled; with ``prestress`` the energy
-        release rates are those of the sum (``lam = 1``).
+        release rates are those of the sum (``lam = 1``) and ``parts`` is
+        ``(front, prestress)``, without it ``parts`` is ``None`` (the
+        factor scales the whole of ``front``).
 
     Raises
     ------
@@ -753,10 +881,8 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
             lam = np.where(front.G_T > 0.0,
                            np.sqrt(G_c / np.where(front.G_T > 0.0, front.G_T, 1.0)),
                            np.inf)
-        return dataclasses.replace(front, G_c=G_c, lambda_c=lam, **record)
-    if prestress.node.shape != front.node.shape or \
-            not np.array_equal(prestress.node, front.node):
-        raise ValueError("prestress must be a CrackFront on the same front nodes.")
+        return dataclasses.replace(front, G_c=G_c, lambda_c=lam, parts=None, **record)
+    _check_same_front(prestress, front)
     area = front.area
     force = prestress.force_local + front.force_local
     opening = prestress.opening_local + front.opening_local
@@ -772,7 +898,15 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
     G_c = _bk_toughness(toughness, eta, G_I, G_II, G_III)
     return dataclasses.replace(
         front, force_local=force, opening_local=opening, G_I=G_I, G_II=G_II,
-        G_III=G_III, G_T=G_T, psi=psi, G_c=G_c, lambda_c=lam, **record)
+        G_III=G_III, G_T=G_T, psi=psi, G_c=G_c, lambda_c=lam,
+        parts=(front, prestress), **record)
+
+
+def _check_same_front(prestress: CrackFront, front: CrackFront) -> None:
+    """Raise unless ``prestress`` is a table on the nodes of ``front``."""
+    if prestress.node.shape != front.node.shape or \
+            not np.array_equal(prestress.node, front.node):
+        raise ValueError("prestress must be a CrackFront on the same front nodes.")
 
 
 def _toughness_record(law: ToughnessKnockdown, Vp: np.ndarray) -> dict:

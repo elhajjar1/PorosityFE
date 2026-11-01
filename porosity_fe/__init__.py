@@ -69,6 +69,7 @@ from ._types import FELoadingMode as FELoadingMode  # noqa: F401, E402
 from ._types import KnockdownModel as KnockdownModel  # noqa: F401, E402
 from ._types import LoadingMode as LoadingMode  # noqa: F401, E402
 from ._types import MeshFace as MeshFace  # noqa: F401, E402
+from ._types import PorosityDegradation as PorosityDegradation  # noqa: F401, E402
 from .cli import DEFAULT_POROSITY_LEVELS as DEFAULT_POROSITY_LEVELS  # noqa: F401, E402
 from .cli import _build_arg_parser as _build_arg_parser  # noqa: F401, E402
 from .cli import _configure_cli_logging as _configure_cli_logging  # noqa: F401, E402
@@ -158,8 +159,10 @@ from .transforms import rotation_matrix_3d as rotation_matrix_3d  # noqa: F401, 
 from .transforms import strain_transformation_3d as strain_transformation_3d  # noqa: F401, E402
 from .transforms import stress_transformation_3d as stress_transformation_3d  # noqa: F401, E402
 from .uq import _UQ_DEFAULT_PERCENTILES as _UQ_DEFAULT_PERCENTILES  # noqa: F401, E402
+from .uq import FractureLoadFactorBand as FractureLoadFactorBand  # noqa: F401, E402
 from .uq import _draw_unit_samples as _draw_unit_samples  # noqa: F401, E402
 from .uq import _normalize_uq_spec as _normalize_uq_spec  # noqa: F401, E402
+from .uq import fracture_load_factor_uncertainty as fracture_load_factor_uncertainty  # noqa: F401, E402
 from .uq import propagate_uncertainty as propagate_uncertainty  # noqa: F401, E402
 from .uq import save_uq_results_to_json as save_uq_results_to_json  # noqa: F401, E402
 from .viz import FEVisualizer as FEVisualizer  # noqa: F401, E402
@@ -240,6 +243,8 @@ __all__ = [
     # Porosity-dependent interlaminar toughness
     "ToughnessKnockdown",
     "toughness_knockdown_factor",
+    "FractureLoadFactorBand",
+    "fracture_load_factor_uncertainty",
     # Interlaminar stresses, delamination onset and free-edge delamination
     "InterfaceTractions",
     "interface_tractions",
@@ -276,6 +281,7 @@ __all__ = [
     "KnockdownModel",
     "LoadingMode",
     "MeshFace",
+    "PorosityDegradation",
     # Version
     "__version__",
 ]

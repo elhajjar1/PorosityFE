@@ -13,8 +13,9 @@ from typing import Literal
 import numpy as np
 import scipy.sparse
 
-from .._types import FEFormulation
+from .._types import FEFormulation, PorosityDegradation
 from ..fracture_specimens import FractureSpecimenGeometry
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION, _check_porosity_degradation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, FlexureGeometry
 from ..porosity_field import PorosityField
@@ -45,16 +46,24 @@ class GlobalAssembler:
         Element formulation (see :class:`Hex8Element`), default
         ``'hex8i'``. Part of the assembly cache key, so changing
         ``self.formulation`` re-assembles.
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Keyword-only porosity degradation mapping of the element stiffness
+        (see :class:`Hex8Element` and :data:`porosity_fe.PorosityDegradation`),
+        default ``'isotropic'``. Also part of the cache key.
     """
 
     def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
                  porosity_field: PorosityField, *,
-                 formulation: FEFormulation = _DEFAULT_FORMULATION) -> None:
+                 formulation: FEFormulation = _DEFAULT_FORMULATION,
+                 porosity_degradation: PorosityDegradation =
+                 _DEFAULT_POROSITY_DEGRADATION) -> None:
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
         _check_formulation(formulation)
         self.formulation: FEFormulation = formulation
+        _check_porosity_degradation(porosity_degradation)
+        self.porosity_degradation: PorosityDegradation = porosity_degradation
         self._C_base = material.get_stiffness_matrix()
         self._C_m = material.get_isotropic_matrix_stiffness()
         self._nu_m = material.matrix_poisson
@@ -87,6 +96,7 @@ class GlobalAssembler:
             is_void=is_void,
             material=self.material,
             formulation=self.formulation,
+            porosity_degradation=self.porosity_degradation,
         )
 
     def element_dof_indices(self, elem_idx: int) -> np.ndarray:
@@ -98,7 +108,7 @@ class GlobalAssembler:
 
         Hashes the mesh arrays by content (so in-place edits are seen) and
         the material (every field, not its abbreviated ``repr``), void
-        shape and element formulation by value.
+        shape, element formulation and porosity degradation by value.
         """
         h = hashlib.blake2b(digest_size=16)
         mesh = self.mesh
@@ -109,7 +119,7 @@ class GlobalAssembler:
             h.update(a.tobytes())
         return (h.hexdigest(), astuple(self.material),
                 tuple(self.porosity_field.void_shape_radii),
-                self.formulation)
+                self.formulation, self.porosity_degradation)
 
     def element_batch(self) -> ElementBatch:
         """Per-element, per-Gauss-point ``B``, ``C`` and ``det(J) w`` arrays.
@@ -121,7 +131,8 @@ class GlobalAssembler:
         if self._batch is None or key != self._key:
             self._batch = build_element_batch(
                 self.mesh, self.material, self.porosity_field.void_shape_radii,
-                formulation=self.formulation)
+                formulation=self.formulation,
+                porosity_degradation=self.porosity_degradation)
             self._key = key
             self._K = None
         return self._batch
@@ -148,7 +159,8 @@ class GlobalAssembler:
         """
         self._batch = build_element_batch(
             self.mesh, self.material, self.porosity_field.void_shape_radii,
-            formulation=self.formulation)
+            formulation=self.formulation,
+            porosity_degradation=self.porosity_degradation)
         self._key = self._state_key()
         batch = self._batch
         Ke = batch.stiffness_matrices()

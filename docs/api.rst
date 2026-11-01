@@ -128,6 +128,20 @@ law has uncalibrated placeholder coefficients), and
    ToughnessKnockdown
    toughness_knockdown_factor
 
+The toughness inputs scatter; :func:`fracture_load_factor_uncertainty`
+(and :meth:`FieldResults.fracture_load_factor_uncertainty`) re-evaluates
+the load factor of every front node for each draw of ``G_Ic``, ``G_IIc``,
+``G_IIIc``, ``bk_eta`` and the law's ``b`` on the energy release rates of
+the one solve, and returns a :class:`FractureLoadFactorBand`. Nothing
+scatters unless named; see :doc:`theory/uncertainty`.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   fracture_load_factor_uncertainty
+   FractureLoadFactorBand
+
 The fracture specimens: :meth:`CompositeMesh.for_dcb`,
 :meth:`CompositeMesh.for_enf` and :meth:`CompositeMesh.for_mmb` build the
 double-cantilever-beam, end-notched-flexure and mixed-mode-bending
@@ -301,6 +315,17 @@ type checkers use them; at run time each function validates its own input.
    (``formulation=``): the standard trilinear brick, or the default
    ``'hex8i'``, the brick with condensed incompatible modes that does not
    lock in bending.
+
+.. py:data:: PorosityDegradation
+
+   ``'isotropic' | 'directional'``, how :class:`FESolver`
+   (``porosity_degradation=``) turns the local porosity into degraded ply
+   stiffness and strengths: the default ``'isotropic'`` projects the
+   Mori-Tanaka tensor of the porous matrix onto an isotropic one;
+   ``'directional'`` keeps it transversely isotropic, so flat (penny) voids
+   weaken the out-of-plane constants and the interlaminar strengths more
+   (opt-in, uncalibrated; see the theory pages on micromechanics and
+   failure). The two agree for spherical voids.
 
 .. py:data:: KnockdownModel
 
