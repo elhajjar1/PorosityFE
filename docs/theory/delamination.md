@@ -399,7 +399,10 @@ applied state is held for every $\lambda$ (see
   and `onset=onset` (a {class}`~porosity_fe.DelaminationOnset`) a
   `delamination_onset` block to the JSON and the point field `onset_index`
   to the VTU ({doc}`failure`, "Interlaminar stresses and delamination
-  onset").
+  onset"), and `fracture_uncertainty=band` (a
+  {class}`~porosity_fe.FractureLoadFactorBand`) a `fracture_uncertainty`
+  block: the band on $\lambda_c$ from toughness scatter
+  ({doc}`uncertainty`, "Delamination load factor").
 
 ### In the app, the CLI and the NCR
 
@@ -411,7 +414,10 @@ applied state is held for every $\lambda$ (see
   **Defects** block shows the front table and $G_T$ and $\psi$ along the
   front, the fracture load factor with the governing node and its mode
   mixity, the knockdown decomposition, and a warning whenever
-  `toughness_uncalibrated` is true. The `dcb`, `enf` and `mmb` loading
+  `toughness_uncalibrated` is true. An opt-in $\lambda_c$ uncertainty
+  band takes CoVs for $G_{Ic}$, $G_{IIc}$, $\eta$, $b_\text{I}$ and
+  $b_\text{II}$ and shows p5, p50 and p95, a histogram and the share of
+  draws below a factor you enter ({doc}`uncertainty`). The `dcb`, `enf` and `mmb` loading
   modes solve the [fracture specimens](#fracture-specimens) for test
   planning (the crack length and the MMB mode ratio, which sets the lever
   by {func}`~porosity_fe.mmb_lever_length`, are inputs) and report the
@@ -859,9 +865,13 @@ which no monotone law follows.
   they matter: voids on the crack plane ease growth, voids off it deflect
   the crack and add bridging (Carraro et al. 2015). Hakim et al. measured
   more porosity in the layers around the insert than the specimen average.
-- The coefficient uncertainty is not propagated
-  ({func}`~porosity_fe.propagate_uncertainty` does not perturb $b$; plan
-  item 4.5).
+- The coefficients are uncertain. {func}`~porosity_fe.fracture_load_factor_uncertainty`
+  (and `FieldResults.fracture_load_factor_uncertainty`) puts a band on
+  $\lambda_c$ from scatter in $b_\text{I}$, $b_\text{II}$, $b_\text{III}$
+  and the pristine toughness, re-evaluated on the one solve; nothing
+  scatters unless named ({doc}`uncertainty`, "Delamination load
+  factor"). The spread of the estimates above is disagreement between
+  studies, not measured scatter.
 
 ## Limitations
 

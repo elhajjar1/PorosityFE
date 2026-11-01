@@ -5,6 +5,41 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Uncertainty band on the delamination load factor** (delamination plan
+  4.5, #213). Opt-in: no existing result, export or cached app run changes.
+  - `fracture_load_factor_uncertainty(front, material, *, prestress=None,
+    toughness_knockdown='exponential', covs=None, spec=None,
+    n_samples=1000, method='monte_carlo', seed=None, percentiles=(5, 50,
+    95), required_load_factor=None)` and
+    `FieldResults.fracture_load_factor_uncertainty(material, ...)` (the
+    solve's law, prestress and load-factor basis) sample `G_Ic`, `G_IIc`,
+    `G_IIIc`, `bk_eta`, `b_I`, `b_II`, `b_III` and re-evaluate λ_c at every
+    front node per draw on the energy release rates of the one FE solve
+    (linear analysis: no further solve). With a thermal prestress each
+    draw takes its own root, vectorised, matching `fracture_load_factors(...,
+    prestress=)` to about 1e-13. **No default CoV**: nothing scatters
+    unless named; scattering stiffness or porosity raises (it would need a
+    solve per draw). Unset `G_IIIc` / `b_III` follow `G_IIc` / `b_II`.
+  - `FractureLoadFactorBand`: the nominal value, draws per node and over
+    the front, statistics and percentiles, `governing_fraction` per node,
+    `probability_below(r)` / `probability_below_required` (an estimate
+    under the entered scatter, not a disposition), the inputs,
+    `load_factor_basis` and a strict-JSON `summary()`, written by
+    `FESolver.export_results(..., fracture_uncertainty=band)` as an opt-in
+    `fracture_uncertainty` block (schema 1.3, additive).
+  - `CrackFront.parts`: a combined thermal + mechanical solve, and
+    `fracture_load_factors(..., prestress=)`, keep the two parts of the
+    front so the factor can be re-evaluated.
+  - The sampling code moves to `porosity_fe._sampling`, shared with
+    `propagate_uncertainty`, whose seeded outputs are bit identical.
+  - App: an opt-in "λ_c uncertainty band" with CoVs for `G_Ic`, `G_IIc`,
+    η, `b_I` and `b_II` (the optional config key `fracture_uq`; the default
+    cache key is unchanged), showing p5 / p50 / p95, a histogram and the
+    share of draws below a factor you enter.
+  - The theory page "Uncertainty propagation" documents the method, the
+    few measured CoVs as starting points, the verification and what the
+    band does not cover (porosity, stiffness, geometry, load, mesh and
+    model form; input correlations).
 - **Delamination in the app, the CLI and the NCR** (delamination plan,
   phase 5 and the rest of 1.6). Everything is opt-in: the default app run
   (its cache key and results), the default CLI output and every existing

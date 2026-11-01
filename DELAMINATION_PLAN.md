@@ -27,7 +27,7 @@ point at commit 2686d62. Progress by pull request:
 | 3.1–3.3 | Done: DCB / ENF / MMB builders and loading modes, MMB lever, compliance calibration, NASA benchmarks within 3 % (SLB 4 %, behind a flag) | #210 |
 | 4.1, 4.2, 4.4 | Done: `ToughnessKnockdown` (uncalibrated placeholders, flagged), front toughness from the local porosity, `hakim_2017` and `agius_fox_2015` reported apart | #210 |
 | 4.3 | Partly: `toughness_knockdown_factor` screens without FE; no empirical `LoadingMode` | — |
-| 4.5 | Not started (uncertainty of `b`) | — |
+| 4.5 | Done: `fracture_load_factor_uncertainty` (band on λ_c from scatter in `G_c`, η and `b`, one solve, no default CoV), opt-in JSON block and app band; not a disposition | #213 |
 | 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | #210 |
 | 6 | Deferred (cohesive zones) | — |
 

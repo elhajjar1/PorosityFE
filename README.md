@@ -189,6 +189,20 @@ r = propagate_uncertainty(0.03, 'T800_epoxy', 'compression', coef_cov=0.1,
 print(r['knockdown']['percentiles'])   # {'p5': ..., 'p50': ..., 'p95': ...}
 ```
 
+The delamination load factor λ_c of an FE solve gets its own band from
+scatter in the toughness inputs (`G_Ic`, `G_IIc`, `G_IIIc`, `bk_eta` and the
+porosity-toughness coefficients `b_I`, `b_II`, `b_III`), re-evaluated on the
+front of that one solve. Nothing scatters unless you name it; the theory page
+"Uncertainty propagation" lists the few measured CoVs as starting points:
+
+```python
+band = result.fracture_load_factor_uncertainty(
+    material, covs={'G_Ic': 0.05, 'G_IIc': 0.07}, n_samples=2000,
+    method='lhs', seed=0)
+print(band.nominal, band.percentiles)  # λ_c and its p5 / p50 / p95
+print(band.probability_below(1.5))     # share of draws below 1.5: information, not a disposition
+```
+
 ### Python library
 ```python
 from porosity_fe import *
