@@ -40,6 +40,46 @@ All notable changes to PorosityFE will be documented in this file.
     few measured CoVs as starting points, the verification and what the
     band does not cover (porosity, stiffness, geometry, load, mesh and
     model form; input correlations).
+- **Opt-in direction-aware porosity degradation in the FE path**
+  (delamination plan 1.4, #212; off by default, so no existing result
+  changes: the 132-case fingerprint shows no difference, and spherical
+  voids give the same results under either option).
+  - `FESolver(..., porosity_degradation='isotropic' | 'directional')`,
+    keyword-only next to `formulation`, and the new `PorosityDegradation`
+    type alias. `'isotropic'` (default) is today's isotropic projection of
+    the Mori-Tanaka tensor. `'directional'` keeps the transversely isotropic
+    tensor of the porous matrix, read in each ply's axes (a penny lies in the
+    ply plane, a cylindrical void runs along the fibres), and degrades each
+    ply constant from its own matrix direction: `E33` from `E*_3`, `G13` and
+    `G23` from `C*_55` and `C*_44`, `nu13` from `nu*_13`; a ply compliance
+    that is not positive definite raises `ValueError` (only a flat void
+    normal to the transverse in-plane axis reaches it, at `Vp >= 0.4`).
+  - Strengths under `'directional'`: `Z_t` (`sigma_3t` or `sigma_2t`) by
+    `r_m sqrt(rho_33/rho_22)`, `S_13` (`tau_13` or the criterion's stand-in)
+    by `r_m sqrt(rho_55/rho_66)`, `S_23` by `r_m sqrt(rho_44/rho_66)`, with
+    `rho_kk = C*_kk / C_m,kk`; relative to `r_m` so spheres keep it. For
+    every criterion, load factor, interior metric and the interface onset.
+  - T800/epoxy, penny voids, `Vp = 0.03`, isotropic -> directional: `E22`
+    0.885 -> 0.968, `E33` 0.885 -> 0.741, `G12` 0.899 -> 0.968, `G13 = G23`
+    0.899 -> 0.847; `Z_t` 0.935 -> 0.800, `S_13 = S_23` 0.935 -> 0.873.
+    Production meshes, uniform penny porosity at 3 %: ILSS knockdown 0.930
+    -> 0.876, compression knockdown 0.985 -> 0.995, ILSS Hashin
+    first-ply-failure factor -13 %, ILSS interface onset factor 338 -> 309.
+    Verified against the parallel penny-crack limit (Kachanov 1992,
+    Budiansky & O'Connell 1976).
+  - Held by `GlobalAssembler` (in its stiffness cache key, so direct, CG and
+    thermal solves see it; the pristine reference is shared), and taken by
+    `Hex8Element`, `build_element_batch`, the `fe.failure` functions,
+    `delamination_onset` / `FieldResults.delamination_onset`,
+    `refinement_study` (recorded in `to_dict()`) and
+    `knockdown_decomposition`.
+  - Not recorded on `FieldResults` or in the JSON export (that changes every
+    fingerprint; to do with the baseline update): pass the same value to
+    `delamination_onset`. Uncalibrated against measured out-of-plane
+    constants of porous laminates, not in the app or CLI, and the empirical
+    solver and CLT helpers keep the isotropic projection. For crowded
+    pennies (local `Vp` near 0.1) Mori-Tanaka's `C33`, `C44` are 7-10 % too
+    stiff and the projection no longer softens that.
 - **Delamination in the app, the CLI and the NCR** (delamination plan,
   phase 5 and the rest of 1.6). Everything is opt-in: the default app run
   (its cache key and results), the default CLI output and every existing

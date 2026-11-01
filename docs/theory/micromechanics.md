@@ -9,6 +9,13 @@ multiply the measured ply constants of the
 {class}`~porosity_fe.MaterialProperties`. Implementation:
 `porosity_fe.homogenization._degraded_composite_stiffness`.
 
+By default (`FESolver(..., porosity_degradation='isotropic')`) the
+Mori-Tanaka tensor is projected onto an isotropic one before the ratios are
+formed, so a void's shape sets *how much* the matrix is degraded but not *in
+which direction*. The opt-in `porosity_degradation='directional'` keeps the
+transversely isotropic tensor and degrades each ply constant from its own
+direction; see [Directional degradation](#directional-degradation-opt-in).
+
 ## Mori-Tanaka for voids
 
 The matrix is isotropic, with Young's modulus $E_m$ (`matrix_modulus`) and
@@ -50,9 +57,9 @@ Mori-Tanaka shear modulus.
 
 ## Degraded matrix constants
 
-For non-spherical voids $\mathbf C^*$ is anisotropic. The code takes its
-isotropic (Voigt-average) projection, which for spherical voids returns the
-Mori-Tanaka constants exactly:
+For non-spherical voids $\mathbf C^*$ is anisotropic. By default the code
+takes its isotropic (Voigt-average) projection, which for spherical voids
+returns the Mori-Tanaka constants exactly:
 
 $$
 K^* = \frac{\sum_{i} C^*_{ii} + 2\,(C^*_{12} + C^*_{13} + C^*_{23})}{9},
@@ -102,7 +109,100 @@ Two simplifications to keep in mind:
   $\xi$ for $G_{23}$ would need data to calibrate it.
 
 The CLT functions ({doc}`laminate`) use the same degraded ply stiffness
-with spherical voids.
+with spherical voids, always with the isotropic projection, as does the
+empirical solver.
+
+## Directional degradation (opt-in)
+
+The projection above averages away what a flat void does. A penny void
+lying in the ply plane (radii $(3, 3, 0.3)$) barely softens the matrix in
+the plane but strongly through the thickness, yet after the projection
+$E_{22}$ and $E_{33}$ drop by the same factor. With
+`FESolver(..., porosity_degradation='directional')` the Mori-Tanaka tensor
+is kept as it is, transversely isotropic about the void axis, and each ply
+constant is degraded from the matrix constant of its own direction. The
+void radii are read in each ply's material axes: $a_1$ along the fibres,
+$a_3$ through the thickness, so a penny lies in the ply plane and a
+cylindrical void runs along the fibres.
+
+From the normal block of the porous-matrix compliance,
+$\mathbf S^* = (\mathbf C^*_{[1:3,1:3]})^{-1}$:
+
+$$
+E^*_i = \frac{1}{S^*_{ii}}, \qquad
+\nu^*_{12} = -\frac{S^*_{12}}{S^*_{11}}, \qquad
+\nu^*_{13} = -\frac{S^*_{13}}{S^*_{11}}, \qquad
+G^*_{23}, G^*_{13}, G^*_{12} = C^*_{44}, C^*_{55}, C^*_{66} .
+$$
+
+| Ply constant | Estimate | Matrix constant |
+|---|---|---|
+| $E_{11}$ | Rule of mixtures | $E^*_1$ |
+| $E_{22}$, $E_{33}$ | Halpin-Tsai, $\xi = 2$ | $E^*_2$, $E^*_3$ |
+| $G_{12}$, $G_{13}$, $G_{23}$ | Halpin-Tsai, $\xi = 1$ | $G^*_{12}$, $G^*_{13}$, $G^*_{23}$ |
+| $\nu_{12}$, $\nu_{13}$ | Rule of mixtures | $\nu^*_{12}$, $\nu^*_{13}$ |
+| $\nu_{23}$ | (none) | unchanged |
+
+The ratios are formed and applied exactly as in the table above, against the
+same pristine estimates. The constants come from different directions of one
+tensor, so the degraded ply compliance is checked with a Cholesky
+factorization before it is inverted, and a compliance that is not positive
+definite raises `ValueError`. With $\nu_{23}$ held at its pristine value
+the condition is $\nu_{23}^2 < E_{22}/E_{33}$: it is met by every preset
+for the three preset void shapes and four others (the penny normal to the
+fibres, the cylinder across them, a $(1, 1, 0.1)$ penny and a
+$(2, 1, 0.5)$ ellipsoid) from $V_p = 10^{-4}$ to the 0.99 clamp. Only a
+flat void normal to the transverse in-plane axis, $(3, 0.3, 3)$, a
+transverse-crack shape, breaks it, from $V_p \approx 0.4$.
+
+For spherical voids $\mathbf C^*$ is isotropic, and the two mappings agree
+to round-off: within $10^{-12}$ in the ply stiffness and, on the production
+meshes, within $5 \times 10^{-13}$ in the knockdowns, failure indices and
+load factors and $2 \times 10^{-11}$ of their maximum in the fields.
+T800/epoxy at $V_p = 0.03$, retention of each constant:
+
+| Void | Mapping | $E_{11}$ | $E_{22}$ | $E_{33}$ | $G_{12}$ | $G_{13}$ | $G_{23}$ |
+|---|---|---|---|---|---|---|---|
+| penny $(3, 3, 0.3)$ | isotropic | 0.9990 | 0.885 | 0.885 | 0.899 | 0.899 | 0.899 |
+| penny $(3, 3, 0.3)$ | directional | 0.9997 | 0.968 | 0.741 | 0.968 | 0.847 | 0.847 |
+| cylinder $(3, 1, 1)$ | isotropic | 0.9995 | 0.942 | 0.942 | 0.945 | 0.945 | 0.945 |
+| cylinder $(3, 1, 1)$ | directional | 0.9997 | 0.932 | 0.932 | 0.949 | 0.949 | 0.935 |
+| sphere | either | 0.9995 | 0.946 | 0.946 | 0.948 | 0.948 | 0.948 |
+
+The penny loses more than twice as much through the thickness as the
+projection says ($E_{33}$ 26 % against 11.5 %) and less than a third as
+much in the plane ($E_{22}$ 3.2 %). The cylinder along the fibres leaves the
+$2$-$3$ plane isotropic and softens $G_{23}$, the shear in that plane, more
+than $G_{12}$ and $G_{13}$. On the production meshes with uniform penny
+porosity at 3 % the short-beam (ILSS) knockdown drops from 0.930 to 0.876
+and the compression knockdown rises from 0.985 to 0.995, since flat voids
+parallel to the load hardly carry it; the solve costs the same. The
+interlaminar strengths follow the same tensor ({doc}`failure`).
+
+**Penny-crack limit.** As the aspect ratio $\gamma = c/a$ of aligned
+oblate voids goes to zero at a fixed crack density $\rho = N a^3$ (so
+$V_p = \tfrac43 \pi \rho \gamma$), the Mori-Tanaka compliance tends to
+that of non-interacting parallel penny cracks (Kachanov 1992, *Appl. Mech.
+Rev.* 45(8); Budiansky & O'Connell 1976):
+
+$$
+\Delta S_{33} = \frac{16 (1 - \nu^2)\,\rho}{3E}, \qquad
+\Delta S_{44} = \Delta S_{55} = \frac{32 (1 - \nu^2)\,\rho}{3 (2 - \nu) E},
+$$
+
+with no in-plane change (engineering shear; $E$, $\nu$ of the matrix). For
+the T800 matrix at $\rho = 0.05$ the computed over the closed-form
+$\Delta S_{33}$ is 1.106, 1.010, 1.001, 1.000 at $\gamma = 10^{-1}$,
+$10^{-2}$, $10^{-3}$, $10^{-4}$, and $\Delta S_{55}$ 1.239, 1.023, 1.002,
+1.000; the error is first order in $\gamma$, and the in-plane change is of
+order $V_p$ (`tests/test_homogenization.py`). These are at the exact void
+fraction. The Mori-Tanaka cache rounds $V_p$ to $10^{-6}$, so through it the
+same ratios read 1.010, 0.999, 1.003 at $\gamma = 10^{-2}$ to $10^{-4}$,
+where $V_p$ is $2 \times 10^{-3}$ to $2 \times 10^{-5}$.
+
+The directional mapping is not calibrated against measured $E_{33}$,
+$G_{13}$ or $G_{23}$ of porous laminates, and it is not exposed in the app
+or the CLI.
 
 ## Verification against a periodic unit cell
 
@@ -225,6 +325,11 @@ slightly underestimated.
   at a local $V_p$ near 0.1, which clustered porosity reaches at a modest
   mean (the `'clustered'` profile peaks at 2.4 times the mean at the
   mid-plane and 4.8 times at the surface). The isotropic projection the FE
-  path uses softens the error but keeps it: 5.5 % in $K$ and 3.7 % in
-  $\mu$ at 0.08, 12 % and 7.5 % at 0.10. The in-plane shear $C_{66}$ of
-  the pennies stays within 0.5 % in every case.
+  path uses by default softens the error but keeps it: 5.5 % in $K$ and
+  3.7 % in $\mu$ at 0.08, 12 % and 7.5 % at 0.10. With
+  `porosity_degradation='directional'` nothing softens it: the out-of-plane
+  constants come straight from $C^*_{33}$ and $C^*_{44}$, which are 7 to
+  10 % too stiff at a local $V_p$ of 0.08 and about 20 % at 0.10, so the
+  directional mapping *underestimates* the out-of-plane loss of crowded
+  pennies. The in-plane shear $C_{66}$ of the pennies stays within 0.5 % in
+  every case.

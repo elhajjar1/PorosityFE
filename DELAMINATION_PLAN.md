@@ -21,7 +21,7 @@ point at commit 2686d62. Progress by pull request:
 | 0.4 | Done (your decision, #211): the mesh scales the sampled `interface` profile to its requested FE volume average (`porosity_renormalization`, 0.848 on one layer per ply); crack-plane point values read the unscaled field (`field_porosity`). Changes `interface` FE results | #230 |
 | 0.5 | Folded into phase 1.1 (optional `tau_13` with today's behaviour as default) | — |
 | 1.1–1.3, 1.5 | Done: optional `sigma_3t` / `tau_13`, interface traction recovery, Brewer–Lagace / Ye onset with load factor, O'Brien free-edge G | #210 |
-| 1.4 | Pending your decision (changes penny results) | — |
+| 1.4 | Done as an opt-in, default off (your decision of 2026-10-27): `FESolver(..., porosity_degradation='directional')` keeps the transversely isotropic Mori–Tanaka tensor and degrades `Z_t`, `S_13`, `S_23` by their own ratios; the default and spherical voids unchanged; uncalibrated, not in the app or CLI | #230 |
 | 1.6 | Done: `FieldResults` methods; on request the JSON `delamination_onset` block (`export_results(..., onset=)`), the VTU `onset_index` field and the app's onset check | #210 |
 | 2.1–2.8 | Done: `Delamination`, duplicated interface nodes and ties, crack-face contact, VCCT, B-K criterion and load factor | #209 |
 | 3.1–3.3 | Done: DCB / ENF / MMB builders and loading modes, MMB lever, compliance calibration, NASA benchmarks within 3 % (SLB 4 %, behind a flag) | #210 |
@@ -38,8 +38,9 @@ default), D5, D6, D7, the optional `tau_13` default, benchmark materials inside 
 zones deferred. Your decisions on the items that change existing results:
 0.4 renormalize the `interface` profile (done, #211; it changes `interface`
 FE results), 1.4 direction-aware degradation as an opt-in option, default
-off (#212), and the `tau_13` stand-ins kept per criterion (no unification).
-4.5 (the uncertainty band of the fracture load factor, #213) is done.
+off (done, #212; no existing result changes), and the `tau_13`
+stand-ins kept per criterion (no unification). 4.5 (the uncertainty band
+of the fracture load factor, #213) is done.
 
 Two corrections to the text below, from the primary sources: the ENF
 benchmark toughness is `G_IIc = 0.78`, `eta = 2.57` (NASA/CR-2011-217305
@@ -179,6 +180,7 @@ Each phase is one or two PRs. Every PR runs the established gate: full suite, nu
 - **1.4 Direction-aware porosity degradation of interlaminar strengths.** Today every matrix strength scales by √(C11*/Cm11), which ignores direction. Use the C33 ratio for Zt and C55 for S13.
   - This connects to a separate decision: keeping the transversely isotropic Mori-Tanaka tensor instead of the isotropic projection, so penny voids degrade E33, G13 and G23 more than in-plane properties.
   - That changes results for every penny configuration, so it is listed as a decision, not a default.
+  - **Status (#212):** done as the opt-in `porosity_degradation='directional'` (owner decision 2026-10-27: opt-in, default off). The relative ratios `r_m sqrt(rho_33/rho_22)` for Zt, `r_m sqrt(rho_55/rho_66)` for S13 and `r_m sqrt(rho_44/rho_66)` for S23 replace the literal C33 / C55 ratios so spherical voids stay identical; for a penny in the ply plane the Zt ratio is the C33 rule. See `docs/theory/micromechanics.md` and `docs/theory/failure.md`. Open: recording the option on `FieldResults` and in the JSON export (with the fingerprint baseline), calibration against measured E33 / G13 / Zt of porous laminates, and exposing it in the app and CLI.
 - **1.5 Free-edge delamination.**
   - O'Brien's closed form, G = (ε²·t/2)·(E_LAM − E*), in the CLT/empirical path. It is independent of delamination size; O'Brien found G_I controls static onset.
   - An FE cross-check: free-edge interface tractions, and the energy release rate once Phase 2 lands.
@@ -362,7 +364,7 @@ PR B and PR C can run in parallel after A. The critical path is A → C → D �
 
 1. **Crack representation:** node duplication with ties (recommended) or interface elements now.
 2. **Phase 0.4:** renormalize the `interface` profile so FE Vp equals the requested Vp. This changes `interface` results by removing the +18 % inflation.
-3. **Phase 1.4:** keep the transversely isotropic Mori-Tanaka tensor so penny voids weaken out-of-plane properties more. This changes every penny configuration.
+3. **Phase 1.4:** keep the transversely isotropic Mori-Tanaka tensor so penny voids weaken out-of-plane properties more. This changes every penny configuration. *Decided 2026-10-27: an opt-in, default off (#212).*
 4. **τ13 strength:** add optional `tau_13` with today's behaviour as the default (recommended), or unify on one strength now (changes results).
 5. **Porosity-toughness default:** a conservative placeholder exponential flagged uncalibrated (recommended), or no default until data exist.
 6. **Benchmark material:** add a sourced `IM7_8552_epoxy` preset, or keep benchmark materials inside the tests.

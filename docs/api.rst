@@ -316,6 +316,17 @@ type checkers use them; at run time each function validates its own input.
    ``'hex8i'``, the brick with condensed incompatible modes that does not
    lock in bending.
 
+.. py:data:: PorosityDegradation
+
+   ``'isotropic' | 'directional'``, how :class:`FESolver`
+   (``porosity_degradation=``) turns the local porosity into degraded ply
+   stiffness and strengths: the default ``'isotropic'`` projects the
+   Mori-Tanaka tensor of the porous matrix onto an isotropic one;
+   ``'directional'`` keeps it transversely isotropic, so flat (penny) voids
+   weaken the out-of-plane constants and the interlaminar strengths more
+   (opt-in, uncalibrated; see the theory pages on micromechanics and
+   failure). The two agree for spherical voids.
+
 .. py:data:: KnockdownModel
 
    ``'judd_wright' | 'power_law' | 'linear'``, the built-in empirical
