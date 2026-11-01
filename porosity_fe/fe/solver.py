@@ -65,6 +65,7 @@ from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
 
 if TYPE_CHECKING:
+    from ..uq import FractureLoadFactorBand
     from .decomposition import KnockdownDecomposition
     from .interlaminar import DelaminationOnset
 
@@ -949,6 +950,7 @@ class FESolver:
                        include_raw: bool = False, *,
                        onset: DelaminationOnset | None = None,
                        knockdown_decomposition: KnockdownDecomposition | None = None,
+                       fracture_uncertainty: FractureLoadFactorBand | None = None,
                        ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1001,6 +1003,16 @@ class FESolver:
             (``knockdown_total``, ``knockdown_porosity_only``,
             ``knockdown_delamination_only``, ``dominant``). ``None``
             (default) writes none.
+        fracture_uncertainty : FractureLoadFactorBand, optional
+            Keyword-only. The uncertainty band on the fracture load factor
+            of these results
+            (:meth:`FieldResults.fracture_load_factor_uncertainty`),
+            written with ``fmt='json'`` as a ``fracture_uncertainty``
+            block (its :meth:`~porosity_fe.FractureLoadFactorBand.summary`:
+            the nominal value, the statistics and percentiles of the
+            draws, the inputs and their scatter, the share of draws each
+            front node governs, and the share below the required load
+            factor when one was given). ``None`` (default) writes none.
 
         Notes
         -----
@@ -1035,6 +1047,12 @@ class FESolver:
           load factors where infinite (the load drives no node to onset) or
           none was evaluated, and an interface's entry of
           ``interface_max_index`` where none of its nodes was evaluated.
+        * In the ``fracture_uncertainty`` block (with
+          ``fracture_uncertainty``): ``nominal``, an entry of
+          ``nominal_per_node`` and the statistics and percentiles where
+          infinite (no energy released), ``seed`` when unseeded, and
+          ``required_load_factor`` and ``probability_below_required``
+          without a required load factor.
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
@@ -1043,4 +1061,5 @@ class FESolver:
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw, onset=onset,
-                        knockdown_decomposition=knockdown_decomposition)
+                        knockdown_decomposition=knockdown_decomposition,
+                        fracture_uncertainty=fracture_uncertainty)

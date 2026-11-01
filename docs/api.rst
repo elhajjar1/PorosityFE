@@ -128,6 +128,20 @@ law has uncalibrated placeholder coefficients), and
    ToughnessKnockdown
    toughness_knockdown_factor
 
+The toughness inputs scatter; :func:`fracture_load_factor_uncertainty`
+(and :meth:`FieldResults.fracture_load_factor_uncertainty`) re-evaluates
+the load factor of every front node for each draw of ``G_Ic``, ``G_IIc``,
+``G_IIIc``, ``bk_eta`` and the law's ``b`` on the energy release rates of
+the one solve, and returns a :class:`FractureLoadFactorBand`. Nothing
+scatters unless named; see :doc:`theory/uncertainty`.
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   fracture_load_factor_uncertainty
+   FractureLoadFactorBand
+
 The fracture specimens: :meth:`CompositeMesh.for_dcb`,
 :meth:`CompositeMesh.for_enf` and :meth:`CompositeMesh.for_mmb` build the
 double-cantilever-beam, end-notched-flexure and mixed-mode-bending

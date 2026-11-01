@@ -28,6 +28,7 @@ from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 if TYPE_CHECKING:
+    from ..uq import FractureLoadFactorBand
     from .decomposition import KnockdownDecomposition
     from .interlaminar import DelaminationOnset
     from .results import FieldResults
@@ -513,6 +514,7 @@ def export_results(field_results: FieldResults,
                    include_raw: bool = False, *,
                    onset: DelaminationOnset | None = None,
                    knockdown_decomposition: KnockdownDecomposition | None = None,
+                   fracture_uncertainty: FractureLoadFactorBand | None = None,
                    ) -> None:
     """Export FE results as JSON, VTK or VTU; see :meth:`FESolver.export_results`."""
     fmt = str(fmt).lower()
@@ -637,6 +639,8 @@ def export_results(field_results: FieldResults,
         results_data['delamination_onset'] = onset.summary()
     if knockdown_decomposition is not None:
         results_data['knockdown_decomposition'] = knockdown_decomposition.summary()
+    if fracture_uncertainty is not None:
+        results_data['fracture_uncertainty'] = fracture_uncertainty.summary()
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),

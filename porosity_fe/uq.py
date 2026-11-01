@@ -1,24 +1,54 @@
-"""Uncertainty propagation (Monte Carlo / LHS) over the empirical solver."""
+"""Uncertainty propagation (Monte Carlo / LHS).
+
+:func:`propagate_uncertainty` samples the inputs of the empirical knockdown
+and runs each draw through :class:`~porosity_fe.EmpiricalSolver`;
+:func:`fracture_load_factor_uncertainty` samples the toughness inputs of the
+delamination load factor and re-evaluates it on the front of one FE solve
+(the analysis is linear, so the energy release rates do not change). Both
+describe scatter with the vocabulary of :mod:`porosity_fe._sampling`.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import io
+import math
 import os
 import warnings
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ._sampling import (
+    _UQ_METHODS,
+    _UQ_NORMAL_DISTS,  # noqa: F401 (re-exported sampling vocabulary)
+    _UQ_UNIFORM_DISTS,  # noqa: F401
+    _draw_unit_samples,
+    _normalize_spec,
+    _perturbed_value,
+    _unit_to_draw,
+)
 from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
     _LAYUP_WARNING_MARKER,
     Calibration,
     EmpiricalSolver,
 )
-from .io import _UNITS_UQ, FORMAT_UQ, _wrap_envelope, _write_json
+from .io import _UNITS_UQ, FORMAT_UQ, _finite_or_none, _wrap_envelope, _write_json
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
+from .toughness import (
+    _TOUGHNESS_LAWS,
+    ToughnessKnockdown,
+    ToughnessKnockdownSpec,
+    _placeholder_applied,
+    _resolve_toughness_knockdown,
+)
+
+if TYPE_CHECKING:
+    from .fe.vcct import CrackFront
 
 # ============================================================
 # SECTION 6b: UNCERTAINTY PROPAGATION (MONTE CARLO / LHS)
@@ -27,10 +57,6 @@ from .pipeline import build_empirical_pipeline
 # Back-compat alias for the default percentiles surface — canonical
 # definition lives on ``Calibration.UQ_DEFAULT_PERCENTILES`` (#121).
 _UQ_DEFAULT_PERCENTILES = Calibration.UQ_DEFAULT_PERCENTILES
-_UQ_METHODS = ('monte_carlo', 'lhs')
-# Distributions that consume a standard-normal unit draw vs. a U(0,1) draw.
-_UQ_NORMAL_DISTS = ('lognormal', 'normal')
-_UQ_UNIFORM_DISTS = ('uniform',)
 # Built-in knockdown law -> (EmpiricalSolver override kwarg, QI coefficient table).
 _UQ_COEF_TABLES = {
     'judd_wright': ('judd_wright_alpha', Calibration.JUDD_WRIGHT_ALPHA_QI),
@@ -58,9 +84,10 @@ def _normalize_uq_spec(material: MaterialProperties,
     with that coefficient of variation. ``spec`` is the explicit form:
     ``{field: (dist, params)}``. They may both be given (``spec`` wins on a
     field collision). Fields with a non-positive CoV are dropped so a
-    zero-CoV request is exactly the deterministic pipeline.
+    zero-CoV request is exactly the deterministic pipeline
+    (:func:`porosity_fe._sampling._normalize_spec` over
+    ``MaterialProperties.PERTURBABLE_FIELDS``).
     """
-    resolved: OrderedDict = OrderedDict()
     valid = set(MaterialProperties.PERTURBABLE_FIELDS)
 
     def _check_field(name: str) -> None:
@@ -79,74 +106,7 @@ def _normalize_uq_spec(material: MaterialProperties,
                 f"dataclasses.replace)."
             )
 
-    for name, cov in (covs or {}).items():
-        _check_field(name)
-        cov = float(cov)
-        if not np.isfinite(cov) or cov < 0.0:
-            raise ValueError(
-                f"CoV for {name!r} must be a finite non-negative number, "
-                f"got {cov!r}."
-            )
-        if cov > 0.0:
-            _check_set(name)
-            resolved[name] = ('lognormal', cov)
-
-    for name, ds in (spec or {}).items():
-        _check_field(name)
-        if not (isinstance(ds, (tuple, list)) and len(ds) == 2):
-            raise ValueError(
-                f"spec[{name!r}] must be a (distribution, params) pair, "
-                f"got {ds!r}."
-            )
-        dist, params = ds
-        if dist not in _UQ_NORMAL_DISTS + _UQ_UNIFORM_DISTS:
-            raise ValueError(
-                f"spec[{name!r}] has unknown distribution {dist!r}. "
-                f"Use one of {sorted(_UQ_NORMAL_DISTS + _UQ_UNIFORM_DISTS)}."
-            )
-        params = float(params)
-        if not np.isfinite(params) or params < 0.0:
-            raise ValueError(
-                f"spec[{name!r}] params must be a finite non-negative "
-                f"number, got {params!r}."
-            )
-        if params > 0.0:
-            _check_set(name)
-            resolved[name] = (dist, params)
-        else:
-            resolved.pop(name, None)
-    return resolved
-
-
-def _draw_unit_samples(n_vars: int, n_samples: int, method: str,
-                       rng: np.random.Generator) -> np.ndarray:
-    """Return an ``(n_samples, n_vars)`` array of U(0, 1) variates.
-
-    ``method='monte_carlo'`` uses ``rng.random``; ``method='lhs'`` uses
-    ``scipy.stats.qmc.LatinHypercube`` seeded from the same ``rng`` so the
-    whole helper is reproducible from a single seed.
-    """
-    if n_vars == 0:
-        return np.empty((n_samples, 0))
-    if method == 'monte_carlo':
-        return rng.random((n_samples, n_vars))
-    if method == 'lhs':
-        from scipy.stats import qmc
-        sampler = qmc.LatinHypercube(d=n_vars, seed=rng)
-        return sampler.random(n=n_samples)
-    raise ValueError(
-        f"Unknown sampling method {method!r}. Use one of {sorted(_UQ_METHODS)}."
-    )
-
-
-def _unit_to_draw(u: np.ndarray, dist: str) -> np.ndarray:
-    """Map U(0, 1) variates to the unit variate the target distribution
-    expects: a standard normal for normal/lognormal, the U(0,1) untouched
-    (clipped off the 0/1 endpoints) for uniform."""
-    if dist in _UQ_NORMAL_DISTS:
-        from scipy.stats import norm
-        return norm.ppf(np.clip(u, 1e-12, 1.0 - 1e-12))
-    return u
+    return _normalize_spec(covs, spec, check_field=_check_field, check_set=_check_set)
 
 
 def propagate_uncertainty(void_volume_fraction: float,
@@ -426,3 +386,524 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
     # Standard JSON: every value is finite, so a non-finite one raises
     # instead of writing NaN.
     _write_json(envelope, Path(filename))
+
+
+# ============================================================
+# SECTION 6c: UNCERTAINTY BAND ON THE DELAMINATION LOAD FACTOR
+# ============================================================
+
+#: Inputs of the fracture load factor band that can scatter: the pristine
+#: toughness and the Benzeggagh-Kenane exponent of the material, and the
+#: porosity-toughness coefficients of the law. Nothing scatters unless
+#: named, and nothing else can: the energy release rates come from one FE
+#: solve.
+_FRACTURE_UQ_MATERIAL_FIELDS = ('G_Ic', 'G_IIc', 'G_IIIc', 'bk_eta')
+_FRACTURE_UQ_LAW_FIELDS = ('b_I', 'b_II', 'b_III')
+_FRACTURE_UQ_FIELDS = _FRACTURE_UQ_MATERIAL_FIELDS + _FRACTURE_UQ_LAW_FIELDS
+
+
+@dataclass(frozen=True)
+class FractureLoadFactorBand:
+    """Uncertainty band on the delamination load factor ``lambda_c`` from
+    toughness scatter; :func:`fracture_load_factor_uncertainty` builds it.
+
+    Every draw re-evaluates the critical load factor of every front node
+    on the energy release rates of one FE solve, so the band covers the
+    toughness inputs only (see :func:`fracture_load_factor_uncertainty`).
+
+    Attributes
+    ----------
+    nominal : float
+        The deterministic load factor on the nominal inputs: the smallest
+        ``lambda_c`` over the front, as :attr:`FieldResults.fracture_load_factor
+        <porosity_fe.FieldResults.fracture_load_factor>` (``inf`` when no
+        node is driven).
+    nominal_per_node : np.ndarray
+        ``(n_nodes,)`` deterministic ``lambda_c`` of each front node.
+    samples : np.ndarray
+        ``(n_samples,)`` load factor of each draw: the smallest
+        ``lambda_c`` over the front on that draw's inputs.
+    samples_per_node : np.ndarray
+        ``(n_samples, n_nodes)`` ``lambda_c`` of every front node on every
+        draw.
+    governing_fraction : np.ndarray
+        ``(n_nodes,)`` share of the draws in which each node governs (has
+        the smallest finite ``lambda_c``); the shares sum to 1 unless some
+        draw drives no node.
+    node : np.ndarray
+        Original node id of each front node (``CrackFront.node``).
+    mean, std, min, max : float
+        Statistics of :attr:`samples` (``inf`` / ``nan`` when a draw is
+        infinite).
+    percentiles : dict
+        ``{'p5': ..., 'p50': ..., 'p95': ...}`` of :attr:`samples` for the
+        requested percentiles (linear interpolation; ``inf`` in an
+        infinite tail).
+    n_samples, method, seed
+        The sampling: draws, ``'monte_carlo'`` or ``'lhs'``, and the seed
+        (``None`` when unseeded).
+    spec : dict
+        The resolved scatter, ``{field: (distribution, params)}``; empty
+        when nothing scatters.
+    inputs : dict
+        The nominal values the draws are centred on: ``G_Ic``, ``G_IIc``,
+        ``G_IIIc`` (``G_IIc`` when unset), ``bk_eta``, and ``b_I``,
+        ``b_II``, ``b_III`` of the law (``None`` for a law without
+        coefficients).
+    toughness_knockdown : ToughnessKnockdown
+        The porosity-toughness law.
+    toughness_uncalibrated : bool
+        Whether a placeholder coefficient of the law lowered the nominal
+        toughness at some front node (the draws are centred on it).
+    load_factor_basis : str
+        What the load factor multiplies (:attr:`FieldResults.load_factor_basis
+        <porosity_fe.FieldResults.load_factor_basis>`).
+    required_load_factor : float or None
+        The required load factor passed in, for
+        :attr:`probability_below_required`; ``None`` when none was.
+
+    Notes
+    -----
+    :meth:`probability_below` is the share of the draws below a load
+    factor, an estimate under the input distributions that were entered.
+    It is **not a disposition**: the tool recommends no disposition for a
+    delamination, and the band leaves out the porosity, stiffness,
+    geometry, load, mesh and model-form uncertainty, and any correlation
+    between the inputs (the draws are independent).
+    """
+
+    nominal: float
+    nominal_per_node: np.ndarray
+    samples: np.ndarray
+    samples_per_node: np.ndarray
+    governing_fraction: np.ndarray
+    node: np.ndarray
+    mean: float
+    std: float
+    min: float
+    max: float
+    percentiles: dict[str, float]
+    n_samples: int
+    method: str
+    seed: int | None
+    spec: dict[str, tuple[str, float]]
+    inputs: dict[str, float | None]
+    toughness_knockdown: ToughnessKnockdown
+    toughness_uncalibrated: bool
+    load_factor_basis: str
+    required_load_factor: float | None = None
+
+    @property
+    def n_front_nodes(self) -> int:
+        """Number of front nodes."""
+        return int(self.node.size)
+
+    def probability_below(self, load_factor: float) -> float:
+        """Share of the draws whose load factor is below ``load_factor``.
+
+        An estimate under the entered input scatter, not a disposition (see
+        the class notes). ``load_factor`` is a multiple of the load named
+        by :attr:`load_factor_basis`, like ``nominal``.
+
+        Raises
+        ------
+        ValueError
+            If ``load_factor`` is not a finite positive number.
+        """
+        r = float(load_factor)
+        if not math.isfinite(r) or r <= 0.0:
+            raise ValueError(
+                f"load_factor must be a finite positive multiple of the "
+                f"analysis load, got {load_factor!r}.")
+        return float(np.mean(self.samples < r))
+
+    @property
+    def probability_below_required(self) -> float | None:
+        """:meth:`probability_below` at :attr:`required_load_factor`;
+        ``None`` without one."""
+        if self.required_load_factor is None:
+            return None
+        return self.probability_below(self.required_load_factor)
+
+    def summary(self) -> dict:
+        """The band without the draws, as a strict-JSON dict.
+
+        Keys: ``load_factor_basis``, ``nominal``, ``n_samples``,
+        ``method``, ``seed``, ``spec`` (``{field: [distribution,
+        params]}``), ``inputs``, ``toughness_knockdown`` (a description),
+        ``toughness_uncalibrated``, ``mean``, ``std``, ``min``, ``max``,
+        ``percentiles``, ``n_front_nodes``, ``node``, ``nominal_per_node``,
+        ``governing_fraction``, ``required_load_factor`` and
+        ``probability_below_required``. Every non-finite number is
+        ``None`` (``null``): an infinite load factor, or the statistics of
+        a sample with one. :meth:`FESolver.export_results(...,
+        fracture_uncertainty=band) <porosity_fe.FESolver.export_results>`
+        writes it as the ``fracture_uncertainty`` block.
+        """
+        return {
+            'load_factor_basis': str(self.load_factor_basis),
+            'nominal': _finite_or_none(self.nominal),
+            'n_samples': int(self.n_samples),
+            'method': str(self.method),
+            'seed': None if self.seed is None else int(self.seed),
+            'spec': {k: [str(v[0]), float(v[1])] for k, v in self.spec.items()},
+            'inputs': {k: (None if v is None else float(v))
+                       for k, v in self.inputs.items()},
+            'toughness_knockdown': self.toughness_knockdown.describe(),
+            'toughness_uncalibrated': bool(self.toughness_uncalibrated),
+            'mean': _finite_or_none(self.mean),
+            'std': _finite_or_none(self.std),
+            'min': _finite_or_none(self.min),
+            'max': _finite_or_none(self.max),
+            'percentiles': {k: _finite_or_none(v) for k, v in self.percentiles.items()},
+            'n_front_nodes': self.n_front_nodes,
+            'node': [int(v) for v in self.node],
+            'nominal_per_node': [_finite_or_none(float(v)) for v in self.nominal_per_node],
+            'governing_fraction': [float(v) for v in self.governing_fraction],
+            'required_load_factor': (None if self.required_load_factor is None
+                                     else float(self.required_load_factor)),
+            'probability_below_required': self.probability_below_required,
+        }
+
+
+def _normalize_fracture_spec(material: MaterialProperties, law: ToughnessKnockdown,
+                             covs: dict[str, float] | None,
+                             spec: dict[str, tuple[str, float]] | None) -> OrderedDict:
+    """:func:`porosity_fe._sampling._normalize_spec` over the toughness
+    inputs of the fracture load factor (:data:`_FRACTURE_UQ_FIELDS`)."""
+
+    def _check_field(name: str) -> None:
+        if name not in _FRACTURE_UQ_FIELDS:
+            raise ValueError(
+                f"Unknown field {name!r} for the fracture load factor band: "
+                f"only the toughness inputs {list(_FRACTURE_UQ_FIELDS)} can "
+                f"scatter. The energy release rates of the front come from "
+                f"one FE solve, so the stiffness, strength, porosity, "
+                f"geometry and load are fixed; scatter in them changes G and "
+                f"needs a solve per draw (propagate_uncertainty samples the "
+                f"empirical path).")
+
+    def _check_set(name: str) -> None:
+        if name in _FRACTURE_UQ_MATERIAL_FIELDS:
+            if getattr(material, name) is None:
+                raise ValueError(
+                    f"Material field {name!r} is None, so it cannot scatter; "
+                    f"set a nominal value first (e.g. with dataclasses.replace). "
+                    f"An unset G_IIIc follows G_IIc, draws included.")
+        elif not law._has_coefficients:
+            raise ValueError(
+                f"{name} cannot scatter: the toughness law ({law.describe()}) "
+                f"has no coefficient. Use the 'exponential' or 'linear' law.")
+        elif name == 'b_III' and law.b_III is None:
+            raise ValueError(
+                "b_III is not set on the toughness law, so it cannot scatter; "
+                "it follows b_II, draws included. Pass "
+                "ToughnessKnockdown(b_III=...) to scatter it on its own.")
+
+    return _normalize_spec(covs, spec, check_field=_check_field, check_set=_check_set)
+
+
+def _toughness_draws(material: MaterialProperties, law: ToughnessKnockdown,
+                     Vp: np.ndarray, values: dict[str, np.ndarray]
+                     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pure-mode toughness ``(G_Ic, G_IIc, G_IIIc)`` at every front node for
+    every draw, each ``(n_samples, n_nodes)`` or ``(n_nodes,)`` when
+    nothing in that mode scatters.
+
+    ``values`` holds the ``(n_samples,)`` draws of the scattered fields;
+    every other input keeps its nominal value, through the same
+    expressions as :func:`~porosity_fe.fracture_load_factors` (the law's
+    ``factor`` at the front porosity times the material value), so an
+    unscattered mode is bit for bit the deterministic one. An unset
+    ``G_IIIc`` follows ``G_IIc`` and an unset ``b_III`` follows ``b_II``,
+    draws included.
+    """
+    assert material.G_Ic is not None and material.G_IIc is not None
+    G: dict[str, np.ndarray | float] = {
+        'I': values.get('G_Ic', float(material.G_Ic)),
+        'II': values.get('G_IIc', float(material.G_IIc)),
+    }
+    if 'G_IIIc' in values:
+        G['III'] = values['G_IIIc']
+    elif material.G_IIIc is not None:
+        G['III'] = float(material.G_IIIc)
+    else:
+        G['III'] = G['II']
+    b: dict[str, np.ndarray | None] = {
+        'I': values.get('b_I'), 'II': values.get('b_II')}
+    if 'b_III' in values:
+        b['III'] = values['b_III']
+    else:
+        b['III'] = None if law.b_III is not None else b['II']
+    out = []
+    for mode in ('I', 'II', 'III'):
+        draws = b[mode]
+        if draws is None:
+            f = law.factor(Vp, mode)                                  # (n,)
+        else:
+            assert isinstance(law.law, str)
+            f = _TOUGHNESS_LAWS[law.law](Vp[None, :], draws[:, None])  # (m, n)
+        g = G[mode]
+        out.append((g[:, None] if isinstance(g, np.ndarray) else g) * f)
+    return out[0], out[1], out[2]
+
+
+def _percentile(samples: np.ndarray, p: float) -> float:
+    """``numpy.percentile`` (linear) that stays defined with infinite
+    samples: ``inf`` when the interpolation reaches the infinite tail."""
+    if np.isfinite(samples).all():
+        return float(np.percentile(samples, p))
+    s = np.sort(samples)
+    pos = p / 100.0 * (s.size - 1)
+    lo, hi = int(math.floor(pos)), int(math.ceil(pos))
+    a, b = float(s[lo]), float(s[hi])
+    frac = pos - lo
+    if frac == 0.0 or a == b:
+        return a
+    if not math.isfinite(b):
+        return b
+    return a + (b - a) * frac
+
+
+def fracture_load_factor_uncertainty(
+        front: CrackFront, material: MaterialProperties, *,
+        prestress: CrackFront | None = None,
+        toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+        covs: dict[str, float] | None = None,
+        spec: dict[str, tuple[str, float]] | None = None,
+        n_samples: int = 1000,
+        method: str = 'monte_carlo',
+        seed: int | None = None,
+        percentiles: tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
+        required_load_factor: float | None = None,
+        load_factor_basis: str | None = None,
+) -> FractureLoadFactorBand:
+    """Uncertainty band on the delamination load factor from toughness scatter.
+
+    The fracture load factor of :func:`~porosity_fe.fracture_load_factors`
+    is a point value, though its inputs scatter: the pristine toughness
+    ``G_Ic``, ``G_IIc``, ``G_IIIc`` and the Benzeggagh-Kenane exponent
+    ``bk_eta`` of the material, and the porosity-toughness coefficients
+    ``b_I``, ``b_II``, ``b_III`` of the law (uncalibrated placeholders by
+    default). The analysis is linear, so the energy release rates of the
+    front from **one** FE solve do not depend on the toughness: every draw
+    re-evaluates ``lambda_c = sqrt(G_c / G_T)`` at every front node without
+    solving again. With a prestress (``u = u_P + lam u``) each draw takes
+    the root of ``G_T(lam) = G_c(psi(lam))`` per node, vectorised over the
+    draws, which agrees with :func:`~porosity_fe.fracture_load_factors`
+    on the same inputs to about 1e-12; the contact set of the applied state
+    is held, as the deterministic factor already assumes.
+
+    **Nothing scatters unless named**: there is no default coefficient of
+    variation. Scatter in anything else (stiffness, strength, porosity,
+    geometry, load) changes ``G`` and would need a solve per draw, so
+    naming such a field raises. The draws are independent between fields
+    (no correlation between ``G_Ic`` and ``G_IIc``, for instance). The
+    sampling vocabulary is that of :func:`propagate_uncertainty`.
+
+    Parameters
+    ----------
+    front : CrackFront
+        The front the factor scales (the mechanical load), with its
+        porosity ``Vp``; usually :attr:`FieldResults.crack_front
+        <porosity_fe.FieldResults.crack_front>`, or
+        :meth:`FieldResults.energy_release_rates
+        <porosity_fe.FieldResults.energy_release_rates>`. A front of a
+        combined solve carries its two parts (``CrackFront.parts``), which
+        are used when ``prestress`` is ``None``.
+        :meth:`FieldResults.fracture_load_factor_uncertainty
+        <porosity_fe.FieldResults.fracture_load_factor_uncertainty>` wraps
+        this with the solve's law, prestress and basis.
+    material : MaterialProperties
+        The nominal toughness: ``G_Ic``, ``G_IIc``, ``bk_eta`` and the
+        optional ``G_IIIc``.
+    prestress : CrackFront, optional
+        The fixed part (the thermal residual state) on the same front
+        nodes, as for :func:`~porosity_fe.fracture_load_factors`.
+    toughness_knockdown : ToughnessKnockdown, str, callable or None
+        The porosity law of the toughness (:class:`~porosity_fe.ToughnessKnockdown`);
+        its coefficients are the nominal ``b``.
+    covs : dict, optional
+        ``{field: cov}``: a median-preserving lognormal with that
+        coefficient of variation (std / mean) on the field, one of
+        ``'G_Ic'``, ``'G_IIc'``, ``'G_IIIc'``, ``'bk_eta'``, ``'b_I'``,
+        ``'b_II'``, ``'b_III'``. A zero CoV leaves the field fixed.
+    spec : dict, optional
+        ``{field: (dist, params)}`` with ``dist`` ``'lognormal'`` or
+        ``'normal'`` (``params`` the CoV) or ``'uniform'`` (``params`` the
+        fractional half-width); wins over ``covs`` on a collision. A draw
+        of a material field is clipped as :meth:`MaterialProperties.perturb
+        <porosity_fe.MaterialProperties.perturb>` clips it (a positive
+        floor); a coefficient ``b`` is clipped at 0 (the law never raises
+        the toughness).
+    n_samples : int
+        Number of draws.
+    method : {'monte_carlo', 'lhs'}
+        Plain Monte Carlo or Latin hypercube sampling.
+    seed : int, optional
+        Seed of ``numpy.random.default_rng``; the band is reproducible from
+        it.
+    percentiles : tuple of float
+        Percentiles to report (default 5 / 50 / 95).
+    required_load_factor : float, optional
+        A required load factor (a multiple of the analysis load, like
+        ``lambda_c``): the band then reports the share of the draws below
+        it (:attr:`FractureLoadFactorBand.probability_below_required`), an
+        estimate under the entered scatter, not a disposition.
+    load_factor_basis : str, optional
+        What the load factor multiplies, recorded on the band; default
+        ``'mechanical_with_residual'`` with a prestress, ``'mechanical'``
+        without.
+
+    Returns
+    -------
+    FractureLoadFactorBand
+        The nominal value, the draws per node and over the front, the
+        statistics and percentiles, which node governs how often, the
+        inputs used, and :meth:`~FractureLoadFactorBand.summary` for the
+        JSON export.
+
+    Raises
+    ------
+    ValueError
+        If the material has no toughness data, a named field cannot
+        scatter (not a toughness input, unset, or a coefficient of a law
+        without coefficients), ``prestress`` is on other nodes, or a
+        sampling argument is invalid.
+
+    Notes
+    -----
+    Not covered: the porosity field, the stiffness and its knockdown, the
+    geometry, the load, the mesh (the front is a staircase on the grid)
+    and the model form (linear VCCT with a growth-onset criterion; the
+    conservative law ignores the rise of mode I propagation toughness with
+    voids). No measured scatter is bundled: the theory page
+    "Delamination" lists the few published coefficients of variation as
+    starting points. With no scattered field every draw is exactly the
+    deterministic value.
+
+    Examples
+    --------
+    >>> band = results.fracture_load_factor_uncertainty(
+    ...     material, covs={'G_Ic': 0.05, 'G_IIc': 0.07}, n_samples=2000,
+    ...     method='lhs', seed=0)                                   # doctest: +SKIP
+    >>> band.nominal, band.percentiles                             # doctest: +SKIP
+    (2.747, {'p5': 2.63, 'p50': 2.75, 'p95': 2.86})
+    """
+    from .fe import vcct
+
+    law = _resolve_toughness_knockdown(toughness_knockdown)
+    eta = vcct._check_toughness(material, "The fracture load factor band")
+    moving: CrackFront = front
+    fixed: CrackFront | None = prestress
+    if prestress is None and front.parts is not None:
+        moving, fixed = front.parts
+    if fixed is not None:
+        vcct._check_same_front(fixed, moving)
+    if not isinstance(n_samples, (int, np.integer)) or isinstance(n_samples, bool) \
+            or n_samples <= 0:
+        raise ValueError(
+            f"n_samples must be a positive integer, got {n_samples!r}.")
+    if method not in _UQ_METHODS:
+        raise ValueError(
+            f"Unknown sampling method {method!r}. Use one of {sorted(_UQ_METHODS)}.")
+    pcts = tuple(float(p) for p in percentiles)
+    if any((not np.isfinite(p)) or p < 0.0 or p > 100.0 for p in pcts):
+        raise ValueError(
+            f"percentiles must lie in [0, 100], got {percentiles!r}.")
+    if required_load_factor is not None:
+        r = float(required_load_factor)
+        if not math.isfinite(r) or r <= 0.0:
+            raise ValueError(
+                f"required_load_factor must be a finite positive multiple of "
+                f"the analysis load, got {required_load_factor!r}.")
+        required_load_factor = r
+    resolved = _normalize_fracture_spec(material, law, covs, spec)
+    basis = (load_factor_basis if load_factor_basis is not None
+             else 'mechanical_with_residual' if fixed is not None else 'mechanical')
+
+    # The nominal value is the deterministic function itself.
+    nominal_front = vcct.fracture_load_factors(
+        moving, material, prestress=fixed, toughness_knockdown=law)
+    assert nominal_front.lambda_c is not None
+    nominal_per_node = np.array(nominal_front.lambda_c, dtype=float)
+    Vp = np.asarray(moving.Vp, dtype=float)
+    n_nodes = len(moving)
+    inputs = {
+        'G_Ic': material.G_Ic, 'G_IIc': material.G_IIc,
+        'G_IIIc': material.G_IIIc_eff, 'bk_eta': material.bk_eta,
+        'b_I': law.coefficient('I'), 'b_II': law.coefficient('II'),
+        'b_III': law.coefficient('III'),
+    }
+
+    rng = np.random.default_rng(seed)
+    names = list(resolved)
+    unit = _draw_unit_samples(len(names), int(n_samples), method, rng)
+    if not names:
+        # Nothing scatters: every draw is the deterministic value, exactly.
+        per_node = np.tile(nominal_per_node, (int(n_samples), 1))
+    else:
+        values: dict[str, np.ndarray] = {}
+        for j, name in enumerate(names):
+            dist, params = resolved[name]
+            z = _unit_to_draw(unit[:, j], dist)
+            if name in _FRACTURE_UQ_MATERIAL_FIELDS:
+                nominal = float(getattr(material, name))
+                drawn = _perturbed_value(nominal, z, dist, params, name=f"field {name!r}")
+                # The floor of MaterialProperties._clip_perturbed.
+                values[name] = np.maximum(np.asarray(drawn, dtype=float),
+                                          1e-6 * abs(nominal))
+            else:
+                b_nominal = law.coefficient(name[2:])  # type: ignore[arg-type]
+                assert b_nominal is not None
+                drawn = _perturbed_value(b_nominal, z, dist, params, name=name)
+                values[name] = np.maximum(np.asarray(drawn, dtype=float), 0.0)
+        toughness = _toughness_draws(material, law, Vp, values)
+        eta_draws: float | np.ndarray = (values['bk_eta'][:, None]
+                                         if 'bk_eta' in values else eta)
+        if fixed is None:
+            # Proportional loading: the same expressions as
+            # fracture_load_factors, over (n_samples, n_nodes).
+            G_T = np.asarray(moving.G_T, dtype=float)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                G_c = vcct._bk_toughness(toughness, eta_draws, moving.G_I,
+                                         moving.G_II, moving.G_III)
+                per_node = np.where(G_T > 0.0,
+                                    np.sqrt(G_c / np.where(G_T > 0.0, G_T, 1.0)),
+                                    np.inf)
+        else:
+            per_node = vcct._thermal_factors_batch(fixed, moving, toughness, eta_draws)
+        per_node = np.broadcast_to(per_node, (int(n_samples), n_nodes)).copy()
+
+    samples = (np.min(per_node, axis=1) if n_nodes else
+               np.full(int(n_samples), np.inf))
+    finite = np.isfinite(per_node)
+    governing = np.zeros(n_nodes, dtype=float)
+    if n_nodes:
+        has = finite.any(axis=1)
+        rows = np.argmin(np.where(finite, per_node, np.inf), axis=1)
+        governing = np.bincount(rows[has], minlength=n_nodes) / float(n_samples)
+    with np.errstate(invalid='ignore'):
+        stats = {
+            'mean': float(np.mean(samples)), 'std': float(np.std(samples)),
+            'min': float(np.min(samples)), 'max': float(np.max(samples)),
+        }
+    return FractureLoadFactorBand(
+        nominal=float(np.min(nominal_per_node)) if n_nodes else math.inf,
+        nominal_per_node=nominal_per_node,
+        samples=samples,
+        samples_per_node=per_node,
+        governing_fraction=governing,
+        node=np.array(moving.node, dtype=int),
+        percentiles={f'p{p:g}': _percentile(samples, p) for p in pcts},
+        n_samples=int(n_samples),
+        method=str(method),
+        seed=seed,
+        spec={k: (str(v[0]), float(v[1])) for k, v in resolved.items()},
+        inputs=inputs,
+        toughness_knockdown=law,
+        toughness_uncalibrated=_placeholder_applied(law, Vp),
+        load_factor_basis=str(basis),
+        required_load_factor=required_load_factor,
+        **stats,
+    )

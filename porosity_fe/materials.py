@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ._sampling import _perturbed_value as _sampled_value
+
 # ============================================================
 # SECTION 1: MATERIAL PROPERTIES AND CONSTANTS
 # ============================================================
@@ -742,29 +744,18 @@ class MaterialProperties:
           - ``'uniform'``: ``params`` is the fractional half-width ``h``; the
             value is drawn uniformly on ``nominal * [1 - h, 1 + h]``.
             ``unit_draw`` is a U(0, 1) variate.
+
+        The draw itself is :func:`porosity_fe._sampling._perturbed_value`,
+        shared with the fracture load factor band; a non-positive
+        ``params`` returns the nominal value, any other draw is clipped to
+        the field's range (:meth:`_clip_perturbed`).
         """
         nominal = float(getattr(self, name))
-        if dist == 'lognormal':
-            cov = float(params)
-            if cov <= 0.0:
-                return nominal
-            # Median-preserving lognormal with the requested CoV.
-            sigma_ln = np.sqrt(np.log1p(cov * cov))
-            return self._clip_perturbed(name, nominal * np.exp(sigma_ln * unit_draw))
-        if dist == 'normal':
-            cov = float(params)
-            if cov <= 0.0:
-                return nominal
-            return self._clip_perturbed(name, nominal + cov * abs(nominal) * unit_draw)
-        if dist == 'uniform':
-            h = float(params)
-            if h <= 0.0:
-                return nominal
-            return self._clip_perturbed(name, nominal * (1.0 - h + 2.0 * h * unit_draw))
-        raise ValueError(
-            f"Unknown distribution {dist!r} for field {name!r}. "
-            f"Use one of 'lognormal', 'normal', 'uniform'."
-        )
+        value = _sampled_value(nominal, unit_draw, dist, params,
+                               name=f"field {name!r}")
+        if value is nominal:
+            return nominal
+        return self._clip_perturbed(name, value)
 
     # Fiber volume fraction cannot exceed hexagonal close packing.
     _VF_MAX = float(np.pi / (2.0 * np.sqrt(3.0)))

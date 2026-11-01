@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -29,6 +29,9 @@ from .interlaminar import (
 )
 from .recovery import NodalAverage, extrapolate_to_nodes
 from .vcct import CrackFront, vcct_energy_release_rates
+
+if TYPE_CHECKING:
+    from ..uq import FractureLoadFactorBand
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,8 +183,10 @@ class FieldResults:
         ``toughness_uncalibrated`` flag are on the table), and the critical
         load factor ``lambda_c``
         (:func:`~porosity_fe.vcct_energy_release_rates`). At the applied
-        state, thermal residual included. ``None`` without a delaminated
-        node pair.
+        state, thermal residual included; a combined solve keeps the
+        mechanical and the residual part as ``crack_front.parts``, so
+        :meth:`fracture_load_factor_uncertainty` can re-evaluate the load
+        factor without a solve. ``None`` without a delaminated node pair.
     fracture_load_factor : float or None
         Smallest ``lambda_c`` over the front: the multiplier on the load
         named by :attr:`load_factor_basis` at which the delamination starts
@@ -411,6 +416,83 @@ class FieldResults:
             return None
         return vcct_energy_release_rates(mesh, self.displacement,
                                          self.interface_forces)
+
+    def fracture_load_factor_uncertainty(
+            self, material: MaterialProperties, *,
+            covs: dict[str, float] | None = None,
+            spec: dict[str, tuple[str, float]] | None = None,
+            n_samples: int = 1000,
+            method: str = 'monte_carlo',
+            seed: int | None = None,
+            percentiles: tuple[float, ...] = (5.0, 50.0, 95.0),
+            required_load_factor: float | None = None,
+    ) -> FractureLoadFactorBand:
+        """Uncertainty band on :attr:`fracture_load_factor` from toughness scatter.
+
+        :func:`~porosity_fe.fracture_load_factor_uncertainty` on this
+        solve's front, with the solve's porosity-toughness law
+        (``crack_front.toughness_knockdown``), its prestress (the residual
+        part of a combined solve, ``crack_front.parts``) and its
+        :attr:`load_factor_basis`. No FE solve is run: the analysis is
+        linear, so the front's energy release rates do not depend on the
+        toughness and ``lambda_c`` is re-evaluated per draw. Nothing
+        scatters unless named in ``covs`` or ``spec``.
+
+        Parameters
+        ----------
+        material : MaterialProperties
+            The material of the solve (its toughness ``G_Ic``, ``G_IIc``,
+            ``bk_eta`` and optional ``G_IIIc`` are the nominal values).
+            A material whose toughness differs from the solve's is
+            rejected: the band's nominal value must be this result's
+            :attr:`fracture_load_factor`.
+        covs, spec, n_samples, method, seed, percentiles, required_load_factor
+            As for :func:`~porosity_fe.fracture_load_factor_uncertainty`:
+            the fields that can scatter are ``G_Ic``, ``G_IIc``,
+            ``G_IIIc``, ``bk_eta``, ``b_I``, ``b_II`` and ``b_III``.
+
+        Returns
+        -------
+        FractureLoadFactorBand
+            Its ``nominal`` is :attr:`fracture_load_factor`.
+
+        Raises
+        ------
+        ValueError
+            Without a delamination front, without toughness data in the
+            solve (no fracture load factor), for a ``material`` that does
+            not reproduce the solve's load factor, or for an invalid
+            scatter or sampling argument.
+        """
+        from ..uq import fracture_load_factor_uncertainty
+
+        front = self.crack_front
+        if front is None:
+            raise ValueError(
+                "These results have no delamination front: the uncertainty "
+                "band needs a mesh with an explicit Delamination.")
+        if front.lambda_c is None or front.toughness_knockdown is None:
+            raise ValueError(
+                "These results have no fracture load factor: the solve had no "
+                "toughness data (MaterialProperties.G_Ic, G_IIc, bk_eta), so "
+                "there is no load factor to put a band on.")
+        moving, fixed = front.parts if front.parts is not None else (front, None)
+        band = fracture_load_factor_uncertainty(
+            moving, material, prestress=fixed,
+            toughness_knockdown=front.toughness_knockdown, covs=covs, spec=spec,
+            n_samples=n_samples, method=method, seed=seed, percentiles=percentiles,
+            required_load_factor=required_load_factor,
+            load_factor_basis=self.load_factor_basis)
+        own = self.fracture_load_factor
+        same = (own is not None and band.nominal == own) or (
+            own is not None and np.isfinite(own) and np.isfinite(band.nominal)
+            and abs(band.nominal - own) <= 1e-9 * abs(own))
+        if not same:
+            raise ValueError(
+                f"material does not reproduce this solve's fracture load factor "
+                f"({own!r}; the material gives {band.nominal!r}): pass the "
+                f"material of the solve, whose toughness the band is centred on.")
+        return band
 
     def interface_tractions(self, mesh: CompositeMesh, *,
                             interfaces: Iterable[int] | None = None
