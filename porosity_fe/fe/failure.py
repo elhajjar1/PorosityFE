@@ -452,6 +452,9 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
     # material sets one, or when the directional degradation supplies them
     # with their own ratios, so the default calls are unchanged.
     opted_in = _has_interlaminar(material) or porosity_degradation == 'directional'
+    # The strengths depend on the element only through its porosity, so they
+    # are computed once per distinct level (a structured mesh has few).
+    strengths_by_vp: dict[float, tuple] = {}
     for e in range(n_elem):
         elem_Vp = float(elem_Vp_all[e])
 
@@ -459,12 +462,16 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         if skip[e]:
             continue
 
-        strengths = degraded_strengths(material, void_shape_radii, elem_Vp,
-                                       porosity_degradation=porosity_degradation)
-        kw = ({'interlaminar': degraded_interlaminar_strengths(
-            material, void_shape_radii, elem_Vp,
-            porosity_degradation=porosity_degradation, criterion=criterion)}
-            if opted_in else {})
+        level = strengths_by_vp.get(elem_Vp)
+        if level is None:
+            level = strengths_by_vp[elem_Vp] = (
+                degraded_strengths(material, void_shape_radii, elem_Vp,
+                                   porosity_degradation=porosity_degradation),
+                ({'interlaminar': degraded_interlaminar_strengths(
+                    material, void_shape_radii, elem_Vp,
+                    porosity_degradation=porosity_degradation, criterion=criterion)}
+                 if opted_in else {}))
+        strengths, kw = level
         s_all = stress_local[e]  # (n_gp, 6)
 
         if criterion == 'tsai_wu':

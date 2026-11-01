@@ -657,7 +657,14 @@ class TestDirectionalDegradation:
         and Budiansky & O'Connell (1976): ``dS33 = 16 (1 - nu^2) rho / (3 E)``,
         ``dS44 = dS55 = 32 (1 - nu^2) rho / (3 (2 - nu) E)`` (engineering
         shear), and no in-plane change. Mori-Tanaka equals the
-        non-interacting result in compliance as ``Vp -> 0``."""
+        non-interacting result in compliance as ``Vp -> 0``; the error is
+        first order in ``gamma``.
+
+        The tensor is taken at the exact ``Vp`` (the cache's inner
+        function): the cache key rounds ``Vp`` to 1e-6, which at these void
+        fractions (2e-3 to 2e-6) moves the ratio by up to 5 %.
+        """
+        from porosity_fe.homogenization import _mt_effective_stiffness_cached
         mat = MATERIALS['T800_epoxy']
         E, nu = mat.matrix_modulus, mat.matrix_poisson
         C_m = mat.get_isotropic_matrix_stiffness()
@@ -665,15 +672,19 @@ class TestDirectionalDegradation:
         rho = 0.05
         d33 = 16.0 * (1.0 - nu ** 2) * rho / (3.0 * E)
         d55 = 32.0 * (1.0 - nu ** 2) * rho / (3.0 * (2.0 - nu) * E)
-        in_plane = []
-        for gamma in (1e-2, 1e-3, 1e-4):
+        exact = _mt_effective_stiffness_cached.__wrapped__
+        for gamma in (1e-2, 1e-3, 1e-4, 1e-5):
             Vp = 4.0 / 3.0 * np.pi * rho * gamma
-            C = _mt_effective_stiffness(C_m, Vp, (1.0, 1.0, gamma), nu)
+            C = exact(float(C_m[0, 0]), float(C_m[3, 3]), Vp, (1.0, 1.0, gamma), nu)
             dS = np.linalg.inv(C) - S_m
-            assert dS[2, 2] / d33 == pytest.approx(1.0, abs=0.015)
-            assert dS[4, 4] / d55 == pytest.approx(1.0, abs=0.025)
+            assert abs(dS[2, 2] / d33 - 1.0) < 1.5 * gamma, gamma
+            assert abs(dS[4, 4] / d55 - 1.0) < 3.0 * gamma, gamma
             assert dS[3, 3] == pytest.approx(dS[4, 4], rel=1e-9)
-            in_plane.append(max(abs(dS[0, 0] / S_m[0, 0]), abs(dS[5, 5] / S_m[5, 5])))
-        # The in-plane change is of order Vp and vanishes with gamma.
-        assert in_plane[0] < 3e-3 and in_plane[1] < in_plane[0] / 5 \
-            and in_plane[2] < in_plane[1] / 5
+            # The in-plane change is of order Vp: it vanishes with gamma.
+            assert abs(dS[0, 0] / S_m[0, 0]) < 1.2 * Vp
+            assert abs(dS[5, 5] / S_m[5, 5]) < 1.2 * Vp
+        # Through the cache (rounded Vp) the ratios stay within that rounding.
+        for gamma, tol in ((1e-2, 0.015), (1e-3, 0.002), (1e-4, 0.004)):
+            Vp = 4.0 / 3.0 * np.pi * rho * gamma
+            dS = np.linalg.inv(_mt_effective_stiffness(C_m, Vp, (1.0, 1.0, gamma), nu)) - S_m
+            assert dS[2, 2] / d33 == pytest.approx(1.0, abs=tol)
