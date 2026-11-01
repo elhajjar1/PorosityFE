@@ -402,7 +402,7 @@ _FRACTURE_UQ_LAW_FIELDS = ('b_I', 'b_II', 'b_III')
 _FRACTURE_UQ_FIELDS = _FRACTURE_UQ_MATERIAL_FIELDS + _FRACTURE_UQ_LAW_FIELDS
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class FractureLoadFactorBand:
     """Uncertainty band on the delamination load factor ``lambda_c`` from
     toughness scatter; :func:`fracture_load_factor_uncertainty` builds it.

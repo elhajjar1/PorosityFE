@@ -347,6 +347,7 @@ class TestBand:
         c = r.fracture_load_factor_uncertainty(MAT, seed=12, **kw)
         np.testing.assert_array_equal(a.samples_per_node, b.samples_per_node)
         assert a.summary() == b.summary()
+        assert a == a and a != b              # identity: the band holds arrays
         assert not np.array_equal(a.samples, c.samples)
         lhs = r.fracture_load_factor_uncertainty(MAT, seed=11, method='lhs', **kw)
         np.testing.assert_array_equal(
