@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.sparse
 
+from .._types import PorosityDegradation
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import strain_transformation_3d, stress_transformation_3d
@@ -151,6 +153,7 @@ def failure_metrics(
     stress_local: np.ndarray, load_stress_local: np.ndarray,
     prestress_local: np.ndarray | None, residual_local: np.ndarray | None,
     interior: np.ndarray, thermal_only: bool, delta_T: float | None,
+    porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION,
 ) -> FailureMetrics:
     """Failure indices and first-ply-failure load factors of a solve.
 
@@ -161,7 +164,8 @@ def failure_metrics(
     ``None``). ``residual_local`` is the residual stress of a combined
     solve, whose own maximum failure index is reported (for
     ``thermal_only`` it is the total one). ``interior`` masks the elements
-    of the interior metrics.
+    of the interior metrics. ``porosity_degradation`` is the mapping the
+    solve degraded its stiffness with; the strengths follow it.
 
     The per-element failure index is the max over Gauss points (0.0 for
     skipped void elements), ``max_fi`` its overall maximum, and the mode
@@ -175,7 +179,8 @@ def failure_metrics(
                  ) -> tuple[float, np.ndarray, dict[str, float]]:
         return failure.evaluate_failure(
             stress, mesh.porosity, mesh.elements, material, void_shape_radii,
-            criterion, void_elements=mesh.void_elements, mode_fields=mode_fields)
+            criterion, void_elements=mesh.void_elements, mode_fields=mode_fields,
+            porosity_degradation=porosity_degradation)
 
     mode_fields: dict[str, np.ndarray] = {}
     max_fi, per_elem_fi, mode_indices = evaluate(stress_local, mode_fields)
@@ -184,7 +189,8 @@ def failure_metrics(
     lam_elem = failure._element_load_factors(
         load_stress_local, mesh.porosity, mesh.elements, material,
         void_shape_radii, criterion, void_elements=mesh.void_elements,
-        prestress_local=prestress_local)
+        prestress_local=prestress_local,
+        porosity_degradation=porosity_degradation)
     load_factor = float(lam_elem.min()) if lam_elem.size else float('inf')
 
     residual_max_fi: float | None = None

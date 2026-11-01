@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from .._types import PorosityDegradation
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..results import FailureResult
@@ -526,6 +528,8 @@ class FieldResults:
                            interfaces: Iterable[int] | None = None,
                            interior_margin: float | None = None,
                            void_shape_radii: tuple | None = None,
+                           porosity_degradation: PorosityDegradation =
+                           _DEFAULT_POROSITY_DEGRADATION,
                            ) -> DelaminationOnset:
         """Stress-based delamination onset at the ply interfaces.
 
@@ -533,7 +537,9 @@ class FieldResults:
         Brewer-Lagace (or Ye) quadratic criterion on the interface traction
         averaged over ``x_avg`` (default one ply thickness), with
         porosity-degraded strengths, and the onset load factor. The
-        arguments are those of :func:`~porosity_fe.delamination_onset`.
+        arguments are those of :func:`~porosity_fe.delamination_onset`;
+        pass the ``porosity_degradation`` the solve used (not recorded
+        here).
 
         Returns
         -------
@@ -544,7 +550,8 @@ class FieldResults:
         return delamination_onset(
             self, mesh, material, criterion=criterion, x_avg=x_avg, Zc=Zc,
             interfaces=interfaces, interior_margin=interior_margin,
-            void_shape_radii=void_shape_radii)
+            void_shape_radii=void_shape_radii,
+            porosity_degradation=porosity_degradation)
 
     def to_vtk(self, mesh: CompositeMesh,
                filename: str | os.PathLike) -> None:

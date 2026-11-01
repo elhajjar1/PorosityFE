@@ -40,9 +40,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .._types import FEFormulation
+from .._types import FEFormulation, PorosityDegradation
 from ..gauss import gauss_points_hex
-from ..homogenization import _degraded_composite_stiffness
+from ..homogenization import (
+    _DEFAULT_POROSITY_DEGRADATION,
+    _check_porosity_degradation,
+    _degraded_composite_stiffness,
+)
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import rotate_stiffness_3d, strain_transformation_3d
@@ -86,6 +90,9 @@ class ElementBatch:
     Kaa : np.ndarray or None
         ``(E, 9, 9)`` internal-mode stiffness ``sum G^T C G det(J) w`` for
         ``'hex8i'`` (``None`` for ``'hex8'``).
+    porosity_degradation : {'isotropic', 'directional'}
+        Porosity degradation mapping ``C`` was built with (default
+        ``'isotropic'``; see :data:`porosity_fe.PorosityDegradation`).
     """
 
     dofs: np.ndarray
@@ -95,6 +102,7 @@ class ElementBatch:
     formulation: FEFormulation = _DEFAULT_FORMULATION
     G_inc: np.ndarray | None = None
     Kaa: np.ndarray | None = None
+    porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION
 
     def stiffness_matrices(self) -> np.ndarray:
         """Symmetrized element stiffness matrices ``(E, 24, 24)``.
@@ -299,6 +307,8 @@ def _condense_incompatible_modes(B: np.ndarray, C: np.ndarray,
 def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
                         void_shape_radii: tuple, *,
                         formulation: FEFormulation = _DEFAULT_FORMULATION,
+                        porosity_degradation: PorosityDegradation =
+                        _DEFAULT_POROSITY_DEGRADATION,
                         ) -> ElementBatch:
     """Compute :class:`ElementBatch` for every element of ``mesh``.
 
@@ -310,15 +320,20 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
         Element formulation (see :class:`Hex8Element`), default
         ``'hex8i'``. For ``'hex8i'`` the incompatible modes are condensed
         into ``ElementBatch.B``.
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Porosity degradation mapping of the Gauss-point stiffness (see
+        :class:`Hex8Element`), default ``'isotropic'``.
 
     Raises
     ------
     ValueError
-        On an unknown ``formulation``, non-finite or out-of-range nodal
-        porosity, or a non-positive Jacobian determinant at any Gauss point
-        (same messages as :class:`Hex8Element`).
+        On an unknown ``formulation`` or ``porosity_degradation``,
+        non-finite or out-of-range nodal porosity, or a non-positive
+        Jacobian determinant at any Gauss point (same messages as
+        :class:`Hex8Element`).
     """
     _check_formulation(formulation)
+    _check_porosity_degradation(porosity_degradation)
     elements = np.asarray(mesh.elements, dtype=np.intp)
     n_elem = len(elements)
     N, dN, points, weights = _gauss_point_tables()
@@ -358,7 +373,9 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
         return_inverse=True)
     table = np.empty((len(pairs), 6, 6))
     for k, (vp, angle) in enumerate(pairs):
-        C_k = _degraded_composite_stiffness(float(vp), void_shape_radii, material)
+        C_k = _degraded_composite_stiffness(
+            float(vp), void_shape_radii, material,
+            porosity_degradation=porosity_degradation)
         ply_rad = np.radians(angle)
         if abs(ply_rad) > 1e-15:
             C_k = rotate_stiffness_3d(C_k, ply_rad, axis='z')
@@ -384,4 +401,5 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
         formulation=formulation,
         G_inc=G_inc,
         Kaa=Kaa,
+        porosity_degradation=porosity_degradation,
     )

@@ -38,7 +38,9 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from .._types import PorosityDegradation
 from ..empirical import Calibration
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION, _check_porosity_degradation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..transforms import stress_transformation_3d
@@ -761,25 +763,35 @@ def _to_ply_axes(t: np.ndarray, angle_deg: np.ndarray) -> np.ndarray:
 
 
 def _degraded_rows(material: MaterialProperties, radii: tuple, vp: np.ndarray,
-                   Zc: float | None) -> tuple[np.ndarray, ...]:
+                   Zc: float | None, *, criterion: str,
+                   porosity_degradation: PorosityDegradation =
+                   _DEFAULT_POROSITY_DEGRADATION) -> tuple[np.ndarray, ...]:
     """``(Z_t, S_13, S_23, Z_c)`` per row, degraded at each row's porosity.
 
     One evaluation per distinct porosity level; ``Z_c`` is ``NaN`` without
-    a compression strength.
+    a compression strength. With ``porosity_degradation='directional'``
+    the strengths take the through-thickness ratios of
+    :func:`porosity_fe.fe.failure._interlaminar_strength_ratios` (``Z_c``
+    that of ``Z_t``), with the ``S_13`` stand-in of ``criterion``.
     """
     Zt, S13, S23, Zc_s = (np.full(vp.size, np.nan) for _ in range(4))
     levels, inverse = np.unique(np.clip(vp, 0.0, 1.0), return_inverse=True)
     inverse = inverse.reshape(-1)
     for i, level in enumerate(levels):
-        st = failure.degraded_strengths(material, radii, float(level))
-        zt_o, s13_o = failure.degraded_interlaminar_strengths(material, radii, float(level))
+        st = failure.degraded_strengths(material, radii, float(level),
+                                        porosity_degradation=porosity_degradation)
+        zt_o, s13_o = failure.degraded_interlaminar_strengths(
+            material, radii, float(level),
+            porosity_degradation=porosity_degradation, criterion=criterion)
         sel = inverse == i
         Zt[sel] = st[2] if zt_o is None else zt_o
         S13[sel] = st[5] if s13_o is None else s13_o
         S23[sel] = st[5]
         if Zc is not None:
-            r_m, _ = failure._strength_ratios(material, radii, float(level))
-            Zc_s[sel] = max(Zc * r_m, Calibration.STRENGTH_FLOOR_MPA)
+            r_Zt, _, _ = failure._interlaminar_strength_ratios(
+                material, radii, float(level),
+                porosity_degradation=porosity_degradation)
+            Zc_s[sel] = max(Zc * r_Zt, Calibration.STRENGTH_FLOOR_MPA)
     return Zt, S13, S23, Zc_s
 
 
@@ -791,6 +803,8 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
                        interfaces: Iterable[int] | None = None,
                        interior_margin: float | None = None,
                        void_shape_radii: tuple | None = None,
+                       porosity_degradation: PorosityDegradation =
+                       _DEFAULT_POROSITY_DEGRADATION,
                        ) -> DelaminationOnset:
     """Stress-based delamination onset at the ply interfaces.
 
@@ -845,6 +859,16 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     void_shape_radii : tuple, optional
         Void shape of the strength degradation; default that of
         ``mesh.porosity_field``.
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Porosity degradation of the strengths (see
+        :data:`porosity_fe.PorosityDegradation`), default ``'isotropic'``:
+        pass the value the solve used (``FESolver(...,
+        porosity_degradation=...)``); the results do not record it. With
+        ``'directional'`` ``Z_t`` (and ``Zc``) take the through-thickness
+        ratio ``r_Zt``, ``S_13`` the ``r_S13`` and ``S_23`` the ``r_S23`` of
+        :func:`porosity_fe.fe.failure._interlaminar_strength_ratios`
+        instead of ``r_m``, so flat voids weaken the interface more; for
+        spherical voids nothing changes.
 
     Returns
     -------
@@ -855,9 +879,9 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     Raises
     ------
     ValueError
-        For an unknown criterion, a negative or non-finite ``x_avg`` or
-        ``interior_margin``, a non-positive ``Zc``, ``Zc`` with ``'ye'``, or
-        results and mesh that do not match.
+        For an unknown criterion or ``porosity_degradation``, a negative or
+        non-finite ``x_avg`` or ``interior_margin``, a non-positive ``Zc``,
+        ``Zc`` with ``'ye'``, or results and mesh that do not match.
 
     Notes
     -----
@@ -866,7 +890,8 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     it is ``None``; ``S_23`` is ``tau_ilss``. All are degraded by the
     matrix ratio ``r_m`` of :func:`porosity_fe.fe.failure.degraded_strengths`
     at the porosity of the interface node, like the matrix strengths of the
-    ply criteria.
+    ply criteria (by their own ratios with
+    ``porosity_degradation='directional'``).
 
     **Load factor.** Linear analysis: the traction is ``t_th + lam t_m``,
     with ``t_th`` the averaged thermal residual traction of a combined
@@ -886,6 +911,7 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     if criterion not in ONSET_CRITERIA:
         raise ValueError(
             f"Unknown onset criterion {criterion!r}. Use one of {list(ONSET_CRITERIA)}.")
+    _check_porosity_degradation(porosity_degradation)
     if Zc is not None:
         if criterion == 'ye':
             raise ValueError(
@@ -936,7 +962,8 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     if prestress is not None:
         evaluated &= np.isfinite(prestress).all(axis=1)
 
-    Zt, S13, S23, Zc_s = _degraded_rows(material, radii, vp, Zc)
+    Zt, S13, S23, Zc_s = _degraded_rows(material, radii, vp, Zc, criterion=criterion,
+                                        porosity_degradation=porosity_degradation)
     index = np.full(vp.size, np.nan)
     lam = np.full(vp.size, np.nan)
     e = evaluated
