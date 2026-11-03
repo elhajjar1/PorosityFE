@@ -5,6 +5,27 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **A register of the deprecations removed in 2.0** (#218). The docs page
+  "Deprecations removed in 2.0" lists the ten deprecated names and paths,
+  with what replaces each, and two open decisions: the
+  `porosity_fe_analysis.py` shim and `EmpiricalSolver.f_md`.
+  `tests/test_deprecations.py` holds the same register.
+  - Before 2.0 it checks that each entry still works, so 1.x removes
+    nothing early, and that each warning entry emits a
+    `DeprecationWarning` naming 2.0.
+  - From version 2.0 on it fails while an entry is left.
+  - It counts the `DeprecationWarning` call sites per file (AST), so a new
+    deprecation cannot skip the register.
+  - It checks that importing the package emits none of them.
+  - Every deprecation message and docstring now names 2.0. Before:
+    - the `ply_angles=None` warning said "a future major version";
+    - the `resolve_material(strict=)` warning said "will be removed";
+    - the #225 assignment warning named no version ("one release" in this
+      changelog);
+    - the docstrings of the dict shims and of `ply_angles=None` said "a
+      future major version".
+
+    No behaviour changes.
 - **Memory budget for direct FE solves** (#228). Before each sparse LU
   factorization `FESolver` estimates its size and what the solve already
   holds (the interpreter, the mesh's assembly arrays and the cached
@@ -946,7 +967,7 @@ All notable changes to PorosityFE will be documented in this file.
 
 ### Deprecated
 - **Assigning `CompositeMesh.L_x`, `L_y` or `x_grid` after the mesh is
-  generated** (#225). It still works for one release: it emits a
+  generated** (#225). It still works until 2.0: it emits a
   `DeprecationWarning` naming the constructor argument (`length=`,
   `width=`, `x_grid=`) and marks the mesh stale until `generate_mesh()`
   runs again. `FESolver` (construction and `solve()`) now refuses a stale

@@ -60,12 +60,12 @@ def _resolve_ply_angles(
         )
     if ply_angles is None:
         # Back-compat shim — emit a DeprecationWarning and resolve to the
-        # standardised default. Planned removal in a future major version.
+        # standardised default. Removal in 2.0 (#218).
         warnings.warn(
             f"Passing {caller}=None is deprecated; pass {none_means!r} (or "
             f"'UD', or an explicit list of ply angles) instead. None is "
             f"resolved to {none_means!r} for back-compat and will be removed "
-            "in a future major version (#44).",
+            "in 2.0 (#44).",
             DeprecationWarning,
             stacklevel=3,
         )

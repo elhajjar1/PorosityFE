@@ -2,7 +2,7 @@
 
 ``length=``, ``width=`` and ``x_grid=`` replace assigning ``L_x`` / ``L_y`` /
 ``x_grid`` and calling ``generate_mesh()`` again. The old assignment still
-works for one release: it warns (``DeprecationWarning`` naming the new
+works until 2.0: it warns (``DeprecationWarning`` naming the new
 argument) and marks the mesh stale, and ``FESolver`` refuses a stale mesh
 until ``generate_mesh()`` runs, so its nodes, porosity and elements can no
 longer silently disagree with the dimensions. Lengths in mm.

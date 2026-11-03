@@ -295,7 +295,8 @@ class EmpiricalSolver:
     """
 
     # Calibration constants now live on :class:`Calibration` (#121). The
-    # class-level names below are deprecated back-compat aliases preserved
+    # class-level names below are deprecated back-compat aliases (removal in
+    # 2.0, docs/deprecations.md) preserved
     # so existing tests and downstream callers that read
     # ``EmpiricalSolver._JUDD_WRIGHT_ALPHA_QI`` continue to work. New code
     # should reference ``Calibration.JUDD_WRIGHT_ALPHA_QI`` etc. directly.
@@ -342,8 +343,8 @@ class EmpiricalSolver:
 
             Passing ``None`` is deprecated and currently resolved to
             ``'QI'`` with a :class:`DeprecationWarning` (#44 item 2);
-            this back-compat path will be removed in a future major
-            version. ``judd_wright_alpha`` / ``power_law_n`` /
+            this back-compat path will be removed in 2.0.
+            ``judd_wright_alpha`` / ``power_law_n`` /
             ``linear_beta`` are optional partial overrides for the
             QI-calibrated coefficients (see README "Empirical Strength
             Knockdown"). Each accepts a dict keyed by mode
@@ -1012,8 +1013,8 @@ class EmpiricalSolver:
             (once per :meth:`get_all_failure_loads` call). Back-compat dict-style access
             (``result['failure_stress']``, ``result['critical_location']``,
             etc.) is preserved via the :class:`FailureResult`
-            ``__getitem__`` shim and will be removed in a future major
-            version — prefer attribute access.
+            ``__getitem__`` shim and will be removed in 2.0 — prefer
+            attribute access.
         """
         model_func, env_kd, fat_kd = self._prepare_loading(
             mode, model, cycles, environment, R)

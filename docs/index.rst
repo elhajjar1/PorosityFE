@@ -83,4 +83,5 @@ Contents
    :caption: Reference
 
    api
+   deprecations
    changelog

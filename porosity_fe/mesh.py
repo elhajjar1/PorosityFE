@@ -299,7 +299,7 @@ class CompositeMesh:
         ``None`` is deprecated and is currently resolved to all-zero
         plies (the historical default) with a
         :class:`DeprecationWarning` (#44 item 2); this back-compat path
-        will be removed in a future major version.
+        will be removed in 2.0.
     delaminations : sequence of Delamination, optional
         Keyword-only explicit delaminations (interlaminar cracks), default
         none. For every ply interface that has at least one, the node plane
@@ -1308,9 +1308,9 @@ class CompositeMesh:
         self._stale = True
         warnings.warn(
             f"Assigning CompositeMesh.{name} after the mesh is generated is "
-            f"deprecated: pass {argument}= to CompositeMesh. Until "
-            f"generate_mesh() runs again the nodes, porosity and elements are "
-            f"stale, and FESolver refuses the mesh.",
+            f"deprecated and will be removed in 2.0: pass {argument}= to "
+            f"CompositeMesh. Until generate_mesh() runs again the nodes, "
+            f"porosity and elements are stale, and FESolver refuses the mesh.",
             DeprecationWarning, stacklevel=3)
 
     @property
