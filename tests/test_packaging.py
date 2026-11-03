@@ -6,11 +6,10 @@ security audit and the Streamlit deployment guide use them, but they must
 list exactly what ``pyproject.toml`` declares.
 """
 
+import tomllib
 from pathlib import Path
 
 import pytest
-
-tomllib = pytest.importorskip("tomllib")  # Python 3.11+
 
 ROOT = Path(__file__).resolve().parent.parent
 

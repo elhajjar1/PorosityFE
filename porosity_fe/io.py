@@ -321,7 +321,7 @@ def _build_provenance(seed: int | None = None) -> dict:
     scipy_v = _pkg_version("scipy")
     # Naive-UTC ISO string plus "Z", the format the schema and consumers
     # already expect (not the "+00:00" suffix an aware isoformat() adds).
-    now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    now_utc = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     generated_utc = now_utc.isoformat() + "Z"
 
     prov = {

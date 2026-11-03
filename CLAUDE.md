@@ -223,14 +223,20 @@ collection puts `test_cli.py` first.
 
 ## CI matrix
 
-`.github/workflows/tests.yml` runs three jobs: `lint` (ruff + mypy on
+`.github/workflows/tests.yml` runs four jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
-`{3.10, 3.11, 3.12, 3.13}` against an editable install; the ubuntu/3.12
+`{3.11, 3.12, 3.13, 3.14}` against an editable install; the ubuntu/3.12
 cell also measures coverage, uploads `coverage.xml` as an artifact, and
-runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`), and `streamlit_smoke` (decoupled
-single-OS/Python import-only check — Streamlit wheel availability on 3.13
-can't be allowed to drop the whole library matrix red, see issue #157).
-`security.yml` runs `pip-audit` weekly. Match the matrix when adding
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
+`fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
+ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
+baseline; see Commands), and `streamlit_smoke` (decoupled
+single-OS/Python import-only check — Streamlit wheel availability on a new
+Python can't be allowed to drop the whole library matrix red, see issue
+#157). The floor is Python 3.11 (`requires-python`, ruff `target-version`,
+mypy `python_version`; 3.10 reached end of life in October 2026, #216).
+`security.yml` runs `pip-audit` weekly, and Dependabot proposes action and
+pip updates (`.github/dependabot.yml`). Match the matrix when adding
 version-sensitive code.
 
 ## Adding materials and empirical coefficients

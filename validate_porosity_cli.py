@@ -19,7 +19,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -77,7 +77,7 @@ def _configure_debug_logging(output_dir: str | os.PathLike) -> str:
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    stamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
     log_path = output_dir / f'validate_porosity_{stamp}.log'
     handler = logging.FileHandler(log_path, encoding='utf-8')
     handler.setLevel(logging.DEBUG)
