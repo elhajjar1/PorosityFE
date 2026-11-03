@@ -1290,9 +1290,11 @@ All notable changes to PorosityFE will be documented in this file.
   - The pristine reference of the knockdown was always factorized
     directly. It is now solved with the requested `solver` (at its
     `rtol` when iterative) and cached apart per solver, so `solver='cg'`
-    factorizes nothing and is the way past the memory budget. A CG
-    knockdown changes by 3e-15 (compression) to 3e-13 (ILSS) on the
-    production meshes; direct results are unchanged.
+    factorizes nothing and is the way past the memory budget. The default
+    compression `refinement_study` with CG now peaks at 1.4 GB instead of
+    3.4 GB (159 s, against 444 s direct on the same machine), with the same
+    printed values. A CG knockdown changes by 3e-15 (compression) to 3e-13
+    (ILSS) on the production meshes; direct results are unchanged.
   - Not done: a CHOLMOD backend (scikit-sparse ships only a source
     distribution that needs SuiteSparse built on every platform), and
     reusing the factorization across contact iterations (the reduced

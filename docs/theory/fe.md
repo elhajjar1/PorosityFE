@@ -919,6 +919,6 @@ checks every factorization against the same budget (see [Linear solvers
 and memory](#linear-solvers-and-memory)). With `solver='cg'` the
 compression study above gives the same values to the printed digits, and
 since the knockdown's pristine reference follows the solver a CG study
-factorizes nothing. Before #228 the reference was always factorized
-directly, so the CG study took 193 s instead of 329 s at the same 3.4 GB
-peak, and CG saved memory only in thermal or pore-free studies.
+factorizes nothing: measured together on one machine, 159 s and a 1.4 GB
+peak instead of 444 s and 3.4 GB. (Before #228 the reference was always
+factorized directly, so a CG study peaked like the direct one.)
