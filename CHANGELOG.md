@@ -5,6 +5,46 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **FE result regression gate in CI** (#214). `scripts/fingerprint.py
+  --check scripts/fingerprint_baseline.json` recomputes 30 cases and
+  compares them with the committed baseline; the new `fe_fingerprint` job
+  runs it on ubuntu / 3.12, single threaded, in about three minutes.
+  - The cases: hex8i, direct, the production coupon, flexure and ILSS
+    meshes of AS4/3501-6 at 3 % clustered porosity in nine loadings
+    (mechanical, thermal and combined) under the three criteria (in-plane
+    shear with Hashin left out: `sigma_11` is zero up to round-off there and
+    its sign switches the fibre mode), plus `interface` penny voids, the
+    `'directional'` degradation on the ILSS specimen, a strip delamination
+    under compression with a thermal prestress (contact, VCCT, the load
+    factor and a seeded uncertainty band) and an 8-ply DCB. The fracture
+    cases use fixture toughness values, not material data.
+  - Each case is a numeric digest: every scalar; per float array its shape,
+    sum, sum of `|x|`, 2-norm, max, min and 16 entries; integer arrays and
+    strings exactly; the export JSON minus provenance, leaf by leaf. A float
+    passes at `|a - b| <= 1e-9 max(|a|, |b|) + 1e-11 scale`, the scale
+    being the magnitude of the values beside it, so quantities that are zero
+    up to round-off (a stress mean of 1e-12 MPa, a reaction sum of 1e-9 N)
+    do not trip it.
+  - Measured spread against the single-threaded baseline: 4 BLAS threads
+    3e-5 of the tolerance, Python 3.12 with the same wheels 0, numpy 1.26 /
+    scipy 1.13 on Python 3.11 2e-5. A relative change of 1e-8 in `E11`
+    trips 151 checks, and one of 1e-6 in the placeholder `b_I` trips the
+    crack-front toughness and the load factor.
+  - A change that moves the FE results on purpose regenerates the baseline
+    in the same PR (`--write-baseline`, single threaded) and says why here.
+    The bitwise mode (`<repo_root> out.json [--quick]`, `--compare`) is
+    unchanged. `tests/test_fingerprint_script.py` covers the comparison,
+    the baseline's consistency with the case list, and the DCB case end to
+    end on every platform (at 1e-6).
+- **The `examples/` scripts run in the test suite** (#215).
+  `tests/test_examples.py` runs each one in-process with its output in a
+  temporary directory (the new `POROSITY_FE_EXAMPLES_OUTPUT`), checks the
+  files it names, and checks that `distribution_comparison.py` prints the
+  empirical and FE compression knockdowns the README quotes, at the
+  README's precision. `examples/README.md` lists `distribution_comparison.py`
+  and no longer calls `interface_penny.py` the worst-case ILSS morphology.
+- **Dependabot** (#220): weekly grouped updates of the SHA-pinned GitHub
+  Actions, monthly grouped updates of the pip ranges.
 - **Uncertainty band on the delamination load factor** (delamination plan
   4.5, #213). Opt-in: no existing result, export or cached app run changes.
   - `fracture_load_factor_uncertainty(front, material, *, prestress=None,
