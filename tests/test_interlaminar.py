@@ -359,9 +359,7 @@ _LEVELS = ((10, 10, 1), (10, 20, 2), (10, 40, 4))
 def _tension(layup, nx, ny, per_ply, *, material=MAT4, strain=0.001, delta_T=None):
     pf = PorosityField(material, 0.0)
     mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=material.n_plies * per_ply,
-                         ply_angles=list(layup))
-    mesh.L_x, mesh.L_y = 10.0, 5.0
-    mesh.generate_mesh()
+                         ply_angles=list(layup), length=10.0, width=5.0)
     res = FESolver(mesh, material, pf, ply_angles=list(layup)).solve(
         'tension', applied_strain=strain, delta_T=delta_T)
     return mesh, res
@@ -799,10 +797,8 @@ class TestOBrien:
             pf = PorosityField(T300_5208, 0.0)
             delams = [Delamination.rectangle(k, center=(Lx / 2, Ly), half_size=(Lx, a))
                       for k in (3, 6)]
-            mesh = CompositeMesh(pf, T300_5208, nx=nx, ny=ny, nz=11,
-                                 ply_angles=EDT_LAYUP, delaminations=delams)
-            mesh.L_x, mesh.L_y = Lx, Ly
-            mesh.generate_mesh()
+            mesh = CompositeMesh(pf, T300_5208, nx=nx, ny=ny, nz=11, ply_angles=EDT_LAYUP,
+                                 delaminations=delams, length=Lx, width=Ly)
             res = FESolver(mesh, T300_5208, pf, ply_angles=EDT_LAYUP).solve(
                 'tension', applied_strain=eps)
             return mesh, res

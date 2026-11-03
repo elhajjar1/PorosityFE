@@ -222,6 +222,7 @@ class FESolver:
                  porosity_degradation: PorosityDegradation =
                  _DEFAULT_POROSITY_DEGRADATION,
                  ) -> None:
+        mesh._require_current()
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
@@ -521,6 +522,7 @@ class FESolver:
         check_solve_arguments(loading, criterion, solver,
                               supported_criteria=self.SUPPORTED_FAILURE_CRITERIA,
                               penalty_factor=penalty_factor, diag_scale=diag_scale)
+        self.mesh._require_current()
         thermal_only = loading == 'thermal'
         knockdown_law = _resolve_toughness_knockdown(toughness_knockdown)
         compliance: float | None = None

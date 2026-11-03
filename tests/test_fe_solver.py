@@ -2641,9 +2641,8 @@ class TestIncompatibleModes:
         from porosity_fe.fe.batch import build_element_batch
         mat = _ud_beam_material()
         pf = PorosityField(mat, 0.0)
-        mesh = CompositeMesh(pf, mat, nx=3, ny=3, nz=4, ply_angles=[30.0] * 4)
-        mesh.L_x, mesh.L_y = 3.0, 3.0
-        mesh.generate_mesh()
+        mesh = CompositeMesh(pf, mat, nx=3, ny=3, nz=4, ply_angles=[30.0] * 4,
+                             length=3.0, width=3.0)
         X = mesh.nodes.copy()
         tol = 1e-9
         interior = np.flatnonzero(

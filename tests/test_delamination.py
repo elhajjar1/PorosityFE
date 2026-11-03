@@ -71,11 +71,8 @@ def _pf(vp: float = 0.03, **kw) -> PorosityField:
 def _coupon(pf: PorosityField, delaminations=None, *, nx=8, ny=4, nz=8,
             L=(8.0, 4.0), ply_angles='QI') -> CompositeMesh:
     """An ``L[0] x L[1]`` mm coupon (1 mm elements in plane by default)."""
-    mesh = CompositeMesh(pf, pf.material, nx=nx, ny=ny, nz=nz,
-                         ply_angles=ply_angles, delaminations=delaminations)
-    mesh.L_x, mesh.L_y = L
-    mesh.generate_mesh()
-    return mesh
+    return CompositeMesh(pf, pf.material, nx=nx, ny=ny, nz=nz, ply_angles=ply_angles,
+                         delaminations=delaminations, length=L[0], width=L[1])
 
 
 def _no_node_strip(k: int, dx: float) -> Delamination:
@@ -538,10 +535,8 @@ def _dcb_mesh(a: float | None) -> CompositeMesh:
     insert from the loaded end (x = 0) to ``a``."""
     pf = PorosityField(DCB_MAT, 0.0)
     dl = None if a is None else [Delamination.strip(DCB_K, 0.0, a)]
-    mesh = CompositeMesh(pf, DCB_MAT, nx=60, ny=2, nz=16, ply_angles='UD', delaminations=dl)
-    mesh.L_x, mesh.L_y = DCB_LENGTH, DCB_WIDTH
-    mesh.generate_mesh()
-    return mesh
+    return CompositeMesh(pf, DCB_MAT, nx=60, ny=2, nz=16, ply_angles='UD', delaminations=dl,
+                         length=DCB_LENGTH, width=DCB_WIDTH)
 
 
 def _dcb_compliance(mesh: CompositeMesh, K, delta: float = 0.5) -> tuple[float, float]:

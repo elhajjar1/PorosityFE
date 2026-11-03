@@ -103,11 +103,9 @@ DCB_W, DCB_L, DCB_A = 4.0, 60.0, 21.0
 def _beam_mesh(material, a, *, nx=60, ny=2, width=DCB_W):
     """16-ply UD beam, ``DCB_L`` long, mid-plane strip from ``x = 0`` to ``a``."""
     pf = PorosityField(material, 0.0)
-    mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=16, ply_angles='UD',
-                         delaminations=[Delamination.strip(MID16, 0.0, a)])
-    mesh.L_x, mesh.L_y = DCB_L, width
-    mesh.generate_mesh()
-    return mesh
+    return CompositeMesh(pf, material, nx=nx, ny=ny, nz=16, ply_angles='UD',
+                         delaminations=[Delamination.strip(MID16, 0.0, a)],
+                         length=DCB_L, width=width)
 
 
 def _end_lines(mesh):
@@ -697,10 +695,8 @@ class TestThermalLoadFactor:
 
 def _coupon(material, pf, delaminations=None):
     """A 4-ply 8 x 4 mm coupon, 1 mm elements in plane."""
-    mesh = CompositeMesh(pf, material, nx=8, ny=4, nz=4, delaminations=delaminations)
-    mesh.L_x, mesh.L_y = 8.0, 4.0
-    mesh.generate_mesh()
-    return mesh
+    return CompositeMesh(pf, material, nx=8, ny=4, nz=4, delaminations=delaminations,
+                         length=8.0, width=4.0)
 
 
 def _isotropic(t_ply: float, E: float = 10000.0, nu: float = 0.3) -> MaterialProperties:
@@ -742,9 +738,8 @@ def penny():
     pf = PorosityField(mat, 0.0)
     mesh = CompositeMesh(pf, mat, nx=xg.size - 1, ny=xg.size - 1, nz=zg.size - 1,
                          ply_angles='UD',
-                         delaminations=[Delamination.ellipse(0, (0.0, 0.0), (a, a))])
-    mesh.L_x = mesh.L_y = 4 * a
-    mesh.generate_mesh()
+                         delaminations=[Delamination.ellipse(0, (0.0, 0.0), (a, a))],
+                         length=4 * a, width=4 * a)
 
     def remap(v, grid):
         return grid[np.rint(v / v.max() * (grid.size - 1)).astype(int)]

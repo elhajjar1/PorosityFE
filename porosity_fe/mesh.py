@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -203,6 +203,14 @@ def _as_delaminations(value: object) -> tuple[Delamination, ...]:
     return items
 
 
+def _check_length(value, name: str) -> float:
+    """A coupon dimension (mm): a finite, positive number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.number)) \
+            or not math.isfinite(float(value)) or float(value) <= 0.0:
+        raise ValueError(f"{name} must be a finite length > 0 in mm, got {value!r}.")
+    return float(value)
+
+
 def _normalize_angles(angles: np.ndarray) -> np.ndarray:
     """Map ply angles (degrees) into ``(-90, 90]``, so 90 and -90 compare equal."""
     a = 90.0 - np.mod(90.0 - np.asarray(angles, dtype=float), 180.0)
@@ -261,12 +269,13 @@ class CompositeMesh:
     elements whose centroid falls inside any explicit
     :class:`VoidGeometry` for the explicit-inclusion solver path.
 
-    The in-plane coupon size is **hard-coded** to ``L_x = 50.0`` mm and
-    ``L_y = 20.0`` mm (a standard ASTM-style coupon). Through-thickness
-    ``L_z`` is taken from ``material.total_thickness``
-    (``t_ply * n_plies``). To analyze a different coupon size, set
-    ``self.L_x`` / ``self.L_y`` on the instance and call
-    :meth:`generate_mesh` again.
+    The in-plane coupon size is ``length`` x ``width`` (default 50 x 20 mm,
+    a standard ASTM-style coupon); through-thickness ``L_z`` is taken from
+    ``material.total_thickness`` (``t_ply * n_plies``). Pass the size to
+    the constructor; assigning :attr:`L_x`, :attr:`L_y` or :attr:`x_grid`
+    afterwards is deprecated (issue #225): it leaves the generated arrays
+    stale, so :class:`~porosity_fe.FESolver` refuses the mesh until
+    :meth:`generate_mesh` runs again.
 
     Parameters
     ----------
@@ -300,9 +309,14 @@ class CompositeMesh:
         solver ties each copy to its original outside the delaminations
         (:meth:`bonded_ties`); inside, the two crack faces are free. Needs
         ``nz`` a multiple of ``n_plies``, so that every interface is a node
-        layer. Checked against the plate in :meth:`generate_mesh`, so a
-        builder that resizes the plate (:meth:`for_flexure`) checks the
-        final size.
+        layer. Checked against the plate in :meth:`generate_mesh`.
+    length, width : float, optional
+        Keyword-only in-plane coupon size ``L_x`` x ``L_y`` in mm, finite
+        and positive; default 50 x 20.
+    x_grid : array_like or None, optional
+        Keyword-only ``x`` (mm) of the ``nx + 1`` node lines, increasing
+        from 0 to ``length`` (a graded mesh); ``None`` (default) spaces them
+        evenly.
 
     Attributes
     ----------
@@ -313,8 +327,10 @@ class CompositeMesh:
     nx, ny, nz : int
         Element counts along each axis.
     L_x, L_y, L_z : float
-        Coupon dimensions in mm. ``L_x = 50.0`` and ``L_y = 20.0`` are
-        defaults; ``L_z = material.total_thickness``.
+        Coupon dimensions in mm: ``length``, ``width`` and
+        ``material.total_thickness``. Assigning ``L_x`` or ``L_y`` is
+        deprecated (pass ``length=`` / ``width=``): it warns and leaves the
+        mesh stale until :meth:`generate_mesh` runs again.
     nodes : np.ndarray
         Shape ``(n_nodes, 3)`` float array of node coordinates (mm),
         populated by :meth:`generate_mesh`. The first
@@ -376,12 +392,6 @@ class CompositeMesh:
         by :meth:`for_dcb`, :meth:`for_enf` and :meth:`for_mmb`; the
         ``'dcb'``, ``'enf'`` and ``'mmb'`` loading modes of
         :class:`~porosity_fe.FESolver` need it and raise without it.
-    x_grid : np.ndarray or None
-        ``x`` (mm) of the ``nx + 1`` node lines, increasing from 0 to
-        ``L_x``; ``None`` (default) spaces them evenly. The fracture-specimen
-        builders set it for a mesh graded towards the crack front (plan
-        decision D5). :meth:`generate_mesh` raises when it does not match
-        ``nx`` and ``L_x``: set it back to ``None`` before changing either.
     n_nodes, n_elements, n_dof, n_structured_nodes : int
         Read-only sizes, duplicated interface nodes included in the first
         three; :attr:`n_structured_nodes` is ``(nx+1)(ny+1)(nz+1)``.
@@ -399,12 +409,11 @@ class CompositeMesh:
     >>> mesh.n_elements
     160
 
-    Override the in-plane coupon size to 80 mm x 25 mm:
+    An 80 mm x 25 mm coupon:
 
-    >>> mesh = CompositeMesh(field, mat, nx=8, ny=4, nz=4)
-    >>> mesh.L_x = 80.0
-    >>> mesh.L_y = 25.0
-    >>> mesh.generate_mesh()
+    >>> mesh = CompositeMesh(field, mat, nx=8, ny=4, nz=4, length=80.0, width=25.0)
+    >>> mesh.L_x, mesh.L_y
+    (80.0, 25.0)
 
     Notes
     -----
@@ -442,7 +451,9 @@ class CompositeMesh:
     def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
                  nx: int = 50, ny: int = 20, nz: int = 24,
                  ply_angles: list[float] | str | None = 'QI', *,
-                 delaminations: Iterable[Delamination] | Delamination | None = None):
+                 delaminations: Iterable[Delamination] | Delamination | None = None,
+                 length: float = 50.0, width: float = 20.0,
+                 x_grid: np.ndarray | Sequence[float] | None = None):
         for axis_name, value in (('nx', nx), ('ny', ny), ('nz', nz)):
             if not isinstance(value, (int, np.integer)) or value <= 0:
                 raise ValueError(
@@ -472,8 +483,11 @@ class CompositeMesh:
         self.ny = ny
         self.nz = nz
 
-        self.L_x = 50.0
-        self.L_y = 20.0
+        self._L_x = _check_length(length, 'length')
+        self._L_y = _check_length(width, 'width')
+        self._x_grid: np.ndarray | None = None if x_grid is None \
+            else np.array(x_grid, dtype=float)
+        self._stale = False
         self.L_z = material.total_thickness
 
         self.nodes = None
@@ -487,7 +501,6 @@ class CompositeMesh:
         self.flexure_geometry: FlexureGeometry | None = None
         self.ilss_geometry: FlexureGeometry | None = None
         self.fracture_geometry: FractureSpecimenGeometry | None = None
-        self.x_grid: np.ndarray | None = None
         self.delaminations: tuple[Delamination, ...] = _as_delaminations(delaminations)
         # Duplicated interface node pairs (see _duplicate_interfaces): the
         # original node of pair p is _pair_original[p], its duplicate is
@@ -702,13 +715,8 @@ class CompositeMesh:
             ny = max(2, 2 * math.ceil(width_f / (2.0 * dx_max) - 1e-9))
 
         mesh = cls(porosity_field, material, nx=nx_total, ny=ny, nz=nz_f,
-                   ply_angles=ply_angles)
-        mesh.L_x = nx_total * dx
-        mesh.L_y = width_f
-        # Set after the default-size build, so they are checked against the
-        # specimen; generate_mesh() duplicates their interfaces last.
-        mesh.delaminations = _as_delaminations(delaminations)
-        mesh.generate_mesh()
+                   ply_angles=ply_angles, delaminations=delaminations,
+                   length=nx_total * dx, width=width_f)
         x = np.linspace(0.0, mesh.L_x, nx_total + 1)
         mesh.flexure_geometry = FlexureGeometry(
             support_x=(float(x[n_over]), float(x[n_over + m])),
@@ -1253,6 +1261,73 @@ class CompositeMesh:
             return porosity
         return np.minimum(porosity / scale, 1.0)
 
+    # In-plane size (issue #225): set by the constructor. Assigning it after
+    # the mesh is generated is deprecated and leaves the arrays stale.
+
+    @property
+    def L_x(self) -> float:
+        """Coupon length along ``x`` (mm), the constructor's ``length``."""
+        return self._L_x
+
+    @L_x.setter
+    def L_x(self, value: float) -> None:
+        self._L_x = _check_length(value, 'L_x')
+        self._mark_stale('L_x', 'length')
+
+    @property
+    def L_y(self) -> float:
+        """Coupon width along ``y`` (mm), the constructor's ``width``."""
+        return self._L_y
+
+    @L_y.setter
+    def L_y(self, value: float) -> None:
+        self._L_y = _check_length(value, 'L_y')
+        self._mark_stale('L_y', 'width')
+
+    @property
+    def x_grid(self) -> np.ndarray | None:
+        """``x`` of the node lines (mm), the constructor's ``x_grid``.
+
+        The ``nx + 1`` node lines, increasing from 0 to :attr:`L_x`, as a
+        float array; ``None`` (default) spaces them evenly. The
+        fracture-specimen builders set it for a mesh graded towards the
+        crack front (plan decision D5). :meth:`generate_mesh` raises when it
+        does not match ``nx`` and ``L_x``. Assigning it is deprecated like
+        ``L_x``: it warns and leaves the mesh stale.
+        """
+        return self._x_grid
+
+    @x_grid.setter
+    def x_grid(self, value: np.ndarray | Sequence[float] | None) -> None:
+        self._x_grid = None if value is None else np.array(value, dtype=float)
+        self._mark_stale('x_grid', 'x_grid')
+
+    def _mark_stale(self, name: str, argument: str) -> None:
+        if self.nodes is None:
+            return
+        self._stale = True
+        warnings.warn(
+            f"Assigning CompositeMesh.{name} after the mesh is generated is "
+            f"deprecated: pass {argument}= to CompositeMesh. Until "
+            f"generate_mesh() runs again the nodes, porosity and elements are "
+            f"stale, and FESolver refuses the mesh.",
+            DeprecationWarning, stacklevel=3)
+
+    @property
+    def is_stale(self) -> bool:
+        """Whether :attr:`L_x`, :attr:`L_y` or :attr:`x_grid` changed after
+        the arrays were generated (:meth:`generate_mesh` clears it)."""
+        return self._stale
+
+    def _require_current(self) -> None:
+        """Raise when the generated arrays do not match the dimensions."""
+        if self._stale:
+            raise ValueError(
+                "CompositeMesh: L_x, L_y or x_grid changed after the mesh was "
+                "generated, so its nodes, porosity and elements are stale. Call "
+                "mesh.generate_mesh(), or build the mesh with CompositeMesh(..., "
+                "length=, width=, x_grid=).")
+
     def _x_node_lines(self) -> np.ndarray:
         """``x`` of the node lines: :attr:`x_grid`, or evenly spaced."""
         if self.x_grid is None:
@@ -1265,7 +1340,7 @@ class CompositeMesh:
             raise ValueError(
                 f"CompositeMesh.x_grid must hold nx + 1 = {self.nx + 1} increasing "
                 f"node-line positions from 0 to L_x = {self.L_x:g} mm, got shape "
-                f"{x.shape}; set mesh.x_grid = None for evenly spaced node lines.")
+                f"{x.shape}; pass x_grid=None for evenly spaced node lines.")
         return x
 
     def generate_mesh(self):
@@ -1341,9 +1416,9 @@ class CompositeMesh:
         self._layup_warning_logged = False
 
         # Explicit delaminations: duplicate their interfaces' node planes
-        # last, after every per-node array exists (and after a builder such
-        # as for_flexure has set the final plate size).
+        # last, after every per-node array exists.
         self._duplicate_interfaces()
+        self._stale = False
 
         logger.info("Mesh generated: %d nodes, %d elements",
                     len(self.nodes), len(self.elements))

@@ -926,6 +926,15 @@ All notable changes to PorosityFE will be documented in this file.
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
 
+### Deprecated
+- **Assigning `CompositeMesh.L_x`, `L_y` or `x_grid` after the mesh is
+  generated** (#225). It still works for one release: it emits a
+  `DeprecationWarning` naming the constructor argument (`length=`,
+  `width=`, `x_grid=`) and marks the mesh stale until `generate_mesh()`
+  runs again. `FESolver` (construction and `solve()`) now refuses a stale
+  mesh with a `ValueError`, where before it silently used nodes, porosity
+  and elements that no longer matched the dimensions.
+
 ### Removed
 - **The PyQt6 desktop GUI is no longer shipped** (it was removed before
   this changelog's tracked history begins). Older entries that mention the
@@ -1242,6 +1251,15 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **`CompositeMesh` takes the coupon size in its constructor** (#225).
+  `CompositeMesh(..., length=50.0, width=20.0, x_grid=None)` (keyword-only,
+  mm; `length` / `width` must be finite and > 0) builds the mesh in one pass.
+  The builders (`for_flexure`, `for_ilss`, `for_dcb` / `for_enf` /
+  `for_mmb`) and the RVE helper use it instead of assigning `L_x` / `L_y` /
+  `x_grid` and calling `generate_mesh()` a second time, so each builds its
+  mesh once; the meshes and the FE fingerprint are bit-identical. `L_x`,
+  `L_y` and `x_grid` are now properties; `CompositeMesh.is_stale` says
+  whether they changed after the mesh was generated.
 - **Thick laminates keep their layup on the default mesh** (#226). Above 48
   plies (the default `nz` cap) `_default_mesh_resolution(n_plies,
   ply_angles)` now takes the largest `nz` up to the cap whose element layers

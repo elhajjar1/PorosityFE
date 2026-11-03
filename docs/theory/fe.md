@@ -6,7 +6,9 @@ element by element from the local porosity.
 
 ## Mesh and elements
 
-{class}`~porosity_fe.CompositeMesh` divides the specimen into
+{class}`~porosity_fe.CompositeMesh` divides the specimen, a coupon of
+`length=` $\times$ `width=` (default $50 \times 20$ mm) by the laminate
+thickness, optionally graded along $x$ by `x_grid=`, into
 $n_x \times n_y \times n_z$ eight-node hexahedra (default production
 resolution $30 \times 10 \times n_\text{plies}$, one element layer per ply,
 with $n_z$ capped at 48: a thicker laminate gets the largest $n_z \le 48$

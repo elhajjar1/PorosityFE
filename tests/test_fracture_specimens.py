@@ -267,10 +267,17 @@ class TestBuilders:
 
     def test_x_grid_must_match_the_mesh(self):
         mesh, _, _ = _dcb(layers=6)
-        mesh.L_x = 160.0
+        grid = mesh.x_grid
+        with pytest.raises(ValueError, match='x_grid'):
+            CompositeMesh(mesh.porosity_field, mesh.material, nx=mesh.nx, ny=mesh.ny,
+                          nz=mesh.nz, ply_angles='UD', length=160.0, x_grid=grid)
+        # The deprecated assignment (#225): the mismatch shows on regeneration.
+        with pytest.warns(DeprecationWarning, match='length='):
+            mesh.L_x = 160.0
         with pytest.raises(ValueError, match='x_grid'):
             mesh.generate_mesh()
-        mesh.x_grid = None
+        with pytest.warns(DeprecationWarning, match='x_grid='):
+            mesh.x_grid = None
         mesh.generate_mesh()                     # evenly spaced again
         np.testing.assert_allclose(np.diff(_x_lines(mesh)), 160.0 / mesh.nx)
 
