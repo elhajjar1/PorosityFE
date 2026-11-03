@@ -42,6 +42,13 @@ cd docs && make html                          # output under docs/_build/html
 # both sides with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, see the script)
 python scripts/fingerprint.py <repo_root> out.json [--quick]
 python scripts/fingerprint.py --compare base.json out.json
+
+# The numeric FE regression gate CI runs (job `fe_fingerprint`, 30 cases,
+# rtol 1e-9). A PR that changes FE results on purpose regenerates the
+# baseline single-threaded and says why in the CHANGELOG:
+python scripts/fingerprint.py --check scripts/fingerprint_baseline.json
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  python scripts/fingerprint.py --write-baseline scripts/fingerprint_baseline.json
 ```
 
 ## Architecture
