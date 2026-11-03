@@ -242,6 +242,18 @@ class TestDefaultMesh:
         assert not at.exception
 
 
+    def test_thick_blocked_layup_resolves_within_the_cap(self):
+        """#226: 64 plies in blocks of four of one angle resolve with 48
+        element layers, so the default keeps the stacking sequence and the
+        thermal check is satisfied without changing nz."""
+        at = _select(_fresh_app(), "Material", "AS4_3501_6_epoxy")
+        at.text_input(key="layup_input").set_value("[0/0/0/0/90/90/90/90]_4s").run()
+        assert ("30 × 10 × 48, 48 element layers, each within plies of one angle, "
+                "for the 64-ply layup") in self._captions(at)
+        at.radio(key="thermal_choice").set_value(_THERMAL_ONLY).run()
+        assert not any("Use nz" in w.value for w in at.warning)
+        assert not at.exception
+
 def test_hashin_criterion_shows_the_failure_modes():
     """The sidebar criterion reaches the FE solve and the Results tab lists
     each mode's maximum, including delamination onset."""

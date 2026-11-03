@@ -1113,7 +1113,7 @@ def refinement_study(
         elif base_resolution is None:
             # The production resolution, but nz = n_plies even above its cap:
             # a study must resolve the layup, and the memory guard applies.
-            nx0, ny0, _ = _default_mesh_resolution(material.n_plies)
+            nx0, ny0, _ = _default_mesh_resolution(material.n_plies, nz_max=material.n_plies)
             base = (nx0, ny0, material.n_plies)
         else:
             base = _check_resolution(base_resolution, 'base_resolution')

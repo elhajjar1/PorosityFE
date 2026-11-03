@@ -1242,6 +1242,22 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Thick laminates keep their layup on the default mesh** (#226). Above 48
+  plies (the default `nz` cap) `_default_mesh_resolution(n_plies,
+  ply_angles)` now takes the largest `nz` up to the cap whose element layers
+  each cover plies of a single angle (the rule of
+  `CompositeMesh.layup_discrepancies`, shared as `mesh._layers_merge_angles`),
+  so the FE solves the requested stacking sequence: a unidirectional
+  laminate keeps 48, a `[0_6/90_6]` pattern of 60 plies gets 40, an 8-ply
+  block pattern of 72 plies 45. Without such an `nz` it keeps the cap and
+  logs a **WARNING** (it was INFO) naming the `mesh_res` that resolves every
+  ply. The cap is a documented `nz_max=` keyword of
+  `build_empirical_pipeline` (default 48). Laminates of 48 plies or fewer,
+  and every empirical result, are unchanged; the app passes the entered
+  layup and says when the default merges plies of one angle, and its
+  thermal hint follows the solve's rule (it warned whenever `nz` was not a
+  multiple of the ply count, even where the merged plies share an angle).
+  `refinement_study` keeps one element layer per ply.
 - **The NCR disposition bands are a policy, and the defaults are labelled
   illustrative** (#229). `porosity_fe.reporting.DispositionPolicy` holds the
   three void-content bounds (percent), the three governing-knockdown bounds,

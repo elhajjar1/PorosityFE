@@ -151,10 +151,13 @@ interior values.
 The thermal option appears for materials
 with lamina CTEs (today `AS4_3501_6_epoxy`). It solves the cure residual
 stress alone, or adds it to the mechanical FE case. ΔT is entered in K,
-negative for a cool-down, and has no default. The mesh must give every ply
-its own element layer, so `nz` must be a multiple of the ply count. The
-default `nz` is the layup's ply count (up to 48); when `nz` is not a
-multiple of it, the app offers one that is. See [Thermal inputs](#thermal-inputs). See
+negative for a cool-down, and has no default. The mesh must resolve the
+stacking sequence: no element layer may merge plies of different angles
+(`nz` a multiple of the ply count always does). The
+default `nz` is the layup's ply count (up to 48; a thicker laminate gets
+the largest `nz` up to 48 whose element layers each lie within plies of
+one angle, or 48 with a warning when no such value exists); when `nz` is
+not a multiple of it, the app offers one that is. See [Thermal inputs](#thermal-inputs). See
 [`DEPLOYMENT_STREAMLIT.md`](DEPLOYMENT_STREAMLIT.md) for hosting on Streamlit
 Community Cloud.
 

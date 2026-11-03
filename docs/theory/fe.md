@@ -9,7 +9,9 @@ element by element from the local porosity.
 {class}`~porosity_fe.CompositeMesh` divides the specimen into
 $n_x \times n_y \times n_z$ eight-node hexahedra (default production
 resolution $30 \times 10 \times n_\text{plies}$, one element layer per ply,
-with $n_z$ capped at 48). Each element gets the ply angle of
+with $n_z$ capped at 48: a thicker laminate gets the largest $n_z \le 48$
+whose element layers each lie within plies of one angle, so a blocked layup
+keeps its stacking sequence, or 48 with a warning). Each element gets the ply angle of
 the ply containing its centroid; a centroid on a ply interface takes the
 ply above. The porosity field is sampled at every node. Elements whose
 centroid lies inside a discrete void are flagged as void elements. The

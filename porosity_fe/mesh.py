@@ -209,6 +209,32 @@ def _normalize_angles(angles: np.ndarray) -> np.ndarray:
     return np.round(a, 6) + 0.0  # + 0.0 turns -0.0 into 0.0
 
 
+def _layers_merge_angles(requested: np.ndarray, nz: int) -> bool:
+    """Whether ``nz`` equal element layers over the plies ``requested``
+    (angles, bottom to top) put plies of different angles in one layer.
+
+    Element layer ``k`` spans ``[k, k + 1] * n_plies / nz`` in ply units:
+    plies ``k * n // nz`` to ``ceil((k + 1) * n / nz) - 1``. The rule of
+    :meth:`CompositeMesh.layup_discrepancies`, shared with the default mesh
+    resolution of :mod:`porosity_fe.pipeline` (issue #226).
+    """
+    requested = _normalize_angles(np.asarray(requested, dtype=float))
+    n_plies = requested.size
+    k = np.arange(nz)
+    first = k * n_plies // nz
+    last = -(-(k + 1) * n_plies // nz) - 1
+    return any(np.ptp(requested[a:b + 1]) > _ANGLE_TOL for a, b in zip(first, last, strict=True))
+
+
+def _expand_layup(angles: list[float], n_plies: int) -> np.ndarray:
+    """A layup pattern repeated (and cut) to ``n_plies`` plies, as
+    :class:`CompositeMesh` lays it up."""
+    angle_list = list(angles)
+    if len(angle_list) < n_plies:
+        angle_list = (angle_list * (n_plies // len(angle_list) + 1))[:n_plies]
+    return np.array(angle_list[:n_plies], dtype=float)
+
+
 def _angle_fractions(angles: np.ndarray) -> dict[float, float]:
     """Fraction of the entries at each normalized angle (equal thicknesses)."""
     values, counts = np.unique(_normalize_angles(angles), return_counts=True)
@@ -1306,11 +1332,8 @@ class CompositeMesh:
             self.ny * self.nx)
 
         if self._input_ply_angles is not None:
-            angle_list = list(self._input_ply_angles)
-            if len(angle_list) < n_plies:
-                # Repeat to fill all plies
-                angle_list = (angle_list * (n_plies // len(angle_list) + 1))[:n_plies]
-            self._ply_layup = np.array(angle_list[:n_plies], dtype=float)
+            # A pattern shorter than the laminate repeats to fill all plies.
+            self._ply_layup = _expand_layup(list(self._input_ply_angles), n_plies)
         else:
             # Default: all 0-degree plies
             self._ply_layup = np.zeros(n_plies, dtype=float)
@@ -1600,11 +1623,7 @@ class CompositeMesh:
         requested = _normalize_angles(self._ply_layup)
         issues: list[str] = []
 
-        # Element layer k spans [k, k + 1] * n_plies / nz in ply units.
-        k = np.arange(self.nz)
-        first = k * n_plies // self.nz
-        last = -(-(k + 1) * n_plies // self.nz) - 1
-        if any(np.ptp(requested[a:b + 1]) > _ANGLE_TOL for a, b in zip(first, last, strict=True)):
+        if _layers_merge_angles(requested, self.nz):
             req_frac = _angle_fractions(requested)
             elem_frac = _angle_fractions(np.asarray(self.ply_angles, dtype=float))
             msg = (f"{self.nz} element layers for {n_plies} plies merge plies "

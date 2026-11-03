@@ -167,8 +167,12 @@ re-implement sentinel handling at a call site.
 the parallel worker invoked by `compare_configurations`; `_DEFAULT_MESH_RES
 = (30, 10, None)` is the single source of truth for production mesh size:
 `nz = None` means one element layer per ply, capped at `_DEFAULT_NZ_MAX`
-(48), resolved by `_default_mesh_resolution(n_plies)`, which the pipeline,
-the app and `refinement_study` all call (never read the tuple directly).
+(48, the `nz_max` of `build_empirical_pipeline`), resolved by
+`_default_mesh_resolution(n_plies, ply_angles)`, which the pipeline, the
+app and `refinement_study` all call (never read the tuple directly). Above
+the cap it takes the largest `nz` whose element layers each cover plies of
+one angle (the rule of `CompositeMesh.layup_discrepancies`), else the cap
+with a warning.
 `build_empirical_pipeline` is the canonical factory used by examples,
 tests, and the UQ helper — when changing mesh defaults or ply-angle
 handling, change it here, not at the call sites.
