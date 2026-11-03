@@ -211,16 +211,16 @@ class TestPlanning:
         assert _estimate_memory_bytes((60, 20, 24), n_factorizations=2) > 1.5 * big
 
     def test_factorizations_at_the_peak(self):
-        porous, solid = PorosityField(MAT4, 0.02), PorosityField(MAT4, 0.0)
         # FESolver.solve frees the pristine reference and the thermal
         # factorization before it builds the next, so a direct solve peaks
-        # at one, with or without delta_T.
-        assert _peak_factorizations('compression', 'direct', porous) == 1
-        assert _peak_factorizations('thermal', 'direct', porous) == 1
-        # The pristine reference is factorized even for an iterative solve.
-        assert _peak_factorizations('ilss', 'cg', porous) == 1
-        assert _peak_factorizations('ilss', 'cg', solid) == 0
-        assert _peak_factorizations('thermal', 'cg', porous) == 0
+        # at one, with or without delta_T; the contact loop adds one.
+        assert _peak_factorizations('compression', 'direct') == 1
+        assert _peak_factorizations('thermal', 'direct') == 1
+        assert _peak_factorizations('enf', 'direct') == 2
+        # The pristine reference follows the solver (#228): an iterative
+        # study factorizes nothing.
+        for loading in ('ilss', 'thermal', 'enf'):
+            assert _peak_factorizations(loading, 'cg') == 0
 
     def test_element_cap_refuses_before_any_solve(self, monkeypatch):
         monkeypatch.setattr(refinement_module, 'FESolver', _NoSolver)

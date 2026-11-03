@@ -71,6 +71,10 @@ def lu_alive_at_build(monkeypatch):
         def solve(self, rhs, *args, **kwargs):
             return self._lu.solve(rhs, *args, **kwargs)
 
+        @property
+        def nnz(self):          # read by the memory budget check
+            return self._lu.nnz
+
         def __del__(self):
             alive[0] -= 1
 

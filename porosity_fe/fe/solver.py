@@ -44,7 +44,16 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
 from ..porosity_field import PorosityField
 from ..toughness import ToughnessKnockdownSpec, _resolve_toughness_knockdown
-from . import _constrained_solve, _contact, _fracture, _knockdown, _postprocess, _thermal, failure
+from . import (
+    _constrained_solve,
+    _contact,
+    _fracture,
+    _knockdown,
+    _memory,
+    _postprocess,
+    _thermal,
+    failure,
+)
 from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
 from ._knockdown import _stiffness_measure
 from ._load_cases import _FRACTURE_TESTS, apply_boundary_conditions, check_solve_arguments, interior_mask
@@ -175,6 +184,20 @@ class FESolver:
         for crowded pennies (local ``Vp`` near 0.1) the Mori-Tanaka
         out-of-plane stiffness is 7-10 % too stiff with no projection to
         soften it. Unknown values raise :class:`ValueError`.
+    max_memory_gb : float, optional
+        Keyword-only. Memory budget (GB) of a direct solve. Before each
+        sparse LU factorization the solver estimates its size and the
+        memory already held (the interpreter, the mesh's assembly arrays
+        and the factorizations it keeps), and raises :class:`ValueError`
+        with the estimate when their sum exceeds the budget, instead of
+        failing late with a ``MemoryError`` or a swap storm. ``None``
+        (default) is 80 % of physical memory, no limit where the platform
+        does not report it; ``math.inf`` turns the check off. The whole
+        estimate was 1.0-1.3 times the measured peak on the production
+        coupons; its factor part is 0.97-1.04 times the actual factor on
+        the coupons and the ILSS specimen and 1.2-1.7 times on the flexure
+        and fracture specimens. ``solver='cg'`` factorizes nothing. See the
+        theory page, "Linear solvers and memory".
 
     Notes
     -----
@@ -221,8 +244,10 @@ class FESolver:
                  *, formulation: FEFormulation = _DEFAULT_FORMULATION,
                  porosity_degradation: PorosityDegradation =
                  _DEFAULT_POROSITY_DEGRADATION,
+                 max_memory_gb: float | None = None,
                  ) -> None:
         mesh._require_current()
+        self.max_memory_gb = _memory.check_max_memory_gb(max_memory_gb)
         self.mesh = mesh
         self.material = material
         self.porosity_field = porosity_field
@@ -376,13 +401,16 @@ class FESolver:
             (:func:`scipy.sparse.linalg.splu`), cached for the last two
             constrained-DOF sets and reused while the mesh, material and
             porosity are unchanged (about 320 MB per factorization on the
-            production mesh; see :meth:`_free_dof_system`). ``K_ff`` is
+            production mesh; see :meth:`_free_dof_system`), and checked
+            against :attr:`max_memory_gb` before it is built. ``K_ff`` is
             symmetric positive definite, so
             ``'cg'`` (conjugate gradient with a Jacobi preconditioner) is
             a memory-light alternative; it needs no LU fill-in and is
             the better choice above roughly 40k DOF (about 1.6x the
             25,575 DOF of the default production mesh of a 24-ply laminate,
-            30 x 10 x 24), where LU time and memory grow fastest.
+            30 x 10 x 24), where LU time and memory grow fastest. The
+            knockdown's pristine reference is solved with the same solver,
+            so ``'cg'`` factorizes nothing.
             ``'minres'`` is deprecated and will be removed in 2.0: it
             emits a :class:`DeprecationWarning`; use ``'cg'``. Because
             ``K_ff`` is SPD, CG covers every case, while MINRES minimizes
@@ -540,11 +568,11 @@ class FESolver:
         # 0. Mesh quality check
         check_mesh_quality(self.mesh, verbose=verbose)
 
-        # The knockdown's pristine reference (a cached value, or a direct
-        # solve whose factorization is freed on return) comes before the
-        # porous model is assembled and factorized, so one factorization is
-        # alive at a time, not two.
-        pristine = self._pristine_stiffness_measure(loading) \
+        # The knockdown's pristine reference (a cached value, or a solve
+        # with the same linear solver whose factorization is freed on
+        # return) comes before the porous model is assembled and
+        # factorized, so one factorization is alive at a time, not two.
+        pristine = self._pristine_stiffness_measure(loading, solver=solver, rtol=rtol) \
             if _knockdown.needs_pristine_reference(
                 self.mesh, loading, applied_strain, applied_load) else None
 
@@ -809,8 +837,7 @@ class FESolver:
         Returns the unit thermal solution (or ``None``), the mechanical
         displacement (or ``None``) and the contact state.
         """
-        scratch = functools.partial(_constrained_solve.free_dof_system,
-                                    self._contact_lu_cache, max_entries=1)
+        scratch = self._contact_system
         prescribed = dict(constrained or {})
         if delta_T is not None:
             prescribed.update(self.bc_handler.free_bcs()[0])
@@ -881,7 +908,33 @@ class FESolver:
         """
         return _constrained_solve.free_dof_system(
             self._lu_cache, K, part, factorize=factorize,
-            max_entries=self._LU_CACHE_SIZE)
+            max_entries=self._LU_CACHE_SIZE, memory_budget=self._memory_budget(),
+            held_bytes=self._held_bytes(self._contact_lu_cache))
+
+    def _contact_system(
+        self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
+        *, factorize: bool,
+    ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
+        """The free-DOF system of a contact active set, in the one-entry
+        :attr:`_contact_lu_cache` (see :meth:`_contact_solve`)."""
+        return _constrained_solve.free_dof_system(
+            self._contact_lu_cache, K, part, factorize=factorize, max_entries=1,
+            memory_budget=self._memory_budget(),
+            held_bytes=self._held_bytes(self._lu_cache))
+
+    def _memory_budget(self) -> float | None:
+        """:attr:`max_memory_gb` in bytes, or its default (``_memory.resolve_budget``)."""
+        return _memory.resolve_budget(self.max_memory_gb)
+
+    def _held_bytes(self, *caches: OrderedDict[bytes, tuple]) -> float:
+        """Memory a solve holds beside a new factorization: the interpreter,
+        the mesh's assembly arrays and the factorizations in ``caches``
+        (the caller's own cache counts itself; see
+        ``_constrained_solve.free_dof_system``)."""
+        held = _memory.BASE_BYTES + self.mesh.n_elements * CompositeMesh._FE_BYTES_PER_ELEMENT
+        for cache in caches:
+            held += sum(_memory.lu_bytes(e[2]) for e in cache.values() if e[2] is not None)
+        return held
 
     def _reactions_and_modulus(
         self, loading: str, K: scipy.sparse.spmatrix, u: np.ndarray,
@@ -951,14 +1004,21 @@ class FESolver:
                 self._lu_cache.pop(thermal_key, None)
         return sol
 
-    def _pristine_stiffness_measure(self, loading: str) -> float:
+    def _pristine_stiffness_measure(
+        self, loading: str, *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
+        rtol: float = 1e-9,
+    ) -> float:
         """Stiffness measure of this mesh with no porosity or voids, the
         knockdown's reference, cached across solvers
-        (``_knockdown.pristine_stiffness_measure``). :meth:`solve` calls it
-        before it assembles the porous model."""
+        (``_knockdown.pristine_stiffness_measure``), solved with the same
+        linear ``solver`` (at ``rtol`` when iterative). :meth:`solve` calls it
+        before it assembles the porous model; its factorization counts
+        against :attr:`max_memory_gb` with this solver's."""
         return _knockdown.pristine_stiffness_measure(
             loading, self.mesh, self.material, self.porosity_field,
-            self.formulation, self.bc_handler)
+            self.formulation, self.bc_handler, solver=solver, rtol=rtol,
+            memory_budget=self._memory_budget(),
+            held_bytes=self._held_bytes(self._lu_cache, self._contact_lu_cache))
 
     #: Empty per-mode failure-index dict (see :mod:`porosity_fe.fe.failure`).
     _EMPTY_MODE_FI: dict[str, float] = failure.EMPTY_MODE_FI

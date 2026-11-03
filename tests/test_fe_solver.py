@@ -2041,7 +2041,7 @@ class TestStiffnessAndFactorizationReuse:
         # Count only this solver's assembly and factorizations, not the
         # (separately cached) pristine knockdown reference solve.
         monkeypatch.setattr(FESolver, '_pristine_stiffness_measure',
-                            lambda self, loading: 1.0)
+                            lambda self, loading, **kw: 1.0)
         return counts
 
     @staticmethod

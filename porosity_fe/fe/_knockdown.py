@@ -18,6 +18,7 @@ import hashlib
 import logging
 from collections import OrderedDict
 from dataclasses import astuple
+from typing import Literal
 
 import numpy as np
 import scipy.sparse
@@ -129,20 +130,27 @@ def knockdown(loading: str, porous: float, pristine: float) -> float:
 def pristine_stiffness_measure(
     loading: str, mesh: CompositeMesh, material: MaterialProperties,
     porosity_field: PorosityField, formulation: FEFormulation,
-    bc_handler: BoundaryHandler,
+    bc_handler: BoundaryHandler, *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
+    rtol: float = 1e-9,
+    memory_budget: float | None = None, held_bytes: float = 0.0,
 ) -> float:
     """:func:`_stiffness_measure` of ``mesh`` with no porosity, voids or
     delamination, cached.
 
-    The reference is a direct solve of the same loading and boundary
-    conditions on :func:`_pristine_mesh`, at the default strain or load
-    (the measure does not depend on its magnitude). On a delaminated mesh
+    The reference is a solve of the same loading and boundary conditions
+    on :func:`_pristine_mesh`, at the default strain or load (the measure
+    does not depend on its magnitude), with the linear ``solver`` of the
+    solve (at ``rtol`` when iterative), so an iterative solve factorizes
+    nothing (#228). Its
+    factorization is checked against ``memory_budget`` with ``held_bytes``
+    beside it (``_memory.check_factorization``). On a delaminated mesh
     every duplicated interface pair is tied in it, so it is the undamaged
     laminate (plan decision D6) and does not change with the delamination
     size. Its assembly and factorization are local to this call and freed
     on return. Cached in :data:`_PRISTINE_MEASURE_CACHE` by loading
     (tension and compression share one), mesh nodes, connectivity and ply
-    angles, every material field, the element formulation, for the bends
+    angles, every material field, the element formulation, the linear
+    solver of the reference (and its ``rtol`` when iterative), for the bends
     the support and load lines and, on a mesh with duplicated interface
     nodes, the tie set of the reference (all pairs bonded), so it never
     shares an entry with a solve of other ties.
@@ -155,7 +163,8 @@ def pristine_stiffness_measure(
         h.update(f"{a.dtype}{a.shape}".encode())
         h.update(a.tobytes())
     # Key on every material field: repr() omits E33, G13, G23, ... .
-    key: tuple = (key_loading, h.hexdigest(), astuple(material), formulation)
+    key: tuple = (key_loading, h.hexdigest(), astuple(material), formulation,
+                  solver if solver == 'direct' else (solver, float(rtol)))
     if key_loading in _FLEXURE_PROCEDURE:
         # Supports and load lines are not part of the node arrays.
         key += (bc_handler.flexure_geometry(),)
@@ -189,9 +198,10 @@ def pristine_stiffness_measure(
     constrained, F = apply_boundary_conditions(
         BoundaryHandler(pristine), key_loading, strain, load)
     K0 = assembler.stiffness()
-    system = functools.partial(free_dof_system, OrderedDict(), max_entries=1)
+    system = functools.partial(free_dof_system, OrderedDict(), max_entries=1,
+                               memory_budget=memory_budget, held_bytes=held_bytes)
     u0, _ = solve_constrained(K0, F, constrained, system=system,
-                              ties=_mesh_ties(pristine))
+                              ties=_mesh_ties(pristine), solver=solver, rtol=rtol)
     measure = _stiffness_measure(key_loading, K0, u0, strain, load)
 
     _PRISTINE_MEASURE_CACHE[key] = measure

@@ -5,6 +5,24 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Memory budget for direct FE solves** (#228). Before each sparse LU
+  factorization `FESolver` estimates its size and what the solve already
+  holds (the interpreter, the mesh's assembly arrays and the cached
+  factorizations), and raises a `ValueError` with the estimate and the
+  alternatives (`solver='cg'`, a coarser mesh, a larger budget) when the
+  sum exceeds `FESolver(max_memory_gb=)`. A too-large call used to fail
+  late, with a `MemoryError` or a swap storm: a 190k-DOF single-leg-bending
+  model needed about 9 GB. The default budget is 80 % of physical memory,
+  now also read on Windows; `math.inf` turns the check off.
+  - The estimate is `refinement_study`'s peak-memory model, moved to
+    `porosity_fe/fe/_memory.py` and shared, so a level the study plans is
+    one the solver accepts. The study passes its `max_memory_gb` to each
+    level's solver, and now rejects a budget that is not a number > 0.
+  - A factorization already built counts at its actual size
+    (`SuperLU.nnz`). The whole estimate was 1.0-1.3 times the measured
+    peak on the production coupons. Its factor part is 0.97-1.04 times the
+    actual factor on the coupons and the ILSS specimen, and 1.2-1.7 times on
+    the flexure and fracture specimens, which fill less.
 - **Interior fracture load factor** (#227).
   `FieldResults.interior_fracture_load_factor` and
   `interior_fracture_governing_node`: the smallest `lambda_c` over the front
@@ -1251,6 +1269,35 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The sparse LU pivots on the diagonal, and the knockdown's pristine
+  reference follows the solver** (#228).
+  - `K_ff` is SPD, so the factorization keeps SuperLU's symmetric
+    `MMD_AT_PLUS_A` ordering and now pivots on the diagonal
+    (`diag_pivot_thresh=0`). With SuperLU's default threshold of 1 it
+    took an off-diagonal pivot wherever a diagonal was not the largest
+    entry of its column, which broke the ordering's fill. On the
+    12-layer DCB that was 251 pivots, costing 18 % more factor entries
+    and over 40 % more time; there were 8 on the flexure specimen. The
+    production coupon and the ILSS specimen had none and are unchanged.
+  - The FE results change at round-off only. The largest change in the
+    gate is 0.09 of its tolerance (rtol 1e-9), so
+    `scripts/fingerprint_baseline.json` is regenerated; the Haswell and
+    Sandybridge kernels pass it at 0.09 and 0.24.
+  - The orderings were measured on every production system (theory page,
+    "Linear solvers and memory"). `COLAMD` fills the coupon 1.65 times
+    as much, `MMD_ATA` 1.3 times and a geometric nested dissection 1.17
+    times, and none is better on every mesh, so the ordering is kept.
+  - The pristine reference of the knockdown was always factorized
+    directly. It is now solved with the requested `solver` (at its
+    `rtol` when iterative) and cached apart per solver, so `solver='cg'`
+    factorizes nothing and is the way past the memory budget. A CG
+    knockdown changes by 3e-15 (compression) to 3e-13 (ILSS) on the
+    production meshes; direct results are unchanged.
+  - Not done: a CHOLMOD backend (scikit-sparse ships only a source
+    distribution that needs SuiteSparse built on every platform), and
+    reusing the factorization across contact iterations (the reduced
+    system changes size with the active set; the existing warm start of
+    the active set already makes a repeat solve take one solve).
 - **`CompositeMesh` takes the coupon size in its constructor** (#225).
   `CompositeMesh(..., length=50.0, width=20.0, x_grid=None)` (keyword-only,
   mm; `length` / `width` must be finite and > 0) builds the mesh in one pass.

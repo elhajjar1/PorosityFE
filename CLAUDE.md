@@ -91,7 +91,11 @@ different numerical answers for the same inputs**, not the same answer:
   per-element `Hex8Element` objects (kept as the public reference
   implementation and tested for agreement); the assembled `K` and its LU
   factorization are cached on the assembler / solver and reused across
-  solves until the mesh, material or porosity change. Strength degradation uses a
+  solves until the mesh, material or porosity change. Every factorization
+  is estimated first and refused over `FESolver(max_memory_gb=)` (default
+  80 % of RAM; `fe/_memory.py`, the model `refinement_study` plans with),
+  and the knockdown's pristine reference follows `solver`, so `'cg'`
+  factorizes nothing. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
   `degraded_strengths` in `fe/failure.py`). The FE path **does** pick up
   distribution-shape differences. `solver.py` holds only the
