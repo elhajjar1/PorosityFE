@@ -25,33 +25,44 @@ sides on one machine with the same wheels and the same BLAS thread settings
 last digits). ``<repo_root>`` is put first on ``sys.path`` so an exported
 tree (``git archive``) can be fingerprinted next to an editable install.
 
-**Numeric gate** (the last two forms; issue #214, run by CI). Across CPUs,
-BLAS builds and numpy / scipy releases the last digits move, so the gate
-records a numeric digest per case instead of hashes: every scalar; for every
-float array its shape, sum, sum of ``|x|``, 2-norm, max, min and 16 entries
-at fixed positions; integer and boolean arrays (as a hash) and strings
-exactly; the export JSON minus provenance, leaf by leaf. Two floats ``a``,
-``b`` agree when ``|a - b| <= rtol * max(|a|, |b|) + noise * scale``, where
-``scale`` is the magnitude of the values beside it: the array's ``max |x|``
+**Numeric gate** (the last two forms; issue #214, run by CI). CPUs (the
+BLAS kernel OpenBLAS picks for them), thread counts and numpy / scipy
+releases move the last digits, so the gate records a numeric digest per
+case instead of hashes: every scalar; for every float array its shape, sum,
+sum of ``|x|``, 2-norm, max, min and 16 entries at fixed positions; integer
+and boolean arrays (as a hash) and strings exactly; the export JSON minus
+provenance, leaf by leaf. Two floats ``a``, ``b`` agree when
+``|a - b| <= rtol * max(|a|, |b|) + noise * scale``, where ``scale`` is the
+magnitude of the values of the same kind beside it: the array's ``max |x|``
 for its max, min and entries, its sum of ``|x|`` for its two sums, its
-2-norm for the 2-norm, and for a number in the export JSON or in a dict of
-results the largest ``|x|`` among its siblings (top-level results and
-``summary()`` mix units and are compared relatively only). The noise term
-absorbs quantities that are zero up to round-off: a stress mean of 1e-12 MPa
-beside a maximum of 358 MPa, a reaction sum of 1e-9 N beside a modulus of
-56 GPa. Defaults ``rtol = 1e-9`` and ``noise = 1e-11`` (``--rtol``,
-``--noise``). Against a single-threaded baseline, 4 BLAS threads moved the
-digests by at most 3e-5 of the tolerance, and numpy 1.26 / scipy 1.13 by
-2e-5 on the same machine.
+2-norm for the 2-norm; in a dict of results the largest ``|x|`` among its
+siblings; in the export JSON the largest ``|x|`` of its section (a stress
+component on the scale of the whole stress tensor's statistics, ``uz`` on
+that of the displacements). Top-level results and ``summary()`` mix units
+and are compared relatively only. The noise term absorbs quantities that
+are small by cancellation or zero up to round-off beside others of their
+kind: a stress mean of 1e-12 MPa beside a maximum of 358 MPa, ``tau_23``
+under in-plane shear. Defaults ``rtol = 1e-9`` and ``noise = 1e-9``
+(``--rtol``, ``--noise``).
 
-Some fields are round-off through and through and have no scale beside them
-to compare with: the reactions of a self-equilibrated specimen (the DCB's
-six supports carry no load, about 1e-7 N) and the mode II / III rates and
-mixity angle of a pure mode I front (about 1e-19). Older wheels on another
-CPU change them by more than their own size. So the CI job installs the
-numpy and scipy the baseline was made with (its ``meta.environment``), on
-which an Azure runner reproduced every digest exactly, and ``--check`` notes
-any version difference. Regenerating the baseline moves the pins with it.
+Some fields are round-off through and through, with nothing of their kind
+beside them: the reactions of a free thermal expansion and of the DCB (on
+statically determinate supports they are zero by equilibrium), the mode II
+/ III rates and mixity of a pure mode I front, and the load factors of front
+nodes the load hardly drives (``lambda_c ~ 1e12``). Each case names these in
+:data:`_CASE_OPTIONS`, with the reason, and the comparison skips them. The
+DCB is also ill-conditioned (slender arms on determinate supports): its
+physical results move by up to 2e-8 between BLAS kernels, so it is compared
+at 1e-6.
+
+Measured against the single-threaded baseline (made on SkylakeX kernels):
+4 BLAS threads, numpy 1.26 / scipy 1.13, and OpenBLAS forced onto the
+Haswell and Sandybridge kernels (``OPENBLAS_CORETYPE``) all stay below 0.2
+of the tolerance (the flexure knockdowns, 1.5e-10 relative, are the
+closest). The CI job installs the numpy and scipy the baseline was
+made with (its ``meta.environment``; ``--check`` notes a difference) and
+runs the check twice, on the runner's own kernel and on Sandybridge's, so a
+new case that depends on the kernel fails on its first PR.
 
 The gate set (30 cases, about two and a half minutes on one thread): hex8i,
 direct, the quick set's nine loadings and three criteria except in-plane
@@ -76,6 +87,7 @@ import json
 import math
 import os
 import platform
+import re
 import sys
 import tempfile
 import time
@@ -83,7 +95,7 @@ import time
 DELTA_T = -157.0
 VP = 0.03
 RTOL = 1e-9
-NOISE = 1e-11
+NOISE = 1e-9
 N_SAMPLES = 16
 
 #: Fixture toughness for the gate's fracture cases (N/mm): typical carbon /
@@ -318,6 +330,32 @@ def _sibling_scale(node) -> float:
     return max(vals, default=0.0)
 
 
+def _norm(path: str) -> str:
+    """A digest path without its list indices: ``parts[0].G_II.samples[3]``
+    -> ``parts.G_II.samples``."""
+    return re.sub(r'\[\d+\]', '', path)
+
+
+def _skipped(rel: str, skip) -> bool:
+    rel = _norm(rel)
+    return any(rel == s or rel.startswith(s + '.') for s in skip)
+
+
+def _float_scale(node, rel: str, skip) -> float:
+    """The largest |x| of the floats in ``node``, recursively, leaving out
+    the skipped paths (``rel`` is ``node``'s path within the case)."""
+    if _skipped(rel, skip):
+        return 0.0
+    if isinstance(node, float):
+        return abs(node)
+    if isinstance(node, dict):
+        return max((_float_scale(v, f"{rel}.{k}", skip) for k, v in node.items()), default=0.0)
+    if isinstance(node, list):
+        return max((_float_scale(v, f"{rel}[{i}]", skip) for i, v in enumerate(node)),
+                   default=0.0)
+    return 0.0
+
+
 class _Comparison:
     """Walks two digests; records mismatches and the largest deviation in
     units of the tolerance."""
@@ -326,6 +364,9 @@ class _Comparison:
         self.rtol, self.noise = rtol, noise
         self.errors: list[str] = []
         self.worst = (0.0, '')
+        self.n_skipped = 0
+        self._skip: tuple = ()
+        self._root = ''
 
     def _float(self, path, a, b, scale):
         tol = self.rtol * max(abs(a), abs(b)) + self.noise * scale
@@ -357,6 +398,9 @@ class _Comparison:
             self._float(f"{path}.samples[{i}]", x, y, big)
 
     def walk(self, path, a, b, scale=0.0, siblings=True):
+        if self._skip and _skipped(path[len(self._root):], self._skip):
+            self.n_skipped += 1
+            return
         if isinstance(a, float) and isinstance(b, float):
             self._float(path, a, b, scale)
         elif isinstance(a, dict) and isinstance(b, dict):
@@ -368,7 +412,7 @@ class _Comparison:
                 return
             if a.keys() != b.keys():
                 self.errors.append(f"{path}: keys {sorted(set(a) ^ set(b))} differ")
-            s = max(_sibling_scale(a), _sibling_scale(b)) if siblings else 0.0
+            s = max(scale, _sibling_scale(a), _sibling_scale(b)) if siblings else 0.0
             for k in sorted(set(a) & set(b)):
                 self.walk(f"{path}.{k}", a[k], b[k], s)
         elif isinstance(a, list) and isinstance(b, list):
@@ -384,25 +428,80 @@ class _Comparison:
         elif a != b or type(a) is not type(b):
             self.errors.append(f"{path}: {a!r} -> {b!r}")
 
-    def case(self, name, a, b):
-        # Top-level results and summary() mix units: relative only there.
-        for part in ('fields', 'summary'):
-            pa, pb = a.get(part), b.get(part)
-            if isinstance(pa, dict) and isinstance(pb, dict):
-                if pa.keys() != pb.keys():
-                    self.errors.append(f"{name}.{part}: keys {sorted(set(pa) ^ set(pb))} differ")
-                for k in sorted(set(pa) & set(pb)):
-                    self.walk(f"{name}.{part}.{k}", pa[k], pb[k])
-            else:
-                self.walk(f"{name}.{part}", pa, pb, siblings=False)
-        for part in sorted(set(a) | set(b)):
-            if part not in ('fields', 'summary'):
-                self.walk(f"{name}.{part}", a.get(part), b.get(part))
+    def case(self, name, a, b, options: dict | None = None):
+        """Compare one case. ``options`` (from :func:`_gate_cases`) may set
+        its ``rtol`` and ``noise`` and name the paths it ``skip``s."""
+        options = options or {}
+        rtol, noise = self.rtol, self.noise
+        self.rtol, self.noise = options.get('rtol', rtol), options.get('noise', noise)
+        self._skip, self._root = tuple(options.get('skip', ())), f"{name}."
+        try:
+            # Top-level results and summary() mix units: relative only there.
+            for part in ('fields', 'summary'):
+                pa, pb = a.get(part), b.get(part)
+                if isinstance(pa, dict) and isinstance(pb, dict):
+                    if pa.keys() != pb.keys():
+                        self.errors.append(f"{name}.{part}: keys {sorted(set(pa) ^ set(pb))} differ")
+                    for k in sorted(set(pa) & set(pb)):
+                        self.walk(f"{name}.{part}.{k}", pa[k], pb[k])
+                else:
+                    self.walk(f"{name}.{part}", pa, pb, siblings=False)
+            # Each export section holds one kind of quantity (the stress
+            # tensor's statistics, the displacement components, ...): a
+            # component is compared on the scale of its whole section.
+            ea, eb = a.get('export'), b.get('export')
+            if isinstance(ea, dict) and isinstance(eb, dict):
+                if ea.keys() != eb.keys():
+                    self.errors.append(f"{name}.export: keys {sorted(set(ea) ^ set(eb))} differ")
+                for k in sorted(set(ea) & set(eb)):
+                    s = max(_float_scale(ea[k], f"export.{k}", self._skip),
+                            _float_scale(eb[k], f"export.{k}", self._skip))
+                    self.walk(f"{name}.export.{k}", ea[k], eb[k], s)
+            elif ea is not None or eb is not None:
+                self.walk(f"{name}.export", ea, eb)
+            for part in sorted(set(a) | set(b)):
+                if part not in ('fields', 'summary', 'export'):
+                    self.walk(f"{name}.{part}", a.get(part), b.get(part))
+        finally:
+            self.rtol, self.noise = rtol, noise
+            self._skip, self._root = (), ''
+
+
+#: Fields that are zero by equilibrium or symmetry in a case: their digits
+#: are round-off, which another BLAS kernel changes by more than their own
+#: size, and nothing of the same kind sits beside them to scale them by.
+#: Paths are within the case, list indices dropped.
+_REACTIONS = ('fields.reaction_forces', 'export.stiffness.reaction_force_sum_N')
+_MODE_I_FRONT = ('fields.crack_front.G_II', 'fields.crack_front.G_III', 'fields.crack_front.psi',
+                 'fields.crack_front.parts.G_II', 'fields.crack_front.parts.G_III')
+_UNDRIVEN_FACTORS = ('fields.crack_front.lambda_c', 'export.fracture.front.lambda_c',
+                     'extras.fracture_band.nominal_per_node')
+
+#: Per case: tolerances other than the defaults, the skipped paths, and why.
+_CASE_OPTIONS = {
+    'thermal': {
+        'skip': _REACTIONS,
+        'why': "free thermal expansion on the statically determinate (3-2-1) supports: "
+               "the reactions are zero by equilibrium"},
+    'strip_delamination': {
+        'skip': _MODE_I_FRONT + _UNDRIVEN_FACTORS,
+        'why': "a through-width strip front is in mode I (its mode II / III rates and "
+               "mixity are round-off), and at front nodes the load hardly drives "
+               "(G_T ~ 1e-24) lambda_c ~ 1e12 is set by round-off; the governing "
+               "factor, G_I, G_T, G_c and the band are compared"},
+    'dcb': {
+        'skip': _REACTIONS + _MODE_I_FRONT, 'rtol': 1e-6, 'noise': 1e-6,
+        'why': "the six supports are statically determinate and carry no load, the front "
+               "is in pure mode I, and the slender arms on determinate supports make the "
+               "system ill-conditioned: its results move by up to 2e-8 between BLAS "
+               "kernels, so it is compared at 1e-6"},
+}
 
 
 def _gate_cases(pfe):
-    """Yield (name, thunk) for the gate set; each thunk returns
-    (FieldResults, extras dict)."""
+    """Yield ``(name, thunk, options)`` for the gate set; each thunk returns
+    ``(FieldResults, extras dict)``, ``options`` is the case's entry of
+    :data:`_CASE_OPTIONS` (or empty)."""
     mat, pf, meshes = _production_meshes(pfe)
     solvers: dict = {}
 
@@ -418,7 +517,7 @@ def _gate_cases(pfe):
             if (loading, crit) == ('shear', 'hashin'):
                 continue
             yield _case_name('hex8i', mesh_name, loading, dT, 'direct', crit), \
-                production(mesh_name, loading, dT, crit)
+                production(mesh_name, loading, dT, crit), _CASE_OPTIONS.get(loading, {})
 
     tough = dataclasses.replace(mat, **GATE_TOUGHNESS)
 
@@ -452,10 +551,11 @@ def _gate_cases(pfe):
         mesh = pfe.CompositeMesh.for_dcb(pf0, thin, ny=2)
         return pfe.FESolver(mesh, thin, pf0).solve('dcb', failure_criterion='tsai_wu'), {}
 
-    yield 'defect/interface_penny/compression/tsai_wu', interface_penny
-    yield 'defect/directional_penny/ilss/hashin', directional_ilss
-    yield 'defect/strip_delamination/compression+dT-157/tsai_wu', strip_delamination
-    yield 'defect/dcb/dcb/tsai_wu', dcb
+    yield 'defect/interface_penny/compression/tsai_wu', interface_penny, {}
+    yield 'defect/directional_penny/ilss/hashin', directional_ilss, {}
+    yield ('defect/strip_delamination/compression+dT-157/tsai_wu', strip_delamination,
+           _CASE_OPTIONS['strip_delamination'])
+    yield 'defect/dcb/dcb/tsai_wu', dcb, _CASE_OPTIONS['dcb']
 
 
 def _case_digest(pfe, res, extras: dict, tmp: str) -> dict:
@@ -471,12 +571,17 @@ def _case_digest(pfe, res, extras: dict, tmp: str) -> dict:
     return digest
 
 
+def gate_options(pfe) -> dict:
+    """``{case name: options}`` of the gate set, without solving."""
+    return {name: options for name, _thunk, options in _gate_cases(pfe)}
+
+
 def _gate_run(repo_root: str, verbose: bool = True) -> dict:
     pfe = _import(repo_root)
     tmp = tempfile.mkdtemp()
     cases = {}
     t_all = time.time()
-    for name, thunk in _gate_cases(pfe):
+    for name, thunk, _options in _gate_cases(pfe):
         t0 = time.time()
         res, extras = thunk()
         cases[name] = _case_digest(pfe, res, extras, tmp)
@@ -501,8 +606,7 @@ def _environment() -> dict:
 
 def write_baseline(path: str, repo_root: str) -> int:
     cases = _gate_run(repo_root)
-    doc = {'meta': {'environment': _environment(), 'rtol': RTOL, 'noise': NOISE,
-                    'n_cases': len(cases)},
+    doc = {'meta': {'environment': _environment(), 'n_cases': len(cases)},
            'cases': cases}
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(doc, fh, indent=1, sort_keys=True)
@@ -515,17 +619,22 @@ def check(path: str, repo_root: str, rtol: float, noise: float) -> int:
     with open(path, encoding='utf-8') as fh:
         base = json.load(fh)
     cases = _gate_run(repo_root)
-    return report(base, cases, rtol, noise)
+    return report(base, cases, rtol, noise, gate_options(sys.modules['porosity_fe']))
 
 
-def report(base: dict, cases: dict, rtol: float, noise: float) -> int:
+def report(base: dict, cases: dict, rtol: float, noise: float,
+           options: dict | None = None) -> int:
+    """Compare ``cases`` with the baseline ``base`` and print the result;
+    ``options`` maps a case name to its :data:`_CASE_OPTIONS` entry.
+    Returns the exit code."""
     cmp = _Comparison(rtol, noise)
+    options = options or {}
     expected = base['cases']
     for name in sorted(set(expected) | set(cases)):
         if name not in cases or name not in expected:
             cmp.errors.append(f"{name}: {'missing' if name not in cases else 'not in the baseline'}")
             continue
-        cmp.case(name, expected[name], cases[name])
+        cmp.case(name, expected[name], cases[name], options.get(name))
     env, here = base['meta']['environment'], _environment()
     print(f"baseline environment: {env}")
     print(f"this environment:     {here}")
@@ -534,8 +643,9 @@ def report(base: dict, cases: dict, rtol: float, noise: float) -> int:
             print(f"NOTE: {lib} {here[lib]} here, {env.get(lib)} in the baseline; the "
                   "round-off fields (see the docstring) may differ")
     ratio, where = cmp.worst
-    print(f"{len(cases)} cases, rtol {rtol:g}, noise {noise:g}; largest deviation "
-          f"{ratio:.3g} of the tolerance at {where or '-'}")
+    print(f"{len(cases)} cases, rtol {rtol:g}, noise {noise:g} (per-case overrides: "
+          f"{sum(1 for o in options.values() if 'rtol' in o)}); {cmp.n_skipped} round-off "
+          f"values skipped; largest deviation {ratio:.3g} of the tolerance at {where or '-'}")
     for e in cmp.errors[:200]:
         print(f"MISMATCH {e}")
     if len(cmp.errors) > 200:

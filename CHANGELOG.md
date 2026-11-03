@@ -21,22 +21,28 @@ All notable changes to PorosityFE will be documented in this file.
   - Each case is a numeric digest: every scalar; per float array its shape,
     sum, sum of `|x|`, 2-norm, max, min and 16 entries; integer arrays and
     strings exactly; the export JSON minus provenance, leaf by leaf. A float
-    passes at `|a - b| <= 1e-9 max(|a|, |b|) + 1e-11 scale`, the scale
-    being the magnitude of the values beside it, so quantities that are zero
-    up to round-off (a stress mean of 1e-12 MPa, a reaction sum of 1e-9 N)
-    do not trip it.
-  - Measured spread against the single-threaded baseline: 4 BLAS threads
-    3e-5 of the tolerance, Python 3.12 with the same wheels 0, numpy 1.26 /
-    scipy 1.13 on Python 3.11 2e-5. A relative change of 1e-8 in `E11`
-    trips 151 checks, and one of 1e-6 in the placeholder `b_I` trips the
-    crack-front toughness and the load factor.
-  - Some fields are round-off through and through, with no scale beside
-    them: the reactions of the self-equilibrated DCB (about 1e-7 N) and the
-    mode II / III rates of its pure mode I front (about 1e-19). Older wheels
-    on another CPU change them by more than their own size, so the job
-    installs the numpy and scipy recorded in the baseline (on which an Azure
-    runner reproduced every digest exactly) and `--check` notes a version
-    difference.
+    passes at `|a - b| <= 1e-9 max(|a|, |b|) + 1e-9 scale`, the scale being
+    the magnitude of the values of its kind beside it (in the export JSON,
+    its whole section: a stress component on the scale of the stress
+    tensor's statistics), so quantities that are small by cancellation or
+    zero up to round-off beside others of their kind do not trip it.
+  - Fields that are zero by equilibrium or symmetry with nothing of their
+    kind beside them are named per case, with the reason, and skipped: the
+    reactions of a free thermal expansion and of the DCB (statically
+    determinate supports), the mode II / III rates and mixity of the pure
+    mode I fronts, and the load factors (~1e12) of front nodes the load
+    hardly drives; the governing factor stays compared. The DCB, whose
+    slender arms on determinate supports make it ill-conditioned (its
+    results move by up to 2e-8 between BLAS kernels), is compared at 1e-6.
+  - Runners differ in CPU, and OpenBLAS picks its kernels by CPU: the first
+    CI run failed on Haswell kernels against a baseline made on SkylakeX
+    ones. The job therefore installs the numpy and scipy the baseline
+    records and runs the check twice, on the runner's kernel and with
+    `OPENBLAS_CORETYPE=Sandybridge`. Against the single-threaded baseline,
+    4 BLAS threads, numpy 1.26 / scipy 1.13, and the Haswell and Sandybridge
+    kernels all stay below 0.2 of the tolerance. A relative change of 1e-8
+    in `E11` trips 151 checks, and one of 1e-6 in the placeholder `b_I`
+    trips the crack-front toughness and the load factor.
   - A change that moves the FE results on purpose regenerates the baseline
     in the same PR (`--write-baseline`, single threaded) and says why here.
     The bitwise mode (`<repo_root> out.json [--quick]`, `--compare`) is
@@ -1223,8 +1229,8 @@ All notable changes to PorosityFE will be documented in this file.
   `validate_porosity_cli.py`) and mypy's `python_version`. numpy, scipy,
   matplotlib and Streamlit all install on 3.14.
 - **Branch coverage with a floor** (#219). The coverage cell measures
-  statements and branches (`--cov-branch`, 96 % together) and fails below
-  95 %. New tests pin the paths nothing reached:
+  statements and branches (`--cov-branch`, 97.1 % together with the tests
+  below) and fails below 95 %. New tests pin the paths nothing reached:
   - `tests/test_cli.py::TestCLIExitPaths`: the exit codes 2 and 3 of the
     parallel sweep, `--uq`, `--plots` and the delamination screening,
     `--verbose` around the screening, the default porosity levels, a

@@ -138,6 +138,51 @@ class TestComparison:
         b['fields']['extra'] = None
         assert any('keys' in e for e in _errors(fp, a, b))
 
+    def test_export_components_on_the_scale_of_their_section(self, fp):
+        """Under in-plane shear tau_23 is round-off beside tau_12: compared
+        on the scale of the whole stress section it passes; a real change of
+        it does not."""
+        a = _case(export={'stress_global': {'tau_12': {'max': 281.4, 'min': -279.8},
+                                            'tau_23': {'max': 3e-12, 'min': -2e-12}}})
+        b = copy.deepcopy(a)
+        b['export']['stress_global']['tau_23'] = {'max': 9e-12, 'min': -7e-12}
+        assert _errors(fp, a, b) == []
+        b['export']['stress_global']['tau_23']['max'] = 1e-3
+        assert len(_errors(fp, a, b)) == 1
+
+    def test_case_options_skip_and_tolerance(self, fp):
+        x = fp._numeric(np.array([1e-9, -3e-10, 2e-10]))
+        y = fp._numeric(np.array([4e-9, 1e-10, -5e-10]))
+        a = _case({'reaction_forces': x, 'knockdown': 0.99},
+                  export={'stiffness': {'reaction_force_sum_N': [1e-9, 2e-10]}})
+        b = _case({'reaction_forces': y, 'knockdown': 0.99 * (1 + 1e-7)},
+                  export={'stiffness': {'reaction_force_sum_N': [-3e-9, 5e-10]}})
+        assert len(_errors(fp, a, b)) > 1
+        skip = {'skip': ('fields.reaction_forces', 'export.stiffness.reaction_force_sum_N')}
+        cmp = fp._Comparison(fp.RTOL, fp.NOISE)
+        cmp.case('c', a, b, skip)
+        assert len(cmp.errors) == 1 and cmp.errors[0].startswith('c.fields.knockdown: 0.99 -> ')
+        assert cmp.n_skipped == 2
+        cmp = fp._Comparison(fp.RTOL, fp.NOISE)
+        cmp.case('c', a, b, dict(skip, rtol=1e-6))
+        assert cmp.errors == [] and cmp.rtol == fp.RTOL       # restored after the case
+
+    def test_skips_ignore_list_indices(self, fp):
+        assert fp._skipped('fields.crack_front.parts[1].G_II.samples[3]',
+                           ('fields.crack_front.parts.G_II',))
+        assert not fp._skipped('fields.crack_front.G_IIx', ('fields.crack_front.G_II',))
+        assert fp._float_scale({'a': [1.0, {'b': -7.0}], 'c': 1e12}, 'export.x',
+                               ('export.x.c',)) == 7.0
+
+    def test_options_name_their_reason(self, fp):
+        options = fp.gate_options(porosity_fe)
+        thermal = [n for n in options if '/thermal' in n]
+        assert len(thermal) == 3 and all(options[n] is fp._CASE_OPTIONS['thermal'] for n in thermal)
+        assert options['defect/dcb/dcb/tsai_wu']['rtol'] == 1e-6
+        for entry in fp._CASE_OPTIONS.values():
+            assert entry['why'] and entry['skip']
+        assert sum(1 for o in options.values() if o) == 5
+
     def test_report_flags_missing_and_new_cases(self, fp, baseline, capsys):
         names = sorted(baseline['cases'])
         cases = {n: baseline['cases'][n] for n in names[1:]}
@@ -146,13 +191,15 @@ class TestComparison:
         out = capsys.readouterr().out
         assert f"MISMATCH {names[0]}: missing" in out
         assert "MISMATCH new/case: not in the baseline" in out
-        assert fp.report(baseline, baseline['cases'], fp.RTOL, fp.NOISE) == 0
-        assert capsys.readouterr().out.rstrip().endswith('OK')
+        assert fp.report(baseline, baseline['cases'], fp.RTOL, fp.NOISE,
+                         fp.gate_options(porosity_fe)) == 0
+        out = capsys.readouterr().out
+        assert out.rstrip().endswith('OK') and 'round-off values skipped' in out
 
 
 class TestBaseline:
     def test_matches_the_case_list(self, fp, baseline):
-        names = [name for name, _thunk in fp._gate_cases(porosity_fe)]
+        names = [name for name, _thunk, _options in fp._gate_cases(porosity_fe)]
         assert len(names) == len(set(names)) == 30
         assert sorted(names) == sorted(baseline['cases'])
         assert baseline['meta']['n_cases'] == 30
@@ -161,8 +208,9 @@ class TestBaseline:
 
     def test_meta(self, fp, baseline):
         meta = baseline['meta']
-        assert meta['rtol'] == fp.RTOL and meta['noise'] == fp.NOISE
+        assert set(meta) == {'environment', 'n_cases'}
         assert meta['environment']['threads']['OPENBLAS_NUM_THREADS'] == '1'
+        assert {'numpy', 'scipy'} <= set(meta['environment'])
         for case in baseline['cases'].values():
             assert {'fields', 'summary', 'export'} <= set(case)
             assert 'provenance' not in case['export']
@@ -178,7 +226,7 @@ class TestBaseline:
         them, so they are left to the CI gate, which runs on the baseline's
         wheels."""
         name = 'defect/dcb/dcb/tsai_wu'
-        thunk = dict(fp._gate_cases(porosity_fe))[name]
+        thunk = {n: th for n, th, _options in fp._gate_cases(porosity_fe)}[name]
         logging.disable(logging.WARNING)
         try:
             with warnings.catch_warnings():

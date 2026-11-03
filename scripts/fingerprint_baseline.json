@@ -19699,8 +19699,6 @@
     "OPENBLAS_NUM_THREADS": "1"
    }
   },
-  "n_cases": 30,
-  "noise": 1e-11,
-  "rtol": 1e-09
+  "n_cases": 30
  }
 }

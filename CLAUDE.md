@@ -231,7 +231,9 @@ cell also measures statement and branch coverage with a 95 % floor
 runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
 `fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
 ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
-baseline; see Commands), and `streamlit_smoke` (decoupled
+baseline, run on the runner's BLAS kernel and again on Sandybridge's; see
+Commands; a case whose fields are round-off by physics names them in
+`_CASE_OPTIONS`), and `streamlit_smoke` (decoupled
 single-OS/Python import-only check — Streamlit wheel availability on a new
 Python can't be allowed to drop the whole library matrix red, see issue
 #157). The floor is Python 3.11 (`requires-python`, ruff `target-version`,
