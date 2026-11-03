@@ -20,6 +20,7 @@ from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
 from ..toughness import ToughnessKnockdown
 from . import vcct
+from ._load_cases import interior_point_mask
 from .assembler import Ties
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -33,6 +34,8 @@ class FractureOutputs:
     load_factor: float | None
     governing_node: int | None
     interface_forces: np.ndarray
+    interior_load_factor: float | None = None
+    interior_governing_node: int | None = None
 
 
 def fracture_outputs(
@@ -40,6 +43,7 @@ def fracture_outputs(
     load: tuple[np.ndarray, np.ndarray],
     prestress: tuple[np.ndarray, np.ndarray] | None = None,
     toughness_knockdown: ToughnessKnockdown | None = None,
+    interior_margin: float | None = None,
 ) -> FractureOutputs:
     """Interface forces, front table and critical load factor of a solve.
 
@@ -65,11 +69,17 @@ def fracture_outputs(
         uncalibrated placeholders, as :meth:`FESolver.solve
         <porosity_fe.fe.solver.FESolver.solve>` does.
 
+    interior_margin : float, optional
+        The lateral margin (mm) of the interior front nodes, as for the
+        interior failure metrics (default ``max(h, 2 element widths)`` per
+        direction; :func:`~porosity_fe.fe._load_cases.lateral_margins`).
+
     Returns
     -------
     FractureOutputs
         The front table at the applied state (``load`` plus
-        ``prestress``), its smallest critical load factor and that node.
+        ``prestress``), its smallest critical load factor and that node,
+        and the same over the interior front nodes (issue #227).
         With ``prestress`` the table's ``parts`` are the two parts'
         tables (``(moving, fixed)``).
     """
@@ -105,7 +115,35 @@ def fracture_outputs(
                                     parts=(moving, fixed),
                                     **vcct._toughness_record(law, front.Vp))
     row = front.governing
+    interior_factor, interior_node = _interior_factor(mesh, front, interior_margin)
     return FractureOutputs(
         crack_front=front, load_factor=front.load_factor,
         governing_node=None if row is None else int(front.node[row]),
-        interface_forces=forces)
+        interface_forces=forces, interior_load_factor=interior_factor,
+        interior_governing_node=interior_node)
+
+
+def _interior_factor(mesh: CompositeMesh, front: vcct.CrackFront,
+                     margin: float | None) -> tuple[float | None, int | None]:
+    """Smallest ``lambda_c`` over the front nodes at least the lateral
+    margin from every lateral face, and that node.
+
+    At a lateral face (the side faces of a fracture specimen, the edges of
+    a coupon a delamination reaches) the energy release rate is mesh
+    dependent, and the plain minimum usually sits there. ``(None, None)``
+    without toughness data or interior front node; ``(inf, None)`` when no
+    interior node is driven, as for the plain minimum.
+    """
+    lam = front.lambda_c
+    if lam is None or len(front) == 0:
+        return None, None
+    interior = interior_point_mask(mesh, front.x, front.y, margin)
+    if not interior.any():
+        return None, None
+    rows = np.flatnonzero(interior)
+    values = lam[rows]
+    finite = np.isfinite(values)
+    if not finite.any():
+        return float(np.min(values)), None
+    best = rows[np.argmin(np.where(finite, values, np.inf))]
+    return float(lam[best]), int(front.node[best])

@@ -5,6 +5,26 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Interior fracture load factor** (#227).
+  `FieldResults.interior_fracture_load_factor` and
+  `interior_fracture_governing_node`: the smallest `lambda_c` over the front
+  nodes at least the lateral margin from every lateral face
+  (`FESolver.solve(interior_margin=...)`, by default `max(h, 2 element
+  widths)` per direction, the rule of the interior failure index; shared
+  through `fe._load_cases.lateral_margins`). At a lateral face the energy
+  release rate is mesh dependent and `fracture_load_factor`, the
+  conservative minimum, usually sits there: on the ENF benchmark mesh the
+  minimum is 148.3 at the side face, the interior value 153.1, within 0.4 %
+  of mid-width. `None` without toughness data or an interior front node,
+  `inf` when no interior node is driven.
+  - In `summary().details`, the JSON `fracture` block
+    (`interior_fracture_load_factor`, `interior_governing_node`; additive in
+    the schema), the app's Defects panel (an "Interior λ_c" row; the λ_c row
+    says a lateral-face minimum is mesh dependent) and `refinement_study`
+    (an interior extremum for the fracture tests).
+  - The new fields change every case's digest, so
+    `scripts/fingerprint_baseline.json` is regenerated: only these keys
+    were added, every other value is identical.
 - **FE result regression gate in CI** (#214). `scripts/fingerprint.py
   --check scripts/fingerprint_baseline.json` recomputes 30 cases and
   compares them with the committed baseline; the new `fe_fingerprint` job

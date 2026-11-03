@@ -1365,6 +1365,8 @@ class TestDefectAnalysis:
         fe = delam_result["fe_field"]
         values = {label: value for label, value, _ in rows}
         assert values["Fracture load factor λ_c"] == f"{fe.fracture_load_factor:.3g}"
+        assert values["Interior λ_c"] == f"{fe.interior_fracture_load_factor:.3g}"
+        assert fe.interior_fracture_load_factor >= fe.fracture_load_factor
         row = fe.crack_front.governing
         assert values["Governing node (x, y mm)"] == \
             f"{fe.crack_front.x[row]:.1f}, {fe.crack_front.y[row]:.1f}"
@@ -1407,7 +1409,8 @@ class TestDefectAnalysis:
         assert np.all(np.diff(s[segments[0]]) >= 0)
         # No toughness: G only, the caption says so, no NCR margin.
         rows, caption, uncalibrated = app.fe_delamination_summary(r)
-        assert dict((lab, v) for lab, v, _ in rows)["Fracture load factor λ_c"] == "n/a"
+        values = dict((lab, v) for lab, v, _ in rows)
+        assert values["Fracture load factor λ_c"] == values["Interior λ_c"] == "n/a"
         assert "no material preset carries them" in caption
         assert uncalibrated is False
         assert not app.ncr_delamination_available(r)

@@ -135,14 +135,16 @@ def _check_delta_T(loading: str, delta_T: float | None,
     return float(delta_T)
 
 
-def _interior_element_mask(mesh: CompositeMesh,
-                           margin: float | None = None) -> np.ndarray:
-    """Elements whose centroid lies at least ``margin`` from every lateral face.
+def lateral_margins(mesh: CompositeMesh, margin: float | None = None
+                    ) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """``(lo, hi, mx, my)``: the mesh's bounding box and the in-plane margins
+    of the interior rule.
 
     The lateral faces are ``x_min``, ``x_max``, ``y_min`` and ``y_max``.
     The default margin is ``max(h, 2 element widths)`` in each in-plane
     direction, with ``h`` the laminate thickness: wide enough to leave out
-    the free-edge interlaminar singularity of a thermal solve.
+    the free-edge interlaminar singularity of a thermal solve. A given
+    ``margin`` (mm) applies in both directions.
     """
     if margin is not None and (
             isinstance(margin, bool)
@@ -158,9 +160,32 @@ def _interior_element_mask(mesh: CompositeMesh,
         my = max(h, 2.0 * (hi[1] - lo[1]) / max(mesh.ny, 1))
     else:
         mx = my = float(margin)
+    return lo, hi, float(mx), float(my)
+
+
+def _interior_element_mask(mesh: CompositeMesh,
+                           margin: float | None = None) -> np.ndarray:
+    """Elements whose centroid lies at least ``margin`` from every lateral
+    face (:func:`lateral_margins`)."""
+    lo, hi, mx, my = lateral_margins(mesh, margin)
+    nodes = np.asarray(mesh.nodes, dtype=float)
     cent = nodes[mesh.elements].mean(axis=1)
     return ((cent[:, 0] >= lo[0] + mx) & (cent[:, 0] <= hi[0] - mx)
             & (cent[:, 1] >= lo[1] + my) & (cent[:, 1] <= hi[1] - my))
+
+
+def interior_point_mask(mesh: CompositeMesh, x: np.ndarray, y: np.ndarray,
+                        margin: float | None = None) -> np.ndarray:
+    """Points ``(x, y)`` (mm) at least the :func:`lateral_margins` margin
+    from every lateral face of ``mesh``: the interior front nodes of the
+    fracture load factor (issue #227). A point on the margin's line counts
+    as interior (to 1e-9 of the mesh's in-plane size, so a node on a grid
+    line does not flip on round-off)."""
+    lo, hi, mx, my = lateral_margins(mesh, margin)
+    tol = 1e-9 * float(max(hi[0] - lo[0], hi[1] - lo[1]))
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    return ((x >= lo[0] + mx - tol) & (x <= hi[0] - mx + tol)
+            & (y >= lo[1] + my - tol) & (y <= hi[1] - my + tol))
 
 
 def interior_mask(loading: str, mesh: CompositeMesh,

@@ -634,8 +634,14 @@ class TestRefinementStudy:
             mat, 0.0, 'enf', ply_angles='UD', resolutions=[(40, 2, 6), (80, 2, 6)],
             applied_load=-1000.0,
             specimen=dict(crack_length=30.0, span=100.0, width=25.0, plane_strain=True))
-        assert list(st.convergence)[-2:] == ['load_point_compliance', 'fracture_load_factor']
+        assert list(st.convergence)[-3:] == ['load_point_compliance', 'fracture_load_factor',
+                                             'interior_fracture_load_factor']
         assert all(lv.fracture_load_factor > 0 for lv in st.levels)
+        # Two elements across the width: no front node is max(h, 2 widths)
+        # from the side faces, so the interior factor is unavailable (#227).
+        assert all(lv.interior_fracture_load_factor is None for lv in st.levels)
+        assert st.convergence['interior_fracture_load_factor'].kind == 'interior extremum'
+        assert st.convergence['interior_fracture_load_factor'].behavior == 'unavailable'
         assert st.convergence['effective_modulus'].behavior == 'unavailable'
         assert 'lambda_c' in st.summary()
         with pytest.raises(ValueError, match='multiple of 10'):

@@ -172,6 +172,9 @@ def _fracture_block(results: FieldResults) -> dict | None:
         'load_factor_basis': str(results.load_factor_basis),
         'fracture_load_factor': _finite_or_none(results.fracture_load_factor),
         'governing_node': results.fracture_governing_node,
+        'interior_fracture_load_factor': _finite_or_none(
+            getattr(results, 'interior_fracture_load_factor', None)),
+        'interior_governing_node': getattr(results, 'interior_fracture_governing_node', None),
         'governing_psi': (None if row is None
                           else _finite_or_none(front.psi[row])),  # type: ignore[union-attr]
         'governing_G_T_N_per_mm': (None if row is None

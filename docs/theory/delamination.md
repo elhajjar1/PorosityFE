@@ -360,6 +360,21 @@ $$
 by `load_factor_basis`: the applied load, or `delta_T` for
 `loading='thermal'`.
 
+At a lateral face (the side face of a fracture specimen, the edge of a
+coupon that a delamination reaches) the energy release rate is mesh
+dependent, and the plain minimum usually sits there. The **interior**
+factor {attr}`~porosity_fe.FieldResults.interior_fracture_load_factor`, at
+{attr}`~porosity_fe.FieldResults.interior_fracture_governing_node`, is the
+minimum over the front nodes at least the lateral margin from every lateral
+face: `FESolver.solve(interior_margin=...)`, by default
+$\max(h, 2\,\text{element widths})$ in each in-plane direction, the margin of
+the interior failure index. On the ENF benchmark mesh the minimum (148.3,
+at $y = 0$) and the interior value (153.1) differ by 3 %, and the interior
+value is within 0.4 % of the mid-width one (153.8). It is `None` without an
+interior front node (two elements across a specimen's width leave none) and
+$\infty$ when no interior node is driven. `refinement_study` reports it as an
+interior extremum.
+
 **Thermal prestress** (a mechanical load with `delta_T`, basis
 `'mechanical_with_residual'`). The front state is
 $\mathbf F' = \mathbf F'_T + \lambda \mathbf F'_M$,
@@ -377,7 +392,8 @@ applied state is held for every $\lambda$ (see
 ## Outputs and exports
 
 - {class}`~porosity_fe.FieldResults`: `crack_front`, `fracture_load_factor`,
-  `fracture_governing_node`, `interface_forces`, `crack_contact`,
+  `fracture_governing_node`, `interior_fracture_load_factor`,
+  `interior_fracture_governing_node`, `interface_forces`, `crack_contact`,
   `contact_iterations`, `contact_pairs` and `contact_converged`, all `None`
   without a delaminated pair; `summary().details` carries them, with
   `toughness_knockdown` (a description of the porosity-toughness law) and
@@ -615,8 +631,9 @@ solved one's; for the DCB that is a small number, since its bonded
 counterpart hardly opens. {attr}`~porosity_fe.FieldResults.fracture_load_factor`
 is the minimum over the front: in the three-dimensional ENF and MMB it
 sits at the free side faces, where $G_\text{II}$ peaks and depends on the
-mesh, so read the front table for the value at mid-width, which is what the
-NASA reports quote (their $y/B = 0$).
+mesh, so read {attr}`~porosity_fe.FieldResults.interior_fracture_load_factor`
+or the front table for the value at mid-width, which is what the NASA
+reports quote (their $y/B = 0$).
 
 **Data reduction.** {func}`~porosity_fe.compliance_calibration` fits the
 compliance from specimens at several crack lengths as the standards do,

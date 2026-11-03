@@ -1348,8 +1348,9 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     flag of the delamination front; ``None`` without a front.
 
     The rows give the fracture load factor (the smallest critical load
-    factor over the front), where it governs, its mode mixity and mode
-    shares, and the largest ``G_T`` at the analysis load. The flag is
+    factor over the front), the same over the interior front nodes (#227),
+    where the smallest governs, its mode mixity and mode shares, and the
+    largest ``G_T`` at the analysis load. The flag is
     ``True`` when the toughness was knocked down by porosity with the
     uncalibrated placeholder coefficients.
     """
@@ -1361,13 +1362,22 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     row = front.governing
     focus = row if row is not None else int(np.argmax(front.G_T))
     where = f"{front.x[focus]:.1f}, {front.y[focus]:.1f}"
+    interior = getattr(fe, "interior_fracture_load_factor", None)
     rows = [
         ("Fracture load factor λ_c",
          "n/a" if lam is None else _fmt_value(lam, "{:.3g}"),
          "Smallest critical load factor over the front: the multiple of the "
          "analysis load at which the delamination starts to grow (G_T reaches "
          "the Benzeggagh-Kenane toughness G_c(ψ)). n/a without G_Ic, G_IIc "
-         "and η; ∞ when the load releases no energy at the front."),
+         "and η; ∞ when the load releases no energy at the front. Where it "
+         "sits at a lateral face (a coupon edge the delamination reaches) G "
+         "is mesh dependent: compare the interior value."),
+        ("Interior λ_c",
+         "n/a" if interior is None else _fmt_value(interior, "{:.3g}"),
+         "Smallest λ_c over the front nodes at least max(h, 2 element widths) "
+         "from every lateral face of the coupon (the margin of the interior "
+         "failure index): the value that converges under mesh refinement. "
+         "n/a without toughness or without an interior front node."),
         ("Governing node (x, y mm)" if row is not None
          else "Largest G_T at (x, y mm)", where,
          "Front node with the smallest λ_c (without toughness, the largest "

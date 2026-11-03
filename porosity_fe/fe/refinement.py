@@ -60,12 +60,14 @@ QUANTITY_KINDS: dict[str, str] = {
 }
 
 #: Quantities added for the fracture tests ('dcb', 'enf', 'mmb'): the
-#: load-point compliance (``'global'``) and the critical load factor of the
+#: load-point compliance (``'global'``), the critical load factor of the
 #: insert's front (``'front extremum'``: the minimum over the front nodes,
-#: which can sit on the node where the front meets a free side face).
+#: which can sit on the node where the front meets a free side face), and
+#: the same over the interior front nodes (``'interior extremum'``, #227).
 FRACTURE_QUANTITY_KINDS: dict[str, str] = {
     'load_point_compliance': 'global',
     'fracture_load_factor': 'front extremum',
+    'interior_fracture_load_factor': 'interior extremum',
 }
 
 #: Short column labels for the text tables.
@@ -78,6 +80,7 @@ _LABELS = {
     'interior_first_ply_failure_load_factor': 'int. FPF',
     'load_point_compliance': 'C mm/N',
     'fracture_load_factor': 'lambda_c',
+    'interior_fracture_load_factor': 'int. lambda_c',
 }
 
 #: Every quantity a level can hold, with its kind.
@@ -87,6 +90,7 @@ _ALL_KINDS = {**QUANTITY_KINDS, **FRACTURE_QUANTITY_KINDS}
 _INTERIOR_OF = {
     'max_failure_index': 'interior_max_failure_index',
     'first_ply_failure_load_factor': 'interior_first_ply_failure_load_factor',
+    'fracture_load_factor': 'interior_fracture_load_factor',
 }
 
 RefineMode = Literal['in_plane', 'all']
@@ -162,11 +166,13 @@ class RefinementLevel:
         ``None`` where the solve does not define them (``effective_modulus``
         for ``'ilss'``, interior values without interior elements) or where
         they are not finite (``knockdown`` of a thermal solve).
-    load_point_compliance, fracture_load_factor : float or None
+    load_point_compliance, fracture_load_factor, interior_fracture_load_factor : float or None
         The fracture tests' quantities (``FRACTURE_QUANTITY_KINDS``):
-        :attr:`~porosity_fe.FieldResults.load_point_compliance` (mm/N) and
-        :attr:`~porosity_fe.FieldResults.fracture_load_factor` (``None``
-        without toughness data); ``None`` for the other loadings.
+        :attr:`~porosity_fe.FieldResults.load_point_compliance` (mm/N),
+        :attr:`~porosity_fe.FieldResults.fracture_load_factor` and
+        :attr:`~porosity_fe.FieldResults.interior_fracture_load_factor`
+        (``None`` without toughness data or interior front node); ``None``
+        for the other loadings.
     """
 
     resolution: tuple[int, int, int]
@@ -183,6 +189,7 @@ class RefinementLevel:
     interior_first_ply_failure_load_factor: float | None
     load_point_compliance: float | None = None
     fracture_load_factor: float | None = None
+    interior_fracture_load_factor: float | None = None
 
     @property
     def mesh(self) -> str:
@@ -445,6 +452,8 @@ class RefinementStudy:
                 f"faces on every level, so the interior quantities are missing; "
                 f"pass a smaller interior_margin or refine the base mesh.")
         for dom, inner in _INTERIOR_OF.items():
+            if dom not in conv or inner not in conv:
+                continue            # the fracture quantities: fracture tests only
             d, i = conv[dom], conv[inner]
             if d.converged is False and i.converged:
                 notes.append(
@@ -1218,6 +1227,7 @@ def refinement_study(
                 out.interior_first_ply_failure_load_factor),
             load_point_compliance=_finite_or_none(out.load_point_compliance),
             fracture_load_factor=_finite_or_none(out.fracture_load_factor),
+            interior_fracture_load_factor=_finite_or_none(out.interior_fracture_load_factor),
         )
         del out, fe, mesh
         gc.collect()

@@ -447,7 +447,9 @@ class FESolver:
             loading band and the side faces, and for ``'flexure_3pt'`` /
             ``'flexure_4pt'`` the distance from each support and load line
             (in the ``x``-``z`` plane) and from the side faces; both
-            default to ``h / 2`` (see
+            default to ``h / 2``. With a delamination the same lateral
+            margin selects the front nodes of
+            :attr:`FieldResults.interior_fracture_load_factor` (see
             :attr:`FieldResults.interior_max_failure_index`).
         crack_contact : bool
             Keyword-only, default ``True``. On a mesh with a delaminated
@@ -669,13 +671,13 @@ class FESolver:
                 assert thermal_part is not None
                 fracture = _fracture.fracture_outputs(
                     self.mesh, self.material, ties, load=thermal_part,
-                    toughness_knockdown=knockdown_law)
+                    toughness_knockdown=knockdown_law, interior_margin=interior_margin)
             else:
                 assert u_mech is not None
                 fracture = _fracture.fracture_outputs(
                     self.mesh, self.material, ties,
                     load=(u_mech, K @ u_mech - F), prestress=thermal_part,
-                    toughness_knockdown=knockdown_law)
+                    toughness_knockdown=knockdown_law, interior_margin=interior_margin)
 
         displacement = u.reshape(-1, 3)
 
@@ -722,6 +724,10 @@ class FESolver:
             contact_pairs=None if contact is None else contact.n_pairs,
             contact_converged=None if contact is None else contact.converged,
             load_point_compliance=compliance,
+            interior_fracture_load_factor=(None if fracture is None
+                                           else fracture.interior_load_factor),
+            interior_fracture_governing_node=(None if fracture is None
+                                              else fracture.interior_governing_node),
         )
 
     # Steps of solve(). The work is done in the private step modules; tests
