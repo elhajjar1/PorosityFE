@@ -169,6 +169,10 @@ def _write_json(obj, filename: str | os.PathLike) -> None:
 # (a description of the porosity-toughness law that knocked G_c down at
 # each front node's Vp) and ``toughness_uncalibrated`` (true when its
 # placeholder coefficients lowered a toughness), null without toughness.
+# Also 1.3 (phase 4.5), additive and opt-in: an FE-field export takes a
+# ``fracture_uncertainty`` block (``export_results(...,
+# fracture_uncertainty=band)``), the band on the fracture load factor from
+# toughness scatter (``FractureLoadFactorBand.summary()``).
 JSON_SCHEMA_VERSION = "1.3"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"

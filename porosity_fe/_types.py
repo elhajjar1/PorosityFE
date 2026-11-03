@@ -2,7 +2,8 @@
 
 These ``typing.Literal`` aliases name the small, fixed sets of accepted
 string values that recur across the public API (loading modes, knockdown
-model names, porosity distribution shapes, mesh faces). Promoting the bare
+model names, porosity distribution shapes, mesh faces, the FE element
+formulation and porosity degradation). Promoting the bare
 ``str`` annotations on the relevant signatures to these aliases lets static
 checkers reject typos and out-of-set values at the call site, without any
 runtime behavior change — the runtime validation in each module is the
@@ -47,6 +48,20 @@ FELoadingMode = Literal['compression', 'tension', 'shear', 'ilss',
 #: trilinear brick. Source of truth:
 #: ``porosity_fe.fe.element.ELEMENT_FORMULATIONS``.
 FEFormulation = Literal['hex8', 'hex8i']
+
+#: How the FE path turns the local porosity into a degraded ply stiffness
+#: and degraded ply strengths (:class:`~porosity_fe.fe.solver.FESolver`,
+#: ``porosity_degradation=``): ``'isotropic'`` (the default), which
+#: projects the Mori-Tanaka tensor of the porous matrix onto an isotropic
+#: one before the Halpin-Tsai ratios and scales every matrix strength by
+#: the in-plane ratio ``r_m``, so a void's shape changes the amount of the
+#: degradation but not its direction; or ``'directional'``, which keeps
+#: the transversely isotropic Mori-Tanaka tensor, degrades each ply
+#: constant from its own matrix direction and scales ``Z_t``, ``S_13`` and
+#: ``S_23`` by their own stiffness ratios (delamination plan 1.4). Both
+#: give the same result for spherical voids. Source of truth:
+#: ``porosity_fe.homogenization.POROSITY_DEGRADATIONS``.
+PorosityDegradation = Literal['isotropic', 'directional']
 
 #: Built-in empirical knockdown model names. Source of truth:
 #: ``porosity_fe.empirical._KNOCKDOWN_LAWS``.

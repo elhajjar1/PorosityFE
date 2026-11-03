@@ -189,6 +189,20 @@ r = propagate_uncertainty(0.03, 'T800_epoxy', 'compression', coef_cov=0.1,
 print(r['knockdown']['percentiles'])   # {'p5': ..., 'p50': ..., 'p95': ...}
 ```
 
+The delamination load factor λ_c of an FE solve gets its own band from
+scatter in the toughness inputs (`G_Ic`, `G_IIc`, `G_IIIc`, `bk_eta` and the
+porosity-toughness coefficients `b_I`, `b_II`, `b_III`), re-evaluated on the
+front of that one solve. Nothing scatters unless you name it; the theory page
+"Uncertainty propagation" lists the few measured CoVs as starting points:
+
+```python
+band = result.fracture_load_factor_uncertainty(
+    material, covs={'G_Ic': 0.05, 'G_IIc': 0.07}, n_samples=2000,
+    method='lhs', seed=0)
+print(band.nominal, band.percentiles)  # λ_c and its p5 / p50 / p95
+print(band.probability_below(1.5))     # share of draws below 1.5: information, not a disposition
+```
+
 ### Python library
 ```python
 from porosity_fe import *
@@ -371,22 +385,25 @@ mode = compression, FE Tsai-Wu, Vp_mean = 3 %
   uniform               0.9924
   clustered (midplane)  0.9925
   clustered (surface)   0.9928
-  interface             0.9819   (penny voids, sharpest local field)
+  interface             0.9842   (penny voids)
 ```
 
 (Numbers reproduced by `python examples/distribution_comparison.py`, on a
 12 x 4 x 24 mesh with one element layer per ply; exact values depend on
-mesh resolution. The interface case is clearly
-the lowest; the uniform and clustered cases differ by less than 0.1
-percentage point, so their order can change with the mesh.)
+mesh resolution. The interface case is the lowest; the uniform and
+clustered cases differ by less than 0.1 percentage point, so their order
+can change with the mesh.)
 
-Most of the interface case's lower knockdown is the penny shape, not the
-location of the voids. Uniform penny voids at 3 % give 0.9846. On a mesh with
-one element layer per ply the nodes also sit on the interface peaks, so the
-FE volume average of the `interface` profile is 0.0354, not 0.03; uniform
-penny voids at 0.0354 give 0.9824. Clustering at the interfaces adds only
-about 0.0005 on top of that. Interface penny porosity remains smeared
-porosity, not a delamination.
+The interface case's lower knockdown is almost all the penny shape, not
+the location of the voids: uniform penny voids at 3 % give 0.9846, so
+clustering them at the interfaces adds only about 0.0004. The mesh scales
+the sampled `interface` profile so its FE volume average is the requested
+`Vp` (`CompositeMesh.porosity_renormalization`): on one element layer per
+ply the nodes sit on the profile's narrow peaks, and unscaled the average
+would be 0.0354 for 0.03 (the scale is 0.848 there). The crack-front
+toughness and the interface onset strengths read the unscaled field on the
+interface plane (`CompositeMesh.field_porosity`). Interface penny porosity
+remains smeared porosity, not a delamination.
 
 ### Guidance
 

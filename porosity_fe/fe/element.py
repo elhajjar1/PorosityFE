@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from .._types import FEFormulation
+from .._types import FEFormulation, PorosityDegradation
 from ..gauss import gauss_points_hex
-from ..homogenization import _degraded_composite_stiffness, _mt_effective_stiffness
+from ..homogenization import (
+    _DEFAULT_POROSITY_DEGRADATION,
+    _check_porosity_degradation,
+    _degraded_composite_stiffness,
+    _mt_effective_stiffness,
+)
 from ..materials import MaterialProperties
 from ..transforms import rotate_stiffness_3d
 
@@ -162,6 +167,14 @@ class Hex8Element:
         laminate thickness. ``'hex8'``: the standard trilinear brick, full
         2x2x2 Gauss integration. See :meth:`G_matrix` and
         :meth:`strain_operator`.
+    porosity_degradation : {'isotropic', 'directional'}, optional
+        Keyword-only. How the local porosity degrades the ply stiffness
+        (:func:`~porosity_fe.homogenization._degraded_composite_stiffness`,
+        :data:`porosity_fe.PorosityDegradation`): ``'isotropic'`` (default)
+        projects the Mori-Tanaka tensor onto an isotropic one;
+        ``'directional'`` keeps it transversely isotropic, so penny and
+        cylindrical voids degrade the out-of-plane constants more. Needs
+        ``material``; the scalar fallback without one ignores it.
 
     Notes
     -----
@@ -181,7 +194,9 @@ class Hex8Element:
                  void_shape_radii: tuple, nu_m: float,
                  C_m: np.ndarray, is_void: bool = False,
                  material: MaterialProperties = None, *,
-                 formulation: FEFormulation = _DEFAULT_FORMULATION) -> None:
+                 formulation: FEFormulation = _DEFAULT_FORMULATION,
+                 porosity_degradation: PorosityDegradation =
+                 _DEFAULT_POROSITY_DEGRADATION) -> None:
         self.node_coords = np.asarray(node_coords, dtype=float)
         if self.node_coords.shape != (8, 3):
             raise ValueError(f"node_coords must be (8,3), got {self.node_coords.shape}.")
@@ -218,6 +233,8 @@ class Hex8Element:
         self.is_void = is_void
         _check_formulation(formulation)
         self.formulation: FEFormulation = formulation
+        _check_porosity_degradation(porosity_degradation)
+        self.porosity_degradation: PorosityDegradation = porosity_degradation
         # Incompatible-mode condensation H = -Kaa^-1 Kau, built on first use.
         self._H: np.ndarray | None = None
 
@@ -404,7 +421,8 @@ class Hex8Element:
         #    while E22/G12 (matrix-dominated) are strongly reduced by porosity.
         if self.material is not None:
             C_degraded = _degraded_composite_stiffness(
-                Vp, self.void_shape_radii, self.material)
+                Vp, self.void_shape_radii, self.material,
+                porosity_degradation=self.porosity_degradation)
         else:
             # Fallback: scalar degradation (legacy behavior)
             C_eff_mt = _mt_effective_stiffness(self.C_m, Vp, self.void_shape_radii, self.nu_m)

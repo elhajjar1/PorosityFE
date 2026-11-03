@@ -300,7 +300,16 @@ class CompositeMesh:
         (VTK hexahedron ordering).
     porosity : np.ndarray
         Shape ``(n_nodes,)`` nodal porosity values in ``[0, 1]``; a
-        duplicated node carries its original's value.
+        duplicated node carries its original's value. An ``'interface'``
+        profile is scaled so its FE volume average equals the field's
+        ``Vp`` (:attr:`porosity_renormalization`).
+    porosity_renormalization : float
+        The factor that scaled the distributed porosity at the nodes: the
+        field's ``Vp`` over the FE volume average of the sampled
+        ``'interface'`` profile, ``1.0`` for the other distributions. On
+        one element layer per ply the nodes sit on that profile's peaks
+        and the factor is about 0.85 (plan item 0.4). The crack-plane
+        quantities read the unscaled field (:meth:`field_porosity`).
     stiffness_reduction : np.ndarray
         Shape ``(n_nodes,)`` complementary ``1 - Vp`` field.
     ply_ids : np.ndarray
@@ -444,6 +453,7 @@ class CompositeMesh:
         self.nodes = None
         self.elements = None
         self.porosity: np.ndarray | None = None
+        self.porosity_renormalization = 1.0
         self.stiffness_reduction = None
         self.ply_ids = None
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
@@ -1171,6 +1181,52 @@ class CompositeMesh:
             element_length=element_length, max_element_length=max_element_length,
             nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
 
+    def _sample_porosity(self, z_layers: np.ndarray) -> np.ndarray:
+        """The porosity field at every node, ``'interface'`` profile scaled.
+
+        The FE interpolates the nodal values trilinearly to the Gauss
+        points, so its volume average of a through-thickness profile is the
+        trapezoid integral over the node layers ``z_layers``. The Gaussians
+        of an ``'interface'`` profile are narrow (``sigma = 0.35 t_ply``),
+        so with one element layer per ply the nodes sit on their peaks and
+        that average is 18 % above the requested ``Vp`` (plan item 0.4).
+        The distributed part of that profile is scaled so the average is
+        ``Vp``; the discrete voids are added after. The other profiles are
+        resolved (the ``'clustered'`` average is within 0.2 %) and sampled
+        as they are.
+        """
+        pf = self.porosity_field
+        x, y, z = self.nodes[:, 0], self.nodes[:, 1], self.nodes[:, 2]
+        self.porosity_renormalization = 1.0
+        if pf.distribution != 'interface' or pf.Vp == 0.0:
+            return pf.local_porosity(x, y, z)
+        layers = pf._distributed_porosity(z_layers)
+        mean = float(np.sum(0.5 * (layers[1:] + layers[:-1]) * np.diff(z_layers))
+                     / (z_layers[-1] - z_layers[0]))
+        if mean > 0.0:
+            self.porosity_renormalization = pf.Vp / mean
+        dist = pf._distributed_porosity(z) * self.porosity_renormalization
+        return pf._with_discrete_voids(dist, x, y, z)
+
+    def field_porosity(self, node_ids) -> np.ndarray:
+        """The porosity field's own value at ``node_ids``, without the
+        ``'interface'`` renormalization of :attr:`porosity`.
+
+        :attr:`porosity` is scaled so its FE volume average is the
+        requested ``Vp``, the right input for the stiffness and the element
+        strengths. A point value on a ply interface, such as the toughness
+        at a crack front or an interlaminar strength, takes the field
+        itself instead: on one element layer per ply the interface nodes
+        sit on the profile's peaks, about 1.25 ``Vp``, and the scaled
+        value there would depend on the mesh. Zeroed porosity (a pristine
+        or pore-free variant of the mesh) stays zero.
+        """
+        porosity = np.asarray(self.porosity, dtype=float)[node_ids]
+        scale = float(getattr(self, 'porosity_renormalization', 1.0))
+        if scale == 1.0:
+            return porosity
+        return np.minimum(porosity / scale, 1.0)
+
     def _x_node_lines(self) -> np.ndarray:
         """``x`` of the node lines: :attr:`x_grid`, or evenly spaced."""
         if self.x_grid is None:
@@ -1201,10 +1257,8 @@ class CompositeMesh:
             (xx.ravel(), yy.ravel(), zz.ravel()))
 
         # Sample porosity at all nodes
-        self.porosity = self.porosity_field.local_porosity(
-            self.nodes[:, 0], self.nodes[:, 1], self.nodes[:, 2])
-        self.stiffness_reduction = self.porosity_field.local_stiffness_reduction(
-            self.nodes[:, 0], self.nodes[:, 1], self.nodes[:, 2])
+        self.porosity = self._sample_porosity(z)
+        self.stiffness_reduction = 1.0 - self.porosity
 
         # Vectorized hex element connectivity. Element ordering is
         # k (outer) -> j (middle) -> i (inner), matching the original

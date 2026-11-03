@@ -12,8 +12,13 @@ from typing import cast
 
 import numpy as np
 
+from .._types import PorosityDegradation
 from ..empirical import Calibration
-from ..homogenization import _mt_effective_stiffness
+from ..homogenization import (
+    _DEFAULT_POROSITY_DEGRADATION,
+    _check_porosity_degradation,
+    _mt_effective_stiffness,
+)
 from ..materials import MaterialProperties
 from .element import VOID_VP_THRESHOLD
 
@@ -63,13 +68,31 @@ Interlaminar = tuple[float | np.ndarray | None, float | np.ndarray | None]
 #: The scalar form, for one element's Tsai-Wu coefficients.
 ScalarInterlaminar = tuple[float | None, float | None]
 
+#: Stand-in for the interlaminar shear strength ``S_13`` of each criterion
+#: when ``MaterialProperties.tau_13`` is ``None``: the in-plane ``tau_12``
+#: for Tsai-Wu and maximum stress, the short-beam ``tau_ilss`` for Hashin's
+#: delamination mode and for the interface onset criteria of
+#: :mod:`porosity_fe.fe.interlaminar` (theory page on failure, "Strengths
+#: and their fallbacks"). Only ``porosity_degradation='directional'``
+#: resolves the stand-in here; the isotropic default leaves it to each
+#: criterion, unchanged.
+_S13_STAND_IN: dict[str, str] = {
+    'tsai_wu': 'tau_12',
+    'max_stress': 'tau_12',
+    'hashin': 'tau_ilss',
+    'brewer_lagace': 'tau_ilss',
+    'ye': 'tau_ilss',
+}
+
 
 def _strength_ratios(material: MaterialProperties, void_shape_radii: tuple,
                      elem_Vp: float) -> tuple[float, float]:
     """Porosity retention ratios ``(r_matrix, r_fiber)`` of the strengths.
 
     See :func:`degraded_strengths` for the rule; both are 1.0 at
-    ``elem_Vp <= 1e-12``.
+    ``elem_Vp <= 1e-12``. The same for either ``porosity_degradation``:
+    the directional mapping changes only the interlaminar ratios of
+    :func:`_interlaminar_strength_ratios`.
     """
     mat = material
     C_m_pristine = mat.get_isotropic_matrix_stiffness()
@@ -94,11 +117,56 @@ def _strength_ratios(material: MaterialProperties, void_shape_radii: tuple,
     return r_matrix, r_fiber
 
 
-def degraded_interlaminar_strengths(material: MaterialProperties,
-                                    void_shape_radii: tuple, elem_Vp: float
-                                    ) -> tuple[float | None, float | None]:
+def _interlaminar_strength_ratios(
+        material: MaterialProperties, void_shape_radii: tuple, elem_Vp: float, *,
+        porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION,
+        ) -> tuple[float, float, float]:
+    """Porosity retention ratios ``(r_Zt, r_S13, r_S23)`` of the interlaminar
+    strengths ``Z_t``, ``S_13`` and ``S_23`` (and of ``Z_c``).
+
+    With ``'isotropic'`` all three are the matrix ratio ``r_m`` of
+    :func:`_strength_ratios`, whatever the void shape. With
+    ``'directional'``, and ``rho_kk = C*_kk / C_m,kk`` the diagonal
+    retention of the Mori-Tanaka tensor of the porous matrix in the ply
+    axes (``k = 1..6`` in Voigt order)::
+
+        r_Zt  = r_m sqrt(rho_33 / rho_22)
+        r_S13 = r_m sqrt(rho_55 / rho_66)
+        r_S23 = r_m sqrt(rho_44 / rho_66)
+
+    Each is relative to the in-plane ratio, so spherical voids
+    (``rho_33 = rho_22``, ``rho_44 = rho_55 = rho_66``) keep ``r_m``
+    exactly, as every other strength does; a literal ``sqrt(rho_55)`` would
+    change spherical results (0.972 against ``r_m = 0.959`` at ``Vp =
+    0.03``). For penny voids in the ply plane ``rho_22 = rho_11``, so
+    ``r_Zt = sqrt(rho_33)``: the ``C_33`` rule of delamination plan 1.4.
+    All are 1.0 at ``elem_Vp <= 1e-12``.
+    """
+    _check_porosity_degradation(porosity_degradation)
+    r_matrix, _ = _strength_ratios(material, void_shape_radii, elem_Vp)
+    if porosity_degradation != 'directional' or elem_Vp <= 1e-12:
+        return r_matrix, r_matrix, r_matrix
+    C_m = material.get_isotropic_matrix_stiffness()
+    C_eff = _mt_effective_stiffness(C_m, elem_Vp, void_shape_radii,
+                                    material.matrix_poisson)
+    rho = np.diag(C_eff) / np.diag(C_m)
+
+    def relative(num: int, den: int) -> float:
+        if not rho[den] > 0.0:
+            return 1.0
+        return float(np.sqrt(max(rho[num] / rho[den], 0.0)))
+
+    return (r_matrix * relative(2, 1), r_matrix * relative(4, 5),
+            r_matrix * relative(3, 5))
+
+
+def degraded_interlaminar_strengths(
+        material: MaterialProperties, void_shape_radii: tuple, elem_Vp: float, *,
+        porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION,
+        criterion: str | None = None) -> tuple[float | None, float | None]:
     """Porosity-degraded optional interlaminar strengths ``(Z_t, S_13)``.
 
+    With the default ``porosity_degradation='isotropic'``:
     ``MaterialProperties.sigma_3t`` and ``tau_13`` scaled by the same
     matrix ratio ``r_m`` as the matrix strengths of
     :func:`degraded_strengths`, and floored the same way. A slot is
@@ -106,7 +174,17 @@ def degraded_interlaminar_strengths(material: MaterialProperties,
     criterion then keeps its historical stand-in: ``Z_t = Y_t``
     (``sigma_2t``) everywhere; ``S_13 = S_12`` (``tau_12``) for Tsai-Wu and
     maximum stress, ``S_13 = S_23`` (``tau_ilss``) for Hashin's delamination
-    mode and the interface onset criteria.
+    mode and the interface onset criteria. ``criterion`` is ignored.
+
+    With ``'directional'`` both slots are always set, so that the criteria
+    use the direction-aware ratios of :func:`_interlaminar_strength_ratios`
+    for the through-thickness quantities: ``Z_t`` is ``sigma_3t``, or its
+    stand-in ``sigma_2t``, scaled by ``r_Zt``; ``S_13`` is ``tau_13``, or
+    the stand-in of ``criterion`` (:data:`_S13_STAND_IN`: ``tau_12`` for
+    ``'tsai_wu'`` and ``'max_stress'``, ``tau_ilss`` for ``'hashin'``,
+    ``'brewer_lagace'`` and ``'ye'``), scaled by ``r_S13``. For spherical
+    voids both ratios equal ``r_m`` and the criteria give what they give
+    without the override.
 
     Parameters
     ----------
@@ -116,20 +194,49 @@ def degraded_interlaminar_strengths(material: MaterialProperties,
         Void shape of the Mori-Tanaka degradation.
     elem_Vp : float
         Void volume fraction in [0, 1].
+    porosity_degradation : {'isotropic', 'directional'}
+        Keyword-only; see :data:`porosity_fe.PorosityDegradation`.
+    criterion : str, optional
+        Keyword-only. The criterion the strengths are for, needed with
+        ``'directional'`` when ``tau_13`` is ``None`` to pick the
+        ``S_13`` stand-in.
 
     Returns
     -------
     (Zt_s, S13_s) : tuple of float or None
-        Degraded strengths in MPa, ``None`` where not supplied.
+        Degraded strengths in MPa, ``None`` where not supplied
+        (``'isotropic'`` only).
+
+    Raises
+    ------
+    ValueError
+        On an unknown ``porosity_degradation``, or with ``'directional'``
+        when ``tau_13`` is ``None`` and ``criterion`` is not one of
+        :data:`_S13_STAND_IN`.
     """
-    if material.sigma_3t is None and material.tau_13 is None:
+    _check_porosity_degradation(porosity_degradation)
+    directional = porosity_degradation == 'directional'
+    if not directional and material.sigma_3t is None and material.tau_13 is None:
         return None, None
-    r_matrix, _ = _strength_ratios(material, void_shape_radii, elem_Vp)
+    r_Zt, r_S13, _ = _interlaminar_strength_ratios(
+        material, void_shape_radii, elem_Vp,
+        porosity_degradation=porosity_degradation)
     floor = Calibration.STRENGTH_FLOOR_MPA
-    Zt = None if material.sigma_3t is None else \
-        max(float(material.sigma_3t) * r_matrix, floor)
-    S13 = None if material.tau_13 is None else \
-        max(float(material.tau_13) * r_matrix, floor)
+    Zt0 = material.sigma_3t
+    S13_0 = material.tau_13
+    if directional:
+        if Zt0 is None:
+            Zt0 = material.sigma_2t
+        if S13_0 is None:
+            if criterion not in _S13_STAND_IN:
+                raise ValueError(
+                    f"porosity_degradation='directional' needs the criterion "
+                    f"to pick the S_13 stand-in when material.tau_13 is None; "
+                    f"got criterion={criterion!r}, expected one of "
+                    f"{list(_S13_STAND_IN)}.")
+            S13_0 = getattr(material, _S13_STAND_IN[criterion])
+    Zt = None if Zt0 is None else max(float(Zt0) * r_Zt, floor)
+    S13 = None if S13_0 is None else max(float(S13_0) * r_S13, floor)
     return Zt, S13
 
 
@@ -139,7 +246,9 @@ def _has_interlaminar(material: MaterialProperties) -> bool:
 
 
 def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
-                       elem_Vp: float
+                       elem_Vp: float, *,
+                       porosity_degradation: PorosityDegradation =
+                       _DEFAULT_POROSITY_DEGRADATION,
                        ) -> tuple[float, float, float, float, float, float]:
     """Return per-element porosity-degraded ply strengths.
 
@@ -166,6 +275,15 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
     and analogously for the fiber-direction components via a rule-of-
     mixtures effective-modulus ratio (also taken under a square root).
 
+    With ``porosity_degradation='directional'`` (keyword-only; default
+    ``'isotropic'``, the rule above) the interlaminar shear strength takes
+    its own direction's ratio, ``S23 = tau_ilss * r_S23`` with ``r_S23 =
+    r_matrix sqrt(rho_44 / rho_66)`` of :func:`_interlaminar_strength_ratios`,
+    and :func:`degraded_interlaminar_strengths` always supplies ``Z_t`` and
+    ``S_13`` (from the set strengths or their stand-ins) scaled by ``r_Zt``
+    and ``r_S13``. The in-plane and fibre strengths keep the rule above.
+    For spherical voids every ratio is ``r_matrix`` and nothing changes.
+
     Heuristic correlation: per-component strength scales as the square
     root of the stiffness retention ratio. Loosely motivated by Puck-
     style strength-stiffness coupling (Puck & Schurmann 2002), but not
@@ -188,23 +306,31 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
     ----------
     elem_Vp : float
         Element-average void volume fraction in [0, 1].
+    porosity_degradation : {'isotropic', 'directional'}
+        Keyword-only; see :data:`porosity_fe.PorosityDegradation`.
 
     Returns
     -------
     (Xt_s, Xc_s, Yt_s, Yc_s, S12_s, S23_s) : tuple of floats
         Floor-clamped degraded strengths in MPa. The optional interlaminar
         strengths ``sigma_3t`` and ``tau_13`` are degraded by the same
-        ``r_matrix`` in :func:`degraded_interlaminar_strengths`.
+        ``r_matrix`` in :func:`degraded_interlaminar_strengths` (by
+        ``r_Zt`` and ``r_S13`` with ``'directional'``).
     """
+    _check_porosity_degradation(porosity_degradation)
     mat = material
     r_matrix, r_fiber = _strength_ratios(material, void_shape_radii, elem_Vp)
+    r_S23 = r_matrix if porosity_degradation != 'directional' else \
+        _interlaminar_strength_ratios(
+            material, void_shape_radii, elem_Vp,
+            porosity_degradation=porosity_degradation)[2]
 
     Xt = mat.sigma_1t * r_fiber
     Xc = mat.sigma_1c * r_fiber
     Yt = mat.sigma_2t * r_matrix
     Yc = mat.sigma_2c * r_matrix
     S12 = mat.tau_12 * r_matrix
-    S23 = mat.tau_ilss * r_matrix
+    S23 = mat.tau_ilss * r_S23
 
     # Strengths approaching zero make the 1/X reciprocals overflow to
     # inf; clamp to a numerical floor so a heavily-degraded element
@@ -222,7 +348,9 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                      elements: np.ndarray, material: MaterialProperties,
                      void_shape_radii: tuple, criterion: str = 'tsai_wu',
                      void_elements=None,
-                     mode_fields: dict[str, np.ndarray] | None = None,
+                     mode_fields: dict[str, np.ndarray] | None = None, *,
+                     porosity_degradation: PorosityDegradation =
+                     _DEFAULT_POROSITY_DEGRADATION,
                      ) -> tuple[float, np.ndarray, dict[str, float]]:
     """Evaluate the chosen failure criterion at every Gauss point.
 
@@ -257,6 +385,12 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         ``(n_elem,)`` array per key of :data:`MODE_KEYS` (0.0 for skipped
         void elements), for ``'hashin'`` and ``'max_stress'``. Tsai-Wu does
         not separate modes and leaves it empty.
+    porosity_degradation : {'isotropic', 'directional'}
+        Keyword-only. ``'directional'`` degrades ``Z_t``, ``S_13`` and
+        ``S_23`` by their own stiffness ratios
+        (:func:`degraded_interlaminar_strengths`,
+        :func:`degraded_strengths`); the default ``'isotropic'`` is the
+        unchanged rule. Pass the value the solve used.
 
     Returns
     -------
@@ -277,6 +411,7 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
             f"Unknown failure criterion {criterion!r}. "
             f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
         )
+    _check_porosity_degradation(porosity_degradation)
 
     n_elem, _, _ = stress_local.shape
     per_elem_fi = np.zeros(n_elem, dtype=float)
@@ -314,8 +449,12 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         }
 
     # The optional interlaminar strengths reach the criteria only when the
-    # material sets one, so the default calls are unchanged.
-    opted_in = _has_interlaminar(material)
+    # material sets one, or when the directional degradation supplies them
+    # with their own ratios, so the default calls are unchanged.
+    opted_in = _has_interlaminar(material) or porosity_degradation == 'directional'
+    # The strengths depend on the element only through its porosity, so they
+    # are computed once per distinct level (a structured mesh has few).
+    strengths_by_vp: dict[float, tuple] = {}
     for e in range(n_elem):
         elem_Vp = float(elem_Vp_all[e])
 
@@ -323,9 +462,16 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         if skip[e]:
             continue
 
-        strengths = degraded_strengths(material, void_shape_radii, elem_Vp)
-        kw = ({'interlaminar': degraded_interlaminar_strengths(
-            material, void_shape_radii, elem_Vp)} if opted_in else {})
+        level = strengths_by_vp.get(elem_Vp)
+        if level is None:
+            level = strengths_by_vp[elem_Vp] = (
+                degraded_strengths(material, void_shape_radii, elem_Vp,
+                                   porosity_degradation=porosity_degradation),
+                ({'interlaminar': degraded_interlaminar_strengths(
+                    material, void_shape_radii, elem_Vp,
+                    porosity_degradation=porosity_degradation, criterion=criterion)}
+                 if opted_in else {}))
+        strengths, kw = level
         s_all = stress_local[e]  # (n_gp, 6)
 
         if criterion == 'tsai_wu':
@@ -884,7 +1030,9 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
                           void_shape_radii: tuple,
                           criterion: str = 'tsai_wu',
                           void_elements=None, *,
-                          prestress_local: np.ndarray | None = None
+                          prestress_local: np.ndarray | None = None,
+                          porosity_degradation: PorosityDegradation =
+                          _DEFAULT_POROSITY_DEGRADATION,
                           ) -> np.ndarray:
     """Per-element first-failure load factor ``(n_elem,)``, ``inf`` where skipped.
 
@@ -895,6 +1043,7 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
             f"Unknown failure criterion {criterion!r}. "
             f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
         )
+    _check_porosity_degradation(porosity_degradation)
     elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
     lam_e = np.full(stress_local.shape[0], np.inf)
     active = np.flatnonzero(~skip)
@@ -903,14 +1052,17 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
     def strengths_of(vp: float) -> tuple[float, float, float, float, float, float]:
         st = strengths_by_vp.get(vp)
         if st is None:
-            st = degraded_strengths(material, void_shape_radii, vp)
+            st = degraded_strengths(material, void_shape_radii, vp,
+                                    porosity_degradation=porosity_degradation)
             strengths_by_vp[vp] = st
         return st
 
-    opted_in = _has_interlaminar(material)
+    opted_in = _has_interlaminar(material) or porosity_degradation == 'directional'
 
     def interlaminar_of(vp: float) -> tuple[float | None, float | None]:
-        return degraded_interlaminar_strengths(material, void_shape_radii, vp)
+        return degraded_interlaminar_strengths(
+            material, void_shape_radii, vp,
+            porosity_degradation=porosity_degradation, criterion=criterion)
 
     if prestress_local is None:
         for e in active:
@@ -964,7 +1116,9 @@ def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray
                                   void_shape_radii: tuple,
                                   criterion: str = 'tsai_wu',
                                   void_elements=None, *,
-                                  prestress_local: np.ndarray | None = None
+                                  prestress_local: np.ndarray | None = None,
+                                  porosity_degradation: PorosityDegradation =
+                                  _DEFAULT_POROSITY_DEGRADATION,
                                   ) -> float:
     """Load multiplier at which ``criterion`` first reaches 1 anywhere.
 
@@ -992,8 +1146,12 @@ def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray
         offset, and Hashin is solved branch by branch, because a
         pre-stress lets a stress change sign (and a mode switch on) as
         ``lam`` grows. ``None`` (default) is the unchanged path.
+    porosity_degradation : {'isotropic', 'directional'}
+        Keyword-only, as for :func:`evaluate_failure`; pass the value the
+        solve used.
     """
     lam_e = _element_load_factors(
         stress_local, porosity, elements, material, void_shape_radii,
-        criterion, void_elements, prestress_local=prestress_local)
+        criterion, void_elements, prestress_local=prestress_local,
+        porosity_degradation=porosity_degradation)
     return float(lam_e.min()) if lam_e.size else float('inf')

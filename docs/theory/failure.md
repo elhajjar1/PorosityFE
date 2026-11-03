@@ -36,8 +36,8 @@ criterion keeps the stand-in it always used: $Y_t$ for $Z_t$, and for
 $S_{13}$ either $S_{12}$ or $S_{23}$ depending on the criterion (see
 [Strengths and their fallbacks](#strengths-and-their-fallbacks)). When they
 are set, every criterion uses them for $\sigma_3$ in tension and for
-$\tau_{13}$, degraded by the same $r_m$ as the other matrix strengths.
-There is no through-thickness compressive strength input: $Y_c$ stays the
+$\tau_{13}$, degraded by default by the same $r_m$ as the other matrix
+strengths. There is no through-thickness compressive strength input: $Y_c$ stays the
 allowable of $\sigma_3$ in compression.
 
 ```{note}
@@ -46,6 +46,50 @@ strength–stiffness coupling but is not derived from a published model or
 validated against degraded-strength data within PorosityFE. This is the
 main reason the FE and empirical strength predictions differ.
 ```
+
+### Directional strengths (opt-in)
+
+With `FESolver(..., porosity_degradation='directional')` the stiffness keeps
+the transversely isotropic Mori-Tanaka tensor ({doc}`micromechanics`), and
+the three interlaminar strengths take their own direction's stiffness
+retention. With $\rho_{kk} = C^*_{kk} / C_{m,kk}$ the diagonal retention of
+the porous-matrix tensor in the ply axes (Voigt order):
+
+$$
+r_{Z_t} = r_m \sqrt{\rho_{33} / \rho_{22}}, \qquad
+r_{S_{13}} = r_m \sqrt{\rho_{55} / \rho_{66}}, \qquad
+r_{S_{23}} = r_m \sqrt{\rho_{44} / \rho_{66}} .
+$$
+
+$Z_t$ (`sigma_3t`, or its stand-in $\sigma_{2t}$) is scaled by $r_{Z_t}$,
+$S_{13}$ (`tau_13`, or the stand-in of the criterion, see
+[Strengths and their fallbacks](#strengths-and-their-fallbacks)) by
+$r_{S_{13}}$ and $S_{23}$ ($\tau_\text{ilss}$) by $r_{S_{23}}$; the fibre and
+in-plane strengths keep $r_f$ and $r_m$. The scaling is relative to the
+in-plane $r_m$ on purpose: for spherical voids $\rho_{33} = \rho_{22}$ and
+$\rho_{44} = \rho_{55} = \rho_{66}$, so every ratio is $r_m$ and the results do
+not change, whereas a literal $\sqrt{\rho_{55}}$ would (0.972 against
+$r_m = 0.959$ at $V_p = 0.03$). For a penny in the ply plane
+$\rho_{22} = \rho_{11}$, so $r_{Z_t} = \sqrt{\rho_{33}}$, the $C_{33}$ rule.
+The interface onset criteria use the same ratios, and an interlaminar
+compressive strength `Zc` takes $r_{Z_t}$.
+
+| T800/epoxy, $V_p = 0.03$ | $Y_t$, $Y_c$, $S_{12}$ | $Z_t$ | $S_{13}$ | $S_{23}$ |
+|---|---|---|---|---|
+| penny, isotropic (default) | 0.935 | 0.935 | 0.935 | 0.935 |
+| penny, directional | 0.935 | 0.800 | 0.873 | 0.873 |
+| cylinder $(3, 1, 1)$, directional | 0.967 | 0.967 | 0.967 | 0.960 |
+| sphere, either | 0.959 | 0.959 | 0.959 | 0.959 |
+
+Every criterion then evaluates its through-thickness terms with these
+strengths (for Tsai-Wu and maximum stress as if `sigma_3t` and `tau_13`
+were set, with the stand-in values), and Hashin's matrix-compression mode,
+which divides $\sigma_2$ by $2 S_{23}$, follows $r_{S_{23}}$ too. On the
+production short-beam specimen with uniform penny porosity at 3 % the Hashin
+first-ply-failure factor drops 13 % (274 to 239) and the Brewer-Lagace onset
+factor from 338 to 309. Like the stiffness mapping it is uncalibrated, and
+the results do not record it: pass the same `porosity_degradation` to
+{func}`~porosity_fe.delamination_onset`.
 
 ## Tsai-Wu (default)
 
@@ -127,8 +171,10 @@ It knows nothing of an explicit delamination ({doc}`delamination`), whose
 growth is judged by energy release rates instead. Unless `sigma_3t` and
 `tau_13` are set, $Y_t$ (from $\sigma_{2t}$) stands in for $Z_t$, and both
 interlaminar shears are checked against the apparent short-beam strength
-$\tau_\text{ilss}$. All are degraded by the same in-plane $r_m$ as the
-other matrix strengths, whatever the void shape. The interface criteria of
+$\tau_\text{ilss}$. By default all are degraded by the same in-plane $r_m$
+as the other matrix strengths, whatever the void shape (see
+[Directional strengths](#directional-strengths-opt-in) for the opt-in
+alternative). The interface criteria of
 [Interlaminar stresses and delamination onset](#interlaminar-stresses-and-delamination-onset)
 evaluate the same quadratic form on the interface tractions, averaged.
 ```
@@ -304,7 +350,9 @@ and its edge rule are PorosityFE's choices.
 The interface criteria use $Z_t$ = `sigma_3t`, $S_{13}$ = `tau_13` and
 $S_{23}$ = `tau_ilss`, degraded by the matrix ratio $r_m$ of
 [Degraded strengths](#degraded-strengths) at the porosity of the interface
-node (the local $V_p$ at the interface). When the optional strengths are
+node (the local $V_p$ at the interface), or by the ratios of
+[Directional strengths](#directional-strengths-opt-in) with
+`porosity_degradation='directional'`. When the optional strengths are
 `None` each criterion falls back as before:
 
 | Criterion | $\sigma_{33}$ in tension | $\tau_{13}$ | $\tau_{23}$ |
@@ -323,11 +371,14 @@ Brewer-Lagace criterion $\bar\tau_{xz}$ meets $S_{13}$ and $\bar\tau_{yz}$
 meets $S_{23}$, with $x$ the $0°$ direction of the laminate; with the
 defaults both are $\tau_\text{ilss}$.
 
-Every interlaminar strength is degraded by the same $r_m$, the square root
-of the in-plane matrix stiffness ratio, whatever the void shape. A
-direction-aware rule (the $C_{33}$ ratio for $Z_t$, $C_{55}$ for $S_{13}$)
-would make flat voids weaken the interface more; it changes existing
-results and is a pending decision (delamination plan, item 1.4).
+By default every interlaminar strength is degraded by the same $r_m$, the
+square root of the in-plane matrix stiffness ratio, whatever the void shape.
+The direction-aware rule of delamination plan item 1.4 is available as the
+opt-in `porosity_degradation='directional'`
+([Directional strengths](#directional-strengths-opt-in)), so flat voids
+weaken the interface more; it is off by default because it changes every
+penny result. With it the stand-ins of the table above still apply, each
+scaled by its own direction's ratio.
 
 ### Onset load factor
 
@@ -441,7 +492,9 @@ Composite Materials*, ASTM STP 775 (1982), which we did not access.
   depend on $x_\text{avg}$ and, until the elements are smaller than
   $x_\text{avg}$, on the mesh. Check the jump and refine.
 - The strength degradation is the heuristic square-root rule of
-  [Degraded strengths](#degraded-strengths), the same in every direction.
+  [Degraded strengths](#degraded-strengths), the same in every direction
+  unless `porosity_degradation='directional'` is chosen, which is
+  uncalibrated against measured interlaminar strengths of porous laminates.
 - `sigma_2t` and `tau_ilss` stand in for the interlaminar strengths unless
   `sigma_3t` and `tau_13` are set, and no preset sets them.
 - The interface onset is computed on request, never by the solve: in the

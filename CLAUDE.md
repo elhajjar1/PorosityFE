@@ -37,6 +37,11 @@ python -m PyInstaller ValidatePorosity.spec --noconfirm --clean
 
 # Docs (Sphinx)
 cd docs && make html                          # output under docs/_build/html
+
+# Bit-identity fingerprint of the FE results (132 production cases; run
+# both sides with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, see the script)
+python scripts/fingerprint.py <repo_root> out.json [--quick]
+python scripts/fingerprint.py --compare base.json out.json
 ```
 
 ## Architecture
