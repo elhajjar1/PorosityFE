@@ -40,8 +40,18 @@ results the largest ``|x|`` among its siblings (top-level results and
 absorbs quantities that are zero up to round-off: a stress mean of 1e-12 MPa
 beside a maximum of 358 MPa, a reaction sum of 1e-9 N beside a modulus of
 56 GPa. Defaults ``rtol = 1e-9`` and ``noise = 1e-11`` (``--rtol``,
-``--noise``); the measured spread between BLAS thread counts and between
-numpy / scipy releases is recorded in the baseline's ``meta``.
+``--noise``). Against a single-threaded baseline, 4 BLAS threads moved the
+digests by at most 3e-5 of the tolerance, and numpy 1.26 / scipy 1.13 by
+2e-5 on the same machine.
+
+Some fields are round-off through and through and have no scale beside them
+to compare with: the reactions of a self-equilibrated specimen (the DCB's
+six supports carry no load, about 1e-7 N) and the mode II / III rates and
+mixity angle of a pure mode I front (about 1e-19). Older wheels on another
+CPU change them by more than their own size. So the CI job installs the
+numpy and scipy the baseline was made with (its ``meta.environment``), on
+which an Azure runner reproduced every digest exactly, and ``--check`` notes
+any version difference. Regenerating the baseline moves the pins with it.
 
 The gate set (30 cases, about two and a half minutes on one thread): hex8i,
 direct, the quick set's nine loadings and three criteria except in-plane
@@ -516,8 +526,13 @@ def report(base: dict, cases: dict, rtol: float, noise: float) -> int:
             cmp.errors.append(f"{name}: {'missing' if name not in cases else 'not in the baseline'}")
             continue
         cmp.case(name, expected[name], cases[name])
-    print(f"baseline environment: {base['meta']['environment']}")
-    print(f"this environment:     {_environment()}")
+    env, here = base['meta']['environment'], _environment()
+    print(f"baseline environment: {env}")
+    print(f"this environment:     {here}")
+    for lib in ('numpy', 'scipy'):
+        if env.get(lib) != here[lib]:
+            print(f"NOTE: {lib} {here[lib]} here, {env.get(lib)} in the baseline; the "
+                  "round-off fields (see the docstring) may differ")
     ratio, where = cmp.worst
     print(f"{len(cases)} cases, rtol {rtol:g}, noise {noise:g}; largest deviation "
           f"{ratio:.3g} of the tolerance at {where or '-'}")

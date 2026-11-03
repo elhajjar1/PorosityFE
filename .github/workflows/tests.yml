@@ -109,10 +109,16 @@ jobs:
           pyproject.toml
           requirements*.txt
 
-    - name: Install package
+    - name: Install package with the baseline's numpy and scipy
+      # Some gate fields are round-off through and through (the reactions
+      # of the self-equilibrated DCB, the mode II / III rates of its pure
+      # mode I front), and other wheels change them; see the script's
+      # docstring. Regenerating the baseline moves these pins.
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
+        pins=$(python -c "import json; e = json.load(open('scripts/fingerprint_baseline.json'))['meta']['environment']; print('numpy==' + e['numpy'], 'scipy==' + e['scipy'])")
+        echo "pins: $pins"
+        pip install -e . $pins
 
     - name: Compare the FE results with the baseline
       env:

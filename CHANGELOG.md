@@ -30,12 +30,20 @@ All notable changes to PorosityFE will be documented in this file.
     scipy 1.13 on Python 3.11 2e-5. A relative change of 1e-8 in `E11`
     trips 151 checks, and one of 1e-6 in the placeholder `b_I` trips the
     crack-front toughness and the load factor.
+  - Some fields are round-off through and through, with no scale beside
+    them: the reactions of the self-equilibrated DCB (about 1e-7 N) and the
+    mode II / III rates of its pure mode I front (about 1e-19). Older wheels
+    on another CPU change them by more than their own size, so the job
+    installs the numpy and scipy recorded in the baseline (on which an Azure
+    runner reproduced every digest exactly) and `--check` notes a version
+    difference.
   - A change that moves the FE results on purpose regenerates the baseline
     in the same PR (`--write-baseline`, single threaded) and says why here.
     The bitwise mode (`<repo_root> out.json [--quick]`, `--compare`) is
     unchanged. `tests/test_fingerprint_script.py` covers the comparison,
-    the baseline's consistency with the case list, and the DCB case end to
-    end on every platform (at 1e-6).
+    the baseline's consistency with the case list, and the DCB case's
+    physical results (load factor, compliance, front rates and openings,
+    displacements) end to end on every platform, at 1e-6.
 - **The `examples/` scripts run in the test suite** (#215).
   `tests/test_examples.py` runs each one in-process with its output in a
   temporary directory (the new `POROSITY_FE_EXAMPLES_OUTPUT`), checks the

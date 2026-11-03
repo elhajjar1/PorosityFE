@@ -169,9 +169,14 @@ class TestBaseline:
 
     def test_dcb_case_end_to_end(self, fp, baseline):
         """The cheapest gate case (an 8-ply DCB, about a second) recomputed
-        here agrees with the baseline. At rtol 1e-6: this test runs on every
-        OS and Python of the matrix, whose BLAS builds move the last digits;
-        the CI gate itself (one ubuntu cell) holds 1e-9."""
+        here gives the baseline's physical results: the load factor, the
+        compliance, the governing node, the energy release rates, load
+        factors and openings along the front, and the displacement field.
+        At 1e-6: this test runs on every OS, Python and set of wheels of the
+        matrix. The DCB's reactions and its mode II / III rates are round-off
+        (zero by equilibrium and by symmetry) and other BLAS builds change
+        them, so they are left to the CI gate, which runs on the baseline's
+        wheels."""
         name = 'defect/dcb/dcb/tsai_wu'
         thunk = dict(fp._gate_cases(porosity_fe))[name]
         logging.disable(logging.WARNING)
@@ -183,4 +188,12 @@ class TestBaseline:
             logging.disable(logging.NOTSET)
         with tempfile.TemporaryDirectory() as tmp:
             digest = fp._case_digest(porosity_fe, res, extras, tmp)
-        assert _errors(fp, baseline['cases'][name], digest, rtol=1e-6, noise=1e-8) == []
+        base = baseline['cases'][name]['fields']
+        here = digest['fields']
+        cmp = fp._Comparison(1e-6, 1e-6)
+        for key in ('fracture_load_factor', 'load_point_compliance',
+                    'fracture_governing_node', 'displacement'):
+            cmp.walk(key, base[key], here[key])
+        for key in ('G_I', 'G_T', 'lambda_c', 'opening_local', 'x', 'y', 'z'):
+            cmp.walk(f'crack_front.{key}', base['crack_front'][key], here['crack_front'][key])
+        assert cmp.errors == []
