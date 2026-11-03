@@ -52,7 +52,9 @@ from porosity_fe import (  # noqa: E402
     build_empirical_pipeline,
 )
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+# POROSITY_FE_EXAMPLES_OUTPUT redirects the output (tests/test_examples.py).
+OUT_DIR = os.environ.get("POROSITY_FE_EXAMPLES_OUTPUT") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Matched specimen-average void volume fraction (3%).

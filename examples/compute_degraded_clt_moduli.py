@@ -29,7 +29,9 @@ import numpy as np  # noqa: E402
 
 from porosity_fe import MATERIALS, compute_degraded_clt_moduli  # noqa: E402
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+# POROSITY_FE_EXAMPLES_OUTPUT redirects the output (tests/test_examples.py).
+OUT_DIR = os.environ.get("POROSITY_FE_EXAMPLES_OUTPUT") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "output")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
