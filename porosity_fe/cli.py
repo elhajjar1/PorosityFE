@@ -575,12 +575,6 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
 
-    # Back-compat shim: a few callers may still reference _log. Now that
-    # progress is routed through ``logger``, this just forwards to
-    # logger.info so --quiet (WARNING level) silences these too.
-    def _log(msg: str) -> None:
-        logger.info("%s", msg)
-
     # Resolve via the shim so tests that monkeypatch
     # ``porosity_fe_analysis.compare_configurations`` (and POROSITY_CONFIGS)
     # see their patch honoured at call time (#119).

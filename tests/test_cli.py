@@ -968,3 +968,103 @@ class TestDelaminationScreening:
         assert (d.shape, d.half_size) == ('rectangle', (2.0, 1.0))
         d = _parse_delamination('strip:0:0:12.5')
         assert (d.shape, d.x_start, d.x_end) == ('strip', 0.0, 12.5)
+
+
+# ----------------------------------------------------------------------
+# Exit paths and small branches of porosity-analyze (issue #219)
+# ----------------------------------------------------------------------
+
+class _Viz:
+    """A visualizer whose knockdown-curve plot raises; every other plot is a
+    no-op."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+
+    def plot_knockdown_curves(self, *args, **kwargs):
+        raise self.exc
+
+
+class TestCLIExitPaths:
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(['--output-dir', str(tmp_path), '--quiet', *argv])
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (ValueError('bad'), 2, 'bad input'), (RuntimeError('boom'), 3, 'solver failure')])
+    def test_parallel_sweep_failure(self, tmp_path, monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr(porosity_fe_analysis, 'sweep_configurations', boom, raising=False)
+        monkeypatch.setattr('porosity_fe.cli.sweep_configurations', boom)
+        assert self._main(tmp_path, monkeypatch, '--vp', '0.02', '0.04', '--jobs', '2') == rc
+        assert message in capsys.readouterr().err
+        assert not list(tmp_path.glob('porosity_analysis_results_*.json'))
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (OSError('disk'), 2, 'uncertainty propagation for Vp=0.02: disk'),
+        (RuntimeError('boom'), 3, 'uncertainty propagation for Vp=0.02 failed')])
+    def test_uq_failure(self, tmp_path, monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_uq', boom)
+        assert self._main(tmp_path, monkeypatch, '--vp', '0.02', '--uq') == rc
+        assert message in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (PermissionError('denied'), 2, 'cannot write knockdown curves'),
+        (RuntimeError('boom'), 3, 'plotting knockdown curves failed')])
+    def test_plot_failure(self, tmp_path, monkeypatch, capsys, exc, rc, message):
+        monkeypatch.setattr(porosity_fe_analysis, 'FEVisualizer', _Viz(exc))
+        assert self._main(tmp_path, monkeypatch, '--vp', '0.02', '--plots') == rc
+        assert message in capsys.readouterr().err
+
+    def test_delamination_unexpected_failure_exits_3(self, small_material, tmp_path,
+                                                     monkeypatch, capsys):
+        def boom(*args, **kwargs):
+            raise RuntimeError('boom')
+        monkeypatch.setattr('porosity_fe.cli._delamination_screening', boom)
+        rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                        '--output-dir', str(tmp_path), '--quiet', *_SPEC])
+        assert rc == 3
+        assert 'delamination screening for Vp=0.03 failed: boom' in capsys.readouterr().err
+
+    def test_verbose_keeps_the_solver_messages(self, small_material, tmp_path, monkeypatch):
+        """--verbose passes ``quiet_solver=False``: the logger level is left
+        as it is during the screening (WARNING is forced only without it)."""
+        from porosity_fe import cli
+        seen = []
+
+        def spy(options, material, configs, Vp, out_path):
+            seen.append(cli.logger.getEffectiveLevel())
+            return 'screened'
+        monkeypatch.setattr(cli, '_delamination_screening', spy)
+        for flag in ('--verbose', None):
+            argv = ['--material', small_material, '--vp', '0.03',
+                    '--output-dir', str(tmp_path), *_SPEC]
+            assert porosity_fe_analysis.main(argv + ([flag] if flag else [])) == 0
+        assert seen == [logging.DEBUG, logging.WARNING]
+
+    def test_default_porosity_levels(self, tmp_path, monkeypatch):
+        from porosity_fe.cli import DEFAULT_POROSITY_LEVELS
+        assert self._main(tmp_path, monkeypatch) == 0
+        assert len(list(tmp_path.glob('porosity_analysis_results_*.json'))) == \
+            len(DEFAULT_POROSITY_LEVELS)
+
+    def test_negative_vp_has_no_percent_hint(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--vp', '-0.1'])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert 'out of range' in err and 'looks like a percentage' not in err
+
+    def test_resolve_via_shim_without_the_shim(self, monkeypatch):
+        import sys
+
+        from porosity_fe.cli import _resolve_via_shim
+        sentinel = object()
+        monkeypatch.delitem(sys.modules, 'porosity_fe_analysis')
+        assert _resolve_via_shim('compare_configurations', sentinel) is sentinel

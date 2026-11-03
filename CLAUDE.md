@@ -226,7 +226,8 @@ collection puts `test_cli.py` first.
 `.github/workflows/tests.yml` runs four jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
 `{3.11, 3.12, 3.13, 3.14}` against an editable install; the ubuntu/3.12
-cell also measures coverage, uploads `coverage.xml` as an artifact, and
+cell also measures statement and branch coverage with a 95 % floor
+(`--cov-fail-under`), uploads `coverage.xml` as an artifact, and
 runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
 `fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
 ubuntu/3.12, single threaded, on the numpy / scipy recorded in the

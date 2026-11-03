@@ -75,10 +75,13 @@ jobs:
         # Also run the production-mesh FE timing guard on this one cell
         # (tests/test_fe_performance.py; generous budgets, see the module).
         POROSITY_FE_BENCHMARK: "1"
+      # Statements and branches together; the floor (95 %) sits about a
+      # point below the measured total, so a drop fails the cell (#219).
       run: >-
         pytest tests/ -v --tb=short
-        --cov=porosity_fe --cov=validation
-        --cov-report=term --cov-report=xml
+        --cov=porosity_fe --cov=validation --cov-branch
+        --cov-report=term-missing:skip-covered --cov-report=xml
+        --cov-fail-under=95
 
     - name: Upload coverage report
       if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12' }}

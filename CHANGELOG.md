@@ -1216,6 +1216,31 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Python 3.11 to 3.14** (#216). Python 3.10 reached end of life in
+  October 2026: `requires-python >= 3.11`, the classifiers and the test
+  matrix (3.11, 3.12, 3.13, 3.14 on ubuntu, macOS and Windows), ruff's
+  `target-version` (its two findings: `datetime.UTC` in `io.py` and
+  `validate_porosity_cli.py`) and mypy's `python_version`. numpy, scipy,
+  matplotlib and Streamlit all install on 3.14.
+- **Branch coverage with a floor** (#219). The coverage cell measures
+  statements and branches (`--cov-branch`, 96 % together) and fails below
+  95 %. New tests pin the paths nothing reached:
+  - `tests/test_cli.py::TestCLIExitPaths`: the exit codes 2 and 3 of the
+    parallel sweep, `--uq`, `--plots` and the delamination screening,
+    `--verbose` around the screening, the default porosity levels, a
+    negative `--vp` and the shim fallback (`porosity_fe/cli.py` 100 %; an
+    unreachable nested `_log` helper is removed).
+  - `tests/test_vcct_edge_cases.py`: a front with no finite factor or none
+    at all, a one-node line, a mesh without a delamination, a one-node
+    ligament (the growth-direction fallbacks), ties-free pair forces, and
+    the prestress roots against closed forms (the bisection where the
+    prestress closes the crack, a root beyond the grid, the batch root with
+    its bisection budget spent).
+  - `tests/test_validation_report_paths.py`: a schema that will not load,
+    an unknown modulus property, toughness arrays of different lengths, and
+    the report's load-error, skipped, error and no-average rows, its
+    default output directory and the per-paper band PNGs
+    (`validation/validate_all.py` 82 % -> 95 % from these).
 - **The `interface` porosity profile is scaled to its requested mean in the
   FE** (delamination plan, item 0.4, #211; this changes results). The FE
   interpolates nodal porosity trilinearly, so its volume average is the
