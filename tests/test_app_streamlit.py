@@ -106,8 +106,11 @@ class TestAppRender:
         at = _run_small_analysis(_fresh_app())
         _button(at, "Generate summary").click().run()
         assert not at.exception
-        # Recommended-disposition guidance is surfaced...
+        # Recommended-disposition guidance is surfaced, with the bands it
+        # used, labelled illustrative (#229)...
         assert any("disposition" in w.value.lower() for w in at.warning)
+        assert any(c.value.startswith("Disposition policy: <= 1 % voids")
+                   and "not taken from a cited standard" in c.value for c in at.caption)
         # ...and all ten download buttons (4 PNG + 3 export + 3 NCR) coexist.
         assert len(at.get("download_button")) == 10
 

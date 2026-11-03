@@ -90,6 +90,7 @@ _README_URL = (
 from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Streamlit UI
     INDICATION_TYPES,
     STRUCTURAL_CLASSES,
+    DispositionPolicy,
     _sanitise_filename_component,
     _serialise_payload_csv,
     _serialise_payload_json,
@@ -3668,6 +3669,9 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             f"**Recommended disposition path{scope}:** {dp['path']}  \n"
             f"{dp['rationale']}"
         )
+        st.caption(
+            "Disposition policy: "
+            + DispositionPolicy.from_dict(dp["policy"]).describe())
         st.info(dp["disclaimer"])
     if assessment is not None:
         st.warning(

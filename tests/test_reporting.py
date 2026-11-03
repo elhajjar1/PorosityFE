@@ -25,7 +25,9 @@ import pytest
 from porosity_fe import FORMAT_EMPIRICAL_SWEEP, FORMAT_NCR, JSON_SCHEMA_VERSION, MATERIALS, build_empirical_pipeline
 from porosity_fe import reporting
 from porosity_fe.reporting import (
+    DEFAULT_DISPOSITION_POLICY,
     STRUCTURAL_CLASSES,
+    DispositionPolicy,
     _format_csv_row,
     _ncr_text_lines,
     _sanitise_filename_component,
@@ -316,7 +318,7 @@ class TestRecommendDisposition:
         for cls in STRUCTURAL_CLASSES:
             d = recommend_disposition(3.0, 0.85, cls)
             assert set(d) == {"path", "structural_class", "rationale", "cited_criteria",
-                              "required_mrb_actions", "disclaimer"}
+                              "required_mrb_actions", "disclaimer", "policy"}
             assert d["structural_class"] == cls
             assert "NOT a final disposition" in d["disclaimer"]
 
@@ -633,6 +635,119 @@ def delaminated_result():
     return result
 
 
+class TestDispositionPolicy:
+    """Issue #229: the bands are a policy, the defaults are labelled
+    illustrative, and the record keeps the policy it was made with."""
+
+    CUSTOM = DispositionPolicy(vp_percent_bounds=(2.0, 4.0, 8.0),
+                               knockdown_bounds=(0.90, 0.80, 0.70),
+                               paths=("Accept", "Accept with analysis", "Review", "Reject"),
+                               source="Example programme specification XYZ-123, rev. B.")
+
+    def test_defaults_are_the_former_bins(self):
+        p = DEFAULT_DISPOSITION_POLICY
+        assert p.vp_percent_bounds == (1.0, 2.0, 5.0)
+        assert p.knockdown_bounds == (0.95, 0.90, 0.80)
+        assert p.paths[0].startswith("Use-As-Is (UAI)") and p.paths[3] == "Repair or Scrap"
+        assert p.is_default and DispositionPolicy() == p
+        assert "not taken from a cited standard" in p.source
+        for Vp, kd in ((0.5, 0.99), (1.5, 0.92), (3.0, 0.85), (7.0, 0.6)):
+            assert recommend_disposition(Vp, kd) == recommend_disposition(Vp, kd, policy=p) \
+                == recommend_disposition(Vp, kd, policy=p.to_dict())
+
+    def test_bands(self):
+        p = DEFAULT_DISPOSITION_POLICY
+        assert [p.band(*c) for c in ((1.0, 0.95), (1.0, 0.9499), (2.0, 0.90), (5.0, 0.80),
+                                     (5.0001, 0.99), (0.0, 0.7999))] == [0, 1, 1, 2, 3, 3]
+
+    def test_custom_policy_sets_the_path(self):
+        assert recommend_disposition(1.5, 0.92)["path"] == "Use-As-Is with Engineering Evaluation"
+        d = recommend_disposition(1.5, 0.92, policy=self.CUSTOM)
+        assert d["path"] == "Accept"
+        assert "at most 2% voids with at least 90% of pristine strength retained" in d["rationale"]
+        assert d["policy"] == self.CUSTOM.to_dict() and d["policy"]["default"] is False
+        # The repair actions follow the band, not the path's wording.
+        review = recommend_disposition(6.0, 0.75, policy=self.CUSTOM)
+        assert review["path"] == "Review"
+        assert any("repair scheme" in a for a in review["required_mrb_actions"])
+        assert not any("repair scheme" in a for a in d["required_mrb_actions"])
+
+    def test_the_defaults_are_called_illustrative(self):
+        default = recommend_disposition(3.0, 0.85)
+        assert "illustrative defaults, not taken from a cited standard" in default["disclaimer"]
+        custom = recommend_disposition(3.0, 0.85, policy=self.CUSTOM)
+        assert "illustrative" not in custom["disclaimer"]
+        assert "NOT a final disposition" in custom["disclaimer"]
+
+    @pytest.mark.parametrize("Vp, kd", [(0.5, 0.99), (1.5, 0.92), (3.0, 0.85), (7.0, 0.6)])
+    def test_rationales_make_no_uncited_claims(self, Vp, kd):
+        rationale = recommend_disposition(Vp, kd)["rationale"]
+        assert "typical" not in rationale and "autoclave" not in rationale
+        assert f"({Vp:.2f}%)" in rationale
+
+    def test_round_trip_and_describe(self):
+        assert DispositionPolicy.from_dict(self.CUSTOM.to_dict()) == self.CUSTOM
+        text = self.CUSTOM.describe()
+        assert "<= 2 % voids and >= 0.9 retained: Accept" in text
+        assert "otherwise: Reject" in text and text.endswith("rev. B.")
+        json.dumps(self.CUSTOM.to_dict(), allow_nan=False)
+
+    @pytest.mark.parametrize("kwargs, message", [
+        ({"vp_percent_bounds": (1.0, 1.0, 5.0)}, "strictly increasing"),
+        ({"vp_percent_bounds": (0.0, 2.0, 5.0)}, "strictly increasing"),
+        ({"vp_percent_bounds": (1.0, 2.0, 101.0)}, "strictly increasing"),
+        ({"vp_percent_bounds": (1.0, 2.0)}, "three void contents"),
+        ({"vp_percent_bounds": (1.0, math.nan, 5.0)}, "three void contents"),
+        ({"knockdown_bounds": (0.8, 0.9, 0.95)}, "strictly decreasing"),
+        ({"knockdown_bounds": (1.1, 0.9, 0.8)}, "strictly decreasing"),
+        ({"knockdown_bounds": (0.95, 0.9, 0.0)}, "strictly decreasing"),
+        ({"paths": ("a", "b", "c")}, "four non-empty"),
+        ({"paths": ("a", "b", "c", " ")}, "four non-empty"),
+        ({"source": ""}, "where the bands come from"),
+    ])
+    def test_invalid_policies(self, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            DispositionPolicy(**kwargs)
+
+    def test_policy_type(self):
+        with pytest.raises(TypeError, match="DispositionPolicy"):
+            recommend_disposition(1.0, 0.99, policy=(1, 2, 5))
+
+    def test_ncr_record_keeps_the_policy(self):
+        default = _ncr()
+        assert default["recommended_disposition"]["policy"] == \
+            DEFAULT_DISPOSITION_POLICY.to_dict()
+        for policy in (self.CUSTOM, self.CUSTOM.to_dict()):
+            ncr = _ncr({"policy": policy})
+            dp = ncr["recommended_disposition"]
+            assert dp["policy"] == self.CUSTOM.to_dict()
+            # 3 % voids, governing knockdown 0.85: band 2 of the custom policy.
+            assert dp["path"] == "Accept with analysis"
+            md = serialise_ncr_markdown(ncr)
+            assert "**Disposition policy:** <= 2 % voids" in md and "rev. B." in md
+            text = "\n".join(_ncr_text_lines(ncr))
+            assert "Disposition policy: <= 2 % voids" in text
+
+    def test_ncr_summary_makes_no_claim_about_the_allowable(self):
+        """It used to say every part exceeds typical drawing allowables,
+        whatever its void content."""
+        summary = _ncr(Vp=0.5)["nonconformance"]["summary"]
+        assert "exceed" not in summary and "typical" not in summary
+        assert "released drawing's porosity allowable is the acceptance limit" in summary
+
+    def test_ncr_json_validates(self):
+        import jsonschema
+        from pathlib import Path
+        schema = json.loads((Path(__file__).resolve().parents[1] / "validation" / "schemas"
+                             / "porosity_results_schema.json").read_text(encoding="utf-8"))
+        doc = json.loads(serialise_ncr_json(_ncr({"policy": self.CUSTOM})))
+        jsonschema.validate(instance=doc, schema=schema)
+        broken = json.loads(json.dumps(doc))
+        del broken["recommended_disposition"]["policy"]["source"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(instance=broken, schema=schema)
+
+
 class TestAssessDelamination:
     """A delamination gets a fracture assessment, never a disposition path."""
 
@@ -712,13 +827,16 @@ class TestAssessDelamination:
             assess_delamination(*args, **kwargs)
 
     def test_recommend_disposition_is_porosity_only(self):
-        """``recommend_disposition`` keeps its three parameters and six keys."""
+        """``recommend_disposition`` keeps its three positional parameters
+        (#229 added the keyword-only ``policy`` and the ``policy`` key)."""
         import inspect
-        assert list(inspect.signature(recommend_disposition).parameters) == [
-            "Vp_percent", "governing_knockdown", "structural_class"]
+        params = inspect.signature(recommend_disposition).parameters
+        assert list(params) == ["Vp_percent", "governing_knockdown", "structural_class",
+                                "policy"]
+        assert params["policy"].kind is inspect.Parameter.KEYWORD_ONLY
         d = recommend_disposition(3.0, 0.85, "secondary")
         assert set(d) == {"path", "structural_class", "rationale", "cited_criteria",
-                          "required_mrb_actions", "disclaimer"}
+                          "required_mrb_actions", "disclaimer", "policy"}
         assert "porosity-knockdown analysis" in d["disclaimer"]
 
 

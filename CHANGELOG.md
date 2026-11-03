@@ -1222,6 +1222,26 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The NCR disposition bands are a policy, and the defaults are labelled
+  illustrative** (#229). `porosity_fe.reporting.DispositionPolicy` holds the
+  three void-content bounds (percent), the three governing-knockdown bounds,
+  the four paths and the bands' source; `DEFAULT_DISPOSITION_POLICY` keeps
+  the former bins (1 / 2 / 5 % with 0.95 / 0.90 / 0.80), so every
+  recommended path is unchanged.
+  - `recommend_disposition(..., policy=None)` (keyword-only) and
+    `build_ncr_record(result, {"policy": ...})` take a policy or its
+    `to_dict()` record; the recommendation gains a `policy` key (NCR JSON:
+    an additive `recommended_disposition.policy` block in the schema), and
+    the Markdown / PDF summaries and the app's NCR panel show the bands.
+  - No source for the defaults could be cited, so the docstring, the README
+    and, for the default policy, the disclaimer say they are illustrative
+    and that the released drawing / process specification governs.
+  - The rationales refer to the policy's bands instead of uncited claims
+    ("typical of autoclave-grade primary structure", "typical drawing
+    allowables"), and the NCR summary no longer says every part is
+    "predicted to exceed typical drawing porosity allowables", which it
+    said even at 0.5 % voids. The repair actions follow the band, not the
+    path's wording.
 - **Python 3.11 to 3.14** (#216). Python 3.10 reached end of life in
   October 2026: `requires-python >= 3.11`, the classifiers and the test
   matrix (3.11, 3.12, 3.13, 3.14 on ubuntu, macOS and Windows), ruff's

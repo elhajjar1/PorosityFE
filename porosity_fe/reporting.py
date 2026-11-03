@@ -24,6 +24,7 @@ that function.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import datetime
 import io
 import math
@@ -234,6 +235,135 @@ STRUCTURAL_CLASSES = ("primary", "secondary", "non-structural")
 INDICATION_TYPES = ("porosity", "delamination", "combined")
 
 
+_POLICY_PATHS = (
+    "Use-As-Is (UAI) — pending MRB concurrence",
+    "Use-As-Is with Engineering Evaluation",
+    "Engineering Evaluation / Repair",
+    "Repair or Scrap",
+)
+
+_POLICY_SOURCE = (
+    "Illustrative default bands, not taken from a cited standard or "
+    "specification: the released engineering drawing / process "
+    "specification porosity allowable governs."
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class DispositionPolicy:
+    """The bands :func:`recommend_disposition` sorts a porosity NCR into.
+
+    A case falls in band ``i`` (``i = 0, 1, 2``) when its void content is at
+    most ``vp_percent_bounds[i]`` **and** its governing knockdown is at least
+    ``knockdown_bounds[i]``, taking the first band that holds; otherwise in
+    the last band. Each band recommends the path of the same index in
+    ``paths``.
+
+    The defaults (1 / 2 / 5 % voids with 0.95 / 0.90 / 0.80 of pristine
+    strength retained) are **illustrative**: they are not taken from a
+    cited standard or specification (issue #229). The released engineering
+    drawing or process specification is the governing acceptance limit; an
+    organisation that has its own bands passes them here.
+
+    Parameters
+    ----------
+    vp_percent_bounds : tuple of 3 floats
+        Upper void-content bound of each of the first three bands, in
+        **percent**, strictly increasing within ``(0, 100]``.
+    knockdown_bounds : tuple of 3 floats
+        Lower governing-knockdown bound of each of the first three bands, a
+        fraction, strictly decreasing within ``(0, 1]``.
+    paths : tuple of 4 str
+        The recommended path of each band, the last for a case outside the
+        first three.
+    source : str
+        Where the bands come from, written to the record; the default says
+        they are illustrative.
+    """
+
+    vp_percent_bounds: tuple[float, float, float] = (1.0, 2.0, 5.0)
+    knockdown_bounds: tuple[float, float, float] = (0.95, 0.90, 0.80)
+    paths: tuple[str, str, str, str] = _POLICY_PATHS
+    source: str = _POLICY_SOURCE
+
+    def __post_init__(self) -> None:
+        vp = tuple(float(v) for v in self.vp_percent_bounds)
+        kd = tuple(float(k) for k in self.knockdown_bounds)
+        if len(vp) != 3 or not all(math.isfinite(v) for v in vp) or \
+                not (0.0 < vp[0] < vp[1] < vp[2] <= 100.0):
+            raise ValueError(
+                "vp_percent_bounds must be three void contents in percent, "
+                f"strictly increasing within (0, 100]; got {self.vp_percent_bounds!r}.")
+        if len(kd) != 3 or not all(math.isfinite(k) for k in kd) or \
+                not (1.0 >= kd[0] > kd[1] > kd[2] > 0.0):
+            raise ValueError(
+                "knockdown_bounds must be three knockdown fractions, strictly "
+                f"decreasing within (0, 1]; got {self.knockdown_bounds!r}.")
+        paths = tuple(self.paths)
+        if len(paths) != 4 or not all(isinstance(p, str) and p.strip() for p in paths):
+            raise ValueError(f"paths must be four non-empty strings; got {self.paths!r}.")
+        if not isinstance(self.source, str) or not self.source.strip():
+            raise ValueError("source must say where the bands come from.")
+        object.__setattr__(self, 'vp_percent_bounds', vp)
+        object.__setattr__(self, 'knockdown_bounds', kd)
+        object.__setattr__(self, 'paths', paths)
+
+    @property
+    def is_default(self) -> bool:
+        """Whether these are the illustrative default bands."""
+        return self == DEFAULT_DISPOSITION_POLICY
+
+    def band(self, Vp_percent: float, governing_knockdown: float) -> int:
+        """Index (0 to 3) of the band a case falls in."""
+        for i, (vp, kd) in enumerate(zip(self.vp_percent_bounds, self.knockdown_bounds,
+                                         strict=True)):
+            if Vp_percent <= vp and governing_knockdown >= kd:
+                return i
+        return 3
+
+    def to_dict(self) -> dict:
+        """JSON-ready record of the bands (the ``policy`` block of an NCR)."""
+        return {
+            "vp_percent_bounds": list(self.vp_percent_bounds),
+            "knockdown_bounds": list(self.knockdown_bounds),
+            "paths": list(self.paths),
+            "source": self.source,
+            "default": self.is_default,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DispositionPolicy:
+        """The policy of a :meth:`to_dict` record (``default`` is ignored)."""
+        return cls(vp_percent_bounds=tuple(data["vp_percent_bounds"]),
+                   knockdown_bounds=tuple(data["knockdown_bounds"]),
+                   paths=tuple(data.get("paths", _POLICY_PATHS)),
+                   source=data.get("source", _POLICY_SOURCE))
+
+    def describe(self) -> str:
+        """One line: the bands and where they come from."""
+        bands = "; ".join(
+            f"<= {vp:g} % voids and >= {kd:g} retained: {path}"
+            for vp, kd, path in zip(self.vp_percent_bounds, self.knockdown_bounds,
+                                    self.paths, strict=False))
+        return f"{bands}; otherwise: {self.paths[3]}. {self.source}"
+
+
+#: The illustrative default bands of :func:`recommend_disposition`.
+DEFAULT_DISPOSITION_POLICY = DispositionPolicy()
+
+
+def _as_policy(policy) -> DispositionPolicy:
+    if policy is None:
+        return DEFAULT_DISPOSITION_POLICY
+    if isinstance(policy, DispositionPolicy):
+        return policy
+    if isinstance(policy, dict):
+        return DispositionPolicy.from_dict(policy)
+    raise TypeError(
+        f"policy must be a DispositionPolicy, its to_dict() record or None; "
+        f"got {type(policy).__name__}.")
+
+
 def governing_failure(result: dict) -> dict:
     """Most-critical empirical case (lowest knockdown) across modes/models.
 
@@ -260,15 +390,17 @@ def governing_failure(result: dict) -> dict:
 
 
 def recommend_disposition(
-    Vp_percent: float, governing_knockdown: float, structural_class: str = "primary"
+    Vp_percent: float, governing_knockdown: float, structural_class: str = "primary",
+    *, policy: DispositionPolicy | dict | None = None,
 ) -> dict:
     """Recommend (not decide) an MRB disposition path for a porosity NCR.
 
     The recommendation bins on the measured void content and the governing
-    (worst-case) knockdown, then escalates required substantiation by
-    structural class. It is deliberately conservative: the released
-    engineering drawing / process spec is the governing acceptance
-    authority, and the MRB must substantiate against it.
+    (worst-case) knockdown with the bands of ``policy``, then escalates
+    required substantiation by structural class. The default bands are
+    **illustrative**, not from a cited standard (:class:`DispositionPolicy`):
+    the released engineering drawing / process spec is the governing
+    acceptance authority, and the MRB must substantiate against it.
 
     Parameters
     ----------
@@ -281,6 +413,16 @@ def recommend_disposition(
         Worst-case strength knockdown, a fraction in ``(0, 1]``.
     structural_class : str
         One of :data:`STRUCTURAL_CLASSES`.
+    policy : DispositionPolicy, dict or None
+        The bands; ``None`` (default) for :data:`DEFAULT_DISPOSITION_POLICY`.
+        A dict is a :meth:`DispositionPolicy.to_dict` record.
+
+    Returns
+    -------
+    dict
+        ``path``, ``structural_class``, ``rationale``, ``cited_criteria``,
+        ``required_mrb_actions``, ``disclaimer`` and ``policy`` (its
+        :meth:`~DispositionPolicy.to_dict` record).
 
     Raises
     ------
@@ -302,40 +444,41 @@ def recommend_disposition(
             f"expected one of {list(STRUCTURAL_CLASSES)}."
         )
 
-    if Vp <= 1.0 and governing_knockdown >= 0.95:
-        path = "Use-As-Is (UAI) — pending MRB concurrence"
+    policy = _as_policy(policy)
+    band = policy.band(Vp, governing_knockdown)
+    path = policy.paths[band]
+    kd_pct = governing_knockdown * 100
+    if band < 3:
+        bound = (f"band {band + 1} of the disposition policy: at most "
+                 f"{policy.vp_percent_bounds[band]:g}% voids with at least "
+                 f"{policy.knockdown_bounds[band] * 100:g}% of pristine strength retained")
+    if band == 0:
         rationale = (
-            f"Measured void content ({Vp:.2f}%) is within the porosity range "
-            f"typical of autoclave-grade primary structure, and the predicted "
-            f"governing residual strength retains "
-            f"{governing_knockdown * 100:.1f}% of pristine. Strength loss is "
-            f"minor and likely covered by as-designed margin."
+            f"Measured void content ({Vp:.2f}%) and the predicted governing "
+            f"residual strength ({kd_pct:.1f}% of pristine) fall in {bound}. "
+            f"Strength loss is minor and likely covered by as-designed margin."
         )
-    elif Vp <= 2.0 and governing_knockdown >= 0.90:
-        path = "Use-As-Is with Engineering Evaluation"
+    elif band == 1:
         rationale = (
-            f"Void content ({Vp:.2f}%) is marginal against typical drawing "
-            f"allowables and the governing knockdown "
-            f"({governing_knockdown * 100:.1f}% retained) indicates moderate "
-            f"strength loss. UAI may be substantiated by a positive "
-            f"margin-of-safety check at the knockdown-adjusted allowable."
+            f"Void content ({Vp:.2f}%) and the governing knockdown "
+            f"({kd_pct:.1f}% retained) fall in {bound}: moderate strength "
+            f"loss. UAI may be substantiated by a positive margin-of-safety "
+            f"check at the knockdown-adjusted allowable."
         )
-    elif Vp <= 5.0 and governing_knockdown >= 0.80:
-        path = "Engineering Evaluation / Repair"
+    elif band == 2:
         rationale = (
-            f"Void content ({Vp:.2f}%) exceeds porosity allowables typical of "
-            f"primary structure and the governing knockdown leaves only "
-            f"{governing_knockdown * 100:.1f}% of pristine strength. "
+            f"Void content ({Vp:.2f}%) and the governing knockdown, which "
+            f"leaves only {kd_pct:.1f}% of pristine strength, fall in {bound}. "
             f"Disposition hinges on the as-designed margin and on whether an "
             f"approved repair can restore a serviceable condition."
         )
     else:
-        path = "Repair or Scrap"
         rationale = (
             f"Void content ({Vp:.2f}%) and the predicted governing knockdown "
-            f"({governing_knockdown * 100:.1f}% retained) represent a severe "
-            f"degradation. Use-As-Is is not recommended without exceptional, "
-            f"test-backed substantiation; repair or scrap is the expected path."
+            f"({kd_pct:.1f}% retained) fall outside every band of the "
+            f"disposition policy: a severe degradation. Use-As-Is is not "
+            f"recommended without exceptional, test-backed substantiation; "
+            f"repair or scrap is the expected path."
         )
 
     cited_criteria = [
@@ -370,7 +513,7 @@ def recommend_disposition(
             "Non-structural item: confirm there is no fluid-ingress, "
             "fatigue, or interface-sealing function affected by the porosity."
         )
-    if path.startswith("Repair") or "Repair" in path:
+    if band >= 2:
         required_mrb_actions.append(
             "If repair is selected, document the approved repair scheme and "
             "the post-repair re-inspection requirements."
@@ -385,6 +528,13 @@ def recommend_disposition(
         "governing engineering drawing / specification and the applicable "
         "structural margins."
     )
+    if policy.is_default:
+        disclaimer += (
+            " The void-content and knockdown bands behind the recommended path "
+            "(at most 1 / 2 / 5 % voids with at least 95 / 90 / 80 % of pristine "
+            "strength retained) are illustrative defaults, not taken from a "
+            "cited standard or specification."
+        )
 
     return {
         "path": path,
@@ -393,6 +543,7 @@ def recommend_disposition(
         "cited_criteria": cited_criteria,
         "required_mrb_actions": required_mrb_actions,
         "disclaimer": disclaimer,
+        "policy": policy.to_dict(),
     }
 
 
@@ -726,6 +877,11 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
     ``"delamination"`` ``recommended_disposition`` is ``None``, and for
     ``"combined"`` it is the porosity recommendation, which covers the
     porosity only. A porosity record is unchanged.
+
+    ``meta["policy"]`` (a :class:`DispositionPolicy` or its ``to_dict()``
+    record; default :data:`DEFAULT_DISPOSITION_POLICY`, whose bands are
+    illustrative) sets the bands of the recommended path; the record keeps
+    them under ``recommended_disposition["policy"]``.
     """
     payload = build_export_payload(result)
     cfg = payload["config"]
@@ -742,7 +898,7 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
     disposition = None
     if indication in ("porosity", "combined"):
         disposition = recommend_disposition(
-            Vp, worst["knockdown"], structural_class
+            Vp, worst["knockdown"], structural_class, policy=meta.get("policy")
         )
     if indication in ("delamination", "combined"):
         fe, front, _ = _delamination_inputs(result)
@@ -759,9 +915,9 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
         f"Porosity / void content of {Vp:.2f}% in a "
         f"{cfg['material']} laminate ({cfg['n_plies']} plies, layup "
         f"{layup}); {cfg['distribution']} distribution, "
-        f"{cfg['void_shape']} void morphology. Predicted to exceed "
-        f"typical drawing porosity allowables and to knock down "
-        f"residual strength — see engineering analysis."
+        f"{cfg['void_shape']} void morphology. Its predicted residual-"
+        f"strength knockdown is in the engineering analysis; the released "
+        f"drawing's porosity allowable is the acceptance limit."
     )
     title = "Composite Porosity Analysis — NCR Validation Summary"
     summary = porosity_summary
@@ -901,6 +1057,15 @@ def _ncr_lists(ncr: dict) -> tuple[list, list]:
     return criteria, actions
 
 
+def _policy_text(dp: dict) -> str | None:
+    """The bands behind a recommended path, one line; ``None`` for a record
+    without them."""
+    policy = dp.get("policy")
+    if not policy:
+        return None
+    return DispositionPolicy.from_dict(policy).describe()
+
+
 def _footer(ncr: dict) -> str:
     """Closing line of the Markdown and PDF attachments."""
     if ncr["recommended_disposition"] is None:
@@ -1003,6 +1168,10 @@ def serialise_ncr_markdown(ncr: dict) -> str:
         lines.append("")
         lines.append(f"**Rationale:** {dp['rationale']}")
         lines.append("")
+        policy_text = _policy_text(dp)
+        if policy_text:
+            lines.append(f"**Disposition policy:** {policy_text}")
+            lines.append("")
         if assessment is not None:
             lines.append(f"**Delamination:** {_NO_DELAMINATION_PATH}")
             lines.append("")
@@ -1118,6 +1287,10 @@ def _ncr_text_lines(ncr: dict) -> list:
         out.append("")
         para(f"Rationale: {dp['rationale']}")
         out.append("")
+        policy_text = _policy_text(dp)
+        if policy_text:
+            para(f"Disposition policy: {policy_text}")
+            out.append("")
         if assessment is not None:
             para(f"Delamination: {_NO_DELAMINATION_PATH}")
             out.append("")

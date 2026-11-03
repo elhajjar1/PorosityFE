@@ -276,10 +276,22 @@
     },
     "recommended_disposition": {
       "type": ["object", "null"],
-      "description": "NCR recommended (not final) disposition path of the porosity: path, structural_class, rationale, cited_criteria, required_mrb_actions and disclaimer. null for a delamination indication (schema_version 1.3), which gets no recommended path; for a combined indication it covers the porosity only.",
+      "description": "NCR recommended (not final) disposition path of the porosity: path, structural_class, rationale, cited_criteria, required_mrb_actions, disclaimer and policy. null for a delamination indication (schema_version 1.3), which gets no recommended path; for a combined indication it covers the porosity only.",
       "properties": {
         "path": {"type": "string"},
-        "structural_class": {"type": "string"}
+        "structural_class": {"type": "string"},
+        "policy": {
+          "type": "object",
+          "description": "The bands the path was chosen with (reporting.DispositionPolicy; additive, schema_version 1.3): band i (i = 0, 1, 2) holds a void content of at most vp_percent_bounds[i] percent with a governing knockdown of at least knockdown_bounds[i]; paths[3] is the path outside them. source says where the bands come from; default is true for the illustrative default bands, which are not taken from a cited standard.",
+          "properties": {
+            "vp_percent_bounds": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "knockdown_bounds": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+            "paths": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 4},
+            "source": {"type": "string"},
+            "default": {"type": "boolean"}
+          },
+          "required": ["vp_percent_bounds", "knockdown_bounds", "paths", "source", "default"]
+        }
       }
     },
     "raw_sidecar": {
