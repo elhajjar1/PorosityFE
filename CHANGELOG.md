@@ -12,6 +12,37 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: compression and in-plane shear datasets from Cinquin et
+  al. 2007** (#221). Cinquin, Triquenaux and Rouesne, ICCM-16 (2007), open
+  access (Zenodo record 15413348): an intermediate-modulus carbon / 180 C
+  epoxy UD prepreg (EADS), with porosity made on purpose by foaming agents
+  (DY5054, AIBN) placed at ply interfaces, measured by hydrostatic
+  weighing and acid digestion. Figs. 25, 26 and 28 are vector charts, so
+  each marker was converted exactly; the same calibration reproduces the
+  regression printed on Fig. 29 (slope -0.5650 read against -0.5642).
+  - `cinquin_2007_qi`: compression strength (AITM 1.0008) of 16-ply QI
+    coupons at 0 to 11.1 % voids, 7 points.
+  - `cinquin_2007_shear`: in-plane shear strength and modulus (AITM 1.0002,
+    8-ply +/-45 coupons, in the lamina axes) at 0 to 5.9 %, 7 points each.
+  - The Expancel series is left out: those are PVC-shell microspheres that
+    stay in the laminate, not voids. The fibre volume fraction (0.58) is
+    derived from the fibre areal weight and the cured ply thickness.
+  - Validation `(fiber, matrix)` map: the unnamed fibre and resin resolve to
+    `IM7_8552_epoxy`, the closest preset.
+  - Strength and modulus MAE: 5.04 % property-weighted and 4.50 %
+    point-weighted over 38 entries and 260 points (were 4.49 % and 3.89 %
+    over 35 and 239). Compression strength rises from 2.6 % to 7.8 % over
+    3 datasets: `cinquin_2007_qi` keeps 0.79 to 0.83 of its strength at 7.8
+    to 11 % voids, where the Judd-Wright law, calibrated to 5 %, gives 0.46
+    to 0.58 (its MAE is 18.2 %; 5.1 % up to 2.1 %). Shear strength: 7.2 %
+    over 3 (`cinquin_2007_shear` 12.6 %, most of the loss by 0.8 %); shear
+    modulus: 9.1 % over 2 (3.5 %). No coefficient is refitted.
+  - Checked and not added: the compression stresses of Ferrarese and
+    Montalto (Politecnico di Milano thesis, 2012), since the peer-reviewed
+    paper on the same laminates (Di Landro et al. 2017) compares failure
+    loads instead, the porous laminates being up to 18 % thicker; and the
+    in-plane shear of Olivier et al. 2007, whose legend void contents do
+    not match the text's measurement method.
 - **Validation: the `olivier_2007` mode I toughness dataset** (#222).
   Olivier, Mascaro, Margueres and Collombet, ICCM-16 (2007), open access
   (Zenodo record 15414374): T700GC/M21 `[0]_16` DCB coupons per ISO 15024,

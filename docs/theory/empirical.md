@@ -67,7 +67,11 @@ quasi-isotropic and in-plane isotropic layup uses them unscaled.
 and interface mechanisms.
 
 **Validity.** The calibration data cover $V_p \lesssim 0.05$. Above that
-the solver emits a `UserWarning`. {meth}`~porosity_fe.EmpiricalSolver.get_failure_load`
+the solver emits a `UserWarning`. Beyond the bound the compression law is
+conservative on the one dataset that goes there: the quasi-isotropic
+coupons of Cinquin et al. 2007 (`cinquin_2007_qi`, artificial porosity)
+keep 0.79 to 0.83 of their strength at 7.8 to 11 % voids, where
+$e^{-6.9 V_p}$ gives 0.46 to 0.58. {meth}`~porosity_fe.EmpiricalSolver.get_failure_load`
 checks the specimen average. {meth}`~porosity_fe.EmpiricalSolver.apply_loading`
 also checks the local peak of a clustered or interface profile, because its
 per-node field evaluates the law at the local $V_p$.

@@ -737,9 +737,11 @@ is the default) and must lie in `[-1, 0]` for a closed envelope.
 
 ## Validation
 
-PorosityFE is validated against **13 peer-reviewed experimental datasets**
-of strength and modulus, covering carbon/epoxy, IM7/toughened epoxy,
-T300/epoxy systems, and CF/PEEK thermoplastic, plus 2 exploratory
+PorosityFE is validated against **15 experimental datasets**
+of strength and modulus (13 peer-reviewed papers, and the ICCM-16
+conference paper of Cinquin et al. 2007 as two), covering carbon/epoxy, IM7/toughened epoxy,
+T300/epoxy systems, an intermediate-modulus carbon/180 °C epoxy with
+artificial porosity, and CF/PEEK thermoplastic, plus 3 exploratory
 interlaminar toughness datasets reported separately (below). Validation is automated via `validate_porosity`
 CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
 or in-process via `validation/validate_all.py`.
@@ -754,15 +756,17 @@ or in-process via `validation/validate_all.py`.
 | Transverse tensile modulus | 3 | 3.3% |
 | Transverse tensile strength | 3 | 6.6% |
 | Flexural modulus (D-matrix CLT) | 5 | 8.9% |
-| Compression strength | 2 | 2.6% |
-| Shear strength | 2 | 4.5% |
-| Shear modulus (A-matrix CLT) | 1 | 14.7% |
+| Compression strength | 3 | 7.8% |
+| Shear strength | 3 | 7.2% |
+| Shear modulus (A-matrix CLT) | 2 | 9.1% |
+
+The compression and shear rows include Cinquin et al. 2007 (ICCM-16; `cinquin_2007_qi`, `cinquin_2007_shear`), whose porosity was made with foaming agents and is read exactly from the PDF's vector charts. Its quasi-isotropic coupons keep 0.79 to 0.83 of their compression strength at 7.8 to 11 % voids, where the Judd-Wright law, calibrated to 5 %, falls to 0.46 to 0.58: that dataset's compression MAE is 18.2 %, 5.1 % over its points up to 2.1 %. Its ±45 coupons lose about 25 % of their in-plane shear strength by 0.8 % voids, faster than the law (MAE 12.6 %).
 
 Transverse compression strength (`sigma_2c`) has no empirical loading mode because no dataset measures it against porosity. The FE failure criteria still use it.
 
 Overall MAE:
-- Property-weighted: **4.49%** across 35 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
-- Point-weighted: **3.89%** across 239 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
+- Property-weighted: **5.04%** across 38 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
+- Point-weighted: **4.50%** across 260 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 

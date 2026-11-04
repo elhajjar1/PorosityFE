@@ -6,6 +6,7 @@ import os
 import tempfile
 
 import jsonschema
+import numpy as np
 import pytest
 
 
@@ -496,6 +497,9 @@ def test_predict_strength_runs_for_transverse_tensile():
 _MAE_BASELINES = {
     ('almeida_1994', 'ilss'): 3.908,
     ('bowles_1992', 'ilss'): 1.648,
+    ('cinquin_2007_qi', 'compression_strength'): 18.224,
+    ('cinquin_2007_shear', 'shear_modulus'): 3.476,
+    ('cinquin_2007_shear', 'shear_strength'): 12.630,
     ('elhajjar_2025', 'compression_strength'): 1.53,
     ('elhajjar_2025', 'tensile_strength'): 1.364,
     ('ghiorse_1993', 'flexural_modulus'): 16.219,
@@ -622,11 +626,12 @@ def test_run_one_dataset_is_picklable():
 def test_headline_mae_pinned(_all_results):
     from validation.validate_all import summarize_mae
     s = summarize_mae(_all_results)
-    assert s['n_entries'] == 35
-    assert s['n_points'] == 239
-    # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling.
-    assert s['property_weighted_mae'] == pytest.approx(4.495, abs=0.05)
-    assert s['point_weighted_mae'] == pytest.approx(3.891, abs=0.05)
+    assert s['n_entries'] == 38
+    assert s['n_points'] == 260
+    # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling;
+    # 4.495 / 3.891 before the cinquin_2007 datasets (#221).
+    assert s['property_weighted_mae'] == pytest.approx(5.044, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(4.501, abs=0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +691,26 @@ def test_olivier_2007_dataset_loads():
     assert block['stage'] == 'propagation' and block['precrack'] == 'unspecified'
     # The text's "a void content of 5% induces a decrease by about 22%".
     assert 1.0 - block['normalized_values'][1] == pytest.approx(0.22, abs=0.02)
+
+
+def test_cinquin_2007_datasets():
+    """Figs. 25, 26 and 28 of one paper in two files: QI compression, and the
+    lamina shear of the +/-45 test in the lamina axes. Expancel is left out."""
+    from validation.validate_all import load_dataset
+    qi = load_dataset(os.path.join(_DATASETS_DIR, 'cinquin_2007_qi.json'))
+    sh = load_dataset(os.path.join(_DATASETS_DIR, 'cinquin_2007_shear.json'))
+    assert qi['doi'] == sh['doi'] == '10.5281/zenodo.15413348'
+    assert qi['material']['ply_angles'] == [45, 0, -45, 90, 45, 0, -45, 90,
+                                            90, -45, 0, 45, 90, -45, 0, 45]
+    assert sh['material']['ply_angles'] == [0] * 8
+    comp = qi['properties']['compression_strength']
+    assert comp['void_content_pct'] == [0.0, 0.89, 1.38, 2.1, 7.84, 9.22, 11.12]
+    assert comp['absolute_values_MPa'][0] == 439.5
+    for block in (comp, sh['properties']['shear_strength'], sh['properties']['shear_modulus']):
+        ref = block['absolute_values_MPa'][0]
+        np.testing.assert_allclose(block['normalized_values'],
+                                   np.asarray(block['absolute_values_MPa']) / ref, atol=1.5e-3)
+        assert len(block['void_content_pct']) == 7    # reference + DY5054 + AIBN
 
 
 def test_schema_toughness_blocks():
@@ -769,7 +794,7 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert tough['point_weighted_mae'] == pytest.approx(3.565, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
-    assert (s['n_entries'], s['n_points']) == (35, 239)
+    assert (s['n_entries'], s['n_points']) == (38, 260)
 
 
 def test_summaries_split_by_property_key():
@@ -804,5 +829,5 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
     assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
     assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
-    assert 'Property-weighted: **4.49%**' in head
+    assert 'Property-weighted: **5.04%**' in head
     assert 'not an independent validation' in tail

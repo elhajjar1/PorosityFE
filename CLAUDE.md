@@ -183,8 +183,8 @@ handling, change it here, not at the call sites.
 
 ### Validation database
 
-`validation/datasets/*.json` holds 16 peer-reviewed experimental
-datasets (13 strength and modulus, plus 3 interlaminar-toughness ones,
+`validation/datasets/*.json` holds 18 experimental datasets (15
+strength and modulus, plus 3 interlaminar-toughness ones,
 `hakim_2017`, `agius_fox_2015` and `olivier_2007`, whose MAE is reported apart from the
 strength headline), schema-validated against
 `validation/schemas/validation_dataset_schema.json`. The datasets are
