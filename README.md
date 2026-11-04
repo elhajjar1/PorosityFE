@@ -792,7 +792,7 @@ If you use PorosityFE in your research, please cite:
   title = {{PorosityFE}: Porosity-Degraded Composite Laminate Analysis},
   year = {2026},
   url = {https://github.com/elhajjar1/PorosityFE},
-  version = {1.3.0}
+  version = {1.2.0}
 }
 ```
 

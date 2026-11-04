@@ -15,6 +15,11 @@ PorosityFE has two version sources of truth and one bundled binary:
   push (see `.github/workflows/build-executables.yml`), but a local
   rebuild verifies the spec still works before tagging.
 
+Between releases, master carries the next version with a `.dev0` suffix
+(e.g. `1.3.0.dev0`), its changes sit under `## [Unreleased]`, and
+`CITATION.cff` and the README BibTeX name the last release. The release
+commit drops the suffix and dates the changelog and the citations.
+
 The CI matrix (`.github/workflows/tests.yml`) runs on Ubuntu/macOS/Windows
 × Python 3.11/3.12/3.13/3.14 plus the FE regression gate (`fe_fingerprint`),
 a decoupled Streamlit job (the app import and the app tests) and a lint job
@@ -36,7 +41,8 @@ a decoupled Streamlit job (the app import and the app tests) and a lint job
    ```
 
 2. **Bump the version in both files**, and in the citations.
-   - `pyproject.toml`: `version = "<new>"` under `[project]`.
+   - `pyproject.toml`: `version = "<new>"` under `[project]` (from
+     `<new>.dev0` when master already carries it).
    - `porosity_fe/__init__.py`: the `__version__ = "<new>"` fallback
      (the comment there explicitly says "keep in sync with
      pyproject.toml on each release").

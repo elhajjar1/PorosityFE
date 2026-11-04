@@ -1,7 +1,9 @@
 # What's new in 1.3
 
-PorosityFE 1.3 is the first release since 1.2.0 (2026-05-11). This page is
-an overview; the {doc}`changelog` has every change, with its numbers. Read
+PorosityFE 1.3 is not released yet: this page describes the development
+version on master (`1.3.0.dev0`), which will be the first release since
+1.2.0 (2026-05-11). It is an overview; the {doc}`changelog` has every
+change, with its numbers. Read
 [Results that change on upgrade](#results-that-change-on-upgrade) before
 you compare 1.3 results with 1.2 ones.
 

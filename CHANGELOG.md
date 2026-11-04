@@ -4,6 +4,13 @@ All notable changes to PorosityFE will be documented in this file.
 
 ## [Unreleased]
 
+Explicit delaminations and fracture mechanics in the FE path (contact,
+VCCT, the critical load factor and the ASTM DCB / ENF / MMB specimens), the
+ASTM D2344 short-beam and D7264 flexure specimens, the thermal residual
+stress load case, mesh-convergence studies, and a faster, exactly
+constrained FE solver with the incompatible-mode brick by default. Several
+results change on upgrade; the docs page "What's new in 1.3" lists them.
+
 ### Added
 - **Validation: the `olivier_2007` mode I toughness dataset** (#222).
   Olivier, Mascaro, Margueres and Collombet, ICCM-16 (2007), open access
@@ -25,17 +32,6 @@ All notable changes to PorosityFE will be documented in this file.
   - The placeholder `b_I = 6.2` is not refitted. Fig. 8 gives 5.37, near
     the 4.97 of the paper's text that the placeholder uses, and mode I has
     two studies, not the three #222 asks for.
-
-## [1.3.0] - 2026-11-04
-
-Explicit delaminations and fracture mechanics in the FE path (contact,
-VCCT, the critical load factor and the ASTM DCB / ENF / MMB specimens), the
-ASTM D2344 short-beam and D7264 flexure specimens, the thermal residual
-stress load case, mesh-convergence studies, and a faster, exactly
-constrained FE solver with the incompatible-mode brick by default. Several
-results change on upgrade; the docs page "What's new in 1.3" lists them.
-
-### Added
 - **An `IM7_8552_epoxy` preset with interlaminar toughness** (#223), the
   first preset that drives the fracture path without manual entry. Every
   value is cited in the entry:
