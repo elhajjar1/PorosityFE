@@ -27,9 +27,9 @@ import dataclasses
 from porosity_fe import (MATERIALS, CompositeMesh, Delamination, FESolver,
                          PorosityField)
 
-# No preset has toughness data. For illustration only, the IM7/8552 values
-# of the table under "Toughness data" on the T800 preset (24 plies); use
-# values measured for your material (N/mm).
+# Of the presets only IM7_8552_epoxy carries toughness. For illustration,
+# the IM7/8552 values of the table under "Toughness data" on the T800
+# preset (24 plies); use values measured for your material (N/mm).
 mat = dataclasses.replace(MATERIALS['T800_epoxy'],
                           G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)
 pf = PorosityField(mat, 0.02)
@@ -338,8 +338,9 @@ $$
 plain B-K when $G_{IIIc} = G_{IIc}$, which is the default. It gives
 $G_{Ic}$ at $\psi = 0$, $G_{IIc}$ in pure mode II and $G_{IIIc}$ in pure mode
 III. The inputs are the optional {class}`~porosity_fe.MaterialProperties`
-fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. No
-preset sets them (see [Toughness data](#toughness-data)). Without them the
+fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. Of
+the presets only `IM7_8552_epoxy` sets them (see
+[Toughness data](#toughness-data)). Without them the
 solve still reports the energy release rates, logs one INFO line, and the
 load factor is `None`. Each pure-mode toughness is the material's, knocked
 down by the porosity at the front node
@@ -424,8 +425,8 @@ applied state is held for every $\lambda$ (see
 
 - The web app's sidebar takes an explicit delamination (an NDI indication:
   interface, planform, position and full size in mm on the FE mesh), the
-  toughness (`G_Ic`, `G_IIc`, optionally `G_IIIc`, and $\eta$; no preset
-  has them) and the porosity knockdown of the toughness (the placeholder
+  toughness (`G_Ic`, `G_IIc`, optionally `G_IIIc`, and $\eta$; of the
+  presets only `IM7_8552_epoxy` has them) and the porosity knockdown of the toughness (the placeholder
   exponential law, none, or your `b_I`, `b_II`). The Results tab's
   **Defects** block shows the front table and $G_T$ and $\psi$ along the
   front, the fracture load factor with the governing node and its mode
@@ -753,13 +754,17 @@ report sets to about three ply thicknesses.
 
 ## Toughness data
 
-No preset carries toughness. Sourced values from the delamination plan's
+The `IM7_8552_epoxy` preset carries the IM7/8552 set of Krueger,
+NASA/CR-2011-217305, Table II ($G_{Ic}$ = 0.21, $G_{IIc}$ = $G_{IIIc}$ =
+0.78 N/mm, $\eta$ = 2.57), with that report's elastic constants (Table I);
+no other preset carries toughness. Sourced values from the delamination plan's
 literature brief (N/mm; [P] read in the primary source, [S] from a
 secondary source, [NV] not verified):
 
 | Material | $G_{Ic}$ | $G_{IIc}$ | B-K $\eta$ | Source |
 |---|---|---|---|---|
 | IM7/8552 (benchmark reference) | 0.212 | 0.774 | 2.1 | Krueger, NASA/CR-2012-217562 [P] |
+| IM7/8552 (the `IM7_8552_epoxy` preset; ENF benchmark) | 0.21 | 0.78 ($G_{IIIc}$ 0.78) | 2.57 | Krueger, NASA/CR-2011-217305, Table II [P] |
 | IM7/8552 | 0.206 (fatigue precracked) to 0.237 (insert) | 0.739 to 0.807 (precracked) | | Czabaj and Ratcliffe 2013, doi:10.1016/j.compscitech.2013.09.008; O'Brien et al., NASA/TM-2010-216838 [P] |
 | AS4/3501-6 | 0.077 to 0.091 | 0.54 to 0.71 | NV | Reeder 1992, NASA TM-104210 [P] |
 | AS4/PEEK (APC-2) | 0.969 | 1.719 | 2.284 | Camanho and Dávila, NASA/TM-2002-211737 [P] (Reeder: 0.78 to 0.84 / 1.16 to 1.25) |
@@ -847,14 +852,16 @@ in the primary source, [S] from a secondary source):
 | Study | Material | $V_p$ | Finding | $b$ |
 |---|---|---|---|---|
 | Hakim et al. 2017 [P], doi:10.4236/msa.2017.82011 | T700/EPON 828 UD, DCB | 1.49, 1.77, 3.43 % | static $G_{Ic}$ 0.52, 0.44, 0.45 N/mm (Table 1) | 7.45 from the end points (4.39 by least squares over all three) |
-| Olivier et al. 2007 [P], ICCM16 (open access, Zenodo record 15414374) | T700GC/M21 $[0]_{16}$, DCB (ISO 15024, Berry's method) | 0.1, 5.09, 15.7 % | "a void content of 5% induces a decrease by about 22% in GIC" (§4.3), read from R-curves to 140 mm of crack (Fig. 8); cited as a propagation value by Carraro et al. 2015 | 4.97 |
+| Olivier et al. 2007 [P], ICCM16 (open access, Zenodo record 15414374) | T700GC/M21 $[0]_{16}$, DCB (ISO 15024, Berry's method) | 0.1, 5.09, 15.7 % (15.3 % in Fig. 8) | "a void content of 5% induces a decrease by about 22% in GIC" (§4.3). The R-curves of Fig. 8 (to 140 mm of crack), read from the PDF's vector graphics, are flat within their scatter, with means 0.348, 0.266 and 0.072 N/mm: propagation values, as Carraro et al. 2015 cite them | 4.97 from the text; 5.37 from Fig. 8 (10.4 at 15.3 %, beyond the 5 % range) |
 | Agius and Fox 2015 [P, abstract], doi:10.1016/j.compositesa.2015.02.023 | out-of-autoclave prepreg, not named in the abstract | < 0.3 / 1.5 % | $G_{IIc}$ 21 % higher for the low-void laminates | 12.7 to 15.9 for a low-void value of 0 to 0.3 %; 14.1 at 0.15 % |
 | Carraro, Maragoni and Quaresimin 2015 [P], doi:10.1179/2055035914Y.0000000004 | STS40 NCF/EC157, DCB | 0 / 1.9 % (0° interface), 0 / 1.23 % (±45°) | initiation unchanged (0°) or slightly higher (±45°), propagation slightly higher; values only in figures | not used |
 | Asp and Brandt 1997 [S], ICCM-11 | UD carbon/epoxy | 0 / about 1 % | initiation $G_c$ slightly down (mode I) or unchanged (mixed mode), mode II slightly down; the original was not read | not used |
 
 $b_\text{I} = 6.2$ is the mean of 4.97 and 7.45, and $b_\text{II} = 14$ the
 Agius and Fox estimate at the midpoint of its low-void range, rounded. Mode
-III has no data. Every result that a placeholder changes is flagged:
+III has no data. Olivier's Fig. 8 gives 5.37, near the 4.97 of its text;
+the placeholder is not refitted on it, since mode I still has only two
+studies, and of different stages (Hakim's does not say). Every result that a placeholder changes is flagged:
 `crack_front.toughness_uncalibrated` (and the same key in
 `summary().details` and the JSON `fracture` block) is `True` when the law
 uses a placeholder and some front node has $V_p > 0$, and the first such
@@ -862,10 +869,12 @@ use logs one INFO line per process. `toughness_knockdown` describes the law
 in every case.
 
 **Validation.** `validate_porosity` runs the bundled toughness datasets
-(`hakim_2017`, `agius_fox_2015`) through the law, normalized to each
-baseline group, and reports them in a section of their own, apart from the
-strength and modulus MAE: 6.20 % and 1.15 % (3.67 % property-weighted,
-4.18 % point-weighted over 5 points). The placeholders come in part from
+(`hakim_2017`, `agius_fox_2015`, `olivier_2007`) through the law, normalized
+to each baseline group, and reports them in a section of their own, apart
+from the strength and modulus MAE: 6.20 %, 1.15 % and 2.03 % (3.13 %
+property-weighted, 3.57 % point-weighted over 7 points). `olivier_2007`
+holds the 0.1 and 5.09 % series of Fig. 8; the 15.3 % series is beyond the
+schema's 15 % and the law's 5 % range, and is given in the dataset's notes. The placeholders come in part from
 the same studies, so this is a consistency check, not an independent
 validation. Hakim's 1.77 % and 3.43 % groups have about the same $G_{Ic}$,
 which no monotone law follows.
@@ -909,7 +918,8 @@ which no monotone law follows.
 - Contact is frictionless, node to node on the matching duplicated nodes
   (small sliding), from a zero gap. With a thermal prestress the load factor
   holds the contact set of the applied state.
-- No preset has toughness data. The porosity knockdown of the toughness has
+- Only the `IM7_8552_epoxy` preset has toughness data. The porosity
+  knockdown of the toughness has
   uncalibrated placeholder coefficients and ignores the rise of mode I
   propagation toughness with voids
   ([Porosity and toughness](#porosity-and-toughness)).

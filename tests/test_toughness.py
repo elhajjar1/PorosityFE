@@ -208,7 +208,7 @@ class TestScreeningFunction:
 
 class TestPlaceholderSources:
     """The placeholder exponents come from the two-point estimates of the
-    studies (theory page "Delamination", "Porosity and toughness"); the two
+    studies (theory page "Delamination", "Porosity and toughness"); the
     bundled datasets reproduce their share of them."""
 
     @staticmethod
@@ -225,6 +225,16 @@ class TestPlaceholderSources:
         assert b_hakim == pytest.approx(7.45, abs=0.01)
         assert 0.5 * (b_hakim + b_olivier) == pytest.approx(B_I, abs=0.05)
         np.testing.assert_allclose(hakim['normalized_values'], G / G[0], atol=1e-4)
+
+    def test_mode_I_olivier_figure(self):
+        """Olivier's Fig. 8 means give 5.37, near the text's 4.97 that the
+        placeholder uses; the placeholder is not refitted on it (#222)."""
+        olivier = self._block('olivier_2007.json', 'G_Ic')
+        vp = np.asarray(olivier['void_content_pct']) / 100.0
+        G = np.asarray(olivier['absolute_values_N_per_mm'])
+        b_fig8 = -math.log(olivier['normalized_values'][1]) / (vp[1] - vp[0])
+        assert b_fig8 == pytest.approx(5.37, abs=0.01)
+        np.testing.assert_allclose(olivier['normalized_values'], G / G[0], atol=2e-3)
 
     def test_mode_II(self):
         agius = self._block('agius_fox_2015.json', 'G_IIc')

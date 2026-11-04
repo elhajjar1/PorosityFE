@@ -29,7 +29,7 @@ try:  # pragma: no cover - exercised by both source and pip-installed paths
 except Exception:  # pragma: no cover - exercised in source checkouts
     # Source checkout that isn't pip-installed. Keep in sync with
     # pyproject.toml on each release.
-    __version__ = "1.2.0"
+    __version__ = "1.3.0.dev0"
 
 # ----------------------------------------------------------------------
 # Apply shared rcParams + cache the LABEL_* / LABELS constants. Run at

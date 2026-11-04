@@ -4,7 +4,57 @@ All notable changes to PorosityFE will be documented in this file.
 
 ## [Unreleased]
 
+Explicit delaminations and fracture mechanics in the FE path (contact,
+VCCT, the critical load factor and the ASTM DCB / ENF / MMB specimens), the
+ASTM D2344 short-beam and D7264 flexure specimens, the thermal residual
+stress load case, mesh-convergence studies, and a faster, exactly
+constrained FE solver with the incompatible-mode brick by default. Several
+results change on upgrade; the docs page "What's new in 1.3" lists them.
+
 ### Added
+- **Validation: the `olivier_2007` mode I toughness dataset** (#222).
+  Olivier, Mascaro, Margueres and Collombet, ICCM-16 (2007), open access
+  (Zenodo record 15414374): T700GC/M21 `[0]_16` DCB coupons per ISO 15024,
+  Berry's method. Fig. 8 plots `G_IC` against crack length at 0.1, 5.09
+  and 15.3 % voids; its markers are vector paths in the PDF, so each was
+  converted exactly with the axis calibration, not digitized from an image.
+  - The R-curves are flat within their scatter, so the dataset holds their
+    means as propagation values: 0.348 and 0.266 N/mm at 0.1 and 5.09 %
+    (normalized 0.765, a 23.5 % decrease; the text says "about 22%").
+    Initiation and plateau cannot be told apart in the figure; the notes
+    give the shortest-crack stations.
+  - The 15.3 % series (0.072 N/mm, normalized 0.207) is left out: it is
+    beyond the schema's 15 % limit and the law's 5 % range.
+  - Toughness MAE, still reported apart from the unchanged strength and
+    modulus headline: `olivier_2007` 2.03 %; overall 3.13 %
+    property-weighted and 3.57 % point-weighted over 7 points (were 3.67 %
+    and 4.18 % over 5).
+  - The placeholder `b_I = 6.2` is not refitted. Fig. 8 gives 5.37, near
+    the 4.97 of the paper's text that the placeholder uses, and mode I has
+    two studies, not the three #222 asks for.
+- **An `IM7_8552_epoxy` preset with interlaminar toughness** (#223), the
+  first preset that drives the fracture path without manual entry. Every
+  value is cited in the entry:
+  - the elastic constants and toughness (`G_Ic` 0.21, `G_IIc` = `G_IIIc`
+    0.78 N/mm, B-K `eta` 2.57) from Krueger, NASA/CR-2011-217305, Tables I
+    and II, the constants of the ENF benchmark;
+  - the strengths from the NCAMP qualification means (CAM-RP-2009-015
+    Rev A), as two NASA papers tabulate them (NTRS 20200002400 and
+    20180004510): 0 deg tension 2501 MPa, compression 1716 MPa, 90 deg
+    tension 64.1 MPa and compression 285.7 MPa, in-plane shear 91.1 MPa
+    (5 % strain), on a 0.183 mm cured ply;
+  - `tau_ilss` 128 MPa, the lower of the two Hexcel datasheet values (the
+    HexPly 8552 sheet lists 137 MPa);
+  - the constituents from the Hexcel HexPly 8552 and HexTow IM7 datasheets
+    (resin modulus 4668 MPa, fibre modulus 276 GPa, fibre volume 57.7 %).
+
+  `matrix_poisson = 0.35` is an assumption, flagged in the entry: no public
+  source gives the neat 8552 Poisson ratio. The preset has no CTEs and no
+  interlaminar strengths.
+  - In the app, an empty toughness field keeps the preset's value; the
+    sidebar says so, and the λ_c uncertainty inputs are offered.
+  - A new test checks that every preset with toughness solves a DCB with a
+    finite load factor.
 - **A register of the deprecations removed in 2.0** (#218). The docs page
   "Deprecations removed in 2.0" lists the ten deprecated names and paths,
   with what replaces each, and two open decisions: the
