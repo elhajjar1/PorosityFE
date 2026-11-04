@@ -7,8 +7,9 @@ description: Add a new composite material system to the MATERIALS preset registr
 
 A preset is a `MaterialProperties(...)` value stored under a string key in
 the `MATERIALS` dict in `porosity_fe/materials.py`. The Streamlit sidebar
-reads `list(MATERIALS.keys())` (`app.py:479`) and the analysis pipeline
-resolves names via `MATERIALS[cfg["material_name"]]` (`app.py:120-125`),
+reads `list(MATERIALS.keys())` (`porosity_app/sidebar.py`) and the analysis
+pipeline resolves names via `MATERIALS[cfg["material_name"]]`
+(`porosity_app/runners.py`),
 so a single registry entry covers both the UI dropdown and the CLI.
 
 ## Required information from the user
@@ -69,7 +70,7 @@ editing — don't invent values.
    `pytest` is uv-isolated and can't see the project deps; see
    `CLAUDE.md`.)
 
-5. **Don't touch `app.py`, `compare_configurations`, or the validation
+5. **Don't touch the app (`app.py`, `porosity_app/`), `compare_configurations`, or the validation
    datasets.** The Streamlit dropdown picks up new keys automatically
    from `list(MATERIALS.keys())`; `compare_configurations` resolves the
    name through the same dict; validation datasets describe what was

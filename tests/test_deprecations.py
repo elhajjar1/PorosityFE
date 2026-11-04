@@ -143,7 +143,7 @@ REGISTER: tuple[Deprecation, ...] = (
 IDS = [d.id for d in REGISTER]
 
 #: The files scanned for ``DeprecationWarning`` call sites.
-_SCANNED = ('porosity_fe', 'validation', 'app.py', 'validate_porosity_cli.py',
+_SCANNED = ('porosity_fe', 'porosity_app', 'validation', 'app.py', 'validate_porosity_cli.py',
             'porosity_fe_analysis.py')
 
 

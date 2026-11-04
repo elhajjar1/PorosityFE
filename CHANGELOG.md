@@ -1290,6 +1290,28 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The Streamlit app is a package, `porosity_app/`** (#224). `app.py` had
+  grown to 3,804 lines. Its 135 functions and constants moved, verbatim, to:
+  - `config`: the sidebar keys, defaults and cache key, labels;
+  - `runners`: `run_analysis`, the FE solve and the cached wrappers;
+  - `summaries`: the result tables;
+  - `convergence`, `plots`, `sidebar`;
+  - `tabs/`: overview, figures (Profile and Mesh), results, stress, export,
+    and `common`;
+  - `render`.
+
+  A module imports only lower layers (`tests/test_app_package.py`). `app.py`
+  stays the entry point: it keeps the bootstrap, re-exports every name (so
+  `app.run_analysis` and the like keep working) and calls `_render()`.
+  No behaviour changes: every moved function has the same source and every
+  constant the same value. Only the log records change logger, from `app`
+  to the `porosity_app.*` module that emits them.
+  - A monkeypatch now targets the module that looks the name up
+    (`porosity_app.runners.FESolver`); patching `app.FESolver` does nothing.
+    The app tests are moved accordingly.
+  - The app tests skip in the core CI matrix, which installs no Streamlit.
+    The `streamlit_smoke` job now runs them after its import check, so the
+    AppTest flows gate the app in CI.
 - **The sparse LU pivots on the diagonal, and the knockdown's pristine
   reference follows the solver** (#228).
   - `K_ff` is SPD, so the factorization keeps SuperLU's symmetric

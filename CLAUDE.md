@@ -196,10 +196,21 @@ pipeline and emit `validation_master_report.png` + `validation_detail_report.md`
 
 ### Streamlit app bootstrap
 
-`app.py` calls `matplotlib.use("Agg")` and adjusts `sys.path` **before**
-importing `pyplot` and sibling modules — this is why
-`pyproject.toml` adds `E402` / `I001` to `[tool.ruff.lint.per-file-ignores]`
-for `app.py`. Don't reorder those imports.
+The app lives in the `porosity_app/` package (#224): `config` (sidebar
+keys, defaults, cache key, labels), `runners` (`run_analysis`, the FE solve,
+the cached wrappers), `summaries` (result tables), `convergence`, `plots`,
+`sidebar`, `tabs/` (one module per tab plus `common`) and `render`
+(`_render`). A module imports only modules of a lower layer, in that
+order (`tests/test_app_package.py`). `app.py` is the entry point
+(`streamlit run app.py`): it calls `matplotlib.use("Agg")` and adjusts
+`sys.path` **before** importing `porosity_fe` and `porosity_app` — this is
+why `pyproject.toml` adds `E402` / `I001` to
+`[tool.ruff.lint.per-file-ignores]` for `app.py`; don't reorder those
+imports. It re-exports every `porosity_app` name, so `app.X` keeps working;
+new code imports from `porosity_app`, and a monkeypatch targets the module
+that looks the name up (`porosity_app.runners.FESolver`, not `app.FESolver`,
+which patches nothing). The app tests skip in the core CI matrix (no
+Streamlit there) and run in the `streamlit_smoke` job.
 
 ### Test conftest layout
 
@@ -242,7 +253,8 @@ ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
 baseline, run on the runner's BLAS kernel and again on Sandybridge's; see
 Commands; a case whose fields are round-off by physics names them in
 `_CASE_OPTIONS`), and `streamlit_smoke` (decoupled
-single-OS/Python import-only check — Streamlit wheel availability on a new
+single-OS/Python job: the `app` import and the app tests, which the core
+matrix skips without Streamlit — Streamlit wheel availability on a new
 Python can't be allowed to drop the whole library matrix red, see issue
 #157). The floor is Python 3.11 (`requires-python`, ruff `target-version`,
 mypy `python_version`; 3.10 reached end of life in October 2026, #216).

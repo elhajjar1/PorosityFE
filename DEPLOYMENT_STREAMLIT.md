@@ -1,6 +1,7 @@
 # Deploying PorosityFE to Streamlit Community Cloud
 
-The browser front end lives in `app.py` at the repo root. Streamlit itself is
+The browser front end is `app.py` at the repo root, the entry point of the
+`porosity_app/` package that holds the app (#224). Streamlit itself is
 an **optional** dependency (declared as the `web` extra in `pyproject.toml`),
 so it is **not** in the core `requirements.txt` — the CLI and library do not
 need it. To run the web app you must install the `web` extra explicitly via
