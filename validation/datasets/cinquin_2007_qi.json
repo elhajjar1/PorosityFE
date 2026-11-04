@@ -1,0 +1,28 @@
+{
+  "reference": "Cinquin, J., Triquenaux, V., & Rouesne, Y. (2007). Porosity influence on organic composite material mechanical properties. Proceedings of the 16th International Conference on Composite Materials (ICCM-16), Kyoto, Japan, paper MoIA1-01.",
+  "doi": "10.5281/zenodo.15413348",
+  "data_source": "Fig. 28 (compression stress at failure against porosity content by volume, quasi-isotropic laminates), read from the vector graphics of the open-access PDF (Zenodo record 15413348, CC-BY-SA-4.0): every marker is a vector path, so its centre was converted to data with the plot-area calibration (0 and 12 %, 300 and 500 MPa). The same calibration on Fig. 29 reproduces the regression line printed there (y = -0.5642x + 48.582, R2 = 0.9155) as -0.5650x + 48.597, R2 = 0.9153",
+  "material": {
+    "fiber": "Intermediate-modulus carbon",
+    "matrix": "180 C-cure epoxy",
+    "fiber_volume_fraction": 0.58,
+    "n_plies": 16,
+    "ply_angles": [45, 0, -45, 90, 45, 0, -45, 90, 90, -45, 0, 45, 90, -45, 0, 45],
+    "layup_name": "[45/0/-45/90]_2s quasi-isotropic"
+  },
+  "porosity_measurement": "hydrostatic weighing and acid digestion (Section 2.5; they agree within about 0.6 %, and the mechanical figures do not say which one they plot); porosity made on purpose with foaming agents (DY5054, AIBN) placed between plies 4/5, 8/9 and 12/13",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "compression_strength": {
+      "test_standard": "AITM 1.0008",
+      "test_config": {
+        "loading_direction_deg": 0
+      },
+      "void_content_pct": [0.0, 0.89, 1.38, 2.1, 7.84, 9.22, 11.12],
+      "normalized_values": [1.0, 1.0327, 0.8182, 0.8625, 0.8333, 0.8239, 0.7912],
+      "absolute_values_MPa": [439.5, 453.8, 359.6, 379.0, 366.2, 362.1, 347.7],
+      "digitization_method": "direct"
+    }
+  },
+  "notes": "UD prepreg of an intermediate-modulus carbon fibre and a 180 C-cure epoxy (EADS; grades not named), 35 % resin by weight, fibre density 1.8 and matrix density 1.27 g/cm3, cured 2 h at 180 C and 7 bar. No fibre volume fraction is given: 0.58 is the dry fibre areal weight (about 268 g/m2, Section 2.5) over the fibre density and the nominal 0.256 mm cured ply; the resin content gives 0.57. 16-ply QI coupons, 45/0/135/90/45/0/135/90/90/135/0/45/90/135/0/45 (135 = -45). The porosity is artificial: DY5054 (Huntsman) or AIBN decompose during cure, at 3 to 13 mg/cm2 placed at three ply interfaces, and spread through the adjacent plies (Section 2.2), so it is denser near those interfaces than a process porosity. The reference (no additive) is plotted at 0 %. Points: DY5054 0.89, 1.38, 2.10 %; AIBN 7.84, 9.22, 11.12 %. The number of coupons per point is not given. Left out: the Expancel series (PVC-shell microspheres filled with isobutane between plies, which remain in the laminate; 0.01, 0.07, 0.16 % at 482.0, 469.7, 461.6 MPa, normalized 1.097, 1.069, 1.050). The DY5054 0.89 % point is above the reference. Fig. 29 also gives the compression modulus (no schema key): 49.32 GPa at 0 %, normalized 0.985, 0.937, 0.947 (DY5054) and 0.911, 0.876, 0.856 (AIBN). Section 2.6.2 estimates -16 % strength and -9 % modulus at 6 %. The in-plane shear results of the same paper are in cinquin_2007_shear."
+}

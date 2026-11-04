@@ -92,7 +92,7 @@ reject it.
    ```
 
 6. **Update README.md only if the dataset count changes a headline
-   number** — the "13 peer-reviewed experimental datasets" line in
+   number** — the dataset-count line ("15 experimental datasets") in
    `README.md` and the per-property MAE table in the "Validation"
    section both depend on the database contents. Re-run
    `validate_porosity` and copy the new aggregate MAEs (property- and

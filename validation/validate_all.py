@@ -117,6 +117,9 @@ _FIBER_MATRIX_TO_PRESET = {
     # for a standard-modulus carbon/epoxy.
     ('Carbon', 'epoxy'): 'T700_epoxy',
     ('Carbon fiber', 'epoxy'): 'T700_epoxy',
+    # An unnamed intermediate-modulus fibre with a 180 C-cure epoxy
+    # (Cinquin et al. 2007): IM7/8552 is the closest preset of that class.
+    ('Intermediate-modulus carbon', '180 C-cure epoxy'): 'IM7_8552_epoxy',
 }
 
 
