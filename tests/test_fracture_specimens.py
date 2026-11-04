@@ -267,10 +267,17 @@ class TestBuilders:
 
     def test_x_grid_must_match_the_mesh(self):
         mesh, _, _ = _dcb(layers=6)
-        mesh.L_x = 160.0
+        grid = mesh.x_grid
+        with pytest.raises(ValueError, match='x_grid'):
+            CompositeMesh(mesh.porosity_field, mesh.material, nx=mesh.nx, ny=mesh.ny,
+                          nz=mesh.nz, ply_angles='UD', length=160.0, x_grid=grid)
+        # The deprecated assignment (#225): the mismatch shows on regeneration.
+        with pytest.warns(DeprecationWarning, match='length='):
+            mesh.L_x = 160.0
         with pytest.raises(ValueError, match='x_grid'):
             mesh.generate_mesh()
-        mesh.x_grid = None
+        with pytest.warns(DeprecationWarning, match='x_grid='):
+            mesh.x_grid = None
         mesh.generate_mesh()                     # evenly spaced again
         np.testing.assert_allclose(np.diff(_x_lines(mesh)), 160.0 / mesh.nx)
 
@@ -634,8 +641,14 @@ class TestRefinementStudy:
             mat, 0.0, 'enf', ply_angles='UD', resolutions=[(40, 2, 6), (80, 2, 6)],
             applied_load=-1000.0,
             specimen=dict(crack_length=30.0, span=100.0, width=25.0, plane_strain=True))
-        assert list(st.convergence)[-2:] == ['load_point_compliance', 'fracture_load_factor']
+        assert list(st.convergence)[-3:] == ['load_point_compliance', 'fracture_load_factor',
+                                             'interior_fracture_load_factor']
         assert all(lv.fracture_load_factor > 0 for lv in st.levels)
+        # Two elements across the width: no front node is max(h, 2 widths)
+        # from the side faces, so the interior factor is unavailable (#227).
+        assert all(lv.interior_fracture_load_factor is None for lv in st.levels)
+        assert st.convergence['interior_fracture_load_factor'].kind == 'interior extremum'
+        assert st.convergence['interior_fracture_load_factor'].behavior == 'unavailable'
         assert st.convergence['effective_modulus'].behavior == 'unavailable'
         assert 'lambda_c' in st.summary()
         with pytest.raises(ValueError, match='multiple of 10'):

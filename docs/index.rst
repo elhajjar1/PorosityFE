@@ -17,7 +17,7 @@ database are described in the
 Installation
 ------------
 
-PorosityFE targets Python 3.10 or newer. The recommended install (from a
+PorosityFE targets Python 3.11 or newer. The recommended install (from a
 fresh clone of the repository) is an editable install with the ``docs``
 extra so this site can be rebuilt locally:
 
@@ -83,4 +83,5 @@ Contents
    :caption: Reference
 
    api
+   deprecations
    changelog

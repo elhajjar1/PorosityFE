@@ -17,7 +17,6 @@ import contextlib
 import gc
 import logging
 import math
-import os
 import time
 import warnings
 from collections.abc import Mapping, Sequence
@@ -39,6 +38,7 @@ from ..mesh import (
 )
 from ..pipeline import _default_mesh_resolution
 from ..porosity_field import PorosityField
+from . import _memory
 from ._load_cases import _FLEXURE_PROCEDURE, _check_delta_T, _minres_deprecation
 from .element import _DEFAULT_FORMULATION, ELEMENT_FORMULATIONS
 from .flexure import default_interior_margin
@@ -60,12 +60,14 @@ QUANTITY_KINDS: dict[str, str] = {
 }
 
 #: Quantities added for the fracture tests ('dcb', 'enf', 'mmb'): the
-#: load-point compliance (``'global'``) and the critical load factor of the
+#: load-point compliance (``'global'``), the critical load factor of the
 #: insert's front (``'front extremum'``: the minimum over the front nodes,
-#: which can sit on the node where the front meets a free side face).
+#: which can sit on the node where the front meets a free side face), and
+#: the same over the interior front nodes (``'interior extremum'``, #227).
 FRACTURE_QUANTITY_KINDS: dict[str, str] = {
     'load_point_compliance': 'global',
     'fracture_load_factor': 'front extremum',
+    'interior_fracture_load_factor': 'interior extremum',
 }
 
 #: Short column labels for the text tables.
@@ -78,6 +80,7 @@ _LABELS = {
     'interior_first_ply_failure_load_factor': 'int. FPF',
     'load_point_compliance': 'C mm/N',
     'fracture_load_factor': 'lambda_c',
+    'interior_fracture_load_factor': 'int. lambda_c',
 }
 
 #: Every quantity a level can hold, with its kind.
@@ -87,6 +90,7 @@ _ALL_KINDS = {**QUANTITY_KINDS, **FRACTURE_QUANTITY_KINDS}
 _INTERIOR_OF = {
     'max_failure_index': 'interior_max_failure_index',
     'first_ply_failure_load_factor': 'interior_first_ply_failure_load_factor',
+    'fracture_load_factor': 'interior_fracture_load_factor',
 }
 
 RefineMode = Literal['in_plane', 'all']
@@ -100,18 +104,8 @@ _P_TRUST = 0.5
 #: Relative changes below ``tol * _NOISE_FRACTION`` count as zero.
 _NOISE_FRACTION = 0.1
 
-# Peak-memory model of one level, fitted on T800 QI meshes (hex8i, sparse LU
-# with MMD_AT_PLUS_A) from 20x8x24 to 45x15x24 and at nz = 48: the nonzeros
-# of L + U grow as about 8 n_dof^1.5 (measured 0.85-1.00 of that), held at
-# about 12 bytes each, on top of the per-element assembly arrays of
-# ``CompositeMesh._FE_BYTES_PER_ELEMENT`` and the interpreter with NumPy and
-# SciPy loaded. It was 1.0-1.3 times the measured peak RSS up to 60x20x24.
-_BASE_BYTES = 0.15e9
-_LU_NNZ_COEFF = 8.0
-_LU_NNZ_EXPONENT = 1.5
-_LU_BYTES_PER_NNZ = 12.0
-#: Fraction of physical memory a study may plan to use by default.
-_DEFAULT_MEMORY_FRACTION = 0.8
+# The peak-memory model of a level is FESolver's (``fe/_memory.py``), so a
+# level the study plans is one the solver accepts.
 
 #: ``'ilss'`` levels are ASTM D2344 specimens (``CompositeMesh.for_ilss``):
 #: 6 h long with the supports h in from the ends, so ``nx`` must be a
@@ -162,11 +156,13 @@ class RefinementLevel:
         ``None`` where the solve does not define them (``effective_modulus``
         for ``'ilss'``, interior values without interior elements) or where
         they are not finite (``knockdown`` of a thermal solve).
-    load_point_compliance, fracture_load_factor : float or None
+    load_point_compliance, fracture_load_factor, interior_fracture_load_factor : float or None
         The fracture tests' quantities (``FRACTURE_QUANTITY_KINDS``):
-        :attr:`~porosity_fe.FieldResults.load_point_compliance` (mm/N) and
-        :attr:`~porosity_fe.FieldResults.fracture_load_factor` (``None``
-        without toughness data); ``None`` for the other loadings.
+        :attr:`~porosity_fe.FieldResults.load_point_compliance` (mm/N),
+        :attr:`~porosity_fe.FieldResults.fracture_load_factor` and
+        :attr:`~porosity_fe.FieldResults.interior_fracture_load_factor`
+        (``None`` without toughness data or interior front node); ``None``
+        for the other loadings.
     """
 
     resolution: tuple[int, int, int]
@@ -183,6 +179,7 @@ class RefinementLevel:
     interior_first_ply_failure_load_factor: float | None
     load_point_compliance: float | None = None
     fracture_load_factor: float | None = None
+    interior_fracture_load_factor: float | None = None
 
     @property
     def mesh(self) -> str:
@@ -445,6 +442,8 @@ class RefinementStudy:
                 f"faces on every level, so the interior quantities are missing; "
                 f"pass a smaller interior_margin or refine the base mesh.")
         for dom, inner in _INTERIOR_OF.items():
+            if dom not in conv or inner not in conv:
+                continue            # the fracture quantities: fracture tests only
             d, i = conv[dom], conv[inner]
             if d.converged is False and i.converged:
                 notes.append(
@@ -714,7 +713,7 @@ def _plan_resolutions(base: tuple[int, int, int], factors: Sequence[float],
 
 def _estimate_memory_bytes(res: tuple[int, int, int], *, n_factorizations: int = 1
                            ) -> float:
-    """Generous peak-memory estimate (bytes) of one level; see ``_BASE_BYTES``.
+    """Generous peak-memory estimate (bytes) of one level (``fe/_memory.py``).
 
     ``n_factorizations`` is the number of sparse LU factors alive at the
     peak (see :func:`_peak_factorizations`).
@@ -722,39 +721,25 @@ def _estimate_memory_bytes(res: tuple[int, int, int], *, n_factorizations: int =
     nx, ny, nz = res
     n_el = nx * ny * nz
     n_dof = 3 * (nx + 1) * (ny + 1) * (nz + 1)
-    lu = _LU_BYTES_PER_NNZ * _LU_NNZ_COEFF * n_dof ** _LU_NNZ_EXPONENT
-    return _BASE_BYTES + n_el * CompositeMesh._FE_BYTES_PER_ELEMENT + n_factorizations * lu
+    lu = _memory.lu_bytes_estimate(n_dof)
+    return (_memory.BASE_BYTES + n_el * CompositeMesh._FE_BYTES_PER_ELEMENT
+            + n_factorizations * lu)
 
 
-def _peak_factorizations(loading: str, solver: str, field: PorosityField) -> int:
+def _peak_factorizations(loading: str, solver: str) -> int:
     """Sparse LU factors alive at once during a level's solve.
 
     :meth:`FESolver.solve` holds one at a time: the pristine reference of
-    the knockdown (always factorized directly) is freed before the porous
-    model is built, and the free-standing thermal problem of a solve with
-    ``delta_T`` before the mechanical one. So a direct solve peaks at one,
-    and an iterative one at the pristine reference's, if it needs one.
+    the knockdown is freed before the porous model is built, and the
+    free-standing thermal problem of a solve with ``delta_T`` before the
+    mechanical one. A fracture test's crack-face contact loop keeps its
+    latest active set's factorization next to the load case's. An
+    iterative solve factorizes nothing: the pristine reference follows the
+    solver (#228).
     """
-    if solver == 'direct':
-        # A fracture test's crack-face contact loop keeps its latest active
-        # set's factorization next to the load case's.
-        return 2 if loading in _FRACTURE_BUILDERS else 1
-    if loading in _FRACTURE_BUILDERS:
-        return 1          # the pristine reference of the delaminated specimen
-    porous = field.Vp > 0.0 or bool(field.discrete_voids)
-    return 1 if (porous and loading != 'thermal') else 0
-
-
-def _physical_memory_bytes() -> int | None:
-    """Total physical memory, or ``None`` where ``os.sysconf`` cannot tell."""
-    try:
-        pages = os.sysconf('SC_PHYS_PAGES')
-        size = os.sysconf('SC_PAGE_SIZE')
-    except (AttributeError, ValueError, OSError):
-        return None
-    if pages <= 0 or size <= 0:
-        return None
-    return int(pages) * int(size)
+    if solver != 'direct':
+        return 0
+    return 2 if loading in _FRACTURE_BUILDERS else 1
 
 
 def _resolve_porosity(material: MaterialProperties, porosity: PorosityField | float,
@@ -927,8 +912,8 @@ def refinement_study(
         ``tol / 10`` count as zero.
     solver : {'direct', 'cg', 'minres'}
         Linear solver of the levels, as :meth:`FESolver.solve`. The
-        pristine reference of the knockdown is always factorized directly,
-        so ``'cg'`` saves memory only for a thermal or pore-free study.
+        knockdown's pristine reference follows it, so ``'cg'`` factorizes
+        nothing and a study's peak memory is that of its meshes.
         ``'minres'`` is deprecated (one :class:`DeprecationWarning` per
         call; removal in 2.0): use ``'cg'``.
     solver_rtol : float
@@ -939,7 +924,10 @@ def refinement_study(
     max_memory_gb : float, optional
         Memory budget (GB) for the estimated peak of a level; default 80 %
         of the physical memory where the platform reports it, otherwise no
-        limit. ``float('inf')`` disables the check.
+        limit. ``float('inf')`` disables the check. Checked for every level
+        before the first solve and passed to each level's
+        :class:`FESolver` (``max_memory_gb=``), which checks each
+        factorization against it.
     allow_unresolved_layup : bool
         Accept levels whose ``nz`` does not resolve the layup
         (:meth:`CompositeMesh.layup_discrepancies`); they raise by default.
@@ -1104,7 +1092,7 @@ def refinement_study(
         elif base_resolution is None:
             # The production resolution, but nz = n_plies even above its cap:
             # a study must resolve the layup, and the memory guard applies.
-            nx0, ny0, _ = _default_mesh_resolution(material.n_plies)
+            nx0, ny0, _ = _default_mesh_resolution(material.n_plies, nz_max=material.n_plies)
             base = (nx0, ny0, material.n_plies)
         else:
             base = _check_resolution(base_resolution, 'base_resolution')
@@ -1138,7 +1126,7 @@ def refinement_study(
 
     # --- guards, before any solve ----------------------------------------
     cap = CompositeMesh._MAX_TOTAL_ELEMENTS if max_elements is None else int(max_elements)
-    n_lu = _peak_factorizations(loading, solver, field)
+    n_lu = _peak_factorizations(loading, solver)
     est = [_estimate_memory_bytes(r, n_factorizations=n_lu) for r in plan]
     table = "; ".join(f"{r[0]}x{r[1]}x{r[2]}: {r[0] * r[1] * r[2]:,} elements, "
                       f"~{e / 1e9:.2g} GB" for r, e in zip(plan, est, strict=True))
@@ -1150,11 +1138,7 @@ def refinement_study(
                 f"Level {r[0]}x{r[1]}x{r[2]} has {n_el:,} elements, above the "
                 f"limit of {min(cap, CompositeMesh._MAX_TOTAL_ELEMENTS):,} "
                 f"(max_elements / mesh caps). Planned levels: {table}.")
-    if max_memory_gb is None:
-        phys = _physical_memory_bytes()
-        budget = None if phys is None else _DEFAULT_MEMORY_FRACTION * phys
-    else:
-        budget = float(max_memory_gb) * 1e9
+    budget = _memory.resolve_budget(_memory.check_max_memory_gb(max_memory_gb))
     if budget is not None and max(est) > budget:
         raise ValueError(
             f"The finest level needs an estimated {max(est) / 1e9:.2g} GB, above "
@@ -1192,7 +1176,8 @@ def refinement_study(
         size = float(np.prod([dims[a] / res[a] for a in axes]) ** (1.0 / len(axes)))
         fe = FESolver(mesh, material, field, ply_angles=ply_angles,
                       failure_criterion=failure_criterion, formulation=formulation,
-                      porosity_degradation=porosity_degradation)
+                      porosity_degradation=porosity_degradation,
+                      max_memory_gb=max_memory_gb)
         quiet = warnings.catch_warnings() if solver == 'minres' \
             else contextlib.nullcontext()
         with quiet:
@@ -1218,6 +1203,7 @@ def refinement_study(
                 out.interior_first_ply_failure_load_factor),
             load_point_compliance=_finite_or_none(out.load_point_compliance),
             fracture_load_factor=_finite_or_none(out.fracture_load_factor),
+            interior_fracture_load_factor=_finite_or_none(out.interior_fracture_load_factor),
         )
         del out, fe, mesh
         gc.collect()

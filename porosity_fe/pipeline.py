@@ -9,9 +9,10 @@ from typing import Any
 
 import numpy as np
 
+from ._ply_angles import _resolve_ply_angles
 from .empirical import EmpiricalSolver
 from .materials import MATERIALS, MaterialProperties
-from .mesh import CompositeMesh
+from .mesh import CompositeMesh, _expand_layup, _layers_merge_angles
 from .porosity_field import POROSITY_CONFIGS, PorosityField
 from .results import ConfigArtifacts, ConfigResult
 
@@ -29,9 +30,13 @@ LayupSpec = str | list[float] | tuple[float, ...]
 # :func:`_default_mesh_resolution`, never by reading this tuple directly.
 _DEFAULT_MESH_RES: tuple[int, int, int | None] = (30, 10, None)
 
-# Largest ``nz`` of the production default. A laminate with more plies gets
-# this many element layers, which do not resolve its plies (``FESolver`` warns,
-# thermal solves refuse); pass an explicit ``mesh_res`` to resolve them. At the
+# Largest ``nz`` of the production default (``nz_max`` of
+# :func:`_default_mesh_resolution` and :func:`build_empirical_pipeline`). A
+# laminate with more plies gets the largest ``nz`` up to it whose element
+# layers each cover plies of a single angle (a blocked layup such as
+# ``[0_4/90_4]`` resolves within it); without one it gets this many layers,
+# which do not resolve its plies (a warning; ``FESolver`` warns too and
+# thermal solves refuse), and an explicit ``mesh_res`` resolves them. At the
 # cap the mesh has 14,400 elements, and a direct FE solve with the knockdown
 # peaked at 1.3 GB (pristine reference solved first, as the app does) to
 # 2.3 GB (``FESolver.solve`` alone keeps the porous factorization while it
@@ -39,34 +44,63 @@ _DEFAULT_MESH_RES: tuple[int, int, int | None] = (30, 10, None)
 _DEFAULT_NZ_MAX = 48
 
 
-def _default_mesh_resolution(n_plies: int) -> tuple[int, int, int]:
+def _check_nz_max(nz_max) -> int:
+    if isinstance(nz_max, bool) or not isinstance(nz_max, (int, np.integer)) or nz_max <= 0:
+        raise ValueError(f"nz_max must be a positive integer, got {nz_max!r}.")
+    return int(nz_max)
+
+
+def _default_mesh_resolution(n_plies: int, ply_angles: LayupSpec | None = None, *,
+                             nz_max: int = _DEFAULT_NZ_MAX) -> tuple[int, int, int]:
     """Production ``(nx, ny, nz)`` for a laminate of ``n_plies`` plies.
 
     ``nx`` and ``ny`` come from :data:`_DEFAULT_MESH_RES`; ``nz`` is
     ``n_plies`` (one element layer per ply, so the FE laminate is the
-    requested one) up to :data:`_DEFAULT_NZ_MAX`, which bounds the memory of
-    an FE solve on the default mesh of a thick custom laminate. The 24-ply
-    presets give ``(30, 10, 24)``. The empirical failure loads do not depend
-    on the mesh.
+    requested one) up to ``nz_max`` (default :data:`_DEFAULT_NZ_MAX`), which
+    bounds the memory of an FE solve on the default mesh of a thick custom
+    laminate. The 24-ply presets give ``(30, 10, 24)``. The empirical
+    failure loads do not depend on the mesh.
+
+    Above ``nz_max`` plies, with the layup ``ply_angles`` (a pattern repeats
+    to ``n_plies``, as in :class:`~porosity_fe.CompositeMesh`), ``nz`` is
+    the largest value up to ``nz_max`` whose element layers each cover plies
+    of a single angle, so the FE layup is still the requested one (issue
+    #226): a unidirectional laminate keeps ``nz_max``, blocks of four plies
+    of one angle resolve with as many layers as blocks or more. Without such
+    a value, or without ``ply_angles``, ``nz = nz_max``, whose element
+    layers merge plies of different angles: logged as a WARNING, with the
+    ``mesh_res`` that resolves them.
 
     Raises
     ------
     ValueError
-        If ``n_plies`` is not a positive integer.
+        If ``n_plies`` or ``nz_max`` is not a positive integer.
     """
     if isinstance(n_plies, bool) or not isinstance(n_plies, (int, np.integer)) \
             or n_plies <= 0:
         raise ValueError(f"n_plies must be a positive integer, got {n_plies!r}.")
+    nz_max = _check_nz_max(nz_max)
     nx, ny, nz = _DEFAULT_MESH_RES
-    if nz is None:
-        nz = min(int(n_plies), _DEFAULT_NZ_MAX)
-        if n_plies > _DEFAULT_NZ_MAX:
-            logger.info(
-                "Default mesh: nz capped at %d for the %d-ply laminate, so its "
-                "element layers do not resolve every ply; pass mesh_res="
-                "(%d, %d, %d) to resolve them in an FE solve.",
-                _DEFAULT_NZ_MAX, n_plies, nx, ny, n_plies)
-    return (nx, ny, nz)
+    if nz is not None:
+        return (nx, ny, nz)
+    n_plies = int(n_plies)
+    if n_plies <= nz_max:
+        return (nx, ny, n_plies)
+    if ply_angles is not None:
+        layup = _expand_layup(_resolve_ply_angles(ply_angles), n_plies)
+        for candidate in range(nz_max, 0, -1):
+            if not _layers_merge_angles(layup, candidate):
+                logger.info(
+                    "Default mesh: nz = %d for the %d-ply laminate (at most %d); "
+                    "each element layer covers plies of one angle, so the FE "
+                    "layup is the requested one.", candidate, n_plies, nz_max)
+                return (nx, ny, candidate)
+    logger.warning(
+        "Default mesh: nz capped at %d for the %d-ply laminate, so its element "
+        "layers merge plies of different angles and an FE solve analyses the "
+        "element layup, not the requested one; pass mesh_res=(%d, %d, %d) to "
+        "resolve every ply.", nz_max, n_plies, nx, ny, n_plies)
+    return (nx, ny, nz_max)
 
 
 def build_empirical_pipeline(
@@ -78,6 +112,7 @@ def build_empirical_pipeline(
     porosity_config: dict[str, Any] | None = None,
     seed: int | None = None,
     solver_kwargs: dict[str, Any] | None = None,
+    nz_max: int = _DEFAULT_NZ_MAX,
 ) -> tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
     """Factory: ``(material, Vp) -> (PorosityField, CompositeMesh, EmpiricalSolver)``.
 
@@ -100,9 +135,14 @@ def build_empirical_pipeline(
     mesh_res : (int, int, int), optional
         ``(nx, ny, nz)`` element counts. Defaults to the production
         resolution ``(30, 10, material.n_plies)``, one element layer per ply
-        (``nz`` capped at 48; see :func:`_default_mesh_resolution`). The
+        (``nz`` up to ``nz_max``; see :func:`_default_mesh_resolution`). The
         empirical failure loads do not depend on it; the per-node
         ``nodal_knockdown`` field is sampled at its nodes.
+    nz_max : int, optional
+        Keyword-only cap on the default ``nz`` (default 48): above it a
+        layup that has no ``nz`` up to the cap with single-angle element
+        layers gets ``nz_max`` layers that merge plies, with a warning.
+        Ignored with ``mesh_res``.
     porosity_config : dict, optional
         Extra keyword arguments forwarded to :class:`PorosityField` (e.g.
         ``distribution``, ``void_shape``, ``cluster_location``,
@@ -126,8 +166,8 @@ def build_empirical_pipeline(
     if seed is not None:
         pf_kwargs['seed'] = seed
     pf = PorosityField(material, void_volume_fraction, **pf_kwargs)
-    nx, ny, nz = _default_mesh_resolution(material.n_plies) if mesh_res is None \
-        else mesh_res
+    nx, ny, nz = (_default_mesh_resolution(material.n_plies, ply_angles, nz_max=nz_max)
+                  if mesh_res is None else mesh_res)
     mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz,
                          ply_angles=ply_angles)
     emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles,

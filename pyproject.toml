@@ -9,7 +9,7 @@ description = "Streamlit web app for porosity-degraded composite laminate analys
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Rani Elhajjar", email = "elhajjar@uwm.edu"},
 ]
@@ -26,10 +26,10 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Physics",
 ]
@@ -84,7 +84,7 @@ testpaths = ["tests"]
 [tool.ruff]
 # Match the existing wide-format scientific code; nothing reflows.
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 # Pragmatic baseline: pyflakes (F), pycodestyle errors (E),
@@ -116,7 +116,7 @@ ignore = [
 # depends on untyped scientific libraries (numpy/scipy/matplotlib).
 # Goal here is to catch obvious signature regressions cheaply, not to
 # enforce full type coverage (tracked separately in issue #54 item 2).
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 implicit_optional = true        # treat `x: T = None` as Optional[T]
 strict_equality = true

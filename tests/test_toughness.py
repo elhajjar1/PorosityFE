@@ -503,9 +503,7 @@ class TestOutputs:
     def test_no_delamination_details(self):
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=4, **TOUGHNESS)
         pf = PorosityField(mat, 0.02)
-        mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=4)
-        mesh.L_x, mesh.L_y = 8.0, 4.0
-        mesh.generate_mesh()
+        mesh = CompositeMesh(pf, mat, nx=8, ny=4, nz=4, length=8.0, width=4.0)
         details = FESolver(mesh, mat, pf).solve('compression').summary().details
         assert details['toughness_knockdown'] is None
         assert details['toughness_uncalibrated'] is None

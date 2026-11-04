@@ -20,6 +20,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
+from . import _memory
 from .assembler import Ties, _ConstraintReduction
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -214,6 +215,7 @@ def solve_constrained(
 def free_dof_system(
     cache: OrderedDict[bytes, tuple], K: scipy.sparse.spmatrix,
     part: _ConstraintReduction, *, factorize: bool, max_entries: int,
+    memory_budget: float | None = None, held_bytes: float = 0.0,
 ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
     """``K_ff`` and (when ``factorize``) its sparse LU, cached in ``cache``.
 
@@ -233,8 +235,24 @@ def free_dof_system(
     ``K_ff`` alone.
 
     Memory: one factorization of the production mesh of a 24-ply
-    laminate (30 x 10 x 24) takes about 320 MB (120 MB on 30 x 10 x 12),
-    so a cache holding two sets holds about 650 MB.
+    laminate (30 x 10 x 24, 32 M stored entries) takes about 320 MB
+    (120 MB on 30 x 10 x 12), so a cache holding two sets holds about
+    650 MB. Before a factorization is built, :func:`_memory.check_factorization
+    <porosity_fe.fe._memory.check_factorization>` estimates it and raises a
+    ``ValueError`` when ``held_bytes`` (what the caller holds outside this
+    cache), the factorizations left in the cache and the estimate exceed
+    ``memory_budget`` (bytes; ``None`` for no check).
+
+    The factorization is SuperLU's with the symmetric ``MMD_AT_PLUS_A``
+    ordering and diagonal pivoting (``SymmetricMode`` with
+    ``diag_pivot_thresh = 0``), which is stable for the SPD ``K_ff`` and
+    keeps the ordering's fill. With the default threshold of 1 SuperLU
+    took an off-diagonal pivot wherever a diagonal was not the largest
+    entry of its column, which on the slender DCB arms (251 pivots) cost
+    16 % more factor entries and 29 % more time. Measured on the production
+    systems (#228), ``COLAMD`` and ``MMD_ATA`` fill the coupon 1.65 and
+    1.3 times as much and a geometric nested dissection 1.17 times; none
+    is better on every mesh.
     """
     if cache and next(iter(cache.values()))[0] is not K:
         cache.clear()
@@ -246,12 +264,14 @@ def free_dof_system(
     else:
         _, K_ff, lu = entry
     if factorize and lu is None:
-        # K_ff is symmetric: a symmetric fill-reducing ordering with
-        # diagonal pivoting factors ~20% faster than SuperLU's default
-        # COLAMD here.
+        held = held_bytes + sum(_memory.lu_bytes(e[2]) for e in cache.values()
+                                if e[2] is not None)
+        _memory.check_factorization(part.n_dof, K_ff.shape[0], held, memory_budget)
+        # K_ff is SPD: a symmetric fill-reducing ordering with diagonal
+        # pivoting (see the docstring).
         try:
             lu = scipy.sparse.linalg.splu(
-                K_ff, permc_spec='MMD_AT_PLUS_A',
+                K_ff, permc_spec='MMD_AT_PLUS_A', diag_pivot_thresh=0.0,
                 options={'SymmetricMode': True})
         except RuntimeError as exc:
             raise RuntimeError(

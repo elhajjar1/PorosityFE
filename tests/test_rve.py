@@ -83,9 +83,8 @@ class TestPeriodicCellConsistency:
         # cell must return the element stiffness itself.
         mat = dataclasses.replace(MAT, n_plies=1)
         field = PorosityField(mat, 0.04, distribution='uniform', void_shape='penny')
-        mesh = CompositeMesh(field, mat, nx=3, ny=2, nz=2, ply_angles=[30.0])
-        mesh.L_x, mesh.L_y = 0.6, 0.4
-        mesh.generate_mesh()
+        mesh = CompositeMesh(field, mat, nx=3, ny=2, nz=2, ply_angles=[30.0],
+                             length=0.6, width=0.4)
         res = _rve.homogenize(mesh, mat, field, formulation=formulation)
         C = GlobalAssembler(mesh, mat, field, formulation=formulation).element_batch().C[0, 0]
         assert abs(C[0, 5]) > 1e3                  # normal-shear coupling present

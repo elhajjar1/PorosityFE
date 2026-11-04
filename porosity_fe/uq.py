@@ -54,8 +54,9 @@ if TYPE_CHECKING:
 # SECTION 6b: UNCERTAINTY PROPAGATION (MONTE CARLO / LHS)
 # ============================================================
 
-# Back-compat alias for the default percentiles surface — canonical
-# definition lives on ``Calibration.UQ_DEFAULT_PERCENTILES`` (#121).
+# Deprecated back-compat alias (removal in 2.0, docs/deprecations.md) for the
+# default percentiles surface; the canonical definition is
+# ``Calibration.UQ_DEFAULT_PERCENTILES`` (#121).
 _UQ_DEFAULT_PERCENTILES = Calibration.UQ_DEFAULT_PERCENTILES
 # Built-in knockdown law -> (EmpiricalSolver override kwarg, QI coefficient table).
 _UQ_COEF_TABLES = {

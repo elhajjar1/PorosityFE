@@ -5,6 +5,119 @@ All notable changes to PorosityFE will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **A register of the deprecations removed in 2.0** (#218). The docs page
+  "Deprecations removed in 2.0" lists the ten deprecated names and paths,
+  with what replaces each, and two open decisions: the
+  `porosity_fe_analysis.py` shim and `EmpiricalSolver.f_md`.
+  `tests/test_deprecations.py` holds the same register.
+  - Before 2.0 it checks that each entry still works, so 1.x removes
+    nothing early, and that each warning entry emits a
+    `DeprecationWarning` naming 2.0.
+  - From version 2.0 on it fails while an entry is left.
+  - It counts the `DeprecationWarning` call sites per file (AST), so a new
+    deprecation cannot skip the register.
+  - It checks that importing the package emits none of them.
+  - Every deprecation message and docstring now names 2.0. Before:
+    - the `ply_angles=None` warning said "a future major version";
+    - the `resolve_material(strict=)` warning said "will be removed";
+    - the #225 assignment warning named no version ("one release" in this
+      changelog);
+    - the docstrings of the dict shims and of `ply_angles=None` said "a
+      future major version".
+
+    No behaviour changes.
+- **Memory budget for direct FE solves** (#228). Before each sparse LU
+  factorization `FESolver` estimates its size and what the solve already
+  holds (the interpreter, the mesh's assembly arrays and the cached
+  factorizations), and raises a `ValueError` with the estimate and the
+  alternatives (`solver='cg'`, a coarser mesh, a larger budget) when the
+  sum exceeds `FESolver(max_memory_gb=)`. A too-large call used to fail
+  late, with a `MemoryError` or a swap storm: a 190k-DOF single-leg-bending
+  model needed about 9 GB. The default budget is 80 % of physical memory,
+  now also read on Windows; `math.inf` turns the check off.
+  - The estimate is `refinement_study`'s peak-memory model, moved to
+    `porosity_fe/fe/_memory.py` and shared, so a level the study plans is
+    one the solver accepts. The study passes its `max_memory_gb` to each
+    level's solver, and now rejects a budget that is not a number > 0.
+  - A factorization already built counts at its actual size
+    (`SuperLU.nnz`). The whole estimate was 1.0-1.3 times the measured
+    peak on the production coupons. Its factor part is 0.97-1.04 times the
+    actual factor on the coupons and the ILSS specimen, and 1.2-1.7 times on
+    the flexure and fracture specimens, which fill less.
+- **Interior fracture load factor** (#227).
+  `FieldResults.interior_fracture_load_factor` and
+  `interior_fracture_governing_node`: the smallest `lambda_c` over the front
+  nodes at least the lateral margin from every lateral face
+  (`FESolver.solve(interior_margin=...)`, by default `max(h, 2 element
+  widths)` per direction, the rule of the interior failure index; shared
+  through `fe._load_cases.lateral_margins`). At a lateral face the energy
+  release rate is mesh dependent and `fracture_load_factor`, the
+  conservative minimum, usually sits there: on the ENF benchmark mesh the
+  minimum is 148.3 at the side face, the interior value 153.1, within 0.4 %
+  of mid-width. `None` without toughness data or an interior front node,
+  `inf` when no interior node is driven.
+  - In `summary().details`, the JSON `fracture` block
+    (`interior_fracture_load_factor`, `interior_governing_node`; additive in
+    the schema), the app's Defects panel (an "Interior λ_c" row; the λ_c row
+    says a lateral-face minimum is mesh dependent) and `refinement_study`
+    (an interior extremum for the fracture tests).
+  - The new fields change every case's digest, so
+    `scripts/fingerprint_baseline.json` is regenerated: only these keys
+    were added, every other value is identical.
+- **FE result regression gate in CI** (#214). `scripts/fingerprint.py
+  --check scripts/fingerprint_baseline.json` recomputes 30 cases and
+  compares them with the committed baseline; the new `fe_fingerprint` job
+  runs it on ubuntu / 3.12, single threaded, in about three minutes.
+  - The cases: hex8i, direct, the production coupon, flexure and ILSS
+    meshes of AS4/3501-6 at 3 % clustered porosity in nine loadings
+    (mechanical, thermal and combined) under the three criteria (in-plane
+    shear with Hashin left out: `sigma_11` is zero up to round-off there and
+    its sign switches the fibre mode), plus `interface` penny voids, the
+    `'directional'` degradation on the ILSS specimen, a strip delamination
+    under compression with a thermal prestress (contact, VCCT, the load
+    factor and a seeded uncertainty band) and an 8-ply DCB. The fracture
+    cases use fixture toughness values, not material data.
+  - Each case is a numeric digest: every scalar; per float array its shape,
+    sum, sum of `|x|`, 2-norm, max, min and 16 entries; integer arrays and
+    strings exactly; the export JSON minus provenance, leaf by leaf. A float
+    passes at `|a - b| <= 1e-9 max(|a|, |b|) + 1e-9 scale`, the scale being
+    the magnitude of the values of its kind beside it (in the export JSON,
+    its whole section: a stress component on the scale of the stress
+    tensor's statistics), so quantities that are small by cancellation or
+    zero up to round-off beside others of their kind do not trip it.
+  - Fields that are zero by equilibrium or symmetry with nothing of their
+    kind beside them are named per case, with the reason, and skipped: the
+    reactions of a free thermal expansion and of the DCB (statically
+    determinate supports), the mode II / III rates and mixity of the pure
+    mode I fronts, and the load factors (~1e12) of front nodes the load
+    hardly drives; the governing factor stays compared. The DCB, whose
+    slender arms on determinate supports make it ill-conditioned (its
+    results move by up to 2e-8 between BLAS kernels), is compared at 1e-6.
+  - Runners differ in CPU, and OpenBLAS picks its kernels by CPU: the first
+    CI run failed on Haswell kernels against a baseline made on SkylakeX
+    ones. The job therefore installs the numpy and scipy the baseline
+    records and runs the check twice, on the runner's kernel and with
+    `OPENBLAS_CORETYPE=Sandybridge`. Against the single-threaded baseline,
+    4 BLAS threads, numpy 1.26 / scipy 1.13, and the Haswell and Sandybridge
+    kernels all stay below 0.2 of the tolerance. A relative change of 1e-8
+    in `E11` trips 151 checks, and one of 1e-6 in the placeholder `b_I`
+    trips the crack-front toughness and the load factor.
+  - A change that moves the FE results on purpose regenerates the baseline
+    in the same PR (`--write-baseline`, single threaded) and says why here.
+    The bitwise mode (`<repo_root> out.json [--quick]`, `--compare`) is
+    unchanged. `tests/test_fingerprint_script.py` covers the comparison,
+    the baseline's consistency with the case list, and the DCB case's
+    physical results (load factor, compliance, front rates and openings,
+    displacements) end to end on every platform, at 1e-6.
+- **The `examples/` scripts run in the test suite** (#215).
+  `tests/test_examples.py` runs each one in-process with its output in a
+  temporary directory (the new `POROSITY_FE_EXAMPLES_OUTPUT`), checks the
+  files it names, and checks that `distribution_comparison.py` prints the
+  empirical and FE compression knockdowns the README quotes, at the
+  README's precision. `examples/README.md` lists `distribution_comparison.py`
+  and no longer calls `interface_penny.py` the worst-case ILSS morphology.
+- **Dependabot** (#220): weekly grouped updates of the SHA-pinned GitHub
+  Actions, monthly grouped updates of the pip ranges.
 - **Uncertainty band on the delamination load factor** (delamination plan
   4.5, #213). Opt-in: no existing result, export or cached app run changes.
   - `fracture_load_factor_uncertainty(front, material, *, prestress=None,
@@ -852,6 +965,15 @@ All notable changes to PorosityFE will be documented in this file.
   empirical_solver instances (all three pickle cleanly today; no
   rebuild on the main process is needed).
 
+### Deprecated
+- **Assigning `CompositeMesh.L_x`, `L_y` or `x_grid` after the mesh is
+  generated** (#225). It still works until 2.0: it emits a
+  `DeprecationWarning` naming the constructor argument (`length=`,
+  `width=`, `x_grid=`) and marks the mesh stale until `generate_mesh()`
+  runs again. `FESolver` (construction and `solve()`) now refuses a stale
+  mesh with a `ValueError`, where before it silently used nodes, porosity
+  and elements that no longer matched the dimensions.
+
 ### Removed
 - **The PyQt6 desktop GUI is no longer shipped** (it was removed before
   this changelog's tracked history begins). Older entries that mention the
@@ -1168,6 +1290,107 @@ All notable changes to PorosityFE will be documented in this file.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **The sparse LU pivots on the diagonal, and the knockdown's pristine
+  reference follows the solver** (#228).
+  - `K_ff` is SPD, so the factorization keeps SuperLU's symmetric
+    `MMD_AT_PLUS_A` ordering and now pivots on the diagonal
+    (`diag_pivot_thresh=0`). With SuperLU's default threshold of 1 it
+    took an off-diagonal pivot wherever a diagonal was not the largest
+    entry of its column, which broke the ordering's fill. On the
+    12-layer DCB that was 251 pivots, costing 18 % more factor entries
+    and over 40 % more time; there were 8 on the flexure specimen. The
+    production coupon and the ILSS specimen had none and are unchanged.
+  - The FE results change at round-off only. The largest change in the
+    gate is 0.09 of its tolerance (rtol 1e-9), so
+    `scripts/fingerprint_baseline.json` is regenerated; the Haswell and
+    Sandybridge kernels pass it at 0.09 and 0.24.
+  - The orderings were measured on every production system (theory page,
+    "Linear solvers and memory"). `COLAMD` fills the coupon 1.65 times
+    as much, `MMD_ATA` 1.3 times and a geometric nested dissection 1.17
+    times, and none is better on every mesh, so the ordering is kept.
+  - The pristine reference of the knockdown was always factorized
+    directly. It is now solved with the requested `solver` (at its
+    `rtol` when iterative) and cached apart per solver, so `solver='cg'`
+    factorizes nothing and is the way past the memory budget. The default
+    compression `refinement_study` with CG now peaks at 1.4 GB instead of
+    3.4 GB (159 s, against 444 s direct on the same machine), with the same
+    printed values. A CG knockdown changes by 3e-15 (compression) to 3e-13
+    (ILSS) on the production meshes; direct results are unchanged.
+  - Not done: a CHOLMOD backend (scikit-sparse ships only a source
+    distribution that needs SuiteSparse built on every platform), and
+    reusing the factorization across contact iterations (the reduced
+    system changes size with the active set; the existing warm start of
+    the active set already makes a repeat solve take one solve).
+- **`CompositeMesh` takes the coupon size in its constructor** (#225).
+  `CompositeMesh(..., length=50.0, width=20.0, x_grid=None)` (keyword-only,
+  mm; `length` / `width` must be finite and > 0) builds the mesh in one pass.
+  The builders (`for_flexure`, `for_ilss`, `for_dcb` / `for_enf` /
+  `for_mmb`) and the RVE helper use it instead of assigning `L_x` / `L_y` /
+  `x_grid` and calling `generate_mesh()` a second time, so each builds its
+  mesh once; the meshes and the FE fingerprint are bit-identical. `L_x`,
+  `L_y` and `x_grid` are now properties; `CompositeMesh.is_stale` says
+  whether they changed after the mesh was generated.
+- **Thick laminates keep their layup on the default mesh** (#226). Above 48
+  plies (the default `nz` cap) `_default_mesh_resolution(n_plies,
+  ply_angles)` now takes the largest `nz` up to the cap whose element layers
+  each cover plies of a single angle (the rule of
+  `CompositeMesh.layup_discrepancies`, shared as `mesh._layers_merge_angles`),
+  so the FE solves the requested stacking sequence: a unidirectional
+  laminate keeps 48, a `[0_6/90_6]` pattern of 60 plies gets 40, an 8-ply
+  block pattern of 72 plies 45. Without such an `nz` it keeps the cap and
+  logs a **WARNING** (it was INFO) naming the `mesh_res` that resolves every
+  ply. The cap is a documented `nz_max=` keyword of
+  `build_empirical_pipeline` (default 48). Laminates of 48 plies or fewer,
+  and every empirical result, are unchanged; the app passes the entered
+  layup and says when the default merges plies of one angle, and its
+  thermal hint follows the solve's rule (it warned whenever `nz` was not a
+  multiple of the ply count, even where the merged plies share an angle).
+  `refinement_study` keeps one element layer per ply.
+- **The NCR disposition bands are a policy, and the defaults are labelled
+  illustrative** (#229). `porosity_fe.reporting.DispositionPolicy` holds the
+  three void-content bounds (percent), the three governing-knockdown bounds,
+  the four paths and the bands' source; `DEFAULT_DISPOSITION_POLICY` keeps
+  the former bins (1 / 2 / 5 % with 0.95 / 0.90 / 0.80), so every
+  recommended path is unchanged.
+  - `recommend_disposition(..., policy=None)` (keyword-only) and
+    `build_ncr_record(result, {"policy": ...})` take a policy or its
+    `to_dict()` record; the recommendation gains a `policy` key (NCR JSON:
+    an additive `recommended_disposition.policy` block in the schema), and
+    the Markdown / PDF summaries and the app's NCR panel show the bands.
+  - No source for the defaults could be cited, so the docstring, the README
+    and, for the default policy, the disclaimer say they are illustrative
+    and that the released drawing / process specification governs.
+  - The rationales refer to the policy's bands instead of uncited claims
+    ("typical of autoclave-grade primary structure", "typical drawing
+    allowables"), and the NCR summary no longer says every part is
+    "predicted to exceed typical drawing porosity allowables", which it
+    said even at 0.5 % voids. The repair actions follow the band, not the
+    path's wording.
+- **Python 3.11 to 3.14** (#216). Python 3.10 reached end of life in
+  October 2026: `requires-python >= 3.11`, the classifiers and the test
+  matrix (3.11, 3.12, 3.13, 3.14 on ubuntu, macOS and Windows), ruff's
+  `target-version` (its two findings: `datetime.UTC` in `io.py` and
+  `validate_porosity_cli.py`) and mypy's `python_version`. numpy, scipy,
+  matplotlib and Streamlit all install on 3.14.
+- **Branch coverage with a floor** (#219). The coverage cell measures
+  statements and branches (`--cov-branch`, 97.1 % together with the tests
+  below) and fails below 95 %. New tests pin the paths nothing reached:
+  - `tests/test_cli.py::TestCLIExitPaths`: the exit codes 2 and 3 of the
+    parallel sweep, `--uq`, `--plots` and the delamination screening,
+    `--verbose` around the screening, the default porosity levels, a
+    negative `--vp` and the shim fallback (`porosity_fe/cli.py` 100 %; an
+    unreachable nested `_log` helper is removed).
+  - `tests/test_vcct_edge_cases.py`: a front with no finite factor or none
+    at all, a one-node line, a mesh without a delamination, a one-node
+    ligament (the growth-direction fallbacks), ties-free pair forces, and
+    the prestress roots against closed forms (the bisection where the
+    prestress closes the crack, a root beyond the grid, the batch root with
+    its bisection budget spent).
+  - `tests/test_validation_report_paths.py`: a schema that will not load,
+    an unknown modulus property, toughness arrays of different lengths, and
+    the report's load-error, skipped, error and no-average rows, its
+    default output directory and the per-paper band PNGs
+    (`validation/validate_all.py` 82 % -> 95 % from these).
 - **The `interface` porosity profile is scaled to its requested mean in the
   FE** (delamination plan, item 0.4, #211; this changes results). The FE
   interpolates nodal porosity trilinearly, so its volume average is the

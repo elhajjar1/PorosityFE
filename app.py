@@ -69,6 +69,7 @@ from porosity_fe.fracture_specimens import (
     _D6671_MODE_RATIO,
     _D7905_CRACK_LENGTH,
 )
+from porosity_fe.mesh import _layers_merge_angles
 from porosity_fe.pipeline import _default_mesh_resolution
 
 # Re-apply the shared style after Streamlit/matplotlib finished their own
@@ -90,6 +91,7 @@ _README_URL = (
 from porosity_fe.reporting import (  # noqa: E402, F401  re-exported for the Streamlit UI
     INDICATION_TYPES,
     STRUCTURAL_CLASSES,
+    DispositionPolicy,
     _sanitise_filename_component,
     _serialise_payload_csv,
     _serialise_payload_json,
@@ -1347,8 +1349,9 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     flag of the delamination front; ``None`` without a front.
 
     The rows give the fracture load factor (the smallest critical load
-    factor over the front), where it governs, its mode mixity and mode
-    shares, and the largest ``G_T`` at the analysis load. The flag is
+    factor over the front), the same over the interior front nodes (#227),
+    where the smallest governs, its mode mixity and mode shares, and the
+    largest ``G_T`` at the analysis load. The flag is
     ``True`` when the toughness was knocked down by porosity with the
     uncalibrated placeholder coefficients.
     """
@@ -1360,13 +1363,22 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
     row = front.governing
     focus = row if row is not None else int(np.argmax(front.G_T))
     where = f"{front.x[focus]:.1f}, {front.y[focus]:.1f}"
+    interior = getattr(fe, "interior_fracture_load_factor", None)
     rows = [
         ("Fracture load factor λ_c",
          "n/a" if lam is None else _fmt_value(lam, "{:.3g}"),
          "Smallest critical load factor over the front: the multiple of the "
          "analysis load at which the delamination starts to grow (G_T reaches "
          "the Benzeggagh-Kenane toughness G_c(ψ)). n/a without G_Ic, G_IIc "
-         "and η; ∞ when the load releases no energy at the front."),
+         "and η; ∞ when the load releases no energy at the front. Where it "
+         "sits at a lateral face (a coupon edge the delamination reaches) G "
+         "is mesh dependent: compare the interior value."),
+        ("Interior λ_c",
+         "n/a" if interior is None else _fmt_value(interior, "{:.3g}"),
+         "Smallest λ_c over the front nodes at least max(h, 2 element widths) "
+         "from every lateral face of the coupon (the margin of the interior "
+         "failure index): the value that converges under mesh refinement. "
+         "n/a without toughness or without an interior front node."),
         ("Governing node (x, y mm)" if row is not None
          else "Largest G_T at (x, y mm)", where,
          "Front node with the smallest λ_c (without toughness, the largest "
@@ -2961,10 +2973,19 @@ def _build_sidebar_inputs() -> dict | None:
         if delamination is not None or specimen:
             toughness, tough_problem = _build_toughness_inputs()
 
+        try:
+            entered_layup = parse_layup(layup_str) if n_plies else None
+        except ValueError:
+            entered_layup = None
         nx0, ny0, nz0 = _default_mesh_resolution(
-            n_plies or MATERIALS[material_name].n_plies)
-        mesh_note = ("one element layer per ply" if not n_plies or nz0 == n_plies
-                     else f"nz capped at {nz0} for the {n_plies}-ply layup")
+            n_plies or MATERIALS[material_name].n_plies, entered_layup)
+        if not n_plies or nz0 == n_plies:
+            mesh_note = "one element layer per ply"
+        elif not _layers_merge_angles(entered_layup, nz0):
+            mesh_note = (f"{nz0} element layers, each within plies of one angle, "
+                         f"for the {n_plies}-ply layup")
+        else:
+            mesh_note = f"nz capped at {nz0} for the {n_plies}-ply layup"
 
         st.subheader("Mesh")
         if expert:
@@ -3009,15 +3030,17 @@ def _build_sidebar_inputs() -> dict | None:
 
         if thermal_mode != "off":
             # The thermal solve refuses a mesh whose element layers merge
-            # plies; say so before the run, with the nz that resolves them.
-            if n_plies and nz % n_plies:
+            # plies of different angles (CompositeMesh.layup_discrepancies);
+            # say so before the run, with the nz that resolves them.
+            merges = (_layers_merge_angles(entered_layup, nz) if entered_layup is not None
+                      else bool(n_plies and nz % n_plies))
+            if n_plies and merges:
                 nz_fix = _resolving_nz(nz, n_plies)
                 st.warning(
-                    f"Thermal residual stress needs every ply in its own "
-                    f"element layer: nz = {nz} layers do not resolve the "
-                    f"{n_plies}-ply layup, so the FE solve will refuse it if "
-                    f"the merged plies differ in angle. Use nz = {nz_fix} "
-                    f"(a multiple of {n_plies}).")
+                    f"Thermal residual stress needs the stacking sequence: "
+                    f"nz = {nz} element layers merge plies of different angles "
+                    f"in the {n_plies}-ply layup, so the FE solve will refuse "
+                    f"it. Use nz = {nz_fix} (a multiple of {n_plies}).")
                 _offer_nz_fix(nz_fix, key="nz_fix_sidebar")
         elif (delamination is not None or specimen) and n_plies and nz % n_plies:
             # The same rule for a delamination: every ply interface must be
@@ -3668,6 +3691,9 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             f"**Recommended disposition path{scope}:** {dp['path']}  \n"
             f"{dp['rationale']}"
         )
+        st.caption(
+            "Disposition policy: "
+            + DispositionPolicy.from_dict(dp["policy"]).describe())
         st.info(dp["disclaimer"])
     if assessment is not None:
         st.warning(

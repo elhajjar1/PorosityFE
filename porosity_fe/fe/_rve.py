@@ -415,9 +415,9 @@ def void_unit_cell(material: MaterialProperties,
         voids.append(VoidGeometry(center=(0.5 * Lx, 0.5 * Ly, 0.5 * Lz),
                                   radii=tuple(radii)))
     field = PorosityField(matrix, 0.0, discrete_voids=voids)
-    mesh = CompositeMesh(field, matrix, nx=nx, ny=ny, nz=nz, ply_angles='UD')
-    mesh.L_x, mesh.L_y = Lx, Ly              # L_z is the one ply's thickness
-    mesh.generate_mesh()
+    # L_z is the one ply's thickness.
+    mesh = CompositeMesh(field, matrix, nx=nx, ny=ny, nz=nz, ply_angles='UD',
+                         length=Lx, width=Ly)
     mesh.porosity[:] = 0.0
     mesh.stiffness_reduction[:] = 1.0
     return mesh, matrix, field

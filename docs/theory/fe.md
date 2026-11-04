@@ -6,10 +6,14 @@ element by element from the local porosity.
 
 ## Mesh and elements
 
-{class}`~porosity_fe.CompositeMesh` divides the specimen into
+{class}`~porosity_fe.CompositeMesh` divides the specimen, a coupon of
+`length=` $\times$ `width=` (default $50 \times 20$ mm) by the laminate
+thickness, optionally graded along $x$ by `x_grid=`, into
 $n_x \times n_y \times n_z$ eight-node hexahedra (default production
 resolution $30 \times 10 \times n_\text{plies}$, one element layer per ply,
-with $n_z$ capped at 48). Each element gets the ply angle of
+with $n_z$ capped at 48: a thicker laminate gets the largest $n_z \le 48$
+whose element layers each lie within plies of one angle, so a blocked layup
+keeps its stacking sequence, or 48 with a warning). Each element gets the ply angle of
 the ply containing its centroid; a centroid on a ply interface takes the
 ply above. The porosity field is sampled at every node. Elements whose
 centroid lies inside a discrete void are flagged as void elements. The
@@ -203,21 +207,8 @@ interface, in every loading mode ({doc}`delamination`); without a
 delamination no loading mode uses ties. The periodic unit cell that checks
 the Mori-Tanaka void model does too ({doc}`micromechanics`).
 
-The default solve is a sparse LU factorization of $\mathbf K_{ff}$. A
-solver keeps the factorizations of the last two sets of constrained degrees
-of freedom (about 320 MB each on the production mesh), so load cases that
-share supports, or two that alternate, factorize once; all are rebuilt when
-the mesh, material or porosity change. Jacobi-preconditioned conjugate gradients
-(`solver='cg'`) agree with it to about $10^{-8}$ at the default
-`rtol = 1e-9` and need no fill-in, which pays off above roughly 40,000
-degrees of freedom. MINRES (`solver='minres'`) is deprecated and will be
-removed in 2.0; it emits a `DeprecationWarning`. $\mathbf K_{ff}$ is
-symmetric positive definite, so CG covers every case, and MINRES, a
-residual minimizer, is less accurate at the same tolerance: on the
-production mesh its displacements are $4 \times 10^{-7}$ to
-$2 \times 10^{-6}$ from the direct solve in compression and shear (CG:
-$5 \times 10^{-9}$ to $10^{-8}$). Until then it still works, warm-restarted
-until its true residual meets `rtol`.
+$\mathbf K_{ff}$ is solved by sparse LU or by conjugate gradients; see
+[Linear solvers and memory](#linear-solvers-and-memory).
 
 ```{note}
 Before the ASTM D2344 rework, `ilss` was a three-point bend of whatever
@@ -228,6 +219,80 @@ supported one). The closest model now is `'flexure_3pt'` on
 `CompositeMesh.for_flexure(field, material, span=50.0, width=20.0,
 overhang=0.0)`, on rollers instead of pinned edges.
 ```
+
+## Linear solvers and memory
+
+The default solve is a sparse LU factorization of $\mathbf K_{ff}$
+(SuperLU, {func}`scipy.sparse.linalg.splu`). $\mathbf K_{ff}$ is symmetric
+positive definite, so it is factorized with the symmetric `MMD_AT_PLUS_A`
+fill-reducing ordering and diagonal pivots (`SymmetricMode`,
+`diag_pivot_thresh = 0`), which is stable for an SPD matrix and keeps the
+ordering's fill. A solver keeps the factorizations of the last two sets of
+constrained degrees of freedom (about 320 MB each on the production mesh),
+so load cases that share supports, or two that alternate, factorize once;
+all are rebuilt when the mesh, material or porosity change. The
+knockdown's pristine reference is solved before the porous model and
+freed, so one factorization is alive at a time (two with crack-face
+contact).
+
+Jacobi-preconditioned conjugate gradients (`solver='cg'`) agree with the
+direct solve to about $10^{-8}$ at the default `rtol = 1e-9` and need no
+fill-in, which pays off above roughly 40,000 degrees of freedom; the
+pristine reference is then solved by CG too, so nothing is factorized.
+MINRES (`solver='minres'`) is deprecated and will be removed in 2.0; it
+emits a `DeprecationWarning`. CG covers every case, and MINRES, a residual
+minimizer, is less accurate at the same tolerance: on the production mesh
+its displacements are $4 \times 10^{-7}$ to $2 \times 10^{-6}$ from the
+direct solve in compression and shear (CG: $5 \times 10^{-9}$ to
+$10^{-8}$). Until then it still works, warm-restarted until its true
+residual meets `rtol`.
+
+**Memory budget.** Before each factorization the solver estimates its
+size, $12$ bytes per entry of about $8\, n_\text{dof}^{1.5}$ entries, and
+adds what the solve already holds: 0.15 GB for the interpreter, 30 kB per
+element of assembly arrays, and the factorizations it keeps, at their
+actual size. When the sum exceeds `FESolver(max_memory_gb=...)` (default
+80 % of physical memory; `math.inf` turns the check off) it raises a
+`ValueError` with the estimate, before SuperLU allocates anything,
+instead of failing late with a `MemoryError` or a swap storm.
+{func}`~porosity_fe.refinement_study` plans its levels with the same
+model. The whole estimate was 1.0 to 1.3 times the measured peak on the
+production coupons. Its factor part is 0.97 to 1.04 times the actual
+factor on the coupons and the ILSS specimen; the flexure and fracture
+specimens fill less, and there it is 1.2 to 1.7 times the factor.
+
+**Orderings.** Measured on the production systems (single thread,
+factor entries and factorization time; the coupon and specimens are
+AS4/3501-6 at 3 % clustered porosity, the fracture specimens those of
+{doc}`delamination`):
+
+| System | DOFs | `MMD_AT_PLUS_A`, diagonal pivots (default) | `MMD_AT_PLUS_A`, threshold 1 (before) | `COLAMD` | `MMD_ATA` | nested dissection |
+|---|---|---|---|---|---|---|
+| coupon $30 \times 10 \times 24$, compression | 24,249 | 32.3 M, 7.6 s | 32.3 M, 7.6 s | 53.4 M, 17.9 s | 42.7 M, 12.2 s | 37.8 M, 7.5 s |
+| `flexure_3pt` specimen | 25,708 | 27.1 M, 5.4 s | 27.1 M, 5.2 s | 26.0 M, 6.6 s | 35.2 M, 8.1 s | 33.6 M, 5.4 s |
+| `ilss` specimen | 16,854 | 18.0 M, 3.2 s | 18.0 M, 3.2 s | 19.6 M, 5.1 s | 21.4 M, 4.0 s | 18.8 M, 3.1 s |
+| DCB, 12 layers | 28,440 | 26.7 M, 3.9 s | 31.6 M, 5.6 s | 22.1 M, 4.4 s | 32.6 M, 5.9 s | 24.4 M, 3.1 s |
+| ENF, 12 layers | 10,903 | 5.75 M, 0.61 s | 6.04 M, 0.70 s | 5.78 M, 0.82 s | 7.71 M, 1.00 s | 7.15 M, 0.67 s |
+| MMB, 12 layers | 10,889 | 6.35 M, 0.64 s | 6.61 M, 0.77 s | 6.49 M, 0.97 s | 8.50 M, 1.11 s | 7.64 M, 0.78 s |
+| coupon $45 \times 15 \times 24$ | 53,249 | 99.9 M, 35.2 s | 99.9 M, 35.3 s | | | 98.3 M, 24.3 s |
+| single-leg-bending beam, 32 layers, $n_y = 8$ | 71,745 | 123.1 M, 39.2 s | 125.4 M, 41.0 s | | | 146.9 M, 42.1 s |
+
+With SuperLU's default pivot threshold of 1 the factorization took an
+off-diagonal pivot wherever a diagonal was not the largest entry of its
+column, which broke the ordering's fill: on the slender DCB arms 251 such
+pivots, 31.6 M entries and 5.6 s instead of 26.7 M and 3.9 s (46 pivots on
+the ENF, 8 on the flexure specimen, none on the coupon or the ILSS
+specimen). `COLAMD` and
+`MMD_ATA`, SuperLU's orderings for unsymmetric matrices, fill the coupon
+1.65 and 1.3 times as much (`COLAMD` is 17 % below the default on the DCB). A geometric nested dissection of the node grid
+(separators by median planes, factorized in that order) is close to
+`MMD_AT_PLUS_A` and 30 % faster on the $45 \times 15 \times 24$ coupon,
+but fills the $30 \times 10 \times 24$ coupon 17 % more and the 32-layer
+single-leg-bending beam 19 % more; no ordering is better on every system,
+so `MMD_AT_PLUS_A` stays. A Cholesky factorization (CHOLMOD) would hold
+about half the entries, but its Python binding, scikit-sparse, ships only
+as source that needs SuiteSparse built on every platform, so it is not an
+option of the package.
 
 ## Stiffness knockdown
 
@@ -849,8 +914,11 @@ the $10^6$ mesh cap) or one whose estimated peak memory exceeds
 reports it), and the error lists the estimate of every level. The
 estimate is $0.15\ \text{GB} + 30\ \text{kB}$ per element plus 12 bytes
 per LU nonzero; it was 1.0 to 1.3 times the measured peak on meshes from
-$20 \times 8 \times 24$ to $60 \times 20 \times 24$. With `solver='cg'`
-the compression study above gives the same values to the printed digits
-in 193 s instead of 329 s, at the same 3.4 GB peak: the knockdown's
-pristine reference is always factorized directly, so CG saves memory only
-in thermal or pore-free studies.
+$20 \times 8 \times 24$ to $60 \times 20 \times 24$. Each level's solver
+checks every factorization against the same budget (see [Linear solvers
+and memory](#linear-solvers-and-memory)). With `solver='cg'` the
+compression study above gives the same values to the printed digits, and
+since the knockdown's pristine reference follows the solver a CG study
+factorizes nothing: measured together on one machine, 159 s and a 1.4 GB
+peak instead of 444 s and 3.4 GB. (Before #228 the reference was always
+factorized directly, so a CG study peaked like the direct one.)

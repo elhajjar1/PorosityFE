@@ -583,13 +583,10 @@ def _build_specimen(cls: type[CompositeMesh], porosity_field: PorosityField,
     else:
         ny_f = ny
 
-    mesh = cls(porosity_field, material, nx=nx_f, ny=ny_f, nz=nz_f, ply_angles=ply_angles)
-    mesh.L_x = total
-    mesh.L_y = layout.width
-    mesh.x_grid = x_grid
     tip = layout.points[layout.front]
-    mesh.delaminations = (Delamination.strip(int(interface), 0.0, tip),)
-    mesh.generate_mesh()
+    mesh = cls(porosity_field, material, nx=nx_f, ny=ny_f, nz=nz_f, ply_angles=ply_angles,
+               delaminations=(Delamination.strip(int(interface), 0.0, tip),),
+               length=total, width=layout.width, x_grid=x_grid)
     mesh.fracture_geometry = FractureSpecimenGeometry(
         test=layout.test,  # type: ignore[arg-type]
         interface=int(interface), plane_strain=plane_strain, **layout.geometry_kwargs)

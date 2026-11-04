@@ -201,6 +201,22 @@ class FieldResults:
         Original node id of the front node with the smallest ``lambda_c``
         (``None`` when :attr:`fracture_load_factor` is ``None`` or
         infinite).
+    interior_fracture_load_factor : float or None
+        Smallest ``lambda_c`` over the **interior** front nodes, those at
+        least the lateral margin from every lateral face (``x`` / ``y``;
+        ``FESolver.solve(interior_margin=...)``, default ``max(h, 2 element
+        widths)`` per direction, the rule of
+        :attr:`interior_max_failure_index`). At a lateral face, the side
+        face of a fracture specimen or a coupon edge a delamination
+        reaches, the energy release rate is mesh dependent and
+        :attr:`fracture_load_factor`, the conservative minimum, usually
+        sits there; the interior value is the one that converges under
+        refinement (issue #227). ``inf`` when no interior node is driven;
+        ``None`` without toughness data or without an interior front node.
+    interior_fracture_governing_node : int or None
+        Original node id of the interior front node with the smallest
+        ``lambda_c`` (``None`` when :attr:`interior_fracture_load_factor`
+        is ``None`` or infinite).
     interface_forces : np.ndarray or None
         ``(n_pairs, 3)`` force (N, global axes) the lower crack face exerts
         on the upper one at every duplicated interface node pair
@@ -286,6 +302,8 @@ class FieldResults:
     contact_pairs: int | None = None
     contact_converged: bool | None = None
     load_point_compliance: float | None = None
+    interior_fracture_load_factor: float | None = None
+    interior_fracture_governing_node: int | None = None
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -375,6 +393,8 @@ class FieldResults:
         return {
             'fracture_load_factor': self.fracture_load_factor,
             'fracture_governing_node': self.fracture_governing_node,
+            'interior_fracture_load_factor': self.interior_fracture_load_factor,
+            'interior_fracture_governing_node': self.interior_fracture_governing_node,
             'fracture_governing_psi': (
                 None if row is None else float(front.psi[row])),  # type: ignore[union-attr]
             'fracture_governing_G_T': (

@@ -153,9 +153,8 @@ class TestThermalLoadVector:
         mat = _material(layup, t_ply=0.5, E11=E, E22=E, E33=E, G12=G, G13=G,
                         G23=G, nu12=nu, nu13=nu, nu23=nu, alpha_1=a, alpha_2=a)
         pf = PorosityField(mat, 0.0)
-        mesh = CompositeMesh(pf, mat, nx=4, ny=3, nz=4, ply_angles=layup)
-        mesh.L_x, mesh.L_y = 6.0, 4.0
-        mesh.generate_mesh()
+        mesh = CompositeMesh(pf, mat, nx=4, ny=3, nz=4, ply_angles=layup,
+                             length=6.0, width=4.0)
         nodes = mesh.nodes
         lo, hi = nodes.min(axis=0), nodes.max(axis=0)
         inner = np.all((nodes > lo + 1e-9) & (nodes < hi - 1e-9), axis=1)
@@ -205,9 +204,8 @@ class TestThermalLoadVector:
         mat = dataclasses.replace(MATERIALS['AS4_3501_6_epoxy'], n_plies=4, t_ply=0.5)
         pf = PorosityField(mat, 0.05, distribution='clustered',
                            cluster_location='surface')
-        mesh = CompositeMesh(pf, mat, nx=4, ny=3, nz=4, ply_angles=layup)
-        mesh.L_x, mesh.L_y = 8.0, 6.0
-        mesh.generate_mesh()
+        mesh = CompositeMesh(pf, mat, nx=4, ny=3, nz=4, ply_angles=layup,
+                             length=8.0, width=6.0)
         solver = FESolver(mesh, mat, pf, ply_angles=layup, formulation='hex8i')
         dT = -120.0
         r = solver.solve('thermal', delta_T=dT)

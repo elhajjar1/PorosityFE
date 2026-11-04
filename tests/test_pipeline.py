@@ -96,6 +96,46 @@ class TestBuildEmpiricalPipeline:
         assert (mesh.nx, mesh.ny, mesh.nz) == (30, 10, mat.n_plies)
         assert mesh.layup_discrepancies() == []
 
+    @pytest.mark.parametrize("pattern, n_plies, expected", [
+        ([0.0], 100, 48),                              # UD: any nz resolves it
+        ([0.0] * 4 + [90.0] * 4, 64, 48),              # 4-ply blocks, 4/3 ply per layer
+        ([0.0] * 6 + [90.0] * 6, 60, 40),              # 6-ply blocks: 1.5 plies per layer
+        ([45.0] * 8 + [-45.0] * 8 + [0.0] * 8, 72, 45),     # 1.6 plies per layer
+    ])
+    def test_thick_blocked_layups_resolve_within_the_cap(self, caplog, pattern, n_plies,
+                                                         expected):
+        """Issue #226: above the cap the default nz is the largest whose
+        element layers each cover plies of one angle."""
+        thick = dataclasses.replace(T800, n_plies=n_plies)
+        with caplog.at_level(logging.INFO, logger="porosity_fe_analysis"):
+            assert _default_mesh_resolution(n_plies, pattern) == (30, 10, expected)
+        assert "each element layer covers plies of one angle" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        _, mesh, _ = build_empirical_pipeline(thick, 0.02, ply_angles=pattern)
+        assert mesh.nz == expected and mesh.layup_discrepancies() == []
+
+    def test_unresolvable_thick_layup_warns(self, caplog):
+        thick = dataclasses.replace(T800, n_plies=64)
+        with caplog.at_level(logging.INFO, logger="porosity_fe_analysis"):
+            _, mesh, _ = build_empirical_pipeline(thick, 0.02, ply_angles=[0.0, 90.0])
+        assert mesh.nz == _DEFAULT_NZ_MAX and mesh.layup_discrepancies()
+        warnings_ = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("merge plies of different angles" in r.getMessage()
+                   and "mesh_res=(30, 10, 64)" in r.getMessage() for r in warnings_)
+
+    def test_nz_max(self):
+        thick = dataclasses.replace(T800, n_plies=64)
+        _, mesh, _ = build_empirical_pipeline(thick, 0.02, ply_angles=[0.0, 90.0], nz_max=64)
+        assert mesh.nz == 64 and mesh.layup_discrepancies() == []
+        assert _default_mesh_resolution(20, nz_max=8) == (30, 10, 8)
+        assert _default_mesh_resolution(20, 'UD', nz_max=8) == (30, 10, 8)
+        # An explicit mesh_res wins over nz_max.
+        _, mesh, _ = build_empirical_pipeline(thick, 0.02, mesh_res=(6, 3, 16), nz_max=64)
+        assert mesh.nz == 16
+        for bad in (0, -3, 2.5, True, "48"):
+            with pytest.raises(ValueError, match="nz_max must be a positive integer"):
+                _default_mesh_resolution(64, nz_max=bad)
+
     def test_default_nz_is_capped_for_thick_laminates(self, caplog):
         """Above ``_DEFAULT_NZ_MAX`` plies the default stops at the cap (and
         says so) instead of growing the FE mesh with the ply count."""

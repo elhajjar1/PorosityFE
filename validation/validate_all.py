@@ -154,7 +154,8 @@ def resolve_material(dataset: Dict[str, Any], strict: bool | None = None) -> Mat
     """
     if strict is not None:
         warnings.warn(
-            "resolve_material(strict=...) is ignored and will be removed; an "
+            "resolve_material(strict=...) is ignored and will be removed in "
+            "2.0; an "
             "unknown (fiber, matrix) pair always raises KeyError.",
             DeprecationWarning, stacklevel=2)
     m = dataset['material']

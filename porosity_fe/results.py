@@ -56,8 +56,7 @@ class FailureResult:
     / ``result['critical_location']`` keep working via the ``__getitem__``
     shim below. The shim maps the four documented dict keys to attribute /
     ``details`` access; any other key raises :class:`KeyError`. New code
-    should use attribute access. The dict shim will be removed in a future
-    major version.
+    should use attribute access. The dict shim will be removed in 2.0.
     """
     failure_stress: float
     knockdown: float
@@ -71,7 +70,7 @@ class FailureResult:
     _DICT_KEYS_DIRECT = ('failure_stress', 'knockdown', 'model')
 
     def __getitem__(self, key: str):
-        """Back-compat dict-style access (deprecated; will be removed)."""
+        """Back-compat dict-style access (deprecated; removal in 2.0)."""
         if key in self._DICT_KEYS_DIRECT:
             return getattr(self, key)
         if key in self.details:
@@ -184,7 +183,7 @@ class ConfigResult:
     notably the legacy ``'mesh'`` / ``'empirical_solver'`` /
     ``'porosity_field'`` keys — raises :class:`KeyError` with a hint
     pointing at ``return_artifacts=True``. The dict shim will be removed
-    in a future major version.
+    in 2.0.
     """
     Vp: float
     config_name: str

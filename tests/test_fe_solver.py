@@ -2041,7 +2041,7 @@ class TestStiffnessAndFactorizationReuse:
         # Count only this solver's assembly and factorizations, not the
         # (separately cached) pristine knockdown reference solve.
         monkeypatch.setattr(FESolver, '_pristine_stiffness_measure',
-                            lambda self, loading: 1.0)
+                            lambda self, loading, **kw: 1.0)
         return counts
 
     @staticmethod
@@ -2641,9 +2641,8 @@ class TestIncompatibleModes:
         from porosity_fe.fe.batch import build_element_batch
         mat = _ud_beam_material()
         pf = PorosityField(mat, 0.0)
-        mesh = CompositeMesh(pf, mat, nx=3, ny=3, nz=4, ply_angles=[30.0] * 4)
-        mesh.L_x, mesh.L_y = 3.0, 3.0
-        mesh.generate_mesh()
+        mesh = CompositeMesh(pf, mat, nx=3, ny=3, nz=4, ply_angles=[30.0] * 4,
+                             length=3.0, width=3.0)
         X = mesh.nodes.copy()
         tol = 1e-9
         interior = np.flatnonzero(

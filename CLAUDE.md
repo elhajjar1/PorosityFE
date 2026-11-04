@@ -42,6 +42,13 @@ cd docs && make html                          # output under docs/_build/html
 # both sides with OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1, see the script)
 python scripts/fingerprint.py <repo_root> out.json [--quick]
 python scripts/fingerprint.py --compare base.json out.json
+
+# The numeric FE regression gate CI runs (job `fe_fingerprint`, 30 cases,
+# rtol 1e-9). A PR that changes FE results on purpose regenerates the
+# baseline single-threaded and says why in the CHANGELOG:
+python scripts/fingerprint.py --check scripts/fingerprint_baseline.json
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  python scripts/fingerprint.py --write-baseline scripts/fingerprint_baseline.json
 ```
 
 ## Architecture
@@ -84,7 +91,11 @@ different numerical answers for the same inputs**, not the same answer:
   per-element `Hex8Element` objects (kept as the public reference
   implementation and tested for agreement); the assembled `K` and its LU
   factorization are cached on the assembler / solver and reused across
-  solves until the mesh, material or porosity change. Strength degradation uses a
+  solves until the mesh, material or porosity change. Every factorization
+  is estimated first and refused over `FESolver(max_memory_gb=)` (default
+  80 % of RAM; `fe/_memory.py`, the model `refinement_study` plans with),
+  and the knockdown's pristine reference follows `solver`, so `'cg'`
+  factorizes nothing. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
   `degraded_strengths` in `fe/failure.py`). The FE path **does** pick up
   distribution-shape differences. `solver.py` holds only the
@@ -160,8 +171,12 @@ re-implement sentinel handling at a call site.
 the parallel worker invoked by `compare_configurations`; `_DEFAULT_MESH_RES
 = (30, 10, None)` is the single source of truth for production mesh size:
 `nz = None` means one element layer per ply, capped at `_DEFAULT_NZ_MAX`
-(48), resolved by `_default_mesh_resolution(n_plies)`, which the pipeline,
-the app and `refinement_study` all call (never read the tuple directly).
+(48, the `nz_max` of `build_empirical_pipeline`), resolved by
+`_default_mesh_resolution(n_plies, ply_angles)`, which the pipeline, the
+app and `refinement_study` all call (never read the tuple directly). Above
+the cap it takes the largest `nz` whose element layers each cover plies of
+one angle (the rule of `CompositeMesh.layup_discrepancies`), else the cap
+with a warning.
 `build_empirical_pipeline` is the canonical factory used by examples,
 tests, and the UQ helper — when changing mesh defaults or ply-angle
 handling, change it here, not at the call sites.
@@ -216,14 +231,23 @@ collection puts `test_cli.py` first.
 
 ## CI matrix
 
-`.github/workflows/tests.yml` runs three jobs: `lint` (ruff + mypy on
+`.github/workflows/tests.yml` runs four jobs: `lint` (ruff + mypy on
 Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
-`{3.10, 3.11, 3.12, 3.13}` against an editable install; the ubuntu/3.12
-cell also measures coverage, uploads `coverage.xml` as an artifact, and
-runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`), and `streamlit_smoke` (decoupled
-single-OS/Python import-only check — Streamlit wheel availability on 3.13
-can't be allowed to drop the whole library matrix red, see issue #157).
-`security.yml` runs `pip-audit` weekly. Match the matrix when adding
+`{3.11, 3.12, 3.13, 3.14}` against an editable install; the ubuntu/3.12
+cell also measures statement and branch coverage with a 95 % floor
+(`--cov-fail-under`), uploads `coverage.xml` as an artifact, and
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
+`fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
+ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
+baseline, run on the runner's BLAS kernel and again on Sandybridge's; see
+Commands; a case whose fields are round-off by physics names them in
+`_CASE_OPTIONS`), and `streamlit_smoke` (decoupled
+single-OS/Python import-only check — Streamlit wheel availability on a new
+Python can't be allowed to drop the whole library matrix red, see issue
+#157). The floor is Python 3.11 (`requires-python`, ruff `target-version`,
+mypy `python_version`; 3.10 reached end of life in October 2026, #216).
+`security.yml` runs `pip-audit` weekly, and Dependabot proposes action and
+pip updates (`.github/dependabot.yml`). Match the matrix when adding
 version-sensitive code.
 
 ## Adding materials and empirical coefficients
