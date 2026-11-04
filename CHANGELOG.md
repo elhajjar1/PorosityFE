@@ -4,6 +4,15 @@ All notable changes to PorosityFE will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-04
+
+Explicit delaminations and fracture mechanics in the FE path (contact,
+VCCT, the critical load factor and the ASTM DCB / ENF / MMB specimens), the
+ASTM D2344 short-beam and D7264 flexure specimens, the thermal residual
+stress load case, mesh-convergence studies, and a faster, exactly
+constrained FE solver with the incompatible-mode brick by default. Several
+results change on upgrade; the docs page "What's new in 1.3" lists them.
+
 ### Added
 - **A register of the deprecations removed in 2.0** (#218). The docs page
   "Deprecations removed in 2.0" lists the ten deprecated names and paths,

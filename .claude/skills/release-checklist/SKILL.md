@@ -16,8 +16,9 @@ PorosityFE has two version sources of truth and one bundled binary:
   rebuild verifies the spec still works before tagging.
 
 The CI matrix (`.github/workflows/tests.yml`) runs on Ubuntu/macOS/Windows
-× Python 3.10/3.11/3.12/3.13 plus a decoupled Streamlit smoke job and a
-lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
+× Python 3.11/3.12/3.13/3.14 plus the FE regression gate (`fe_fingerprint`),
+a decoupled Streamlit job (the app import and the app tests) and a lint job
+(`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
 
 ## Get from the user first
 
@@ -34,11 +35,13 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    git log --oneline -10
    ```
 
-2. **Bump the version in both files.**
+2. **Bump the version in both files**, and in the citations.
    - `pyproject.toml`: `version = "<new>"` under `[project]`.
    - `porosity_fe/__init__.py`: the `__version__ = "<new>"` fallback
      (the comment there explicitly says "keep in sync with
      pyproject.toml on each release").
+   - `CITATION.cff` (`version`, `date-released`) and the BibTeX block in
+     `README.md` (`version = {<new>}`).
 
 3. **Update `CHANGELOG.md`.** Add a dated section for the new version
    following the existing style. Pull the entries from `git log
@@ -46,7 +49,9 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    Fixed / Removed. Don't invent entries — every line should map to a
    landed commit. Move everything under `## [Unreleased]` into the new
    section and leave `[Unreleased]` empty: the publish workflow refuses
-   to release otherwise.
+   to release otherwise. For a minor or major release, update or add the
+   docs page `docs/whatsnew.md` ("What's new in X.Y"), with the results
+   that change on upgrade.
 
 4. **Run the local gate** (must mirror `.github/workflows/tests.yml`):
    ```bash
@@ -84,7 +89,7 @@ lint job (`ruff` + `mypy` with `numpy<2`). Mirror it locally before tagging.
    Do *not* run `git tag` or `git push --tags` from the skill. Print
    the suggested commands instead:
    ```
-   git add pyproject.toml porosity_fe/__init__.py CHANGELOG.md
+   git add pyproject.toml porosity_fe/__init__.py CHANGELOG.md CITATION.cff README.md
    git commit -m "release: v<new>"
    git tag -a v<new> -m "v<new>"
    git push origin <branch> --follow-tags
