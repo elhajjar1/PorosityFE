@@ -30,6 +30,8 @@ from matplotlib.collections import QuadMesh
 pytest.importorskip("streamlit")
 
 import app
+from porosity_app import convergence as app_convergence
+from porosity_app import runners as app_runners
 
 
 def _base_cfg(**overrides) -> dict:
@@ -270,7 +272,7 @@ class TestRunAnalysis:
             def solve(self, **kwargs):
                 raise RuntimeError("singular stiffness matrix")
 
-        monkeypatch.setattr(app, "FESolver", _ExplodingFESolver)
+        monkeypatch.setattr(app_runners, "FESolver", _ExplodingFESolver)
         r = app.run_analysis(_base_cfg(loading_mode="tension"))
         assert r["fe_field"] is None
         assert "RuntimeError" in r["fe_skipped_reason"]
@@ -286,7 +288,7 @@ class TestRunAnalysis:
         def _raise(*args, **kwargs):
             raise ValueError("bad ply angles")
 
-        monkeypatch.setattr(app, "FESolver", _raise)
+        monkeypatch.setattr(app_runners, "FESolver", _raise)
         r = app.run_analysis(_base_cfg())
         assert r["fe_field"] is None
         assert "ValueError: bad ply angles" in r["fe_skipped_reason"]
@@ -304,8 +306,8 @@ class TestRunAnalysis:
         def _no_fe(*args, **kwargs):
             raise RuntimeError("FE not needed for this test")
 
-        monkeypatch.setattr(app, "build_empirical_pipeline", _spy)
-        monkeypatch.setattr(app, "FESolver", _no_fe)
+        monkeypatch.setattr(app_runners, "build_empirical_pipeline", _spy)
+        monkeypatch.setattr(app_runners, "FESolver", _no_fe)
         cfg = _base_cfg(distribution="clustered", cluster_location="surface")
         r = app.run_analysis(cfg)
 
@@ -1103,7 +1105,7 @@ class TestConvergenceCheck:
             calls.append((material, porosity, loading, kwargs))
             return real(material, porosity, loading, **kwargs)
 
-        monkeypatch.setattr(app, "refinement_study", spy)
+        monkeypatch.setattr(app_convergence, "refinement_study", spy)
         cfg = _base_cfg(nx=6, ny=2, nz=4, distribution="clustered",
                         cluster_location="surface")
         study = app.run_convergence_check(cfg, [(6, 2, 4), (9, 3, 4)])
@@ -1152,7 +1154,7 @@ class TestConvergenceCheck:
     ])
     def test_load_case_wiring(self, monkeypatch, cfg, loading, extra):
         calls = []
-        monkeypatch.setattr(app, "refinement_study",
+        monkeypatch.setattr(app_convergence, "refinement_study",
                             lambda m, p, ld, **kw: calls.append((ld, kw)) or "study")
         assert app.run_convergence_check(cfg, [(4, 2, 4), (6, 3, 4)]) == "study"
         (got_loading, kwargs), = calls
@@ -1164,7 +1166,7 @@ class TestConvergenceCheck:
 
     def test_cached_wrapper(self, monkeypatch):
         seen = []
-        monkeypatch.setattr(app, "run_convergence_check",
+        monkeypatch.setattr(app_convergence, "run_convergence_check",
                             lambda cfg, res: seen.append((cfg, res)) or "study")
         key = app._config_to_key(_base_cfg(nx=7))
         assert app.run_convergence_cached(key, ((7, 4, 6), (11, 6, 6))) == "study"
@@ -1235,7 +1237,7 @@ class TestFEFailureSummary:
 
     def test_convergence_check_uses_the_criterion(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(app, "refinement_study",
+        monkeypatch.setattr(app_convergence, "refinement_study",
                             lambda m, p, ld, **kw: calls.append(kw) or "study")
         app.run_convergence_check(_base_cfg(failure_criterion="hashin"),
                                   [(4, 2, 4), (6, 3, 4)])
@@ -1310,7 +1312,7 @@ class TestDefectConfigKey:
     def test_the_cached_runner_restores_the_config(self, monkeypatch):
         """The key round-trips to the config run_analysis sees."""
         seen = {}
-        monkeypatch.setattr(app, "run_analysis", lambda cfg: seen.update(cfg) or {})
+        monkeypatch.setattr(app_runners, "run_analysis", lambda cfg: seen.update(cfg) or {})
         cfg = _delam_cfg(toughness_law="user", toughness_b=[5.0, 12.0])
         app.run_analysis_cached.__wrapped__(app._config_to_key(cfg))
         assert seen["delamination"] == cfg["delamination"]

@@ -72,7 +72,7 @@ porosity-analyze = "porosity_fe_analysis:main"
 # `streamlit run app.py` and the tests can import it, and could shadow
 # another installed module called `app`.
 py-modules = ["porosity_fe_analysis", "app", "validate_porosity_cli"]
-packages = ["porosity_fe", "porosity_fe.fe", "validation"]
+packages = ["porosity_fe", "porosity_fe.fe", "porosity_app", "porosity_app.tabs", "validation"]
 
 [tool.setuptools.package-data]
 validation = ["datasets/*.json", "schemas/*.json"]
@@ -101,7 +101,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # app.py intentionally calls matplotlib.use("Agg") and bootstraps sys.path
-# before importing pyplot / sibling modules, which trips E402/I001.
+# before importing porosity_fe / porosity_app, which trips E402/I001.
 "app.py" = ["E402", "I001"]
 # validation/validate_all.py selects the Agg backend and bootstraps sys.path
 # before importing pyplot and the package, like app.py.
