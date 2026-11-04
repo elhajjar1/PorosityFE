@@ -83,5 +83,6 @@ Contents
    :caption: Reference
 
    api
+   whatsnew
    deprecations
    changelog

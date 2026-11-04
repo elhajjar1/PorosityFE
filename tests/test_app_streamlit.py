@@ -459,6 +459,27 @@ class TestDefectsPanel:
         assert labels.count("Download PNG") == 5          # + the front plot
         assert any("Delamination: through-width strip" in s.value for s in at.success)
 
+    def test_preset_toughness_is_used_without_entries(self):
+        """IM7_8552_epoxy carries toughness (#223): with the toughness
+        fields left empty the run uses the preset's, so it reports the
+        fracture load factor, and the sidebar says so."""
+        at = _fresh_app()
+        _select(at, "Material", "IM7_8552_epoxy")
+        at = _small_mesh(at)
+        _select(at, "Loading mode", "tension")
+        at.checkbox(key="delam_on").check().run()
+        at.number_input(key="delam_interface").set_value(0).run()
+        at.selectbox(key="delam_shape").set_value("strip").run()
+        assert any("This preset carries interlaminar toughness: G_Ic 0.21" in c.value
+                   for c in at.caption)
+        assert at.number_input(key="tough_G_Ic").value is None
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        fe = at.session_state["result"]["fe_field"]
+        assert fe.crack_front is not None and fe.fracture_load_factor is not None
+        cfg = at.session_state["result"]["config"]
+        assert all(cfg.get(k) is None for k in ("G_Ic", "G_IIc", "bk_eta"))
+
     def test_ncr_assesses_the_delamination_without_a_path(self):
         at = _delamination_run(_fresh_app())
         assert at.selectbox(key="ncr_indication").value == "combined"

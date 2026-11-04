@@ -355,39 +355,58 @@ def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
     return delamination, bool(split), problem
 
 
-def _build_toughness_inputs() -> tuple[dict, str | None]:
+def _build_toughness_inputs(material=None) -> tuple[dict, str | None]:
     """Interlaminar toughness and its porosity knockdown; return the config
-    fields and why the run is blocked (``None`` when it is not)."""
+    fields and why the run is blocked (``None`` when it is not).
+
+    When the selected ``material`` preset carries toughness (today
+    ``IM7_8552_epoxy``), an empty field keeps the preset's value: the
+    analysis overrides the preset only with the fields entered here."""
+    preset = material if material is not None and material.has_toughness else None
     st.subheader("Interlaminar toughness (FE)")
-    st.caption(
-        "No material preset carries interlaminar toughness: enter measured "
-        "initiation (or precracked) values for your material, in N/mm "
-        "(= kJ/m²). Without G_Ic, G_IIc and η the FE reports the energy "
-        "release rates only, no fracture load factor.")
+    if preset is None:
+        st.caption(
+            "This material preset carries no interlaminar toughness: enter "
+            "measured initiation (or precracked) values for your material, in "
+            "N/mm (= kJ/m²). Without G_Ic, G_IIc and η the FE reports the "
+            "energy release rates only, no fracture load factor.")
+    else:
+        st.caption(
+            f"This preset carries interlaminar toughness: G_Ic {preset.G_Ic:g}, "
+            f"G_IIc {preset.G_IIc:g}, G_IIIc {preset.G_IIIc_eff:g} N/mm, "
+            f"η {preset.bk_eta:g}. Leave a field empty to keep the preset's "
+            "value, or enter one measured for your material (N/mm = kJ/m²).")
+    required = "required for λ_c"
     c1, c2 = st.columns(2)
     with c1:
         G_Ic = st.number_input("G_Ic, mode I (N/mm)", min_value=0.001,
                                max_value=20.0, value=None, step=0.01,
                                format="%.4f", key="tough_G_Ic",
-                               placeholder="required for λ_c")
+                               placeholder=required if preset is None
+                               else f"preset: {preset.G_Ic:g}")
         G_IIIc = st.number_input("G_IIIc, mode III (N/mm)", min_value=0.001,
                                  max_value=20.0, value=None, step=0.01,
                                  format="%.4f", key="tough_G_IIIc",
-                                 placeholder="= G_IIc",
-                                 help="Optional; empty uses G_IIc.")
+                                 placeholder="= G_IIc" if preset is None
+                                 else f"preset: {preset.G_IIIc_eff:g}",
+                                 help="Optional; empty uses G_IIc"
+                                 + ("." if preset is None else " (the preset's G_IIIc)."))
     with c2:
         G_IIc = st.number_input("G_IIc, mode II (N/mm)", min_value=0.001,
                                 max_value=20.0, value=None, step=0.01,
                                 format="%.4f", key="tough_G_IIc",
-                                placeholder="required for λ_c")
+                                placeholder=required if preset is None
+                                else f"preset: {preset.G_IIc:g}")
         bk_eta = st.number_input("B-K exponent η", min_value=0.01,
                                  max_value=20.0, value=None, step=0.1,
                                  format="%.3f", key="tough_bk_eta",
-                                 placeholder="required for λ_c",
+                                 placeholder=required if preset is None
+                                 else f"preset: {preset.bk_eta:g}",
                                  help=("Benzeggagh-Kenane: G_c = G_Ic + "
                                        "(G_IIc - G_Ic) ψ^η, fitted to mixed-"
                                        "mode bending data."))
-    given = [v is not None for v in (G_Ic, G_IIc, bk_eta)]
+    # A field left empty on a preset with toughness keeps the preset's value.
+    given = [v is not None or preset is not None for v in (G_Ic, G_IIc, bk_eta)]
     if any(given) and not all(given):
         st.info("Enter G_Ic, G_IIc and η for the fracture load factor.")
     law = st.selectbox(
@@ -622,7 +641,7 @@ def _build_sidebar_inputs() -> dict | None:
         specimen = loading_mode in _FRACTURE_MODES and thermal_mode != "thermal_only"
         toughness, tough_problem = ({}, None)
         if delamination is not None or specimen:
-            toughness, tough_problem = _build_toughness_inputs()
+            toughness, tough_problem = _build_toughness_inputs(MATERIALS[material_name])
 
         try:
             entered_layup = parse_layup(layup_str) if n_plies else None
