@@ -114,6 +114,19 @@ class TestMaterialProperties:
         mat = MATERIALS['IM7_8551_epoxy']
         assert 170000 <= mat.E11 <= 180000
 
+    def test_im7_8552_preset(self):
+        """IM7/8552 (#223): NASA/CR-2011-217305 Tables I-II for the elastic
+        constants and toughness, NCAMP means for the strengths."""
+        mat = MATERIALS['IM7_8552_epoxy']
+        assert (mat.E11, mat.E22, mat.E33) == (161000.0, 11380.0, 11380.0)
+        assert (mat.G12, mat.G13, mat.G23) == (5200.0, 5200.0, 3900.0)
+        assert (mat.nu12, mat.nu13, mat.nu23) == (0.32, 0.32, 0.45)
+        assert mat.has_toughness
+        assert (mat.G_Ic, mat.G_IIc, mat.G_IIIc, mat.bk_eta) == (0.21, 0.78, 0.78, 2.57)
+        assert mat.sigma_1t == pytest.approx(362.7 * 6.894757, abs=0.5)
+        assert mat.sigma_1c == pytest.approx(248.9 * 6.894757, abs=0.5)
+        assert not mat.has_cte and mat.sigma_3t is None and mat.tau_13 is None
+
     def test_t300_934_preset_exists(self):
         assert 'T300_934_epoxy' in MATERIALS
         mat = MATERIALS['T300_934_epoxy']
@@ -597,7 +610,10 @@ class TestInterlaminarToughnessFields:
         assert mat.has_toughness and mat.G_IIIc_eff == self.TOUGH['G_IIc']
         assert dataclasses.replace(mat, G_IIIc=1.0).G_IIIc_eff == 1.0
         assert not dataclasses.replace(mat, bk_eta=None).has_toughness
-        assert all(m.G_Ic is None and m.bk_eta is None for m in MATERIALS.values())
+        # Toughness is set only from a cited source: today IM7/8552
+        # (NASA/CR-2011-217305, #223).
+        assert {n for n, m in MATERIALS.items() if m.G_Ic is not None or m.bk_eta is not None} \
+            == {'IM7_8552_epoxy'}
 
     def test_perturbable_only_when_set(self):
         from collections import OrderedDict
@@ -622,3 +638,28 @@ class TestInterlaminarToughnessFields:
         mat = dataclasses.replace(self.BASE, G_IIIc=0.9, **self.TOUGH)
         block = json.loads(json.dumps({'m': mat}, default=_json_default))['m']
         assert MaterialProperties(**block) == mat
+
+
+@pytest.mark.parametrize('name', sorted(n for n, m in MATERIALS.items() if m.has_toughness))
+def test_presets_with_toughness_solve_a_dcb(name):
+    """Every preset that carries toughness drives the fracture path: an
+    ASTM D5528 DCB of it gives a finite, positive critical load factor
+    (#223). Eight plies and two elements across keep it fast."""
+    import dataclasses
+    import logging
+    import math
+    import warnings
+
+    from porosity_fe import FESolver
+    mat = dataclasses.replace(MATERIALS[name], n_plies=8)
+    pf = PorosityField(mat, 0.0)
+    logging.disable(logging.WARNING)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            mesh = CompositeMesh.for_dcb(pf, mat, ny=2)
+            res = FESolver(mesh, mat, pf, ply_angles='UD').solve('dcb', applied_load=10.0)
+    finally:
+        logging.disable(logging.NOTSET)
+    assert math.isfinite(res.fracture_load_factor) and res.fracture_load_factor > 0.0
+    assert res.crack_front is not None and res.crack_front.G_I.max() > 0.0

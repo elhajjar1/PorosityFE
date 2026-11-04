@@ -95,6 +95,10 @@ cohesive zone or buckling.
   specification governs.
 - **JSON exports** carry a `units` block. The results schema is at 1.3,
   with additive blocks only.
+- **An `IM7_8552_epoxy` material preset** carries interlaminar toughness
+  (NASA/CR-2011-217305), so the fracture features work on it without
+  manual entry. Its strengths are the NCAMP qualification means. Its resin
+  Poisson ratio is an assumption, flagged in the entry.
 
 ## Results that change on upgrade
 

@@ -908,4 +908,41 @@ MATERIALS = {
         matrix_modulus=3400.0, matrix_poisson=0.35,
         fiber_modulus=238000.0, fiber_volume_fraction=0.60,
     ),
+    # IM7/8552 (Hexcel HexTow IM7 / HexPly 8552), unidirectional tape (#223).
+    # Not IM7_8551_epoxy: 8551-7 is a different, toughened resin.
+    # - Elastic constants and toughness: Krueger, NASA/CR-2011-217305
+    #   (2011), Table I (E11 = 161 GPa, E22 = E33 = 11.38 GPa, nu12 = nu13 =
+    #   0.32, nu23 = 0.45, G12 = G13 = 5.2 GPa, G23 = 3.9 GPa) and Table II
+    #   (G_Ic = 0.21, G_IIc = G_IIIc = 0.78 N/mm, B-K eta = 2.57), the
+    #   constants of the ENF benchmark in tests/test_fracture_specimens.py.
+    # - Strengths: the NCAMP qualification means (CAM-RP-2009-015 Rev A,
+    #   190 gsm / 35 % RC, RTD, normalized to the 0.0072 in = 0.183 mm cured
+    #   ply), as tabulated by Lovejoy et al. 2020 (AIAA SciTech, NTRS
+    #   20200002400, Tables 3, 4, 7) and Miller et al. 2018 (NTRS
+    #   20180004510, Table 5): 0 deg tension 362.7 ksi, 0 deg compression
+    #   248.9 ksi (back-out factor method), 90 deg tension 9.29 ksi, 90 deg
+    #   compression 41.44 ksi, in-plane shear 13.22 ksi at 5 % strain
+    #   (ASTM D3518). tau_ilss: 0 deg short-beam shear 128 MPa (18.5 ksi),
+    #   HexTow IM7 datasheet (2023); the HexPly 8552 datasheet (2020) lists
+    #   19.9 ksi (137 MPa) at 77 F dry, so the lower value is kept.
+    # - Constituents: 8552 neat-resin tensile modulus 0.677 Msi (HexPly 8552
+    #   datasheet); IM7 fibre modulus 276 GPa (HexTow IM7 datasheet); fibre
+    #   volume 57.7 % at 35 % resin content (HexPly 8552 EU datasheet).
+    #   matrix_poisson = 0.35 is an ASSUMPTION, not a sourced 8552 value: no
+    #   public source gives the neat-resin Poisson ratio, so it takes the
+    #   value the other carbon/epoxy presets use.
+    # The lamina moduli are NASA's, not NCAMP's (NCAMP: E1 = 158.5 GPa,
+    # E2 = 9.0 GPa, G12 = 4.7 GPa), so the preset reproduces the fracture
+    # benchmarks. No CTEs or interlaminar strengths: not sourced.
+    'IM7_8552_epoxy': MaterialProperties(
+        E11=161000.0, E22=11380.0, E33=11380.0,
+        G12=5200.0, G13=5200.0, G23=3900.0,
+        nu12=0.32, nu13=0.32, nu23=0.45,
+        sigma_1c=1716.0, sigma_1t=2501.0, sigma_2t=64.1, sigma_2c=285.7,
+        tau_12=91.1, tau_ilss=128.0,
+        t_ply=0.183, n_plies=24,
+        matrix_modulus=4668.0, matrix_poisson=0.35,
+        fiber_modulus=276000.0, fiber_volume_fraction=0.577,
+        G_Ic=0.21, G_IIc=0.78, G_IIIc=0.78, bk_eta=2.57,
+    ),
 }

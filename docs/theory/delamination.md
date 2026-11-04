@@ -27,9 +27,9 @@ import dataclasses
 from porosity_fe import (MATERIALS, CompositeMesh, Delamination, FESolver,
                          PorosityField)
 
-# No preset has toughness data. For illustration only, the IM7/8552 values
-# of the table under "Toughness data" on the T800 preset (24 plies); use
-# values measured for your material (N/mm).
+# Of the presets only IM7_8552_epoxy carries toughness. For illustration,
+# the IM7/8552 values of the table under "Toughness data" on the T800
+# preset (24 plies); use values measured for your material (N/mm).
 mat = dataclasses.replace(MATERIALS['T800_epoxy'],
                           G_Ic=0.212, G_IIc=0.774, bk_eta=2.1)
 pf = PorosityField(mat, 0.02)
@@ -338,8 +338,9 @@ $$
 plain B-K when $G_{IIIc} = G_{IIc}$, which is the default. It gives
 $G_{Ic}$ at $\psi = 0$, $G_{IIc}$ in pure mode II and $G_{IIIc}$ in pure mode
 III. The inputs are the optional {class}`~porosity_fe.MaterialProperties`
-fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. No
-preset sets them (see [Toughness data](#toughness-data)). Without them the
+fields `G_Ic`, `G_IIc`, `G_IIIc` (default `G_IIc`) and `bk_eta`, in N/mm. Of
+the presets only `IM7_8552_epoxy` sets them (see
+[Toughness data](#toughness-data)). Without them the
 solve still reports the energy release rates, logs one INFO line, and the
 load factor is `None`. Each pure-mode toughness is the material's, knocked
 down by the porosity at the front node
@@ -424,8 +425,8 @@ applied state is held for every $\lambda$ (see
 
 - The web app's sidebar takes an explicit delamination (an NDI indication:
   interface, planform, position and full size in mm on the FE mesh), the
-  toughness (`G_Ic`, `G_IIc`, optionally `G_IIIc`, and $\eta$; no preset
-  has them) and the porosity knockdown of the toughness (the placeholder
+  toughness (`G_Ic`, `G_IIc`, optionally `G_IIIc`, and $\eta$; of the
+  presets only `IM7_8552_epoxy` has them) and the porosity knockdown of the toughness (the placeholder
   exponential law, none, or your `b_I`, `b_II`). The Results tab's
   **Defects** block shows the front table and $G_T$ and $\psi$ along the
   front, the fracture load factor with the governing node and its mode
@@ -753,13 +754,17 @@ report sets to about three ply thicknesses.
 
 ## Toughness data
 
-No preset carries toughness. Sourced values from the delamination plan's
+The `IM7_8552_epoxy` preset carries the IM7/8552 set of Krueger,
+NASA/CR-2011-217305, Table II ($G_{Ic}$ = 0.21, $G_{IIc}$ = $G_{IIIc}$ =
+0.78 N/mm, $\eta$ = 2.57), with that report's elastic constants (Table I);
+no other preset carries toughness. Sourced values from the delamination plan's
 literature brief (N/mm; [P] read in the primary source, [S] from a
 secondary source, [NV] not verified):
 
 | Material | $G_{Ic}$ | $G_{IIc}$ | B-K $\eta$ | Source |
 |---|---|---|---|---|
 | IM7/8552 (benchmark reference) | 0.212 | 0.774 | 2.1 | Krueger, NASA/CR-2012-217562 [P] |
+| IM7/8552 (the `IM7_8552_epoxy` preset; ENF benchmark) | 0.21 | 0.78 ($G_{IIIc}$ 0.78) | 2.57 | Krueger, NASA/CR-2011-217305, Table II [P] |
 | IM7/8552 | 0.206 (fatigue precracked) to 0.237 (insert) | 0.739 to 0.807 (precracked) | | Czabaj and Ratcliffe 2013, doi:10.1016/j.compscitech.2013.09.008; O'Brien et al., NASA/TM-2010-216838 [P] |
 | AS4/3501-6 | 0.077 to 0.091 | 0.54 to 0.71 | NV | Reeder 1992, NASA TM-104210 [P] |
 | AS4/PEEK (APC-2) | 0.969 | 1.719 | 2.284 | Camanho and Dávila, NASA/TM-2002-211737 [P] (Reeder: 0.78 to 0.84 / 1.16 to 1.25) |
@@ -909,7 +914,8 @@ which no monotone law follows.
 - Contact is frictionless, node to node on the matching duplicated nodes
   (small sliding), from a zero gap. With a thermal prestress the load factor
   holds the contact set of the applied state.
-- No preset has toughness data. The porosity knockdown of the toughness has
+- Only the `IM7_8552_epoxy` preset has toughness data. The porosity
+  knockdown of the toughness has
   uncalibrated placeholder coefficients and ignores the rise of mode I
   propagation toughness with voids
   ([Porosity and toughness](#porosity-and-toughness)).

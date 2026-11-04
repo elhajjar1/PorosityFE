@@ -14,6 +14,29 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **An `IM7_8552_epoxy` preset with interlaminar toughness** (#223), the
+  first preset that drives the fracture path without manual entry. Every
+  value is cited in the entry:
+  - the elastic constants and toughness (`G_Ic` 0.21, `G_IIc` = `G_IIIc`
+    0.78 N/mm, B-K `eta` 2.57) from Krueger, NASA/CR-2011-217305, Tables I
+    and II, the constants of the ENF benchmark;
+  - the strengths from the NCAMP qualification means (CAM-RP-2009-015
+    Rev A), as two NASA papers tabulate them (NTRS 20200002400 and
+    20180004510): 0 deg tension 2501 MPa, compression 1716 MPa, 90 deg
+    tension 64.1 MPa and compression 285.7 MPa, in-plane shear 91.1 MPa
+    (5 % strain), on a 0.183 mm cured ply;
+  - `tau_ilss` 128 MPa, the lower of the two Hexcel datasheet values (the
+    HexPly 8552 sheet lists 137 MPa);
+  - the constituents from the Hexcel HexPly 8552 and HexTow IM7 datasheets
+    (resin modulus 4668 MPa, fibre modulus 276 GPa, fibre volume 57.7 %).
+
+  `matrix_poisson = 0.35` is an assumption, flagged in the entry: no public
+  source gives the neat 8552 Poisson ratio. The preset has no CTEs and no
+  interlaminar strengths.
+  - In the app, an empty toughness field keeps the preset's value; the
+    sidebar says so, and the λ_c uncertainty inputs are offered.
+  - A new test checks that every preset with toughness solves a DCB with a
+    finite load factor.
 - **A register of the deprecations removed in 2.0** (#218). The docs page
   "Deprecations removed in 2.0" lists the ten deprecated names and paths,
   with what replaces each, and two open decisions: the
