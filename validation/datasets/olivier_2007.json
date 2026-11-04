@@ -1,0 +1,29 @@
+{
+  "reference": "Olivier, P.A., Mascaro, B., Margueres, P., & Collombet, F. (2007). CFRP with voids: ultrasonic characterization of localized porosity, acceptance criteria and mechanical characteristics. Proceedings of the 16th International Conference on Composite Materials (ICCM-16), Kyoto, Japan.",
+  "doi": "10.5281/zenodo.15414374",
+  "data_source": "Fig. 8 (G_IC against crack length for Vv = 0.1, 5.09 and 15.3 %), read from the vector graphics of the open-access PDF (Zenodo record 15414374, CC-BY-SA-4.0): every plotted marker is a vector path, so its centre was converted to data with the axis calibration (0 and 140 mm, 0 and 0.45 N/mm, checked against the plot frame to 0.1 pt, about 0.0004 N/mm). The values are the means of the plotted R-curve points per void content; the text's 'a void content of 5% induces a decrease by about 22% in GIC' (Section 4.3) agrees",
+  "material": {
+    "fiber": "T700GC",
+    "matrix": "M21 (Hexcel)",
+    "fiber_volume_fraction": 0.56,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "[0]_16, crack at the 0/0 mid-plane interface"
+  },
+  "porosity_measurement": "image analysis of polished sections (ImageJ, three 30 x 30 mm samples per cure cycle); resin acid digestion per EN 2564 was also run and agrees below 5 %",
+  "baseline_porosity_pct": 0.1,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "ISO 15024 (DCB), Berry's method",
+      "stage": "propagation",
+      "precrack": "unspecified",
+      "void_content_pct": [0.1, 5.09],
+      "normalized_values": [1.0, 0.765],
+      "normalized_uncertainty": [0.056, 0.059],
+      "absolute_values_N_per_mm": [0.348, 0.266],
+      "absolute_uncertainty_N_per_mm": [0.019, 0.021],
+      "digitization_method": "direct"
+    }
+  },
+  "notes": "Autoclave-cured T700GC/M21 UD prepreg (Hexcel, Vf0 = 56 % and an initial resin weight fraction of 37.4 % in the prepreg; no cured fibre volume fraction is given; 0.256 mm prepreg plies), with the void content set by the cure pressure path only. DCB coupons [0]_16, 4 mm thick, crack at the 0/0 mid-plane; width and length are not given. Mode I was tested at 0.1 %, 5.09 % and 15.7 % voids (Section 4.3; the Fig. 8 legend and the image-analysis value of Fig. 4 say 15.3 %). Fig. 8 holds 31, 19 and 27 points over crack lengths of 37.8-115.7, 32.1-127.0 and 32.8-118.5 mm, with means 0.3476, 0.2659 and 0.0718 N/mm and standard deviations 0.0194, 0.0205 and 0.0101 N/mm (the uncertainties listed, absolute and over the 0.1 % mean). The R-curves are flat within that scatter (least-squares slopes +0.018, -0.018 and -0.033 N/mm per 100 mm of crack), so initiation and plateau cannot be told apart from the figure: the points are stored as propagation values, as Carraro et al. 2015 cite them. The shortest-crack stations are 0.365 N/mm at 37.8 mm (0.1 %), 0.260-0.278 N/mm at 32.1-32.4 mm (5.09 %, three points) and 0.081-0.092 N/mm at 32.8-33.2 mm (15.3 %, three points); no ISO 15024 initiation value (NL, 5 % or maximum load) is reported. 0.2659 / 0.3476 = 0.765 is a 23.5 % decrease at 5.09 % voids (b = 5.37 per unit Vp), against 'about 22%' in the text. The text calls the crack starter '50 mm long pre-crack', which does not say whether it is the film insert or a crack grown from it; precrack is 'unspecified'. The 15.3 % series (normalized 0.207, b = 10.4) is left out: it is beyond the schema's 15 % limit and the 5 % calibration range of the law. The same paper gives void-free mode II G_IIc = 1.12 N/mm by ENF for T700GC/M21 (1.21 N/mm in a later formula), not studied against void content."
+}

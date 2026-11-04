@@ -674,6 +674,20 @@ def test_agius_fox_2015_dataset_loads():
     assert block['normalized_values'] == [1.0, pytest.approx(1 / 1.21, abs=1e-4)]
 
 
+def test_olivier_2007_dataset_loads():
+    """Fig. 8 R-curve means, propagation; the 15.3 % series is left out."""
+    from validation.validate_all import load_dataset
+    data = load_dataset(os.path.join(_DATASETS_DIR, 'olivier_2007.json'))
+    block = data['properties']['G_Ic']
+    assert block['void_content_pct'] == [0.1, 5.09]
+    assert block['absolute_values_N_per_mm'] == [0.348, 0.266]
+    assert block['normalized_values'] == [1.0, 0.765]
+    assert data['baseline_porosity_pct'] == 0.1
+    assert block['stage'] == 'propagation' and block['precrack'] == 'unspecified'
+    # The text's "a void content of 5% induces a decrease by about 22%".
+    assert 1.0 - block['normalized_values'][1] == pytest.approx(0.22, abs=0.02)
+
+
 def test_schema_toughness_blocks():
     schema = _schema()
     jsonschema.validate(_toughness_dataset(), schema)
@@ -738,18 +752,21 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     from validation.validate_all import summarize_mae, summarize_toughness_mae
     hakim = _all_results['hakim_2017']['G_Ic']
     agius = _all_results['agius_fox_2015']['G_IIc']
-    for entry, mode in ((hakim, 'I'), (agius, 'II')):
+    olivier = _all_results['olivier_2007']['G_Ic']
+    for entry, mode, stage in ((hakim, 'I', 'unspecified'), (agius, 'II', 'unspecified'),
+                               (olivier, 'I', 'propagation')):
         assert entry['category'] == 'toughness' and entry['mode'] == mode
         assert entry['uncalibrated'] is True and 'placeholder' in entry['law']
-        assert entry['stage'] == ['unspecified'] * entry['n_points']
+        assert entry['stage'] == [stage] * entry['n_points']
         assert len(entry['predicted_band']) == entry['n_points']
     # Pinned: exp(-6.2 dVp) and exp(-14 dVp) against the normalized data.
     assert hakim['mae'] == pytest.approx(6.200, abs=0.01)
     assert agius['mae'] == pytest.approx(1.147, abs=0.01)
+    assert olivier['mae'] == pytest.approx(2.033, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 2 and tough['n_points'] == 5
-    assert tough['property_weighted_mae'] == pytest.approx(3.673, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(4.179, abs=0.01)
+    assert tough['n_entries'] == 3 and tough['n_points'] == 7
+    assert tough['property_weighted_mae'] == pytest.approx(3.126, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(3.565, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
     assert (s['n_entries'], s['n_points']) == (35, 239)
@@ -786,5 +803,6 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert 'G_Ic' not in head and 'G_IIc' not in head
     assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
     assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
+    assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
     assert 'Property-weighted: **4.49%**' in head
     assert 'not an independent validation' in tail

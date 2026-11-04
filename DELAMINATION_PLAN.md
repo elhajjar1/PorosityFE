@@ -400,7 +400,7 @@ Use precracked or initiation values as the base the porosity knockdown applies t
 | Hakim et al. 2017 [P] | T700/EPON 828 UD | 1.49, 1.77, 3.43 % | G_Ic 0.52 → 0.45 (about −7 % per 1 % voids); mode I fatigue onset G_Imax at 10⁶ cycles −50 % |
 | Carraro et al. 2015 [P], doi:10.1179/2055035914Y.0000000004 | STS40 NCF/EC157 | 0 / 1.9 % (0°), 0 / 1.23 % (±45°) | G_Ic slightly *higher* with voids (bridging); fatigue Paris curves unchanged |
 | Agius & Fox 2015 [P, abstract], doi:10.1016/j.compositesa.2015.02.023 | OoA carbon/epoxy | < 0.3 / 1.5 % | G_IIc 21 % higher without voids |
-| Olivier et al. 2007 [S] | UD carbon/epoxy | up to 5 % | G_Ic −22 % for +5 % voids |
+| Olivier et al. 2007 [P], ICCM16, Zenodo record 15414374 | T700GC/M21 UD | 0.1, 5.09, 15.3 % | Propagation G_Ic 0.348, 0.266, 0.072 N/mm (Fig. 8, flat R-curves); −22 % for +5 % voids in the text. Dataset `olivier_2007` (#222) |
 | Asp & Brandt 1997 [S] | UD carbon/epoxy | 0 / 0.9 % | Initiation down or unchanged; propagation G_Ic +75 % (ply splits); mode II slightly down |
 | Mouritz 2000 [S], doi:10.1177/002199830003400303 | Woven glass/polyester | 3–30 % | G_Ic (initiation and propagation) falls steeply to about 15 %, then plateaus |
 | Hou, Ye & Mai 1996 [S], doi:10.1177/073168449601501104 | Woven CF/PEI | 0–6 % | Propagation G_Ic up; initiation G_Ic, G_IIc down |

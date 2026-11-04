@@ -4,6 +4,28 @@ All notable changes to PorosityFE will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Validation: the `olivier_2007` mode I toughness dataset** (#222).
+  Olivier, Mascaro, Margueres and Collombet, ICCM-16 (2007), open access
+  (Zenodo record 15414374): T700GC/M21 `[0]_16` DCB coupons per ISO 15024,
+  Berry's method. Fig. 8 plots `G_IC` against crack length at 0.1, 5.09
+  and 15.3 % voids; its markers are vector paths in the PDF, so each was
+  converted exactly with the axis calibration, not digitized from an image.
+  - The R-curves are flat within their scatter, so the dataset holds their
+    means as propagation values: 0.348 and 0.266 N/mm at 0.1 and 5.09 %
+    (normalized 0.765, a 23.5 % decrease; the text says "about 22%").
+    Initiation and plateau cannot be told apart in the figure; the notes
+    give the shortest-crack stations.
+  - The 15.3 % series (0.072 N/mm, normalized 0.207) is left out: it is
+    beyond the schema's 15 % limit and the law's 5 % range.
+  - Toughness MAE, still reported apart from the unchanged strength and
+    modulus headline: `olivier_2007` 2.03 %; overall 3.13 %
+    property-weighted and 3.57 % point-weighted over 7 points (were 3.67 %
+    and 4.18 % over 5).
+  - The placeholder `b_I = 6.2` is not refitted. Fig. 8 gives 5.37, near
+    the 4.97 of the paper's text that the placeholder uses, and mode I has
+    two studies, not the three #222 asks for.
+
 ## [1.3.0] - 2026-11-04
 
 Explicit delaminations and fracture mechanics in the FE path (contact,
