@@ -12,6 +12,24 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: the `uhl_1988` compression dataset** (#221). Uhl, Lucht,
+  Jeong and Hsu, Review of Progress in QNDE 7B (1988), pp. 1075-1082,
+  doi:10.1007/978-1-4613-0979-6_24, open copy in the Iowa State repository:
+  compression strength of 16-ply `[45/-45/0/90]_2s` Rohr graphite/epoxy at
+  0.34, 1.25, 2.81 and 4.05 % voids (acid digestion), each the mean of 3
+  tests in an end-restrained jig.
+  - Fig. 5 is a 447 x 328 px scan, read at its native pixels (about 0.03 %
+    and 400 psi per pixel). The points lie within 0.3 % of the exponential
+    fit printed in the figure (B = -0.0314 per %; -0.0307 from the read
+    points).
+  - The fibre and resin are not named; the generic `('Carbon', 'epoxy')`
+    preset is used, with an assumed Vf of 0.6 that the QI compression
+    knockdown does not depend on.
+  - MAE 6.5 %: the data lose 10.6 % from 0.34 to 4.05 %, where the
+    Judd-Wright law (alpha 6.9) gives 22.6 %. Compression strength: 7.5 %
+    over 4 datasets. Strength and modulus: 5.08 % property-weighted and
+    4.53 % point-weighted over 39 entries and 264 points (were 5.04 % and
+    4.50 % over 38 and 260).
 - **Validation: compression and in-plane shear datasets from Cinquin et
   al. 2007** (#221). Cinquin, Triquenaux and Rouesne, ICCM-16 (2007), open
   access (Zenodo record 15413348): an intermediate-modulus carbon / 180 C

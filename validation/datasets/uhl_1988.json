@@ -1,0 +1,29 @@
+{
+  "reference": "Uhl, K.M., Lucht, B., Jeong, H., & Hsu, D.K. (1988). Mechanical strength degradation of graphite fiber reinforced thermoset composites due to porosity. In D.O. Thompson & D.E. Chimenti (Eds.), Review of Progress in Quantitative Nondestructive Evaluation, Vol. 7B (pp. 1075-1082). Plenum Press.",
+  "doi": "10.1007/978-1-4613-0979-6_24",
+  "data_source": "Fig. 5 (compressive strength against porosity content, B-series quasi-isotropic graphite/epoxy), digitized from the scanned figure of the open copy in the Iowa State University repository (dr.lib.iastate.edu): the 447 x 328 px greyscale image was read at its native pixels, axes from the 0 and 10 % and 0 and 100000 psi grid lines, markers at their intensity-weighted centres (about 0.03 % and 400 psi per pixel). The four points lie within 0.3 % of the fit printed in the figure (Y = A exp(B X), A = 84893 psi, B = -0.0314 per %); a fit to the read points gives A = 84683 psi, B = -0.0307",
+  "material": {
+    "fiber": "Carbon",
+    "matrix": "epoxy",
+    "fiber_volume_fraction": 0.6,
+    "n_plies": 16,
+    "ply_angles": [45, -45, 0, 90, 45, -45, 0, 90, 90, 0, -45, 45, 90, 0, -45, 45],
+    "layup_name": "[45/-45/0/90]_2s quasi-isotropic"
+  },
+  "porosity_measurement": "acid digestion, spatially averaged over several areas of each panel",
+  "baseline_porosity_pct": 0.34,
+  "properties": {
+    "compression_strength": {
+      "test_standard": "end-restrained compression jig (non-standard; the paper reports agreement with ASTM D3410 for void-free QI laminates)",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "n_specimens_per_point": 3
+      },
+      "void_content_pct": [0.34, 1.25, 2.81, 4.05],
+      "normalized_values": [1.0, 0.975, 0.9257, 0.8938],
+      "absolute_values_MPa": [577.4, 563.0, 534.5, 516.1],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Rohr graphite/epoxy panels made with porosity (B-series, 16-ply [45/-45/0/90]_2s quasi-isotropic); the fibre and resin are not named and no fibre volume fraction is given: 0.6 is an assumption, which the quasi-isotropic compression knockdown does not depend on. Coupons about 2 x 0.25 x 0.09 in, loaded along the 0 direction in a 17-4PH stainless retaining jig; failure stress = maximum load / cross-section. Each point is the mean of three tests; the error bars are drawn only in Fig. 3. Read values 83750, 81660, 77524 and 74858 psi (577.4, 563.0, 534.5, 516.1 MPa) at 0.335, 1.249, 2.813 and 4.049 %, normalized to the lowest-porosity group. Fig. 7 gives an 11 % compression loss at 4 % voids for these laminates, as the printed fit does from 0 %. The void-free open square at 0 % and the one at 10 % are the fit (labelled Ryshkewitch), not data. The same paper's woven graphite/PMR-15 compression (Fig. 6) is left out (polyimide, no preset), and its short-beam data (Figs. 3, 4) are not used here. The ISU group's later Jeong 1997 (jeong_1997, ILSS) may use panels from the same programme."
+}
