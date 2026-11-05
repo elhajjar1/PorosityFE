@@ -161,6 +161,21 @@ class TestValidatePorosityCLIRun:
         assert rc == 0
         assert "1 succeeded, 1 failed" in capsys.readouterr().out
 
+    def test_failed_property_is_reported(self, tmp_path, capsys):
+        """A property whose prediction fails is left out of the MAE; the
+        summary says so instead of reporting a clean run."""
+        from validate_porosity_cli import main
+        ds = tmp_path / "ds"
+        ds.mkdir()
+        bad = json.loads(json.dumps(_MIN_VALID_DATASET))
+        bad["properties"]["ilss"]["normalized_values"] = [1.0]
+        (ds / "mismatch.json").write_text(json.dumps(bad), encoding="utf-8")
+        rc = main(['--datasets', str(ds), '--output-dir', str(tmp_path / "out")])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "[ERROR] mismatch / ilss: 4 void contents for 1 values." in out
+        assert "Property entries failed: 1 (left out of the MAE)" in out
+
     def test_debug_writes_log(self, tmp_path):
         from validate_porosity_cli import main
         ds = _write_min_datasets(tmp_path / "ds")
@@ -924,9 +939,45 @@ class TestDelaminationScreening:
         frac = _strict_json(tmp_path / 'porosity_delamination_3pct.json')['fracture']
         assert frac['toughness_knockdown'].startswith('none')
 
+    def test_porosity_degradation_option(self, small_material, tmp_path, monkeypatch, capsys):
+        """``--porosity-degradation`` reaches the FE solve and the knockdown
+        split, and is recorded in the JSON; it is 'isotropic' by default."""
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', {
+            **_TINY_CONFIGS, 'uniform_penny': {'distribution': 'uniform',
+                                               'void_shape': 'penny'}})
+        docs, lines = {}, {}
+        for mapping in (None, 'isotropic', 'directional'):
+            out_dir = tmp_path / str(mapping)
+            argv = ['--material', small_material, '--vp', '0.03',
+                    '--output-dir', str(out_dir), *_SPEC, '--delam-config', 'uniform_penny']
+            assert porosity_fe_analysis.main(
+                argv + ([] if mapping is None else ['--porosity-degradation', mapping])) == 0
+            lines[mapping] = capsys.readouterr().out
+            docs[mapping] = _strict_json(out_dir / 'porosity_delamination_3pct.json')
+        for mapping, doc in docs.items():
+            assert doc['solver']['porosity_degradation'] == (mapping or 'isotropic')
+            parts = doc['knockdown_decomposition']
+            assert parts['knockdown_total'] == doc['failure']['knockdown_factor']
+        for block in ('failure', 'knockdown_decomposition', 'fracture'):
+            assert docs[None][block] == docs['isotropic'][block]
+        iso, d = docs['isotropic'], docs['directional']
+        # Flat voids in the ply plane leave the in-plane tension stiffness
+        # less degraded with the directional mapping, in every solve.
+        assert d['failure']['knockdown_factor'] > iso['failure']['knockdown_factor']
+        assert d['knockdown_decomposition']['knockdown_porosity_only'] > \
+            iso['knockdown_decomposition']['knockdown_porosity_only']
+        assert d['knockdown_decomposition']['knockdown_delamination_only'] == pytest.approx(
+            iso['knockdown_decomposition']['knockdown_delamination_only'], rel=1e-12)
+        assert 'porosity degradation directional (uncalibrated)' in lines['directional']
+        assert 'porosity degradation' not in lines[None] + lines['isotropic']
+
     @pytest.mark.parametrize("argv, message", [
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
+        (['--porosity-degradation', 'directional'],
+         '--porosity-degradation need --delamination'),
+        (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
+         "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
         (['--delamination', 'strip:1.5:0:10'], 'must be an integer'),
         (['--delamination', 'strip:1:0'], 'takes 3 numbers'),

@@ -99,6 +99,14 @@
         }
       }
     },
+    "solver": {
+      "type": "object",
+      "description": "FE-field export: the settings of the solve. formulation, the element formulation ('hex8i', the default, or 'hex8'); porosity_degradation, how the local porosity degrades the ply stiffness and strengths (FESolver(porosity_degradation=...)): 'isotropic', the default, or the opt-in, uncalibrated 'directional', added in schema_version 1.3 (additive). A file without it was solved with 'isotropic', which load_results_from_json fills in.",
+      "properties": {
+        "formulation": {"type": "string"},
+        "porosity_degradation": {"type": "string", "enum": ["isotropic", "directional"]}
+      }
+    },
     "stiffness": {
       "type": "object",
       "description": "FE-field export: effective modulus, summed reactions and, for the fracture tests, the load-point compliance.",

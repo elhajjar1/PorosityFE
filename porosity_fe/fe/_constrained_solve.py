@@ -38,6 +38,23 @@ def _relative_residual(A: scipy.sparse.spmatrix, x: np.ndarray,
     return r / norm_b if norm_b > 0.0 else r
 
 
+#: Normwise backward error at which an iterate is accepted even above the
+#: residual tolerance: ``x`` then solves a system within about 1000 machine
+#: epsilons of ``A x = b``, as well as a direct solve can.
+_BACKWARD_ERROR_TOL = 1e3 * float(np.finfo(float).eps)
+
+
+def _backward_error(A: scipy.sparse.spmatrix, x: np.ndarray,
+                    b: np.ndarray) -> float:
+    """Normwise backward error ``||A x - b|| / (||A|| ||x|| + ||b||)``
+    (infinity norms): the smallest relative perturbation of ``A`` and ``b``
+    that ``x`` solves exactly."""
+    r = float(np.linalg.norm(A @ x - b, np.inf))
+    denom = (float(scipy.sparse.linalg.norm(A, np.inf)) * float(np.linalg.norm(x, np.inf))
+             + float(np.linalg.norm(b, np.inf)))
+    return r / denom if denom > 0.0 else r
+
+
 def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
                      diag: np.ndarray, *, solver: str, rtol: float,
                      max_restarts: int = 3) -> tuple[np.ndarray, float]:
@@ -91,7 +108,19 @@ def _iterative_solve(K_ff: scipy.sparse.spmatrix, rhs: np.ndarray,
             inner = max(inner * rtol / rel_res, eps)
             x0 = u_f
             restarts += 1
-    if not (info == 0 and rel_res <= accept):
+    # The relative residual cannot always reach rtol: on a stiff open
+    # specimen (the DCB arms) ||K|| ||u|| is far above ||rhs||, and even the
+    # exact LU solution's residual sits above 1e-9 from round-off alone. A
+    # converged iterate whose backward error is at round-off is as accurate
+    # as a direct solve, and is accepted, unless the caller asked for a
+    # tolerance below round-off itself, which still raises.
+    if info == 0 and rel_res > accept and rtol >= _BACKWARD_ERROR_TOL \
+            and _backward_error(K_ff, u_f, rhs) <= _BACKWARD_ERROR_TOL:
+        logger.info(
+            "%s: relative residual %.4e above %.4e, at the round-off floor "
+            "(backward error %.2e); accepted", solver, rel_res, accept,
+            _backward_error(K_ff, u_f, rhs))
+    elif not (info == 0 and rel_res <= accept):
         raise RuntimeError(
             f"{solver} failed to converge: info={info}, achieved relative "
             f"residual {rel_res:.4e} (requested rtol={rtol:.4e}"

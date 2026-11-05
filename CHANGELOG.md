@@ -12,6 +12,67 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: three more interlaminar-toughness datasets** (#222), all
+  tabulated and read in the primary source:
+  - `asp_brandt_1997`: Asp and Brandt, ICCM-11 (1997), Zenodo record
+    15409117. HTA/6376C, void-free against 0.9 % voids (1.4 % at the crack
+    plane), film insert. Mode I DCB: initiation unchanged (229.0 to 239.8
+    J/m²), propagation maximum +74 % (253.4 to 441.4, ply-split bridging).
+    Mode II ENF: −8 % (883.1 to 811.3).
+  - `russell_street_1982`: Russell and Street, ICCM-IV (1982), Zenodo
+    record 15403101, read from the page images. AS1/3501-6 [0]_24, 2.1 %
+    voids (method not stated). Mode I initiation 126 to 132 J/m², stabilized
+    218 and 218; mode II initiation 452 to 504.
+  - `vorobyev_2020`: Vorobyev et al., Akusticheskii Zhurnal 66:148 (2020).
+    Infused UD carbon/epoxy at 0.41, 1.12 and 5.23 % voids (ASTM D3171);
+    static G_Ic 0.25, 0.13 and 0.11 kJ/m².
+  - Toughness MAE, apart from the unchanged strength headline: 12.47 %
+    property-weighted and 13.57 % point-weighted over 8 entries and 22
+    points (were 3.13 % and 3.57 % over 3 and 7); `vorobyev_2020` alone is
+    50.9 %.
+  - The least-squares `b` per mode and stage that #222 asks for is on the
+    delamination theory page. Mode I now has five studies and mode II
+    three, but they contradict each other: the toughness falls, holds or
+    rises with voids, and the per-study `b` runs from −62 to 18.6. The
+    placeholders (`b_I = 6.2`, `b_II = 14`) and the uncalibrated flag are
+    kept.
+- **`porosity_degradation` on the results, in the JSON, the app and the
+  CLI** (delamination plan 1.4, the open items of #212). The default
+  `'isotropic'` results do not change: the 30-case FE gate moves by 0 of
+  its tolerance.
+  - `FieldResults.porosity_degradation` (`'isotropic'` or `'directional'`,
+    the last field, default `'isotropic'` for a `FieldResults` built
+    directly), set by `FESolver.solve`, and `summary().details`
+    `['porosity_degradation']` next to `formulation`.
+  - JSON: the `solver` block of the FE export gains `porosity_degradation`
+    (schema 1.3, additive; the schema now describes the `solver` block and
+    enumerates the two values). `load_results_from_json` gives an FE file
+    written before it existed `'isotropic'`, the only mapping then
+    (creating the `solver` block when the file has none); a file that
+    records it keeps it, and the other formats are returned as read.
+  - CLI: `porosity-analyze --porosity-degradation {isotropic,directional}`
+    for the FE delamination screening (its solve and the three solves of
+    the knockdown split), refused without `--delamination` like the other
+    screening options; a directional run says so on its summary line. With
+    the default spherical `--delam-config` the two give the same results.
+  - App: an "FE porosity degradation" selectbox under the failure criterion
+    (isotropic by default; directional is flagged uncalibrated, and moot
+    for spherical voids). It reaches the FE solve, the knockdown split, the
+    interface onset, the mechanical-only load factor of a combined thermal
+    run and the mesh-convergence check, and the Stress tab names it next
+    to the element formulation. It is the optional config key
+    `porosity_degradation`, in the cache key only when not `'isotropic'`,
+    so the default key and cached results are unchanged.
+  - `delamination_onset` / `FieldResults.delamination_onset` keep their
+    own argument, default `'isotropic'`: pass `results.porosity_degradation`
+    for the strengths of the solve (the app's onset check does).
+  - Fingerprints: the gate baseline gains the key in each case's `fields`,
+    `summary.details` and `export.solver` (90 string entries, no number
+    changed; a regeneration on the baseline's numpy / scipy equals it value
+    for value). The bitwise fingerprint differs from an earlier build only
+    in the new `porosity_degradation` hash and the `summary` and
+    `export_json` hashes (checked on the 27 `--quick` cases); every array
+    and scalar is bit identical.
 - **Validation: the `uhl_1988` compression dataset** (#221). Uhl, Lucht,
   Jeong and Hsu, Review of Progress in QNDE 7B (1988), pp. 1075-1082,
   doi:10.1007/978-1-4613-0979-6_24, open copy in the Iowa State repository:
@@ -285,10 +346,11 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     `delamination_onset` / `FieldResults.delamination_onset`,
     `refinement_study` (recorded in `to_dict()`) and
     `knockdown_decomposition`.
-  - Not recorded on `FieldResults` or in the JSON export (that changes every
-    fingerprint; to do with the baseline update): pass the same value to
-    `delamination_onset`. Uncalibrated against measured out-of-plane
-    constants of porous laminates, not in the app or CLI, and the empirical
+  - Recorded on `FieldResults` and in the JSON export, and offered in the
+    app and the CLI, since the entry "`porosity_degradation` on the
+    results, in the JSON, the app and the CLI" above; pass the same value
+    to `delamination_onset`. Uncalibrated against measured out-of-plane
+    constants of porous laminates, and the empirical
     solver and CLT helpers keep the isotropic projection. For crowded
     pennies (local `Vp` near 0.1) Mori-Tanaka's `C33`, `C44` are 7-10 % too
     stiff and the projection no longer softens that.
@@ -1083,6 +1145,40 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **Validation: silent errors in `validate_porosity`** (found by review).
+  - A strength or modulus block whose `void_content_pct` and
+    `normalized_values` differ in length was broadcast by numpy into a
+    wrong MAE that entered the headline; an empty block gave a NaN
+    headline. Every property now checks both, and the schema requires at
+    least one value (`minItems`) and one property.
+  - A misspelled property name (`compressive_strength`) passed the schema
+    and dropped out of the headline as an entry error, while the CLI
+    reported a clean run. The schema now rejects unknown property names
+    (`additionalProperties: false`), and the CLI prints each failed
+    property and a "Property entries failed" count. The exit code stays 0
+    for failed datasets, as before.
+  - A file that is not valid JSON aborted the whole run; it is now a load
+    error of that dataset.
+- **`solver='cg'` refused an accurate answer on the DCB specimen.** The
+  relative residual of the open DCB arms cannot reach `rtol = 1e-9`: even
+  the LU solution sits at 2.6e-9 from round-off. A converged CG iterate
+  whose normwise backward error is below 1000 machine epsilons (5e-15 on
+  the DCB) is now accepted, logged at INFO. A tolerance requested below
+  round-off still raises.
+- **The default memory budget ignored a container's memory limit.** On
+  Linux, `physical_memory_bytes` now takes the cgroup v2 / v1 limit
+  (`/sys/fs/cgroup/memory.max`, `memory/memory.limit_in_bytes`) when it is
+  smaller than the host's RAM, so in Docker or Streamlit Cloud the 80 %
+  default is set against what the process may use, and the budget check
+  fires before the out-of-memory killer.
+- **App: the G_IIIc help text on a preset with toughness** said an empty
+  field used G_IIc; it keeps the preset's G_IIIc (0.78 N/mm on
+  `IM7_8552_epoxy`), also when G_IIc is entered.
+- **App: the mesh-convergence plan's memory column** counted two
+  factorizations for a combined thermal run and one for a fracture
+  specimen; it now uses `refinement_study`'s count (one, since the thermal
+  factorization is freed before the mechanical one is built; two for the
+  fracture specimens' contact loop).
 - **App figures were hard to read.** No result changes.
   - Mesh and Stress tabs: a laminate section about 50 x 4.4 mm was drawn
     to scale, a sliver under a colorbar about ten times its height that

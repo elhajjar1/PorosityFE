@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import __version__
 from .delamination import Delamination
+from .homogenization import _DEFAULT_POROSITY_DEGRADATION, POROSITY_DEGRADATIONS
 from .io import save_results_to_json
 from .materials import MATERIALS
 from .pipeline import _resolve_n_jobs, compare_configurations, sweep_configurations
@@ -33,6 +34,7 @@ _DELAM_LOADINGS = ('compression', 'tension', 'shear')
 _DELAM_DEFAULT_LOADING = 'compression'
 _DELAM_DEFAULT_CONFIG = 'uniform_spherical'
 _DELAM_DEFAULT_LAW = 'exponential'
+_DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
 
 
 def _parse_delamination(spec: str) -> Delamination:
@@ -274,6 +276,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--toughness-b", type=float, nargs=2, default=None,
         metavar=("B_I", "B_II"),
         help="Your coefficients of the exponential law (per unit Vp).")
+    delam.add_argument(
+        "--porosity-degradation", choices=POROSITY_DEGRADATIONS, default=None,
+        help=("How the porosity degrades the ply stiffness and strengths in "
+              "the FE solves (FESolver(porosity_degradation=...)): "
+              f"'{_DELAM_DEFAULT_DEGRADATION}' (default) or 'directional' "
+              "(opt-in, uncalibrated: flat voids weaken E33, G13, G23, Z_t "
+              "and S_13 more than the in-plane properties; spherical voids "
+              "give the same results). Recorded in the JSON."))
     return parser
 
 
@@ -281,7 +291,8 @@ def _delamination_options(args) -> dict:
     """The resolved delamination screening options; ``ValueError`` when one
     is given without ``--delamination`` or is invalid."""
     given = [name for name in ('delam_loading', 'delam_config', 'toughness',
-                               'toughness_knockdown', 'toughness_b')
+                               'toughness_knockdown', 'toughness_b',
+                               'porosity_degradation')
              if getattr(args, name) is not None]
     if args.delamination is None:
         if given:
@@ -315,6 +326,7 @@ def _delamination_options(args) -> dict:
         'config': args.delam_config or _DELAM_DEFAULT_CONFIG,
         'toughness': toughness,
         'toughness_knockdown': knockdown,
+        'porosity_degradation': args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION,
     }
 
 
@@ -360,9 +372,11 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
     mesh = CompositeMesh(pf, material, *_default_mesh_resolution(material.n_plies),
                          delaminations=[options['delamination']])
     loading = options['loading']
-    result = FESolver(mesh, material, pf).solve(
+    degradation = options.get('porosity_degradation', _DELAM_DEFAULT_DEGRADATION)
+    result = FESolver(mesh, material, pf, porosity_degradation=degradation).solve(
         loading, toughness_knockdown=options['toughness_knockdown'])
-    parts = knockdown_decomposition(mesh, material, pf, loading, total=result)
+    parts = knockdown_decomposition(mesh, material, pf, loading, total=result,
+                                    porosity_degradation=degradation)
     FESolver.export_results(result, out_path, knockdown_decomposition=parts)
     front = result.crack_front
     lam = result.fracture_load_factor
@@ -378,6 +392,8 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
             f"{parts.delamination_only:.4f}"
             + ("; toughness knockdown uncalibrated"
                if front is not None and front.toughness_uncalibrated else "")
+            + ("" if degradation == _DELAM_DEFAULT_DEGRADATION
+               else f"; porosity degradation {degradation} (uncalibrated)")
             + f"\n  Saved: {out_path}")
 
 

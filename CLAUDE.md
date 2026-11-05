@@ -93,7 +93,8 @@ different numerical answers for the same inputs**, not the same answer:
   factorization are cached on the assembler / solver and reused across
   solves until the mesh, material or porosity change. Every factorization
   is estimated first and refused over `FESolver(max_memory_gb=)` (default
-  80 % of RAM; `fe/_memory.py`, the model `refinement_study` plans with),
+  80 % of RAM or of a container's cgroup limit; `fe/_memory.py`, the model
+  `refinement_study` plans with),
   and the knockdown's pristine reference follows `solver`, so `'cg'`
   factorizes nothing. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see
@@ -183,9 +184,10 @@ handling, change it here, not at the call sites.
 
 ### Validation database
 
-`validation/datasets/*.json` holds 19 experimental datasets (16
-strength and modulus, plus 3 interlaminar-toughness ones,
-`hakim_2017`, `agius_fox_2015` and `olivier_2007`, whose MAE is reported apart from the
+`validation/datasets/*.json` holds 22 experimental datasets (16
+strength and modulus, plus 6 interlaminar-toughness ones,
+`hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,
+`russell_street_1982` and `vorobyev_2020`, whose MAE is reported apart from the
 strength headline), schema-validated against
 `validation/schemas/validation_dataset_schema.json`. The datasets are
 tracked in the repository (it is where they are backed up), and CI runs

@@ -252,7 +252,8 @@ size, $12$ bytes per entry of about $8\, n_\text{dof}^{1.5}$ entries, and
 adds what the solve already holds: 0.15 GB for the interpreter, 30 kB per
 element of assembly arrays, and the factorizations it keeps, at their
 actual size. When the sum exceeds `FESolver(max_memory_gb=...)` (default
-80 % of physical memory; `math.inf` turns the check off) it raises a
+80 % of physical memory, or of a Linux container's cgroup memory limit when
+that is smaller; `math.inf` turns the check off) it raises a
 `ValueError` with the estimate, before SuperLU allocates anything,
 instead of failing late with a `MemoryError` or a swap storm.
 {func}`~porosity_fe.refinement_study` plans its levels with the same
@@ -910,8 +911,8 @@ its porous model is assembled, so only one factorization is alive at a
 time (at $45 \times 15 \times 24$ the peak is 1.5 GB instead of 2.9 GB).
 Before solving, the study refuses a level above `max_elements` (default
 the $10^6$ mesh cap) or one whose estimated peak memory exceeds
-`max_memory_gb` (default 80 % of physical memory where the platform
-reports it), and the error lists the estimate of every level. The
+`max_memory_gb` (default 80 % of physical memory, or of the container's
+memory limit, where the platform reports it), and the error lists the estimate of every level. The
 estimate is $0.15\ \text{GB} + 30\ \text{kB}$ per element plus 12 bytes
 per LU nonzero; it was 1.0 to 1.3 times the measured peak on meshes from
 $20 \times 8 \times 24$ to $60 \times 20 \times 24$. Each level's solver

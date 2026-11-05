@@ -1081,10 +1081,20 @@ class TestConvergenceCheck:
         plan = app.convergence_plan(flexure_result, (1.0, 1.025, 1.5))   # 41 -> 42
         assert [lv["resolution"] for lv in plan] == [(40, 8, 4), (42, 8, 4), (60, 12, 4)]
 
-    def test_combined_thermal_plan_counts_two_factorizations(self, combined_results):
+    def test_combined_thermal_plan_counts_one_factorization(self, combined_results):
+        """As refinement_study plans it: the solver frees the thermal
+        factorization before it builds the mechanical one (the plan used to
+        count two)."""
         from porosity_fe.fe.refinement import _estimate_memory_bytes
         comb, _ = combined_results
         lv = app.convergence_plan(comb, (1.0,))[0]
+        assert lv["memory_gb"] == pytest.approx(
+            _estimate_memory_bytes(lv["resolution"], n_factorizations=1) / 1e9,
+            rel=1e-12)
+
+    def test_fracture_plan_counts_the_contact_factorization(self, comp_result):
+        from porosity_fe.fe.refinement import _estimate_memory_bytes
+        lv = app.convergence_plan({**comp_result, "fe_loading": "dcb"}, (1.0,))[0]
         assert lv["memory_gb"] == pytest.approx(
             _estimate_memory_bytes(lv["resolution"], n_factorizations=2) / 1e9,
             rel=1e-12)
@@ -1598,3 +1608,84 @@ class TestFractureSpecimens:
         values = dict((lab, v) for lab, v, _ in app.fe_fracture_test_summary(r)[0])
         assert values["P_c at mid-width (N)"] == "n/a"
         assert float(values["G_T at mid-width (N/mm)"]) > 0.0
+
+
+# ----------------------------------------------------------------------
+# FE porosity degradation (delamination plan 1.4, #212)
+# ----------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def penny_delam_results():
+    """The delaminated tension coupon of ``_delam_cfg`` (knockdown split and
+    interface onset) with penny voids, under each mapping."""
+    return {m: app.run_analysis(_delam_cfg(void_shape="penny", porosity_degradation=m))
+            for m in ("isotropic", "directional")}
+
+
+class TestPorosityDegradation:
+    def test_labels_cover_the_library_values(self):
+        from porosity_fe.homogenization import POROSITY_DEGRADATIONS
+        assert tuple(app._POROSITY_DEGRADATION_LABELS) == POROSITY_DEGRADATIONS
+        assert app._CFG_DEFAULTS["porosity_degradation"] == "isotropic"
+
+    def test_cache_key(self, monkeypatch):
+        """The default keeps the key of before; 'directional' enters it and
+        the cached runner restores it."""
+        default = app._config_to_key(_base_cfg())
+        assert app._config_to_key(_base_cfg(porosity_degradation="isotropic")) == default
+        key = app._config_to_key(_base_cfg(porosity_degradation="directional"))
+        assert key[:-1] == default and key[-1] == ("porosity_degradation", "directional")
+        seen = {}
+        monkeypatch.setattr(app_runners, "run_analysis", lambda cfg: seen.update(cfg) or {})
+        app.run_analysis_cached.__wrapped__(key)
+        assert seen["porosity_degradation"] == "directional"
+
+    def test_every_fe_step_uses_it(self, penny_delam_results):
+        """The solve, the knockdown split and the interface onset follow the
+        config; the empirical results do not depend on it."""
+        iso, d = penny_delam_results["isotropic"], penny_delam_results["directional"]
+        fe, mesh, material = d["fe_field"], d["mesh"], d["material"]
+        assert iso["fe_field"].porosity_degradation == "isotropic"
+        assert fe.porosity_degradation == "directional"
+        assert fe.knockdown != pytest.approx(iso["fe_field"].knockdown, rel=1e-6)
+        assert d["empirical"] == iso["empirical"]
+        parts = d["fe_decomposition"]
+        assert parts.total == fe.knockdown
+        assert parts.porosity_only == pytest.approx(app.knockdown_decomposition(
+            mesh, material, d["porosity_field"], "tension", applied_strain=0.01,
+            porosity_degradation="directional").porosity_only, rel=1e-12)
+        assert parts.porosity_only != pytest.approx(
+            iso["fe_decomposition"].porosity_only, rel=1e-6)
+        onset = fe.delamination_onset(mesh, material, porosity_degradation="directional")
+        np.testing.assert_array_equal(d["fe_onset"].index, onset.index)
+        e = onset.evaluated
+        assert np.all(onset.Zt[e] < fe.delamination_onset(mesh, material).Zt[e])
+
+    def test_mechanical_load_factor_of_a_combined_solve(self):
+        """The load factor without the residual stress takes the solve's
+        strengths: on the short beam the interlaminar shear governs, which
+        the directional mapping weakens for penny voids."""
+        r = app.run_analysis(_thermal_cfg(thermal_mode="combined", loading_mode="ilss",
+                                          void_shape="penny", failure_criterion="hashin",
+                                          porosity_degradation="directional"))
+        fe, mesh = r["fe_field"], r["mesh"]
+        assert fe.porosity_degradation == "directional"
+        args = (fe.stress_local - fe.residual_stress_local, mesh.porosity, mesh.elements,
+                r["material"], r["porosity_field"].void_shape_radii, "hashin")
+        lam = app.first_ply_failure_load_factor(
+            *args, void_elements=mesh.void_elements, porosity_degradation="directional")
+        assert r["fe_mechanical_fpf"] == lam
+        assert lam != pytest.approx(app.first_ply_failure_load_factor(
+            *args, void_elements=mesh.void_elements), rel=1e-6)
+
+    def test_unknown_value_raises(self):
+        with pytest.raises(ValueError, match="Unknown porosity_degradation 'radial'"):
+            app.run_analysis(_base_cfg(porosity_degradation="radial"))
+
+    def test_convergence_check_uses_it(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(app_convergence, "refinement_study",
+                            lambda m, p, ld, **kw: calls.append(kw) or "study")
+        for cfg in (_base_cfg(), _base_cfg(porosity_degradation="directional")):
+            app.run_convergence_check(cfg, [(4, 2, 4), (6, 3, 4)])
+        assert [kw["porosity_degradation"] for kw in calls] == ["isotropic", "directional"]

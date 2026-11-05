@@ -1,0 +1,47 @@
+{
+  "reference": "Russell, A.J., & Street, K.N. (1982). Factors affecting the interlaminar fracture energy of graphite/epoxy laminates. Proceedings of the 4th International Conference on Composite Materials (ICCM-IV), Tokyo, Japan, pp. 279-286.",
+  "doi": "10.5281/zenodo.15403101",
+  "data_source": "Tables I and II (tabulated), read from the page images of the scanned PDF on Zenodo (record 15403101, CC-BY-SA-4.0); the OCR layer garbles Table I",
+  "material": {
+    "fiber": "AS1",
+    "matrix": "3501-6 epoxy (Hercules)",
+    "n_plies": 24,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "unidirectional [0]_24, crack at the 0/0 mid-plane"
+  },
+  "porosity_measurement": "not stated: the voided panel is footnoted 'Voids 2.1 volume percent'; the void content of the standard 24-ply panel is not given and is taken as 0",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "DCB, experimental compliance (cubic fit of C(a)); pre-standard",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "temperature_C": 20,
+        "humidity": "dry"
+      },
+      "stage": ["initiation", "initiation", "propagation", "propagation"],
+      "precrack": "insert",
+      "void_content_pct": [0.0, 2.1, 0.0, 2.1],
+      "normalized_values": [1.0, 1.0476, 1.0, 1.0],
+      "absolute_values_N_per_mm": [0.126, 0.132, 0.218, 0.218],
+      "absolute_uncertainty_N_per_mm": [null, null, 0.003, null],
+      "digitization_method": "tabulated"
+    },
+    "G_IIc": {
+      "test_standard": "three-point 'forward shear' (ENF-type), beam-theory compliance; pre-standard",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "temperature_C": 20,
+        "humidity": "dry"
+      },
+      "stage": "initiation",
+      "precrack": "insert",
+      "void_content_pct": [0.0, 2.1],
+      "normalized_values": [1.0, 1.115],
+      "absolute_values_N_per_mm": [0.452, 0.504],
+      "absolute_uncertainty_N_per_mm": [0.006, 0.016],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "Hercules AS1/3501-6 unidirectional, 24 plies for both groups, post-cured 8 h at 177 C, tested at 20 C dry, from Teflon-coated fabric strip starters. Table I (J/m2): G_IC at initiation 126 (24 plies) and 132 (24 plies, 2.1 % voids); the stabilized value G^s_IC, once a tied zone of bridged fibres has formed, 218 +- 3 and 218 (the +- is the standard error of the mean). Table II (J/m2): G_IIC at initiation from the Teflon notch 452 +- 6 and 504 +- 16 (voided); the re-initiation value G'_IIC after about 25 mm of extension, 385 +- 6, was not measured on the voided panel. One voided group only; the void measurement method and the baseline void content are not stated; the number of specimens is not given in the tables."
+}

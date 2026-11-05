@@ -1,0 +1,24 @@
+{
+  "reference": "Vorobyev, R.I., Sergeichev, I.V., Karabutov, A.A., Mironova, E.A., Savateeva, E.V., & Akhatov, I.Sh. (2020). Application of the optoacoustic method to assess the influence of voids on the fracture toughness of structural carbon fibre reinforced plastics [in Russian]. Akusticheskii Zhurnal, 66(2), 148-153. English translation: Acoustical Physics, 66(2), 132-136, doi:10.1134/S1063771020020153.",
+  "doi": "10.31857/S0320791920020161",
+  "data_source": "Table 3 (tabulated static G_IC at three vacuum levels) and Table 2 (void content of the same panels by three methods), from the free PDF of the Russian original at sciencejournals.ru (no open licence stated)",
+  "material": {
+    "fiber": "Carbon Wrap Tape-230/500 (UD carbon tape)",
+    "matrix": "EPOLAM 2040 epoxy, EPOLAM 2042 hardener",
+    "layup_name": "unidirectional, film insert at the mid-plane"
+  },
+  "porosity_measurement": "chemical digestion per ASTM D3171 (3 to 6 samples of 20-25 mm per panel); the paper also gives laser optoacoustic and SEM image-analysis values for the same panels",
+  "baseline_porosity_pct": 0.41,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "ASTM D5528-01 specimen geometry and loading (DCB), static",
+      "stage": "initiation",
+      "precrack": "insert",
+      "void_content_pct": [0.41, 1.12, 5.23],
+      "normalized_values": [1.0, 0.52, 0.44],
+      "absolute_values_N_per_mm": [0.25, 0.13, 0.11],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "Vacuum infusion of 500 x 500 mm panels at 100, 50 and 20 % of the resin maker's recommended vacuum (-760, -380 and -150 mmHg) to vary the void content. Table 2, void content at -760 / -380 / -150 mmHg: optoacoustic 1.91 / 2.49 / 6.33 %, ASTM D3171 digestion 0.41 / 1.12 / 5.23 % (used here), SEM 0.25 / 1.32 / 4.39 %. Table 3, static G_IC: 0.25 / 0.13 / 0.11 kJ/m2 (= N/mm), given to two digits. The static test found the load at which the starter delamination (non-adhesive WL3900R film between the middle layers) begins to grow, used to set the fatigue amplitude, so the values are taken as initiation; the table does not say. Under cyclic loading G_IC fell from 0.25 to 0.09, 0.13 to 0.07 and 0.11 to 0.06 kJ/m2 (text). The specimens are 4.1-4.5 mm thick (Table 1), the -380 mmHg ones the thickest; ply count, fibre volume fraction and the number of static specimens are not given. The loss (-48 % from 0.41 to 1.12 %) is far steeper than in the other studies, and the reduced vacuum also changes the compaction."
+}

@@ -203,6 +203,7 @@ def main(argv=None) -> int:
     # Print summary
     n_datasets_ok = 0
     n_datasets_err = 0
+    n_props_err = 0
     for ds_name, ds_results in results.items():
         if 'error' in ds_results:
             n_datasets_err += 1
@@ -210,6 +211,13 @@ def main(argv=None) -> int:
                 print(f"  [ERROR] {ds_name}: {ds_results['error']}")
             continue
         n_datasets_ok += 1
+        # A property whose prediction failed is left out of every MAE below;
+        # say so rather than let the headline shrink silently.
+        for prop, entry in ds_results.items():
+            if 'error' in entry:
+                n_props_err += 1
+                if not args.quiet:
+                    print(f"  [ERROR] {ds_name} / {prop}: {entry['error']}")
 
     summary = summarize_mae(results)
 
@@ -221,6 +229,8 @@ def main(argv=None) -> int:
     print()
     print(f"Datasets processed:  {n_datasets_ok} succeeded, "
           f"{n_datasets_err} failed")
+    if n_props_err:
+        print(f"Property entries failed: {n_props_err} (left out of the MAE)")
     if summary['n_entries']:
         print(
             f"Overall MAE (property-weighted): "

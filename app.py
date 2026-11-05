@@ -117,6 +117,7 @@ from porosity_app.config import (  # noqa: E402, F401
     _LOADING_LABELS,
     _MODE_LABELS,
     _NZ_SLIDER_MAX,
+    _POROSITY_DEGRADATION_LABELS,
     _README_URL,
     _resolving_nz,
     _SUGGESTED_DELTA_T_177C_EPOXY,

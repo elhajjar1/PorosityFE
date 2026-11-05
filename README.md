@@ -96,6 +96,11 @@ The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
 governing mode, with each mode's maximum for Hashin and maximum stress.
+Below it, "FE porosity degradation" keeps the default isotropic mapping or
+picks the opt-in, uncalibrated directional one, with which flat (penny)
+voids weaken the out-of-plane stiffness and the interlaminar strengths
+more than the in-plane ones (`FESolver(porosity_degradation=...)`; the
+same for spherical voids). The Stress tab names the mapping of the solve.
 
 Delamination inputs are opt-in and leave the default run unchanged:
 
@@ -771,7 +776,7 @@ Overall MAE:
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 
-**Interlaminar toughness (exploratory, not in the headline).** Three more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1), Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract) and Olivier et al. 2007 (T700GC/M21 DCB, propagation G_Ic 0.348 / 0.266 N/mm at 0.1 / 5.09 % voids, the means of the Fig. 8 R-curves read from the PDF's vector graphics). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: MAE 6.20 %, 1.15 % and 2.03 % (3.13 % property-weighted, 3.57 % point-weighted, 7 points). The placeholders come in part from these same studies, so this is a consistency check, not a validation; the headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Carraro et al. 2015 report R-curves only in figures and are not included.
+**Interlaminar toughness (exploratory, not in the headline).** Six more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1), Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract), Olivier et al. 2007 (T700GC/M21 DCB, propagation G_Ic 0.348 / 0.266 N/mm at 0.1 / 5.09 % voids, the means of the Fig. 8 R-curves read from the PDF's vector graphics), Asp & Brandt 1997 (HTA/6376C DCB and ENF, void-free / 0.9 %: mode I initiation unchanged, propagation +74 %, mode II −8 %), Russell & Street 1982 (AS1/3501-6, 2.1 %: mode I initiation +5 %, mode II +12 %) and Vorobyev et al. 2020 (infused UD carbon/epoxy DCB, G_Ic 0.25 / 0.13 / 0.11 N/mm at 0.41 / 1.12 / 5.23 %). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: 12.47 % property-weighted, 13.57 % point-weighted over 8 entries and 22 points. The studies contradict each other (toughness falls, holds or rises with voids; a least-squares b per mode and stage runs from −2.9 to 15.9, per study from −62 to 18.6), so the placeholders stay uncalibrated; see the delamination theory page. The headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Carraro et al. 2015 report R-curves only in figures and are not included.
 
 ## Limitations
 

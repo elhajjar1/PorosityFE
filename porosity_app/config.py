@@ -12,6 +12,7 @@ from porosity_fe.fracture_specimens import (
     _D6671_CRACK_LENGTH,
     _D7905_CRACK_LENGTH,
 )
+from porosity_fe.homogenization import _DEFAULT_POROSITY_DEGRADATION
 
 # Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
 _README_URL = (
@@ -41,14 +42,16 @@ _CFG_KEYS = (
 #: b_II]``), the interface onset check and its averaging length (mm), and
 #: the crack length (mm) and MMB mode ratio of a fracture specimen, and the
 #: CoVs of the λ_c uncertainty band (``fracture_uq``, one per
-#: :data:`_FRACTURE_UQ_FIELDS` entry; ``None`` for no band). Unlike
-#: :data:`_CFG_KEYS`, each enters the cache key only when it differs from
-#: its default, so a config without them keeps the key (and the cached
+#: :data:`_FRACTURE_UQ_FIELDS` entry; ``None`` for no band); then the FE
+#: porosity degradation mapping (``FESolver(porosity_degradation=)``,
+#: ``"isotropic"`` or the opt-in ``"directional"``; delamination plan 1.4).
+#: Unlike :data:`_CFG_KEYS`, each enters the cache key only when it differs
+#: from its default, so a config without them keeps the key (and the cached
 #: result) it had before they existed.
 _CFG_OPTIONAL_KEYS = (
     "delamination", "knockdown_split", "G_Ic", "G_IIc", "G_IIIc", "bk_eta",
     "toughness_law", "toughness_b", "onset", "onset_x_avg",
-    "crack_length", "mmb_mode_ratio", "fracture_uq",
+    "crack_length", "mmb_mode_ratio", "fracture_uq", "porosity_degradation",
 )
 
 
@@ -66,7 +69,7 @@ _FRACTURE_UQ_SAMPLES = 2000
 #: Config fields that an older config dict may lack, and the value that
 #: absence means (no thermal load, the Tsai-Wu criterion, no delamination,
 #: no toughness, the default toughness law, no onset check, the standard
-#: specimen dimensions).
+#: specimen dimensions, the isotropic porosity degradation).
 _CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
                  "failure_criterion": "tsai_wu",
                  "delamination": None, "knockdown_split": False,
@@ -74,7 +77,8 @@ _CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
                  "toughness_law": "exponential", "toughness_b": None,
                  "onset": False, "onset_x_avg": None,
                  "crack_length": None, "mmb_mode_ratio": None,
-                 "fracture_uq": None}
+                 "fracture_uq": None,
+                 "porosity_degradation": _DEFAULT_POROSITY_DEGRADATION}
 
 
 #: FE failure criteria offered in the sidebar: key -> label.
@@ -82,6 +86,15 @@ _CRITERION_LABELS = {
     "tsai_wu": "Tsai-Wu (one interactive index)",
     "hashin": "Hashin (separate modes, incl. delamination onset)",
     "max_stress": "Maximum stress (separate modes)",
+}
+
+
+#: FE porosity degradation mappings offered in the sidebar
+#: (``FESolver(porosity_degradation=)``, every value of
+#: :data:`porosity_fe.homogenization.POROSITY_DEGRADATIONS`): key -> label.
+_POROSITY_DEGRADATION_LABELS = {
+    "isotropic": "Isotropic (default)",
+    "directional": "Directional: flat voids weaken out of plane (uncalibrated)",
 }
 
 

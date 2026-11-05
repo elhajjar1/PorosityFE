@@ -855,13 +855,34 @@ in the primary source, [S] from a secondary source):
 | Olivier et al. 2007 [P], ICCM16 (open access, Zenodo record 15414374) | T700GC/M21 $[0]_{16}$, DCB (ISO 15024, Berry's method) | 0.1, 5.09, 15.7 % (15.3 % in Fig. 8) | "a void content of 5% induces a decrease by about 22% in GIC" (§4.3). The R-curves of Fig. 8 (to 140 mm of crack), read from the PDF's vector graphics, are flat within their scatter, with means 0.348, 0.266 and 0.072 N/mm: propagation values, as Carraro et al. 2015 cite them | 4.97 from the text; 5.37 from Fig. 8 (10.4 at 15.3 %, beyond the 5 % range) |
 | Agius and Fox 2015 [P, abstract], doi:10.1016/j.compositesa.2015.02.023 | out-of-autoclave prepreg, not named in the abstract | < 0.3 / 1.5 % | $G_{IIc}$ 21 % higher for the low-void laminates | 12.7 to 15.9 for a low-void value of 0 to 0.3 %; 14.1 at 0.15 % |
 | Carraro, Maragoni and Quaresimin 2015 [P], doi:10.1179/2055035914Y.0000000004 | STS40 NCF/EC157, DCB | 0 / 1.9 % (0° interface), 0 / 1.23 % (±45°) | initiation unchanged (0°) or slightly higher (±45°), propagation slightly higher; values only in figures | not used |
-| Asp and Brandt 1997 [S], ICCM-11 | UD carbon/epoxy | 0 / about 1 % | initiation $G_c$ slightly down (mode I) or unchanged (mixed mode), mode II slightly down; the original was not read | not used |
+| Asp and Brandt 1997 [P], ICCM-11 (open access, Zenodo record 15409117) | HTA/6376C, $[0_{12}//(\pm 5/0_4)_s]$, DCB, ENF, MMB | void-free / 0.9 % (1.4 % at the crack plane) | Table 1: mode I initiation unchanged (229.0 to 239.8 J/m²), propagation maximum +74 % (253.4 to 441.4) from ply-split bridging; mode II −8 % (883.1 to 811.3); mixed mode initiation −20 % | mode I −5.1 (initiation), −62 (propagation); mode II 9.4 |
+| Russell and Street 1982 [P], ICCM-IV (open access, Zenodo record 15403101) | AS1/3501-6 $[0]_{24}$, DCB and three-point ENF-type | standard / 2.1 % | Tables I, II: mode I initiation 126 to 132 J/m², stabilized 218 and 218; mode II initiation 452 to 504; void method and baseline not stated | mode I −2.2 (initiation), 0 (propagation); mode II −5.2 |
+| Vorobyev et al. 2020 [P], Akust. Zh. 66:148, doi:10.31857/S0320791920020161 | Carbon Wrap tape / EPOLAM 2040 UD, infused, DCB (ASTM D5528) | 0.41, 1.12, 5.23 % (ASTM D3171) | Table 3: static $G_{Ic}$ 0.25, 0.13, 0.11 kJ/m², read as initiation; the reduced vacuum also changes the compaction | 18.6 |
 
 $b_\text{I} = 6.2$ is the mean of 4.97 and 7.45, and $b_\text{II} = 14$ the
 Agius and Fox estimate at the midpoint of its low-void range, rounded. Mode
-III has no data. Olivier's Fig. 8 gives 5.37, near the 4.97 of its text;
-the placeholder is not refitted on it, since mode I still has only two
-studies, and of different stages (Hakim's does not say). Every result that a placeholder changes is flagged:
+III has no data. Olivier's Fig. 8 gives 5.37, near the 4.97 of its text.
+
+**Fit against the bundled data.** A least-squares fit of
+$\ln(G_c / G_{c0})$ against $\Delta V_p$ through the origin, per mode and
+stage over the bundled datasets (the right-hand column above, per study):
+
+| Mode | Stage | Studies | $b$ |
+|---|---|---|---|
+| I | initiation | Asp and Brandt, Russell and Street, Vorobyev | 14.8 |
+| I | propagation | Asp and Brandt, Olivier, Russell and Street | 2.8 |
+| I | not stated | Hakim | 8.5 |
+| II | initiation | Asp and Brandt, Russell and Street | −2.9 |
+| II | not stated | Agius and Fox | 15.9 |
+
+The studies contradict each other. A negative $b$ is a toughness that
+rises with voids, which the law cannot express ($f \le 1$). The
+per-study values run from −62 (the R-curve rise of Asp and Brandt) to
++18.6 (Vorobyev), and the mode I initiation fit rests on one study,
+Vorobyev's; without it, the initiation values rise. Five studies cover
+mode I and three mode II, but they do not agree on a sign, so the placeholders are kept and stay flagged uncalibrated.
+Choosing a $b$ for design is a judgement on which studies resemble the
+material at hand. Every result that a placeholder changes is flagged:
 `crack_front.toughness_uncalibrated` (and the same key in
 `summary().details` and the JSON `fracture` block) is `True` when the law
 uses a placeholder and some front node has $V_p > 0$, and the first such
@@ -869,10 +890,13 @@ use logs one INFO line per process. `toughness_knockdown` describes the law
 in every case.
 
 **Validation.** `validate_porosity` runs the bundled toughness datasets
-(`hakim_2017`, `agius_fox_2015`, `olivier_2007`) through the law, normalized
-to each baseline group, and reports them in a section of their own, apart
-from the strength and modulus MAE: 6.20 %, 1.15 % and 2.03 % (3.13 %
-property-weighted, 3.57 % point-weighted over 7 points). `olivier_2007`
+(`hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,
+`russell_street_1982`, `vorobyev_2020`) through the law, normalized to each
+baseline group of the same stage, and reports them in a section of their
+own, apart from the strength and modulus MAE: 12.47 % property-weighted,
+13.57 % point-weighted over 8 entries and 22 points. Per entry: Hakim 6.20 %,
+Agius and Fox 1.15 %, Olivier 2.03 %, Asp and Brandt 13.85 % (mode I) and
+2.02 % (mode II), Russell and Street 7.10 % and 16.58 %, Vorobyev 50.86 %. `olivier_2007`
 holds the 0.1 and 5.09 % series of Fig. 8; the 15.3 % series is beyond the
 schema's 15 % and the law's 5 % range, and is given in the dataset's notes. The placeholders come in part from
 the same studies, so this is a consistency check, not an independent

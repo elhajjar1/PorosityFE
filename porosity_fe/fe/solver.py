@@ -176,10 +176,11 @@ class FESolver:
         its stiffness cache key, so direct, CG and thermal solves all see
         it; the pristine reference is shared (``Vp = 0`` is identical).
         Threaded to the failure criteria, the load factors and the interior
-        metrics; pass the same value to
-        :func:`~porosity_fe.delamination_onset`, which is post-processing
-        and cannot read it from the results (the option is not recorded on
-        :class:`FieldResults` or in the JSON export). Not calibrated
+        metrics, and recorded on :attr:`FieldResults.porosity_degradation`,
+        in ``summary().details`` and in the JSON export (``solver``
+        block). :func:`~porosity_fe.delamination_onset` is post-processing
+        with its own argument (default ``'isotropic'``): pass it the
+        results' value. Not calibrated
         against measured out-of-plane constants of porous laminates, and
         for crowded pennies (local ``Vp`` near 0.1) the Mori-Tanaka
         out-of-plane stiffness is 7-10 % too stiff with no projection to
@@ -191,8 +192,9 @@ class FESolver:
         and the factorizations it keeps), and raises :class:`ValueError`
         with the estimate when their sum exceeds the budget, instead of
         failing late with a ``MemoryError`` or a swap storm. ``None``
-        (default) is 80 % of physical memory, no limit where the platform
-        does not report it; ``math.inf`` turns the check off. The whole
+        (default) is 80 % of physical memory (on Linux, of the container's
+        cgroup memory limit when that is smaller), no limit where the
+        platform does not report it; ``math.inf`` turns the check off. The whole
         estimate was 1.0-1.3 times the measured peak on the production
         coupons; its factor part is 0.97-1.04 times the actual factor on
         the coupons and the ILSS specimen and 1.2-1.7 times on the flexure
@@ -758,6 +760,7 @@ class FESolver:
                                            else fracture.interior_load_factor),
             interior_fracture_governing_node=(None if fracture is None
                                               else fracture.interior_governing_node),
+            porosity_degradation=self.porosity_degradation,
         )
 
     # Steps of solve(). The work is done in the private step modules; tests
@@ -1074,7 +1077,9 @@ class FESolver:
         With ``fmt='json'`` (the default, unchanged legacy behavior) this
         saves displacement statistics, stress/strain summaries, failure data,
         and knockdown factor; large arrays are summarized (min/max/mean/std)
-        rather than stored in full.
+        rather than stored in full. A ``solver`` block records the
+        :attr:`FieldResults.formulation` and
+        :attr:`FieldResults.porosity_degradation` of the solve.
 
         With ``fmt='vtk'`` it delegates to :meth:`FieldResults.to_vtk` and
         writes the full hex mesh plus per-element fields as a legacy ASCII
@@ -1174,7 +1179,8 @@ class FESolver:
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
         :func:`~porosity_fe.load_results_from_json` reads ``null`` as
-        ``None``.
+        ``None``, and gives a file written before ``solver.porosity_degradation``
+        existed its default, ``'isotropic'``.
         """
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw, onset=onset,

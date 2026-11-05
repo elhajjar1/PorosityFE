@@ -695,6 +695,30 @@ def test_olivier_2007_dataset_loads():
     assert 1.0 - block['normalized_values'][1] == pytest.approx(0.22, abs=0.02)
 
 
+@pytest.mark.parametrize('name, key, stage, vp, absolute', [
+    ('asp_brandt_1997', 'G_Ic', ['initiation', 'initiation', 'propagation', 'propagation'],
+     [0.0, 0.9, 0.0, 0.9], [0.229, 0.2398, 0.2534, 0.4414]),
+    ('asp_brandt_1997', 'G_IIc', 'initiation', [0.0, 0.9], [0.8831, 0.8113]),
+    ('russell_street_1982', 'G_Ic', ['initiation', 'initiation', 'propagation', 'propagation'],
+     [0.0, 2.1, 0.0, 2.1], [0.126, 0.132, 0.218, 0.218]),
+    ('russell_street_1982', 'G_IIc', 'initiation', [0.0, 2.1], [0.452, 0.504]),
+    ('vorobyev_2020', 'G_Ic', 'initiation', [0.41, 1.12, 5.23], [0.25, 0.13, 0.11]),
+])
+def test_tabulated_toughness_datasets(name, key, stage, vp, absolute):
+    """The tabulated values of Asp & Brandt 1997 (Table 1), Russell & Street
+    1982 (Tables I, II) and Vorobyev et al. 2020 (Tables 2, 3), each
+    normalized to the baseline group of its own stage."""
+    from validation.validate_all import load_dataset
+    block = load_dataset(os.path.join(_DATASETS_DIR, f'{name}.json'))['properties'][key]
+    assert block['stage'] == stage and block['precrack'] == 'insert'
+    assert block['void_content_pct'] == vp
+    assert block['absolute_values_N_per_mm'] == absolute
+    stages = stage if isinstance(stage, list) else [stage] * len(vp)
+    base = {s: a for s, a, v in zip(stages, absolute, vp, strict=True) if v == min(vp)}
+    expected = [a / base[s] for s, a in zip(stages, absolute, strict=True)]
+    np.testing.assert_allclose(block["normalized_values"], expected, atol=1e-3)
+
+
 def test_cinquin_2007_datasets():
     """Figs. 25, 26 and 28 of one paper in two files: QI compression, and the
     lamina shear of the +/-45 test in the lamina axes. Expancel is left out."""
@@ -806,9 +830,11 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert agius['mae'] == pytest.approx(1.147, abs=0.01)
     assert olivier['mae'] == pytest.approx(2.033, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 3 and tough['n_points'] == 7
-    assert tough['property_weighted_mae'] == pytest.approx(3.126, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(3.565, abs=0.01)
+    assert tough['n_entries'] == 8 and tough['n_points'] == 22
+    # 3.126 / 3.565 over 3 entries before asp_brandt_1997, russell_street_1982
+    # and vorobyev_2020 (#222).
+    assert tough['property_weighted_mae'] == pytest.approx(12.474, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(13.570, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
     assert (s['n_entries'], s['n_points']) == (39, 264)
@@ -835,6 +861,54 @@ def test_toughness_tag_length_mismatch_is_an_entry_error(tmp_path):
     assert 'stage' in results['G_Ic']['error']
 
 
+def _strength_dataset(**block):
+    ilss = {"void_content_pct": [0.5, 2.0, 3.0], "normalized_values": [1.0, 0.9, 0.85]}
+    ilss.update(block)
+    return {"reference": "Synthetic strength dataset (2026)",
+            "material": {"fiber": "T700", "matrix": "epoxy", "fiber_volume_fraction": 0.6,
+                         "n_plies": 8, "ply_angles": [0] * 8},
+            "baseline_porosity_pct": 0.5,
+            "properties": {"ilss": ilss}}
+
+
+def test_schema_rejects_unknown_property_names_and_empty_blocks():
+    """A misspelled property used to pass the schema and drop out of the
+    headline as an entry error; an empty block gave a NaN headline."""
+    schema = _schema()
+    jsonschema.validate(_strength_dataset(), schema)
+    typo = _strength_dataset()
+    typo['properties'] = {'compressive_strength': typo['properties']['ilss']}
+    for bad in (typo,
+                _strength_dataset(void_content_pct=[], normalized_values=[]),
+                {**_strength_dataset(), 'properties': {}},
+                _toughness_dataset(void_content_pct=[], normalized_values=[])):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+
+def test_strength_length_mismatch_is_an_entry_error(tmp_path):
+    """numpy broadcast one value against every prediction (a silently wrong
+    MAE in the headline); every property now checks the lengths."""
+    from validation.validate_all import _run_one_dataset, summarize_mae
+    path = tmp_path / 'mismatch.json'
+    path.write_text(json.dumps(_strength_dataset(normalized_values=[1.0])),
+                    encoding='utf-8')
+    name, results = _run_one_dataset(str(path))
+    assert results['ilss']['error'] == '3 void contents for 1 values.'
+    assert summarize_mae({name: results})['n_entries'] == 0
+
+
+def test_unreadable_dataset_is_a_load_error_not_a_crash(tmp_path):
+    from validation.validate_all import ValidationError, load_dataset, run_all_datasets
+    (tmp_path / 'good.json').write_text(json.dumps(_strength_dataset()), encoding='utf-8')
+    (tmp_path / 'truncated.json').write_text('{"reference": "trunc', encoding='utf-8')
+    with pytest.raises(ValidationError, match='could not be read'):
+        load_dataset(str(tmp_path / 'truncated.json'))
+    results = run_all_datasets(str(tmp_path))
+    assert 'could not be read' in results['truncated']['error']
+    assert 'mae' in results['good']['ilss']
+
+
 def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     from validation.validate_all import generate_master_report
     _, md_path = generate_master_report(_all_results, output_dir=str(tmp_path))
@@ -846,5 +920,10 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
     assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
     assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
+    assert '| asp_brandt_1997 | G_Ic | mixed | insert | 4 | 13.85 |' in tail
+    assert '| asp_brandt_1997 | G_IIc | initiation | insert | 2 | 2.02 |' in tail
+    assert '| russell_street_1982 | G_Ic | mixed | insert | 4 | 7.10 |' in tail
+    assert '| russell_street_1982 | G_IIc | initiation | insert | 2 | 16.58 |' in tail
+    assert '| vorobyev_2020 | G_Ic | initiation | insert | 3 | 50.86 |' in tail
     assert 'Property-weighted: **5.08%**' in head
     assert 'not an independent validation' in tail

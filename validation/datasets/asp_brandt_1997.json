@@ -1,0 +1,49 @@
+{
+  "reference": "Asp, L.E., & Brandt, F. (1997). Effects of pores and voids on the interlaminar delamination toughness of a carbon/epoxy composite. Proceedings of the 11th International Conference on Composite Materials (ICCM-11), Gold Coast, Australia, Vol. II, pp. 322-331.",
+  "doi": "10.5281/zenodo.15409117",
+  "data_source": "Table 1 (tabulated): G_C at crack growth initiation and the maximum G_C during propagation of the void-free and voided laminates, DCB (mode I) and ENF (mode II); open-access PDF on Zenodo (record 15409117, CC-BY-SA-4.0)",
+  "material": {
+    "fiber": "HTA",
+    "matrix": "6376C epoxy (Ciba-Geigy)",
+    "n_plies": 24,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, -5, 0, 0, 0, 0, 0, 0, 0, 0, -5, 5],
+    "layup_name": "[0_12//(+5/-5/0_4)_s], starter crack at the 0/+5 interface"
+  },
+  "porosity_measurement": "image analysis (OPTILAB) of 36 cross-sections over 20 specimens: 0.9 % in the laminate, 1.4 % at the 0/+5 interface of the starter crack and 9.2 % at the +5/-5 interface; the void-free laminate is that of the authors' earlier report (ref. 7 of the paper), whose void content is not quantified here",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "DCB, corrected beam theory with Olsson's correction (no standard named)",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "specimen_width_mm": 20,
+        "specimen_length_mm": 150,
+        "n_specimens_per_point": 7
+      },
+      "stage": ["initiation", "initiation", "propagation", "propagation"],
+      "precrack": "insert",
+      "void_content_pct": [0.0, 0.9, 0.0, 0.9],
+      "normalized_values": [1.0, 1.0472, 1.0, 1.7419],
+      "absolute_values_N_per_mm": [0.229, 0.2398, 0.2534, 0.4414],
+      "absolute_uncertainty_N_per_mm": [0.0178, 0.0097, 0.0066, 0.0508],
+      "digitization_method": "tabulated"
+    },
+    "G_IIc": {
+      "test_standard": "ENF, Carlsson and Gillespie (no standard named)",
+      "test_config": {
+        "loading_direction_deg": 0,
+        "specimen_width_mm": 20,
+        "specimen_length_mm": 150,
+        "n_specimens_per_point": 7
+      },
+      "stage": "initiation",
+      "precrack": "insert",
+      "void_content_pct": [0.0, 0.9],
+      "normalized_values": [1.0, 0.9187],
+      "absolute_values_N_per_mm": [0.8831, 0.8113],
+      "absolute_uncertainty_N_per_mm": [0.1175, 0.057],
+      "digitization_method": "tabulated"
+    }
+  },
+  "notes": "HTA/6376C prepreg cured at 175 C and 6 bar; the voided laminate was made by turning the vacuum pump off after evacuation and venting the bag to 1 atm during cure. Specimens 20 x 150 mm, 3.3 mm thick (3.1 mm void-free), with a 35 mm, 7.5 um Upilex 7.5S polyimide film insert, pre-loaded to release the film; dried 2 weeks at 70 C; 7 specimens per test. Voids are needle shaped along the fibres and irregularly distributed (one specimen reached 2.2 % in the laminate and 25.8 % at an interface). The void contents here are the laminate values; at the starter-crack interface the voids are 1.4 %. Mode I (Table 1, J/m2, +- standard deviation): initiation 229.0 (17.8) void-free and 239.8 (9.7) voided, unchanged; maximum during propagation 253.4 (6.6) and 441.4 (50.8): the voided specimens show a strong R-curve from ply splits bridging the crack (bridged zone 25-30 mm), absent without voids. Mode II: crack growth was unstable, so initiation equals the maximum, 883.1 (117.5) and 811.3 (57.0), -8 %; four voided specimens precracked in mode I confirmed the insert value (not tabulated). Mixed mode (MMB, G_II/G about 0.54, not a schema key): initiation 478.8 (43.7) and 381.4 (47.6), -20 %; maximum 487.1 (45.5) and 454.5 (70.3). The flexural modulus of the voided laminate was 7.5 % lower (111 GPa). The authors conclude the voids do not impair the static delamination toughness of this material; the Mehdikhani et al. 2019 review lists the mode II initiation as an increase, against Table 1."
+}

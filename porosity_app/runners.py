@@ -32,8 +32,10 @@ from porosity_fe.fe.failure import first_ply_failure_load_factor
 from porosity_fe.fracture_specimens import (
     _D6671_MODE_RATIO,
 )
+from porosity_fe.homogenization import _check_porosity_degradation
 
 from .config import (
+    _CFG_DEFAULTS,
     _FE_APPLIED_STRAIN,
     _FE_FLEXURE_LOAD_N,
     _FE_FRACTURE_LOAD_N,
@@ -158,6 +160,13 @@ def run_analysis(cfg: dict) -> dict:
     solve; ``fe_fracture_uq``, or the reason in ``fe_fracture_uq_error``).
     All are ``None`` when not requested.
 
+    ``cfg["porosity_degradation"]`` (``"isotropic"`` when absent, or the
+    opt-in ``"directional"``) is the FE porosity degradation mapping
+    (``FESolver(porosity_degradation=)``), used by the FE solve, the
+    knockdown split, the interface onset and the mechanical-only load
+    factor alike, and recorded on ``fe_field.porosity_degradation``. The
+    empirical results do not depend on it.
+
     ``cfg["thermal_mode"]`` (``"off"`` when absent) selects the FE thermal
     load: ``"combined"`` adds the cure residual stress at
     ``cfg["delta_T"]`` (K, negative for a cool-down) to the mechanical
@@ -172,7 +181,8 @@ def run_analysis(cfg: dict) -> dict:
     Raises
     ------
     ValueError
-        For an unknown material or ``thermal_mode``, a thermal mode without
+        For an unknown material, ``thermal_mode`` or
+        ``porosity_degradation``, a thermal mode without
         a finite ``delta_T``, a ``delamination`` that is not a
         :class:`Delamination`, an unknown ``toughness_law``, ``"user"``
         without both coefficients, invalid toughness values, or a
@@ -199,6 +209,8 @@ def run_analysis(cfg: dict) -> dict:
             f"(negative for a cool-down); got {delta_T!r}. There is no default."
         )
     fracture_uq_covs = _fracture_uq_covs(cfg)
+    porosity_degradation = _check_porosity_degradation(
+        cfg.get("porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
     material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
         material, t_ply=cfg["t_ply"], n_plies=cfg["n_plies"],
@@ -273,6 +285,7 @@ def run_analysis(cfg: dict) -> dict:
             mesh, material, porosity_field, cfg["angles"], cfg["loading_mode"],
             thermal_mode=thermal_mode, delta_T=delta_T,
             failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+            porosity_degradation=porosity_degradation,
             **({"toughness_knockdown": toughness_spec} if cracked else {}),
         )
     else:
@@ -296,6 +309,7 @@ def run_analysis(cfg: dict) -> dict:
             fe_decomposition = knockdown_decomposition(
                 mesh, material, porosity_field, fe_loading, total=fe_field,
                 delta_T=delta_T if thermal_mode == "combined" else None,
+                porosity_degradation=porosity_degradation,
                 **_fe_load_kwargs(fe_loading))
         except Exception as exc:
             logger.exception("Knockdown decomposition failed for loading=%s",
@@ -306,7 +320,8 @@ def run_analysis(cfg: dict) -> dict:
     if cfg.get("onset") and fe_field is not None:
         try:
             fe_onset = fe_field.delamination_onset(
-                mesh, material, x_avg=cfg.get("onset_x_avg"))
+                mesh, material, x_avg=cfg.get("onset_x_avg"),
+                porosity_degradation=fe_field.porosity_degradation)
         except ValueError as exc:
             fe_onset_error = str(exc)
     fe_fracture_uq = fe_fracture_uq_error = None
@@ -343,7 +358,8 @@ def run_analysis(cfg: dict) -> dict:
                 fe_field.stress_local - fe_field.residual_stress_local,
                 mesh.porosity, mesh.elements, material,
                 porosity_field.void_shape_radii, fe_field.failure_criterion,
-                void_elements=mesh.void_elements)
+                void_elements=mesh.void_elements,
+                porosity_degradation=fe_field.porosity_degradation)
 
     return {
         "config": cfg,
@@ -527,7 +543,9 @@ def _clt_flexure_reference(material, angles, vp: float, loading: str) -> dict:
 
 def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
                   *, thermal_mode: str = "off", delta_T: float | None = None,
-                  failure_criterion: str = "tsai_wu", **fracture):
+                  failure_criterion: str = "tsai_wu",
+                  porosity_degradation: str = _CFG_DEFAULTS["porosity_degradation"],
+                  **fracture):
     """Run the FE solve for ``loading_mode``; return ``(field, skipped_reason)``.
 
     Exactly one of the pair is ``None``. Any exception from the FE path is
@@ -538,8 +556,9 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     ``thermal_mode="combined"`` passes ``delta_T`` to the mechanical solve
     (residual stress superposed); ``"thermal_only"`` solves
     ``loading='thermal'`` at ``delta_T`` instead of ``loading_mode``.
-    ``failure_criterion`` is the FE criterion (``FESolver``'s). ``fracture``
-    (``toughness_knockdown=``, for a delaminated mesh) goes to the solve.
+    ``failure_criterion`` and ``porosity_degradation`` are the
+    ``FESolver``'s. ``fracture`` (``toughness_knockdown=``, for a
+    delaminated mesh) goes to the solve.
     The fracture modes ``'dcb'``, ``'enf'`` and ``'mmb'`` are loaded by
     :data:`_FE_FRACTURE_LOAD_N`.
     """
@@ -547,7 +566,8 @@ def _run_fe_solve(mesh, material, porosity_field, angles, loading_mode: str,
     thermal.update(fracture)
     try:
         fe_solver = FESolver(mesh, material, porosity_field, ply_angles=angles,
-                             failure_criterion=failure_criterion)
+                             failure_criterion=failure_criterion,
+                             porosity_degradation=porosity_degradation)
         if thermal_mode == "thermal_only":
             # Free-standing laminate under delta_T (3-2-1 supports): the
             # cure residual stress, with no mechanical load.

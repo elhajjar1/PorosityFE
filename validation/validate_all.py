@@ -75,10 +75,16 @@ def _get_schema() -> Dict[str, Any]:
 def load_dataset(path: str) -> Dict[str, Any]:
     """Load and validate a validation dataset JSON file.
 
-    Raises ValidationError if the file fails schema validation.
+    Raises ValidationError if the file cannot be read or parsed as JSON, or
+    fails schema validation, so one bad file is a load error of that dataset
+    and not of the whole run.
     """
-    with open(path, encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValidationError(
+            f"Dataset {path} could not be read: {type(e).__name__}: {e}") from e
     try:
         jsonschema.validate(instance=data, schema=_get_schema())
     except jsonschema.ValidationError as e:
@@ -503,14 +509,19 @@ def _run_one_dataset(path: str):
         vp = prop_data['void_content_pct']
         exp = prop_data['normalized_values']
         try:
+            # Checked for every property: numpy would broadcast a single
+            # value against all the predictions, and an empty block gives a
+            # NaN MAE that turns every headline aggregate into NaN.
+            if not vp:
+                raise ValueError("no data points.")
+            if len(vp) != len(exp):
+                raise ValueError(
+                    f"{len(vp)} void contents for {len(exp)} values.")
             predicted_band = None
             extra: Dict[str, Any] = {}
             if prop_key in _MODULUS_PROPS:
                 pred = predict_modulus(data, prop_key, vp)
             elif prop_key in _TOUGHNESS_PROPS:
-                if len(vp) != len(exp):
-                    raise ValueError(
-                        f"{len(vp)} void contents for {len(exp)} values.")
                 pred, predicted_band = predict_toughness(data, prop_key, vp)
                 law = ToughnessKnockdown()
                 mode = _TOUGHNESS_PROPERTY_TO_MODE[prop_key]

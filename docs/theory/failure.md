@@ -87,9 +87,16 @@ were set, with the stand-in values), and Hashin's matrix-compression mode,
 which divides $\sigma_2$ by $2 S_{23}$, follows $r_{S_{23}}$ too. On the
 production short-beam specimen with uniform penny porosity at 3 % the Hashin
 first-ply-failure factor drops 13 % (274 to 239) and the Brewer-Lagace onset
-factor from 338 to 309. Like the stiffness mapping it is uncalibrated, and
-the results do not record it: pass the same `porosity_degradation` to
-{func}`~porosity_fe.delamination_onset`.
+factor from 338 to 309. Like the stiffness mapping it is uncalibrated. The
+results record it, as {attr}`FieldResults.porosity_degradation
+<porosity_fe.FieldResults.porosity_degradation>`, in `summary().details` and
+in the `solver` block of the JSON export, but the onset is post-processing
+with its own argument, `'isotropic'` by default: pass it the results'
+value, `delamination_onset(results, mesh, material,
+porosity_degradation=results.porosity_degradation)`, as the app's onset
+check does. The app offers the option as the sidebar's "FE porosity
+degradation", and the CLI's delamination screening as
+`porosity-analyze --porosity-degradation directional`.
 
 ## Tsai-Wu (default)
 

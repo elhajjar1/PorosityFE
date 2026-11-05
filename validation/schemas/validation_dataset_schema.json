@@ -28,6 +28,8 @@
     "baseline_porosity_pct": {"type": "number", "minimum": 0, "maximum": 15},
     "properties": {
       "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
       "patternProperties": {
         "^(compression_strength|tensile_strength|transverse_tensile_strength|ilss|shear_strength|tensile_modulus|transverse_tensile_modulus|flexural_modulus|shear_modulus)$": {
           "type": "object",
@@ -44,9 +46,9 @@
                 "n_specimens_per_point": {"type": "integer"}
               }
             },
-            "void_content_pct": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 15}},
+            "void_content_pct": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 15}},
             "void_content_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
-            "normalized_values": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1.2}},
+            "normalized_values": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 1.2}},
             "normalized_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
             "absolute_values_MPa": {"type": "array", "items": {"type": ["number", "null"]}},
             "absolute_uncertainty_MPa": {"type": "array", "items": {"type": ["number", "null"]}},
@@ -84,9 +86,9 @@
                 {"type": "array", "items": {"type": "string", "enum": ["insert", "precracked", "unspecified"]}}
               ]
             },
-            "void_content_pct": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 15}},
+            "void_content_pct": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 15}},
             "void_content_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
-            "normalized_values": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 2.0}},
+            "normalized_values": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0, "maximum": 2.0}},
             "normalized_uncertainty": {"type": "array", "items": {"type": ["number", "null"]}},
             "absolute_values_N_per_mm": {"type": "array", "items": {"type": ["number", "null"]}},
             "absolute_uncertainty_N_per_mm": {"type": "array", "items": {"type": ["number", "null"]}},
