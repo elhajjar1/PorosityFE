@@ -12,6 +12,43 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **`porosity_degradation` on the results, in the JSON, the app and the
+  CLI** (delamination plan 1.4, the open items of #212). The default
+  `'isotropic'` results do not change: the 30-case FE gate moves by 0 of
+  its tolerance.
+  - `FieldResults.porosity_degradation` (`'isotropic'` or `'directional'`,
+    the last field, default `'isotropic'` for a `FieldResults` built
+    directly), set by `FESolver.solve`, and `summary().details`
+    `['porosity_degradation']` next to `formulation`.
+  - JSON: the `solver` block of the FE export gains `porosity_degradation`
+    (schema 1.3, additive; the schema now describes the `solver` block and
+    enumerates the two values). `load_results_from_json` gives an FE file
+    written before it existed `'isotropic'`, the only mapping then
+    (creating the `solver` block when the file has none); a file that
+    records it keeps it, and the other formats are returned as read.
+  - CLI: `porosity-analyze --porosity-degradation {isotropic,directional}`
+    for the FE delamination screening (its solve and the three solves of
+    the knockdown split), refused without `--delamination` like the other
+    screening options; a directional run says so on its summary line. With
+    the default spherical `--delam-config` the two give the same results.
+  - App: an "FE porosity degradation" selectbox under the failure criterion
+    (isotropic by default; directional is flagged uncalibrated, and moot
+    for spherical voids). It reaches the FE solve, the knockdown split, the
+    interface onset, the mechanical-only load factor of a combined thermal
+    run and the mesh-convergence check, and the Stress tab names it next
+    to the element formulation. It is the optional config key
+    `porosity_degradation`, in the cache key only when not `'isotropic'`,
+    so the default key and cached results are unchanged.
+  - `delamination_onset` / `FieldResults.delamination_onset` keep their
+    own argument, default `'isotropic'`: pass `results.porosity_degradation`
+    for the strengths of the solve (the app's onset check does).
+  - Fingerprints: the gate baseline gains the key in each case's `fields`,
+    `summary.details` and `export.solver` (90 string entries, no number
+    changed; a regeneration on the baseline's numpy / scipy equals it value
+    for value). The bitwise fingerprint differs from an earlier build only
+    in the new `porosity_degradation` hash and the `summary` and
+    `export_json` hashes (checked on the 27 `--quick` cases); every array
+    and scalar is bit identical.
 - **Validation: the `uhl_1988` compression dataset** (#221). Uhl, Lucht,
   Jeong and Hsu, Review of Progress in QNDE 7B (1988), pp. 1075-1082,
   doi:10.1007/978-1-4613-0979-6_24, open copy in the Iowa State repository:
@@ -285,10 +322,11 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     `delamination_onset` / `FieldResults.delamination_onset`,
     `refinement_study` (recorded in `to_dict()`) and
     `knockdown_decomposition`.
-  - Not recorded on `FieldResults` or in the JSON export (that changes every
-    fingerprint; to do with the baseline update): pass the same value to
-    `delamination_onset`. Uncalibrated against measured out-of-plane
-    constants of porous laminates, not in the app or CLI, and the empirical
+  - Recorded on `FieldResults` and in the JSON export, and offered in the
+    app and the CLI, since the entry "`porosity_degradation` on the
+    results, in the JSON, the app and the CLI" above; pass the same value
+    to `delamination_onset`. Uncalibrated against measured out-of-plane
+    constants of porous laminates, and the empirical
     solver and CLT helpers keep the isotropic projection. For crowded
     pennies (local `Vp` near 0.1) Mori-Tanaka's `C33`, `C44` are 7-10 % too
     stiff and the projection no longer softens that.

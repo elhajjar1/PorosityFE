@@ -77,7 +77,9 @@ cohesive zone or buckling.
   observed orders, Richardson extrapolates and a convergence flag per
   quantity. The app runs it from its Results tab.
 - **An opt-in direction-aware porosity degradation**
-  (`porosity_degradation='directional'`) for flat voids.
+  (`porosity_degradation='directional'`) for flat voids, recorded on the
+  results and in the JSON export, and offered in the app and in
+  `porosity-analyze --porosity-degradation`. It is uncalibrated.
 
 ## The app, the CLI and reporting
 

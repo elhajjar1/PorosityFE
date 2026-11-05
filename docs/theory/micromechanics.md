@@ -179,6 +179,18 @@ and the compression knockdown rises from 0.985 to 0.995, since flat voids
 parallel to the load hardly carry it; the solve costs the same. The
 interlaminar strengths follow the same tensor ({doc}`failure`).
 
+The mapping of a solve is recorded on the results,
+{attr}`FieldResults.porosity_degradation
+<porosity_fe.FieldResults.porosity_degradation>` (`'isotropic'` for a
+`FieldResults` built directly), in `summary().details` and in the `solver`
+block of the JSON export, next to the element formulation (schema 1.3,
+additive: {func}`~porosity_fe.load_results_from_json` gives a file written
+before the field existed `'isotropic'`, the only mapping then). The app
+offers it as the sidebar's "FE porosity degradation", and
+`porosity-analyze` as `--porosity-degradation` of its FE delamination
+screening ({doc}`../cli`); both default to `'isotropic'`. It is not
+calibrated against measured out-of-plane constants of porous laminates.
+
 **Penny-crack limit.** As the aspect ratio $\gamma = c/a$ of aligned
 oblate voids goes to zero at a fixed crack density $\rho = N a^3$ (so
 $V_p = \tfrac43 \pi \rho \gamma$), the Mori-Tanaka compliance tends to
