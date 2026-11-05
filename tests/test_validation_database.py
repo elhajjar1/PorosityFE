@@ -861,6 +861,54 @@ def test_toughness_tag_length_mismatch_is_an_entry_error(tmp_path):
     assert 'stage' in results['G_Ic']['error']
 
 
+def _strength_dataset(**block):
+    ilss = {"void_content_pct": [0.5, 2.0, 3.0], "normalized_values": [1.0, 0.9, 0.85]}
+    ilss.update(block)
+    return {"reference": "Synthetic strength dataset (2026)",
+            "material": {"fiber": "T700", "matrix": "epoxy", "fiber_volume_fraction": 0.6,
+                         "n_plies": 8, "ply_angles": [0] * 8},
+            "baseline_porosity_pct": 0.5,
+            "properties": {"ilss": ilss}}
+
+
+def test_schema_rejects_unknown_property_names_and_empty_blocks():
+    """A misspelled property used to pass the schema and drop out of the
+    headline as an entry error; an empty block gave a NaN headline."""
+    schema = _schema()
+    jsonschema.validate(_strength_dataset(), schema)
+    typo = _strength_dataset()
+    typo['properties'] = {'compressive_strength': typo['properties']['ilss']}
+    for bad in (typo,
+                _strength_dataset(void_content_pct=[], normalized_values=[]),
+                {**_strength_dataset(), 'properties': {}},
+                _toughness_dataset(void_content_pct=[], normalized_values=[])):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(bad, schema)
+
+
+def test_strength_length_mismatch_is_an_entry_error(tmp_path):
+    """numpy broadcast one value against every prediction (a silently wrong
+    MAE in the headline); every property now checks the lengths."""
+    from validation.validate_all import _run_one_dataset, summarize_mae
+    path = tmp_path / 'mismatch.json'
+    path.write_text(json.dumps(_strength_dataset(normalized_values=[1.0])),
+                    encoding='utf-8')
+    name, results = _run_one_dataset(str(path))
+    assert results['ilss']['error'] == '3 void contents for 1 values.'
+    assert summarize_mae({name: results})['n_entries'] == 0
+
+
+def test_unreadable_dataset_is_a_load_error_not_a_crash(tmp_path):
+    from validation.validate_all import ValidationError, load_dataset, run_all_datasets
+    (tmp_path / 'good.json').write_text(json.dumps(_strength_dataset()), encoding='utf-8')
+    (tmp_path / 'truncated.json').write_text('{"reference": "trunc', encoding='utf-8')
+    with pytest.raises(ValidationError, match='could not be read'):
+        load_dataset(str(tmp_path / 'truncated.json'))
+    results = run_all_datasets(str(tmp_path))
+    assert 'could not be read' in results['truncated']['error']
+    assert 'mae' in results['good']['ilss']
+
+
 def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     from validation.validate_all import generate_master_report
     _, md_path = generate_master_report(_all_results, output_dir=str(tmp_path))

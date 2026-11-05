@@ -419,8 +419,10 @@ def _build_toughness_inputs(material=None) -> tuple[dict, str | None]:
                                  format="%.4f", key="tough_G_IIIc",
                                  placeholder="= G_IIc" if preset is None
                                  else f"preset: {preset.G_IIIc_eff:g}",
-                                 help="Optional; empty uses G_IIc"
-                                 + ("." if preset is None else " (the preset's G_IIIc)."))
+                                 help=("Optional; empty uses G_IIc." if preset is None
+                                       else "Optional; empty keeps the preset's G_IIIc "
+                                       f"({preset.G_IIIc_eff:g} N/mm), also when G_IIc "
+                                       "is entered."))
     with c2:
         G_IIc = st.number_input("G_IIc, mode II (N/mm)", min_value=0.001,
                                 max_value=20.0, value=None, step=0.01,

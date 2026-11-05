@@ -192,8 +192,9 @@ class FESolver:
         and the factorizations it keeps), and raises :class:`ValueError`
         with the estimate when their sum exceeds the budget, instead of
         failing late with a ``MemoryError`` or a swap storm. ``None``
-        (default) is 80 % of physical memory, no limit where the platform
-        does not report it; ``math.inf`` turns the check off. The whole
+        (default) is 80 % of physical memory (on Linux, of the container's
+        cgroup memory limit when that is smaller), no limit where the
+        platform does not report it; ``math.inf`` turns the check off. The whole
         estimate was 1.0-1.3 times the measured peak on the production
         coupons; its factor part is 0.97-1.04 times the actual factor on
         the coupons and the ILSS specimen and 1.2-1.7 times on the flexure

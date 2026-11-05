@@ -97,6 +97,35 @@ class TestModel:
         # Off Windows ctypes has no windll.
         assert _memory._windows_physical_memory() is None
 
+    @pytest.mark.parametrize('content, expected', [
+        ('1073741824\n', 2**30),          # cgroup v2 or v1, a 1 GiB limit
+        ('max\n', None),                  # v2, no limit
+        ('9223372036854771712\n', None),  # v1, no limit
+        ('', None),
+    ])
+    def test_cgroup_memory_limit(self, tmp_path, monkeypatch, content, expected):
+        f = tmp_path / 'memory.max'
+        f.write_text(content, encoding='ascii')
+        monkeypatch.setattr(_memory, '_CGROUP_LIMIT_FILES', (str(f),))
+        assert _memory._cgroup_memory_limit() == expected
+        monkeypatch.setattr(_memory, '_CGROUP_LIMIT_FILES', (str(tmp_path / 'absent'),))
+        assert _memory._cgroup_memory_limit() is None
+
+    @pytest.mark.skipif(not sys.platform.startswith('linux'), reason='cgroup path')
+    def test_container_limit_caps_physical_memory(self, monkeypatch):
+        """A container's limit below the host's RAM sets the default budget;
+        one above it, or none, leaves the host's RAM."""
+        import os
+        monkeypatch.setattr(os, 'sysconf', lambda name: 2**20 if name == 'SC_PHYS_PAGES' else 4096)
+        host = 2**32
+        monkeypatch.setattr(_memory, '_cgroup_memory_limit', lambda: 2**30)
+        assert _memory.physical_memory_bytes() == 2**30
+        assert _memory.resolve_budget(None) == pytest.approx(0.8 * 2**30)
+        monkeypatch.setattr(_memory, '_cgroup_memory_limit', lambda: 2**40)
+        assert _memory.physical_memory_bytes() == host
+        monkeypatch.setattr(_memory, '_cgroup_memory_limit', lambda: None)
+        assert _memory.physical_memory_bytes() == host
+
     def test_check_factorization(self):
         est = _memory.lu_bytes_estimate(30_000)
         _memory.check_factorization(30_000, 29_000, 1e9, None)

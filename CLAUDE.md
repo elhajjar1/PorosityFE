@@ -93,7 +93,8 @@ different numerical answers for the same inputs**, not the same answer:
   factorization are cached on the assembler / solver and reused across
   solves until the mesh, material or porosity change. Every factorization
   is estimated first and refused over `FESolver(max_memory_gb=)` (default
-  80 % of RAM; `fe/_memory.py`, the model `refinement_study` plans with),
+  80 % of RAM or of a container's cgroup limit; `fe/_memory.py`, the model
+  `refinement_study` plans with),
   and the knockdown's pristine reference follows `solver`, so `'cg'`
   factorizes nothing. Strength degradation uses a
   heuristic `strength ~ sqrt(stiffness_retention)` scaling (see

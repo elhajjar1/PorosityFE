@@ -1081,10 +1081,20 @@ class TestConvergenceCheck:
         plan = app.convergence_plan(flexure_result, (1.0, 1.025, 1.5))   # 41 -> 42
         assert [lv["resolution"] for lv in plan] == [(40, 8, 4), (42, 8, 4), (60, 12, 4)]
 
-    def test_combined_thermal_plan_counts_two_factorizations(self, combined_results):
+    def test_combined_thermal_plan_counts_one_factorization(self, combined_results):
+        """As refinement_study plans it: the solver frees the thermal
+        factorization before it builds the mechanical one (the plan used to
+        count two)."""
         from porosity_fe.fe.refinement import _estimate_memory_bytes
         comb, _ = combined_results
         lv = app.convergence_plan(comb, (1.0,))[0]
+        assert lv["memory_gb"] == pytest.approx(
+            _estimate_memory_bytes(lv["resolution"], n_factorizations=1) / 1e9,
+            rel=1e-12)
+
+    def test_fracture_plan_counts_the_contact_factorization(self, comp_result):
+        from porosity_fe.fe.refinement import _estimate_memory_bytes
+        lv = app.convergence_plan({**comp_result, "fe_loading": "dcb"}, (1.0,))[0]
         assert lv["memory_gb"] == pytest.approx(
             _estimate_memory_bytes(lv["resolution"], n_factorizations=2) / 1e9,
             rel=1e-12)

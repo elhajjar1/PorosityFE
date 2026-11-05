@@ -1145,6 +1145,40 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **Validation: silent errors in `validate_porosity`** (found by review).
+  - A strength or modulus block whose `void_content_pct` and
+    `normalized_values` differ in length was broadcast by numpy into a
+    wrong MAE that entered the headline; an empty block gave a NaN
+    headline. Every property now checks both, and the schema requires at
+    least one value (`minItems`) and one property.
+  - A misspelled property name (`compressive_strength`) passed the schema
+    and dropped out of the headline as an entry error, while the CLI
+    reported a clean run. The schema now rejects unknown property names
+    (`additionalProperties: false`), and the CLI prints each failed
+    property and a "Property entries failed" count. The exit code stays 0
+    for failed datasets, as before.
+  - A file that is not valid JSON aborted the whole run; it is now a load
+    error of that dataset.
+- **`solver='cg'` refused an accurate answer on the DCB specimen.** The
+  relative residual of the open DCB arms cannot reach `rtol = 1e-9`: even
+  the LU solution sits at 2.6e-9 from round-off. A converged CG iterate
+  whose normwise backward error is below 1000 machine epsilons (5e-15 on
+  the DCB) is now accepted, logged at INFO. A tolerance requested below
+  round-off still raises.
+- **The default memory budget ignored a container's memory limit.** On
+  Linux, `physical_memory_bytes` now takes the cgroup v2 / v1 limit
+  (`/sys/fs/cgroup/memory.max`, `memory/memory.limit_in_bytes`) when it is
+  smaller than the host's RAM, so in Docker or Streamlit Cloud the 80 %
+  default is set against what the process may use, and the budget check
+  fires before the out-of-memory killer.
+- **App: the G_IIIc help text on a preset with toughness** said an empty
+  field used G_IIc; it keeps the preset's G_IIIc (0.78 N/mm on
+  `IM7_8552_epoxy`), also when G_IIc is entered.
+- **App: the mesh-convergence plan's memory column** counted two
+  factorizations for a combined thermal run and one for a fracture
+  specimen; it now uses `refinement_study`'s count (one, since the thermal
+  factorization is freed before the mechanical one is built; two for the
+  fracture specimens' contact loop).
 - **App figures were hard to read.** No result changes.
   - Mesh and Stress tabs: a laminate section about 50 x 4.4 mm was drawn
     to scale, a sliver under a colorbar about ten times its height that

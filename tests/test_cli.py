@@ -161,6 +161,21 @@ class TestValidatePorosityCLIRun:
         assert rc == 0
         assert "1 succeeded, 1 failed" in capsys.readouterr().out
 
+    def test_failed_property_is_reported(self, tmp_path, capsys):
+        """A property whose prediction fails is left out of the MAE; the
+        summary says so instead of reporting a clean run."""
+        from validate_porosity_cli import main
+        ds = tmp_path / "ds"
+        ds.mkdir()
+        bad = json.loads(json.dumps(_MIN_VALID_DATASET))
+        bad["properties"]["ilss"]["normalized_values"] = [1.0]
+        (ds / "mismatch.json").write_text(json.dumps(bad), encoding="utf-8")
+        rc = main(['--datasets', str(ds), '--output-dir', str(tmp_path / "out")])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "[ERROR] mismatch / ilss: 4 void contents for 1 values." in out
+        assert "Property entries failed: 1 (left out of the MAE)" in out
+
     def test_debug_writes_log(self, tmp_path):
         from validate_porosity_cli import main
         ds = _write_min_datasets(tmp_path / "ds")

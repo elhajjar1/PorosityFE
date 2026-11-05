@@ -39,6 +39,12 @@ LU_NNZ_EXPONENT = 1.5
 LU_BYTES_PER_NNZ = 12.0
 #: Fraction of physical memory a solve or a study may plan to use by default.
 DEFAULT_MEMORY_FRACTION = 0.8
+#: Files that hold a Linux container's memory limit, cgroup v2 then v1, as
+#: seen from inside the container's cgroup namespace.
+_CGROUP_LIMIT_FILES = ('/sys/fs/cgroup/memory.max',
+                       '/sys/fs/cgroup/memory/memory.limit_in_bytes')
+#: cgroup v1 reports "no limit" as a huge page-aligned number.
+_CGROUP_NO_LIMIT = 2 ** 60
 
 
 def lu_bytes_estimate(n_dof: int) -> float:
@@ -52,7 +58,13 @@ def lu_bytes(lu: Any) -> float:
 
 
 def physical_memory_bytes() -> int | None:
-    """Total physical memory, or ``None`` where the platform cannot tell."""
+    """Total physical memory, or ``None`` where the platform cannot tell.
+
+    On Linux a container's cgroup memory limit counts when it is smaller
+    (:func:`_cgroup_memory_limit`): the host's RAM is not what the process
+    may use, and above the limit the out-of-memory killer ends it before
+    any budget check would.
+    """
     if sys.platform == 'win32':
         return _windows_physical_memory()
     try:
@@ -62,7 +74,24 @@ def physical_memory_bytes() -> int | None:
         return None
     if pages <= 0 or size <= 0:
         return None
-    return int(pages) * int(size)
+    host = int(pages) * int(size)
+    limit = _cgroup_memory_limit() if sys.platform.startswith('linux') else None
+    return host if limit is None else min(host, limit)
+
+
+def _cgroup_memory_limit() -> int | None:
+    """The memory limit (bytes) of this process's cgroup, or ``None`` when
+    there is none (``max``, or v1's huge no-limit value) or no file can be
+    read."""
+    for path in _CGROUP_LIMIT_FILES:
+        try:
+            with open(path, encoding='ascii') as f:
+                text = f.read().strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text.isdigit() and 0 < int(text) < _CGROUP_NO_LIMIT:
+            return int(text)
+    return None
 
 
 def _windows_physical_memory() -> int | None:

@@ -15,7 +15,7 @@ from porosity_fe import (
     RefinementStudy,
     refinement_study,
 )
-from porosity_fe.fe.refinement import _estimate_memory_bytes
+from porosity_fe.fe.refinement import _estimate_memory_bytes, _peak_factorizations
 
 from .config import (
     _CFG_DEFAULTS,
@@ -92,7 +92,10 @@ def convergence_plan(result: dict, factors) -> list[dict]:
     """
     mesh = result["mesh"]
     nx0, ny0, nz0 = int(mesh.nx), int(mesh.ny), int(mesh.nz)
-    combined = (result.get("fe_thermal") or {}).get("mode") == "combined"
+    # The factorizations alive at once, as refinement_study plans them: one,
+    # since a combined thermal solve frees its thermal factorization before
+    # the mechanical one is built; two for a fracture specimen's contact loop.
+    n_factorizations = _peak_factorizations(str(result.get("fe_loading")), "direct")
     t0 = result.get("fe_solve_time_s")
     dof0 = 3 * (nx0 + 1) * (ny0 + 1) * (nz0 + 1)
     plan = []
@@ -109,9 +112,8 @@ def convergence_plan(result: dict, factors) -> list[dict]:
             "resolution": res,
             "n_elements": nx * ny * nz0,
             "n_dof": n_dof,
-            # A combined thermal solve holds two factorizations at its peak.
             "memory_gb": _estimate_memory_bytes(
-                res, n_factorizations=2 if combined else 1) / 1e9,
+                res, n_factorizations=n_factorizations) / 1e9,
             "time_s": None if not t0 else float(t0) * (n_dof / dof0) ** 1.5,
         })
     return plan

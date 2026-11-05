@@ -993,6 +993,29 @@ class TestFESolverIterative:
                 solver='cg', rtol=1e-30,
             )
 
+    def test_cg_accepts_an_iterate_at_the_round_off_floor(self, monkeypatch):
+        """A converged CG whose relative residual cannot reach rtol (||K||
+        ||u|| far above ||rhs||, as on the DCB arms) but whose backward error
+        is at round-off is accepted; one with a real error still raises."""
+        import scipy.sparse
+        import scipy.sparse.linalg as sla
+
+        from porosity_fe.fe import _constrained_solve as cs
+        A = scipy.sparse.csr_matrix([[1.0, 1.0 - 1e-8], [1.0 - 1e-8, 1.0]])
+        x_true = np.array([1e8, -1e8])
+        b = A @ x_true
+        for delta, ok in ((1e-6, True), (1e-1, False)):
+            u = x_true + delta
+            monkeypatch.setattr(sla, 'cg', lambda *a, u=u, **k: (u.copy(), 0))
+            assert cs._relative_residual(A, u, b) > 10 * 1e-9
+            assert (cs._backward_error(A, u, b) <= cs._BACKWARD_ERROR_TOL) is ok
+            if ok:
+                u_f, _ = cs._iterative_solve(A, b, A.diagonal(), solver='cg', rtol=1e-9)
+                np.testing.assert_allclose(u_f, x_true, rtol=1e-13)
+            else:
+                with pytest.raises(RuntimeError, match="cg failed to converge"):
+                    cs._iterative_solve(A, b, A.diagonal(), solver='cg', rtol=1e-9)
+
     def test_minres_nonconvergence_raises(self):
         solver = FESolver(self.mesh, self.material, self.pf)
         with _minres_warns('minres'), \
