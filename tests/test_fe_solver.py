@@ -2822,7 +2822,8 @@ class TestIncompatibleModes:
         path = tmp_path / "fe.json"
         FESolver.export_results(r, path)
         with open(path, encoding='utf-8') as f:
-            assert json.load(f)['solver'] == {'formulation': 'hex8i'}
+            assert json.load(f)['solver'] == {'formulation': 'hex8i',
+                                              'porosity_degradation': 'isotropic'}
         # FieldResults built directly takes the solver default; an explicit
         # 'hex8' solve is recorded as such.
         bare = FieldResults(r.displacement, r.stress_global, r.stress_local,
@@ -2833,7 +2834,8 @@ class TestIncompatibleModes:
         assert r8.summary().details['formulation'] == 'hex8'
         FESolver.export_results(r8, path)
         with open(path, encoding='utf-8') as f:
-            assert json.load(f)['solver'] == {'formulation': 'hex8'}
+            assert json.load(f)['solver'] == {'formulation': 'hex8',
+                                              'porosity_degradation': 'isotropic'}
 
     def test_assembly_cache_is_keyed_on_formulation(self):
         mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)

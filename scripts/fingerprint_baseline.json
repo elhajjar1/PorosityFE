@@ -149,7 +149,8 @@
     },
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -699,6 +700,7 @@
      "sum": 42.24949279715267
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 3.3006327309472816e-06,
@@ -889,6 +891,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": 2.3513347621363128,
      "max_failure_index": 1.6918449451693007,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": "exponential: G_c = G_c0 exp(-b Vp), b_I = 6.2, b_II = 14, b_III = 14 (placeholder, uncalibrated)",
      "toughness_uncalibrated": false
@@ -951,7 +954,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "directional"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -1335,6 +1339,7 @@
       "sum": 0.010554081135221868
      }
     },
+    "porosity_degradation": "directional",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999999778,
@@ -1532,6 +1537,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 7.248581060724442e-05,
+     "porosity_degradation": "directional",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -1587,7 +1593,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55428.094845155356,
@@ -1792,6 +1799,7 @@
      "sum": 5784.767921585295
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88362.1981057196,
@@ -1982,6 +1990,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 2.089808790223402,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -2328,7 +2337,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 56013.286558514694,
@@ -4032,6 +4042,7 @@
      "sum": 3808.965987106894
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 86791.02274970076,
@@ -4252,6 +4263,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 2.3649054430717107,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.686238574731773,
      "toughness_knockdown": "exponential: G_c = G_c0 exp(-b Vp), b_I = 6.2, b_II = 14, b_III = 14 (placeholder, uncalibrated)",
      "toughness_uncalibrated": true
@@ -4315,7 +4327,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -4734,6 +4747,7 @@
       "sum": 6152.521197198658
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -4961,6 +4975,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 2.199434021884438,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.5746702672710838,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -5024,7 +5039,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -5443,6 +5459,7 @@
       "sum": 4828.353440606055
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -5670,6 +5687,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 1.4837839773407426,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7579672962503898,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -5726,7 +5744,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -5963,6 +5982,7 @@
      "sum": 9506.625231889273
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -6183,6 +6203,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 2.7491871076336225,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7353366626854776,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -6245,7 +6266,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -6629,6 +6651,7 @@
       "sum": 6139.090188140505
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -6826,6 +6849,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 2.1414941318789236,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -6888,7 +6912,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -7272,6 +7297,7 @@
       "sum": 4806.259549189806
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -7469,6 +7495,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 1.4746182996431454,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -7524,7 +7551,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -7726,6 +7754,7 @@
      "sum": 6087.244914378611
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -7916,6 +7945,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 2.194169037231062,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -7978,7 +8008,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 21812.867427536366,
@@ -8362,6 +8393,7 @@
       "sum": 3615.588672184096
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 124690.57908755491,
@@ -8559,6 +8591,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 1.0140061150655553,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -8614,7 +8647,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 21812.867427536366,
@@ -8816,6 +8850,7 @@
      "sum": 5014.316651409808
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 124690.57908755491,
@@ -9006,6 +9041,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 1.0628097134715633,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -9069,7 +9105,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -9488,6 +9525,7 @@
       "sum": 6134.187160420644
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -9715,6 +9753,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 5.9747154270508585,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.5746702672710838,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -9778,7 +9817,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -10197,6 +10237,7 @@
       "sum": 4815.271352990876
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -10424,6 +10465,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 2.443519663114559,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7579672962503898,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -10480,7 +10522,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -10717,6 +10760,7 @@
      "sum": 18825.139742687774
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -10937,6 +10981,7 @@
      "load_factor_basis": "mechanical_with_residual",
      "load_point_compliance": null,
      "max_failure_index": 3.7321305124519264,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7353366626854776,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -10999,7 +11044,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -11383,6 +11429,7 @@
       "sum": 6139.090188140505
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -11580,6 +11627,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 3.1355335463014797,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -11642,7 +11690,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -12026,6 +12075,7 @@
       "sum": 4806.259549189806
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -12223,6 +12273,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 1.7690306720778437,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -12278,7 +12329,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 55999.187915234776,
@@ -12480,6 +12532,7 @@
      "sum": 12908.764855103094
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 88836.32218933225,
@@ -12670,6 +12723,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 2.8907078111365836,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -12733,7 +12787,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -13152,6 +13207,7 @@
       "sum": 0.2009675256168722
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 1.0403637205197436e-09,
@@ -13379,6 +13435,7 @@
      "load_factor_basis": "delta_T",
      "load_point_compliance": null,
      "max_failure_index": 0.5746702672710838,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.5746702672710838,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -13442,7 +13499,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -13861,6 +13919,7 @@
       "sum": 101.03212679629729
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 1.0403637205197436e-09,
@@ -14088,6 +14147,7 @@
      "load_factor_basis": "delta_T",
      "load_point_compliance": null,
      "max_failure_index": 0.7579672962503898,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7579672962503898,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -14144,7 +14204,8 @@
     "provenance_delta_T_K": -157.0,
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -14381,6 +14442,7 @@
      "sum": 4709.507035974757
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 1.0403637205197436e-09,
@@ -14601,6 +14663,7 @@
      "load_factor_basis": "delta_T",
      "load_point_compliance": null,
      "max_failure_index": 0.7353366626854776,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": 0.7353366626854776,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -14663,7 +14726,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60158.29614219585,
@@ -15047,6 +15111,7 @@
       "sum": 0.23172393717786718
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999497453,
@@ -15244,6 +15309,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.0009740500639084102,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -15306,7 +15372,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60158.29614219585,
@@ -15690,6 +15757,7 @@
       "sum": 25.593373024716342
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999497453,
@@ -15887,6 +15955,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.031194980104597002,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -15942,7 +16011,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60158.29614219585,
@@ -16144,6 +16214,7 @@
      "sum": 3.0161045323922533
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999497453,
@@ -16334,6 +16405,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.02532959049191316,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -16396,7 +16468,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60129.73578284536,
@@ -16780,6 +16853,7 @@
       "sum": 0.11511742672365652
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999627809,
@@ -16977,6 +17051,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.00025785284457273817,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -17039,7 +17114,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60129.73578284536,
@@ -17423,6 +17499,7 @@
       "sum": 18.410762830185778
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999627809,
@@ -17620,6 +17697,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.01605185532666888,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -17675,7 +17753,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": 60129.73578284536,
@@ -17877,6 +17956,7 @@
      "sum": 1.9685329295520075
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 9.999999999627809,
@@ -18067,6 +18147,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.012939209828745288,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -18129,7 +18210,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -18513,6 +18595,7 @@
       "sum": 0.009820914644752161
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 10.000000000000368,
@@ -18710,6 +18793,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 6.235058636028353e-05,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -18772,7 +18856,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -19156,6 +19241,7 @@
       "sum": 11.548026089123839
      }
     },
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 10.000000000000368,
@@ -19353,6 +19439,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.009144920692146827,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null
@@ -19408,7 +19495,8 @@
     "format": "porosity-fe.fe-fields",
     "schema_version": "1.3",
     "solver": {
-     "formulation": "hex8i"
+     "formulation": "hex8i",
+     "porosity_degradation": "isotropic"
     },
     "stiffness": {
      "effective_modulus_MPa": null,
@@ -19610,6 +19698,7 @@
      "sum": -4.2938990448026555
     },
     "per_element_mode_failure_index": null,
+    "porosity_degradation": "isotropic",
     "reaction_forces": {
      "__array__": "<f8",
      "abs_sum": 10.000000000000368,
@@ -19800,6 +19889,7 @@
      "load_factor_basis": "mechanical",
      "load_point_compliance": null,
      "max_failure_index": 0.00606580135173065,
+     "porosity_degradation": "isotropic",
      "residual_max_failure_index": null,
      "toughness_knockdown": null,
      "toughness_uncalibrated": null

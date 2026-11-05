@@ -531,6 +531,54 @@ def test_fe_json_infinite_load_factor_is_null(fe_tsai_wu, tmp_path):
     assert fail["interior_first_ply_failure_load_factor"] is None
 
 
+def test_fe_json_records_the_porosity_degradation(fe_tsai_wu, tmp_path):
+    """Schema 1.3, additive: the ``solver`` block records the porosity
+    degradation mapping of the solve next to the element formulation."""
+    import jsonschema
+
+    r = fe_tsai_wu["tsai_wu"]
+    assert r.porosity_degradation == "isotropic"
+    doc = _export_fe(r, tmp_path / "fe.json")
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    assert doc["schema_version"] == JSON_SCHEMA_VERSION == "1.3"
+    assert doc["solver"] == {"formulation": "hex8i", "porosity_degradation": "isotropic"}
+    directional = dataclasses.replace(r, porosity_degradation="directional")
+    doc = _export_fe(directional, tmp_path / "dir.json")
+    jsonschema.validate(instance=doc, schema=_load_schema())
+    assert doc["solver"]["porosity_degradation"] == "directional"
+    assert load_results_from_json(tmp_path / "dir.json") == doc
+
+
+@pytest.mark.parametrize("version, drop_solver", [
+    ("1.2", True), ("1.3", False),
+], ids=["no_solver_block", "no_porosity_degradation"])
+def test_legacy_fe_json_without_porosity_degradation_loads_with_the_default(
+        fe_tsai_wu, tmp_path, version, drop_solver):
+    """A file written before ``solver.porosity_degradation`` existed (with
+    or without a ``solver`` block) still validates, and loads with the
+    default ``'isotropic'``, the only mapping before the option; every
+    other value is the file's."""
+    import jsonschema
+
+    doc = _export_fe(fe_tsai_wu["tsai_wu"], tmp_path / "fe.json")
+    legacy = json.loads(json.dumps(doc))
+    legacy["schema_version"] = legacy["provenance"]["schema_version"] = version
+    if drop_solver:
+        del legacy["solver"]
+    else:
+        del legacy["solver"]["porosity_degradation"]
+    jsonschema.validate(instance=legacy, schema=_load_schema())
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = load_results_from_json(path)
+    assert loaded["solver"]["porosity_degradation"] == "isotropic"
+    assert loaded["solver"] == ({"porosity_degradation": "isotropic"} if drop_solver
+                                else {"formulation": "hex8i",
+                                      "porosity_degradation": "isotropic"})
+    assert {k: v for k, v in loaded.items() if k != "solver"} == \
+        {k: v for k, v in legacy.items() if k != "solver"}
+
+
 def test_fe_json_refuses_unexpected_nan_before_writing(fe_tsai_wu, tmp_path):
     """A NaN in a field with no documented null meaning is a bug upstream:
     the writer raises, names the field, and leaves no file or sidecar."""

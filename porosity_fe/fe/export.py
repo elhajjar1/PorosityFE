@@ -22,6 +22,7 @@ from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
+from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..io import FORMAT_FE_FIELDS, _dumps_json, _finite_or_none, _wrap_envelope
 from ..mesh import CompositeMesh
 from .element import _DEFAULT_FORMULATION
@@ -647,6 +648,10 @@ def export_results(field_results: FieldResults,
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),
+        # Schema 1.3, additive: a file without it was solved with the
+        # default, which load_results_from_json fills in.
+        'porosity_degradation': str(getattr(field_results, 'porosity_degradation',
+                                            _DEFAULT_POROSITY_DEGRADATION)),
     }
     if field_results.reaction_forces is not None:
         results_data['stiffness'] = {

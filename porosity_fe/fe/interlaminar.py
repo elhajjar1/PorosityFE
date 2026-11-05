@@ -861,9 +861,11 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
         ``mesh.porosity_field``.
     porosity_degradation : {'isotropic', 'directional'}, optional
         Porosity degradation of the strengths (see
-        :data:`porosity_fe.PorosityDegradation`), default ``'isotropic'``:
-        pass the value the solve used (``FESolver(...,
-        porosity_degradation=...)``); the results do not record it. With
+        :data:`porosity_fe.PorosityDegradation`), default ``'isotropic'``
+        whatever the solve used: pass the value the solve used,
+        ``results.porosity_degradation``
+        (:attr:`FieldResults.porosity_degradation
+        <porosity_fe.FieldResults.porosity_degradation>`). With
         ``'directional'`` ``Z_t`` (and ``Zc``) take the through-thickness
         ratio ``r_Zt``, ``S_13`` the ``r_S13`` and ``S_23`` the ``r_S23`` of
         :func:`porosity_fe.fe.failure._interlaminar_strength_ratios`

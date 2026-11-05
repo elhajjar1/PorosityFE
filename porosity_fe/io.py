@@ -20,6 +20,7 @@ import numpy as np
 if TYPE_CHECKING:
     from .results import ConfigArtifacts
 
+from .homogenization import _DEFAULT_POROSITY_DEGRADATION
 from .results import ConfigResult
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -172,7 +173,11 @@ def _write_json(obj, filename: str | os.PathLike) -> None:
 # Also 1.3 (phase 4.5), additive and opt-in: an FE-field export takes a
 # ``fracture_uncertainty`` block (``export_results(...,
 # fracture_uncertainty=band)``), the band on the fracture load factor from
-# toughness scatter (``FractureLoadFactorBand.summary()``).
+# toughness scatter (``FractureLoadFactorBand.summary()``). Also 1.3
+# (delamination plan 1.4, #212), additive: the ``solver`` block of an
+# FE-field export gains ``porosity_degradation`` ('isotropic' or
+# 'directional'); load_results_from_json gives a file without it the
+# default, 'isotropic', the only mapping before the option existed.
 JSON_SCHEMA_VERSION = "1.3"
 FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
@@ -475,6 +480,12 @@ def load_results_from_json(filename: str | os.PathLike) -> dict:
     non-standard tokens ``NaN`` / ``Infinity`` instead; they are read as
     ``None`` too, with a logged warning, so old and new files load the
     same way.
+
+    For the same reason an FE-field export (``format`` ``porosity-fe.fe-fields``)
+    written before ``solver.porosity_degradation`` existed is given its
+    default, ``'isotropic'``: the only mapping before the option was added
+    and the default since (its ``solver`` block is created when the file
+    has none). A file that records the mapping keeps it.
     """
     filename = Path(filename)
     legacy_tokens: set[str] = set()
@@ -511,4 +522,8 @@ def load_results_from_json(filename: str | os.PathLike) -> dict:
             f"{filename}: unknown format {fmt!r}. "
             f"Known formats: {sorted(_KNOWN_FORMATS)}."
         )
+    if fmt == FORMAT_FE_FIELDS:
+        solver = data.setdefault('solver', {})
+        if isinstance(solver, dict):
+            solver.setdefault('porosity_degradation', _DEFAULT_POROSITY_DEGRADATION)
     return data

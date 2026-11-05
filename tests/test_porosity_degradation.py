@@ -10,6 +10,7 @@ must give the same results under either option.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -21,6 +22,9 @@ T800 = MATERIALS['T800_epoxy']
 SPHERE = (1.0, 1.0, 1.0)
 PENNY = (3.0, 3.0, 0.3)
 CYL = (3.0, 1.0, 1.0)
+
+_SCHEMA = Path(__file__).resolve().parent.parent / 'validation' / 'schemas' / \
+    'porosity_results_schema.json'
 
 
 # ----------------------------------------------------------------------
@@ -325,11 +329,14 @@ def _assert_results_close(a, b, mesh, rtol, *, thermal=False):
     are round-off by construction and only bounded: the reactions of the
     statically determinate thermal supports, and the mode breakdown at the
     governing Gauss point, which can move between points whose indices tie
-    to round-off (its ``max_fi`` is compared).
+    to round-off (its ``max_fi`` is compared). ``porosity_degradation``
+    records the option the two solves differ in, so the caller checks it.
     """
     fi_scale = abs(a.max_failure_index)
     for f in dataclasses.fields(a):
         x, y = getattr(a, f.name), getattr(b, f.name)
+        if f.name == 'porosity_degradation':
+            continue
         if f.name == 'failure_mode_indices':
             assert x['max_fi'] == pytest.approx(y['max_fi'], rel=rtol)
         elif f.name == 'reaction_forces' and thermal:
@@ -454,6 +461,7 @@ class TestFEThreading:
         # large terms: 2e-11 relative on macOS. The scalars therefore take
         # the fields' tolerance; the penny effect they guard is 1e-2.
         thermal = loading == 'thermal'
+        assert (a.porosity_degradation, b.porosity_degradation) == ('isotropic', 'directional')
         _assert_results_close(a, b, mesh, rtol=1e-7 if thermal else 1e-9, thermal=thermal)
         for name in ('knockdown', 'max_failure_index', 'first_ply_failure_load_factor'):
             x, y = getattr(a, name), getattr(b, name)
@@ -612,3 +620,58 @@ class TestFEThreading:
         assert seen[-3:] == ['isotropic'] * 3
         assert iso.porosity_only != pytest.approx(parts.porosity_only, rel=1e-6)
         assert iso.delamination_only == pytest.approx(parts.delamination_only, rel=1e-12)
+
+
+# ----------------------------------------------------------------------
+# Recorded on the results and in the JSON export
+# ----------------------------------------------------------------------
+
+class TestRecordedOnResults:
+    def test_field_summary_and_export(self, tmp_path):
+        """The mapping of the solve is on ``FieldResults``, in
+        ``summary().details`` and in the JSON ``solver`` block, which the
+        results schema accepts (and no other value); a ``FieldResults``
+        built directly has the default, and a copy keeps it."""
+        import json
+
+        import jsonschema
+
+        from porosity_fe import FESolver, FieldResults, load_results_from_json
+        schema = json.loads(_SCHEMA.read_text(encoding='utf-8'))
+        pf, mesh = _coupon('penny')
+        for mapping in ('isotropic', 'directional'):
+            fe = FESolver(mesh, MAT4, pf, ply_angles=LAYUP, porosity_degradation=mapping)
+            r = fe.solve('compression', failure_criterion='hashin')
+            assert r.porosity_degradation == mapping
+            assert fe.solve('thermal', delta_T=-157.0).porosity_degradation == mapping
+            assert r.summary().details['porosity_degradation'] == mapping
+            assert r.summary().details['formulation'] == 'hex8i'
+            path = tmp_path / f'{mapping}.json'
+            FESolver.export_results(r, path)
+            doc = json.loads(path.read_text(encoding='utf-8'))
+            assert doc['solver'] == {'formulation': 'hex8i', 'porosity_degradation': mapping}
+            jsonschema.validate(doc, schema)
+            assert load_results_from_json(path) == doc
+        assert dataclasses.replace(r, knockdown=0.5).porosity_degradation == 'directional'
+        bare = FieldResults(r.displacement, r.stress_global, r.stress_local,
+                            r.strain_global, r.strain_local, 1.0, 1.0)
+        assert bare.porosity_degradation == 'isotropic'
+        doc['solver']['porosity_degradation'] = 'radial'
+        with pytest.raises(jsonschema.ValidationError, match="'radial' is not one of"):
+            jsonschema.validate(doc, schema)
+
+    def test_the_recorded_value_reproduces_the_onset(self):
+        """``FieldResults.delamination_onset`` keeps its own argument
+        (default ``'isotropic'``); passing the recorded value gives the
+        strengths of the solve."""
+        from porosity_fe import FESolver
+        pf, mesh = _coupon('penny')
+        r = FESolver(mesh, MAT4, pf, ply_angles=LAYUP,
+                     porosity_degradation='directional').solve('tension')
+        recorded = r.delamination_onset(mesh, MAT4,
+                                        porosity_degradation=r.porosity_degradation)
+        explicit = r.delamination_onset(mesh, MAT4, porosity_degradation='directional')
+        np.testing.assert_array_equal(recorded.index, explicit.index)
+        default = r.delamination_onset(mesh, MAT4)
+        e = default.evaluated
+        assert np.all(recorded.Zt[e] < default.Zt[e])

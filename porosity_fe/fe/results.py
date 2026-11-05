@@ -116,6 +116,15 @@ class FieldResults:
         Element formulation of the solve, ``'hex8i'`` (default, also for
         callers that construct ``FieldResults`` directly) or ``'hex8'``;
         see :class:`FESolver`.
+    porosity_degradation : {'isotropic', 'directional'}
+        Porosity degradation mapping of the solve
+        (``FESolver(..., porosity_degradation=...)``; see
+        :data:`porosity_fe.PorosityDegradation`): ``'isotropic'`` (default,
+        also for callers that construct ``FieldResults`` directly) or the
+        opt-in ``'directional'``. The stiffness, the failure indices and
+        the load factors of the solve follow it. Post-processing that
+        re-evaluates strengths, such as :meth:`delamination_onset`, takes
+        its own ``porosity_degradation`` argument: pass this value.
     delta_T : float or None
         Temperature change from the stress-free state (K) of a thermal
         (``loading='thermal'``) or combined (mechanical with ``delta_T=``)
@@ -304,6 +313,7 @@ class FieldResults:
     load_point_compliance: float | None = None
     interior_fracture_load_factor: float | None = None
     interior_fracture_governing_node: int | None = None
+    porosity_degradation: PorosityDegradation = _DEFAULT_POROSITY_DEGRADATION
 
     def __repr__(self) -> str:
         n_nodes = self.displacement.shape[0] if self.displacement is not None else 0
@@ -341,7 +351,8 @@ class FieldResults:
             ``loading='thermal'``, passed through), derived
             ``failure_stress``, FE-criterion-tagged ``model`` and a
             ``details`` dict carrying ``max_failure_index``,
-            ``failure_criterion`` and ``failure_mode_indices`` for
+            ``failure_criterion``, ``failure_mode_indices``,
+            ``formulation`` and ``porosity_degradation`` for
             downstream consumers that need the richer field-result data,
             and the delamination keys (``fracture_load_factor``,
             ``fracture_governing_node``, ``fracture_governing_psi``,
@@ -375,6 +386,7 @@ class FieldResults:
                 'first_ply_failure_load_factor': self.first_ply_failure_load_factor,
                 'effective_modulus': self.effective_modulus,
                 'formulation': self.formulation,
+                'porosity_degradation': self.porosity_degradation,
                 'load_factor_basis': self.load_factor_basis,
                 'interior_max_failure_index': self.interior_max_failure_index,
                 'interior_first_ply_failure_load_factor':
@@ -557,9 +569,10 @@ class FieldResults:
         Brewer-Lagace (or Ye) quadratic criterion on the interface traction
         averaged over ``x_avg`` (default one ply thickness), with
         porosity-degraded strengths, and the onset load factor. The
-        arguments are those of :func:`~porosity_fe.delamination_onset`;
-        pass the ``porosity_degradation`` the solve used (not recorded
-        here).
+        arguments are those of :func:`~porosity_fe.delamination_onset`.
+        ``porosity_degradation`` defaults to ``'isotropic'`` whatever the
+        solve used: pass :attr:`porosity_degradation` for the strengths of
+        the solve.
 
         Returns
         -------
