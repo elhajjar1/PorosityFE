@@ -803,8 +803,7 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
                        interfaces: Iterable[int] | None = None,
                        interior_margin: float | None = None,
                        void_shape_radii: tuple | None = None,
-                       porosity_degradation: PorosityDegradation =
-                       _DEFAULT_POROSITY_DEGRADATION,
+                       porosity_degradation: PorosityDegradation | None = None,
                        ) -> DelaminationOnset:
     """Stress-based delamination onset at the ply interfaces.
 
@@ -861,11 +860,12 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
         ``mesh.porosity_field``.
     porosity_degradation : {'isotropic', 'directional'}, optional
         Porosity degradation of the strengths (see
-        :data:`porosity_fe.PorosityDegradation`), default ``'isotropic'``
-        whatever the solve used: pass the value the solve used,
-        ``results.porosity_degradation``
+        :data:`porosity_fe.PorosityDegradation`). ``None`` (default) takes
+        the one the solve used, ``results.porosity_degradation``
         (:attr:`FieldResults.porosity_degradation
-        <porosity_fe.FieldResults.porosity_degradation>`). With
+        <porosity_fe.FieldResults.porosity_degradation>`; ``'isotropic'``
+        for results without it); pass a value to evaluate the onset with
+        the other mapping. With
         ``'directional'`` ``Z_t`` (and ``Zc``) take the through-thickness
         ratio ``r_Zt``, ``S_13`` the ``r_S13`` and ``S_23`` the ``r_S23`` of
         :func:`porosity_fe.fe.failure._interlaminar_strength_ratios`
@@ -913,6 +913,9 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     if criterion not in ONSET_CRITERIA:
         raise ValueError(
             f"Unknown onset criterion {criterion!r}. Use one of {list(ONSET_CRITERIA)}.")
+    if porosity_degradation is None:
+        porosity_degradation = getattr(results, 'porosity_degradation',
+                                       _DEFAULT_POROSITY_DEGRADATION)
     _check_porosity_degradation(porosity_degradation)
     if Zc is not None:
         if criterion == 'ye':

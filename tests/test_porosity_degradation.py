@@ -552,7 +552,7 @@ class TestFEThreading:
             pf, mesh = _coupon(shape)
             r = FESolver(mesh, MAT4, pf, ply_angles=LAYUP,
                          porosity_degradation='directional').solve('tension')
-            iso = delamination_onset(r, mesh, MAT4, Zc=200.0)
+            iso = delamination_onset(r, mesh, MAT4, Zc=200.0, porosity_degradation='isotropic')
             d = delamination_onset(r, mesh, MAT4, Zc=200.0, porosity_degradation='directional')
             d2 = r.delamination_onset(mesh, MAT4, Zc=200.0, porosity_degradation='directional')
             np.testing.assert_array_equal(d.index, d2.index)
@@ -660,18 +660,23 @@ class TestRecordedOnResults:
         with pytest.raises(jsonschema.ValidationError, match="'radial' is not one of"):
             jsonschema.validate(doc, schema)
 
-    def test_the_recorded_value_reproduces_the_onset(self):
-        """``FieldResults.delamination_onset`` keeps its own argument
-        (default ``'isotropic'``); passing the recorded value gives the
-        strengths of the solve."""
-        from porosity_fe import FESolver
+    def test_the_onset_follows_the_recorded_value_by_default(self):
+        """``delamination_onset`` (the function and the method) defaults to
+        the mapping the solve used; an explicit argument still overrides
+        it, and results without the field read as isotropic."""
+        import dataclasses
+
+        from porosity_fe import FESolver, delamination_onset
         pf, mesh = _coupon('penny')
         r = FESolver(mesh, MAT4, pf, ply_angles=LAYUP,
                      porosity_degradation='directional').solve('tension')
-        recorded = r.delamination_onset(mesh, MAT4,
-                                        porosity_degradation=r.porosity_degradation)
-        explicit = r.delamination_onset(mesh, MAT4, porosity_degradation='directional')
-        np.testing.assert_array_equal(recorded.index, explicit.index)
         default = r.delamination_onset(mesh, MAT4)
+        explicit = r.delamination_onset(mesh, MAT4, porosity_degradation='directional')
+        np.testing.assert_array_equal(default.index, explicit.index)
+        np.testing.assert_array_equal(delamination_onset(r, mesh, MAT4).index, explicit.index)
+        iso = r.delamination_onset(mesh, MAT4, porosity_degradation='isotropic')
         e = default.evaluated
-        assert np.all(recorded.Zt[e] < default.Zt[e])
+        assert np.all(default.Zt[e] < iso.Zt[e])
+        as_isotropic = dataclasses.replace(r, porosity_degradation='isotropic')
+        np.testing.assert_array_equal(as_isotropic.delamination_onset(mesh, MAT4).index,
+                                      iso.index)

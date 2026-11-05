@@ -1485,6 +1485,13 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **`delamination_onset` follows the solve's porosity degradation by
+  default.** `porosity_degradation=None` (the new default, for the function
+  and `FieldResults.delamination_onset`) takes
+  `results.porosity_degradation`, so a directional result gets directional
+  interlaminar strengths without being told twice; pass a value to
+  evaluate the onset with the other mapping. It defaulted to
+  `'isotropic'` whatever the solve used. Isotropic results are unchanged.
 - **The Streamlit app is a package, `porosity_app/`** (#224). `app.py` had
   grown to 3,804 lines. Its 135 functions and constants moved, verbatim, to:
   - `config`: the sidebar keys, defaults and cache key, labels;

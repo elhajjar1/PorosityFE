@@ -178,9 +178,8 @@ class FESolver:
         Threaded to the failure criteria, the load factors and the interior
         metrics, and recorded on :attr:`FieldResults.porosity_degradation`,
         in ``summary().details`` and in the JSON export (``solver``
-        block). :func:`~porosity_fe.delamination_onset` is post-processing
-        with its own argument (default ``'isotropic'``): pass it the
-        results' value. Not calibrated
+        block), which :func:`~porosity_fe.delamination_onset` follows by
+        default. Not calibrated
         against measured out-of-plane constants of porous laminates, and
         for crowded pennies (local ``Vp`` near 0.1) the Mori-Tanaka
         out-of-plane stiffness is 7-10 % too stiff with no projection to

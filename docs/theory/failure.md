@@ -90,11 +90,9 @@ first-ply-failure factor drops 13 % (274 to 239) and the Brewer-Lagace onset
 factor from 338 to 309. Like the stiffness mapping it is uncalibrated. The
 results record it, as {attr}`FieldResults.porosity_degradation
 <porosity_fe.FieldResults.porosity_degradation>`, in `summary().details` and
-in the `solver` block of the JSON export, but the onset is post-processing
-with its own argument, `'isotropic'` by default: pass it the results'
-value, `delamination_onset(results, mesh, material,
-porosity_degradation=results.porosity_degradation)`, as the app's onset
-check does. The app offers the option as the sidebar's "FE porosity
+in the `solver` block of the JSON export, and the onset follows the
+recorded value by default (`delamination_onset(results, mesh, material)`;
+pass `porosity_degradation=` to evaluate it with the other mapping). The app offers the option as the sidebar's "FE porosity
 degradation", and the CLI's delamination screening as
 `porosity-analyze --porosity-degradation directional`.
 
