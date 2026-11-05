@@ -33,8 +33,16 @@ the ``knockdown_decomposition`` block, and prints one summary line.
 ``K + 1`` from the bottom, 0-based) and lengths in mm on the 50 x 20 mm
 coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. No preset
 has interlaminar toughness, so the fracture load factor needs
-``--toughness`` (N/mm). Without ``--delamination`` the run is unchanged,
-and its options are refused (see :doc:`theory/delamination`).
+``--toughness`` (N/mm). ``--porosity-degradation directional`` solves the
+screening with the opt-in, uncalibrated direction-aware porosity
+degradation (``FESolver(porosity_degradation='directional')``: flat voids
+weaken the out-of-plane stiffness and the interlaminar strengths more than
+the in-plane ones; see :doc:`theory/micromechanics`) instead of the default
+``isotropic``. It applies to all three solves and is recorded in the
+``solver`` block of the JSON, and with penny voids
+(``--delam-config interface_penny``) it changes the results; spherical
+voids give the same results under both. Without ``--delamination`` the run
+is unchanged, and its options are refused (see :doc:`theory/delamination`).
 
 .. code-block:: bash
 
