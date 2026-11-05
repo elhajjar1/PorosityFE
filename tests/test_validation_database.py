@@ -695,6 +695,30 @@ def test_olivier_2007_dataset_loads():
     assert 1.0 - block['normalized_values'][1] == pytest.approx(0.22, abs=0.02)
 
 
+@pytest.mark.parametrize('name, key, stage, vp, absolute', [
+    ('asp_brandt_1997', 'G_Ic', ['initiation', 'initiation', 'propagation', 'propagation'],
+     [0.0, 0.9, 0.0, 0.9], [0.229, 0.2398, 0.2534, 0.4414]),
+    ('asp_brandt_1997', 'G_IIc', 'initiation', [0.0, 0.9], [0.8831, 0.8113]),
+    ('russell_street_1982', 'G_Ic', ['initiation', 'initiation', 'propagation', 'propagation'],
+     [0.0, 2.1, 0.0, 2.1], [0.126, 0.132, 0.218, 0.218]),
+    ('russell_street_1982', 'G_IIc', 'initiation', [0.0, 2.1], [0.452, 0.504]),
+    ('vorobyev_2020', 'G_Ic', 'initiation', [0.41, 1.12, 5.23], [0.25, 0.13, 0.11]),
+])
+def test_tabulated_toughness_datasets(name, key, stage, vp, absolute):
+    """The tabulated values of Asp & Brandt 1997 (Table 1), Russell & Street
+    1982 (Tables I, II) and Vorobyev et al. 2020 (Tables 2, 3), each
+    normalized to the baseline group of its own stage."""
+    from validation.validate_all import load_dataset
+    block = load_dataset(os.path.join(_DATASETS_DIR, f'{name}.json'))['properties'][key]
+    assert block['stage'] == stage and block['precrack'] == 'insert'
+    assert block['void_content_pct'] == vp
+    assert block['absolute_values_N_per_mm'] == absolute
+    stages = stage if isinstance(stage, list) else [stage] * len(vp)
+    base = {s: a for s, a, v in zip(stages, absolute, vp, strict=True) if v == min(vp)}
+    expected = [a / base[s] for s, a in zip(stages, absolute, strict=True)]
+    np.testing.assert_allclose(block["normalized_values"], expected, atol=1e-3)
+
+
 def test_cinquin_2007_datasets():
     """Figs. 25, 26 and 28 of one paper in two files: QI compression, and the
     lamina shear of the +/-45 test in the lamina axes. Expancel is left out."""
@@ -806,9 +830,11 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert agius['mae'] == pytest.approx(1.147, abs=0.01)
     assert olivier['mae'] == pytest.approx(2.033, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 3 and tough['n_points'] == 7
-    assert tough['property_weighted_mae'] == pytest.approx(3.126, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(3.565, abs=0.01)
+    assert tough['n_entries'] == 8 and tough['n_points'] == 22
+    # 3.126 / 3.565 over 3 entries before asp_brandt_1997, russell_street_1982
+    # and vorobyev_2020 (#222).
+    assert tough['property_weighted_mae'] == pytest.approx(12.474, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(13.570, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
     assert (s['n_entries'], s['n_points']) == (39, 264)
@@ -846,5 +872,10 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
     assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
     assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
+    assert '| asp_brandt_1997 | G_Ic | mixed | insert | 4 | 13.85 |' in tail
+    assert '| asp_brandt_1997 | G_IIc | initiation | insert | 2 | 2.02 |' in tail
+    assert '| russell_street_1982 | G_Ic | mixed | insert | 4 | 7.10 |' in tail
+    assert '| russell_street_1982 | G_IIc | initiation | insert | 2 | 16.58 |' in tail
+    assert '| vorobyev_2020 | G_Ic | initiation | insert | 3 | 50.86 |' in tail
     assert 'Property-weighted: **5.08%**' in head
     assert 'not an independent validation' in tail

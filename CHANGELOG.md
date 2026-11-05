@@ -12,6 +12,30 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: three more interlaminar-toughness datasets** (#222), all
+  tabulated and read in the primary source:
+  - `asp_brandt_1997`: Asp and Brandt, ICCM-11 (1997), Zenodo record
+    15409117. HTA/6376C, void-free against 0.9 % voids (1.4 % at the crack
+    plane), film insert. Mode I DCB: initiation unchanged (229.0 to 239.8
+    J/m²), propagation maximum +74 % (253.4 to 441.4, ply-split bridging).
+    Mode II ENF: −8 % (883.1 to 811.3).
+  - `russell_street_1982`: Russell and Street, ICCM-IV (1982), Zenodo
+    record 15403101, read from the page images. AS1/3501-6 [0]_24, 2.1 %
+    voids (method not stated). Mode I initiation 126 to 132 J/m², stabilized
+    218 and 218; mode II initiation 452 to 504.
+  - `vorobyev_2020`: Vorobyev et al., Akusticheskii Zhurnal 66:148 (2020).
+    Infused UD carbon/epoxy at 0.41, 1.12 and 5.23 % voids (ASTM D3171);
+    static G_Ic 0.25, 0.13 and 0.11 kJ/m².
+  - Toughness MAE, apart from the unchanged strength headline: 12.47 %
+    property-weighted and 13.57 % point-weighted over 8 entries and 22
+    points (were 3.13 % and 3.57 % over 3 and 7); `vorobyev_2020` alone is
+    50.9 %.
+  - The least-squares `b` per mode and stage that #222 asks for is on the
+    delamination theory page. Mode I now has five studies and mode II
+    three, but they contradict each other: the toughness falls, holds or
+    rises with voids, and the per-study `b` runs from −62 to 18.6. The
+    placeholders (`b_I = 6.2`, `b_II = 14`) and the uncalibrated flag are
+    kept.
 - **`porosity_degradation` on the results, in the JSON, the app and the
   CLI** (delamination plan 1.4, the open items of #212). The default
   `'isotropic'` results do not change: the 30-case FE gate moves by 0 of
