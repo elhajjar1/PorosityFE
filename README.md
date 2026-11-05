@@ -96,6 +96,11 @@ The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
 governing mode, with each mode's maximum for Hashin and maximum stress.
+Below it, "FE porosity degradation" keeps the default isotropic mapping or
+picks the opt-in, uncalibrated directional one, with which flat (penny)
+voids weaken the out-of-plane stiffness and the interlaminar strengths
+more than the in-plane ones (`FESolver(porosity_degradation=...)`; the
+same for spherical voids). The Stress tab names the mapping of the solve.
 
 Delamination inputs are opt-in and leave the default run unchanged:
 

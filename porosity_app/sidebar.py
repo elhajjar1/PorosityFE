@@ -33,6 +33,7 @@ from .config import (
     _FRACTURE_UQ_SAMPLES,
     _LOADING_LABELS,
     _NZ_SLIDER_MAX,
+    _POROSITY_DEGRADATION_LABELS,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
     _delta_T_suggestion,
@@ -241,6 +242,35 @@ def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
         except ValueError as exc:
             st.caption(f"No lever for this mode ratio: {exc}")
     return float(crack_length), (None if mode_ratio is None else float(mode_ratio))
+
+
+def _build_porosity_degradation_input(void_shape: str) -> str:
+    """FE porosity degradation mapping (``FESolver(porosity_degradation=)``);
+    return its key, ``"isotropic"`` (the default) or ``"directional"``."""
+    choice = st.selectbox(
+        "FE porosity degradation",
+        options=list(_POROSITY_DEGRADATION_LABELS),
+        format_func=_POROSITY_DEGRADATION_LABELS.__getitem__,
+        index=0, key="porosity_degradation",
+        help=("How the local porosity degrades the ply stiffness and strengths "
+              "in the FE solve. Isotropic (default): the porous matrix is made "
+              "isotropic, so a void's shape sets how much the matrix "
+              "properties drop but not in which direction. Directional: the "
+              "matrix keeps its directions, so flat (penny) voids lie in the "
+              "ply plane and weaken E33, G13, G23 and the interlaminar "
+              "strengths Z_t, S_13, S_23 more than the in-plane properties "
+              "(theory pages: Micromechanics, Failure)."),
+    )
+    if choice != "isotropic":
+        st.caption(
+            "Directional degradation is uncalibrated: it has not been checked "
+            "against measured out-of-plane constants of porous laminates. FE "
+            "only: the empirical knockdowns and the lamination-theory flexural "
+            "modulus keep the isotropic mapping."
+            + (" Spherical voids give the same results under both mappings; "
+               "it matters for penny and cylindrical voids."
+               if void_shape == "spherical" else ""))
+    return str(choice)
 
 
 def _build_onset_inputs() -> tuple[bool, float | None]:
@@ -632,6 +662,7 @@ def _build_sidebar_inputs() -> dict | None:
                 "an explicit delamination is the Delamination input below."
             ),
         )
+        porosity_degradation = _build_porosity_degradation_input(void_shape)
         onset, onset_x_avg = _build_onset_inputs()
 
         thermal_mode, delta_T = _build_thermal_inputs(material_name)
@@ -771,8 +802,10 @@ def _build_sidebar_inputs() -> dict | None:
         "thermal_mode": thermal_mode,
         "delta_T": delta_T,
         "failure_criterion": failure_criterion,
-        # Defects and fracture (each at its default when not used, so the
-        # cache key of a run without them is unchanged).
+        # The opt-in FE porosity degradation, defects and fracture (each at
+        # its default when not used, so the cache key of a run without them
+        # is unchanged).
+        "porosity_degradation": porosity_degradation,
         "delamination": delamination,
         "knockdown_split": knockdown_split,
         **toughness,

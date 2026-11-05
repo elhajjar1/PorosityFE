@@ -49,7 +49,13 @@ def _build_stress_tab(result: dict | None):
     _show_figure(plot_stress(result, comp_name), f"stress_{slug}", "dl_png_stress")
     formulation = getattr(result["fe_field"], "formulation", None)
     if formulation:
-        st.caption(f"FE element formulation: {formulation}.")
+        text = f"FE element formulation: {formulation}"
+        degradation = getattr(result["fe_field"], "porosity_degradation", None)
+        if degradation:
+            text += f"; porosity degradation: {degradation}"
+            if degradation == "directional":
+                text += " (uncalibrated)"
+        st.caption(text + ".")
     thermal = result.get("fe_thermal")
     if thermal:
         st.caption(

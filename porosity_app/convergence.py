@@ -17,7 +17,14 @@ from porosity_fe import (
 )
 from porosity_fe.fe.refinement import _estimate_memory_bytes
 
-from .config import _FE_APPLIED_STRAIN, _FE_FLEXURE_LOAD_N, _FE_ILSS_LOAD_N, _FLEXURE_MODES, _FRACTURE_MODES
+from .config import (
+    _CFG_DEFAULTS,
+    _FE_APPLIED_STRAIN,
+    _FE_FLEXURE_LOAD_N,
+    _FE_ILSS_LOAD_N,
+    _FLEXURE_MODES,
+    _FRACTURE_MODES,
+)
 from .summaries import _fmt_value
 
 
@@ -113,8 +120,8 @@ def convergence_plan(result: dict, factors) -> list[dict]:
 def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
     """:func:`refinement_study` of the analysis ``cfg`` on ``resolutions``.
 
-    Same material, layup, porosity field and load case as
-    :func:`run_analysis` (thermal-only solves ``'thermal'`` at
+    Same material, layup, porosity field, porosity degradation and load
+    case as :func:`run_analysis` (thermal-only solves ``'thermal'`` at
     ``cfg["delta_T"]``; ``"combined"`` adds the residual stress), on the
     explicit ``(nx, ny, nz)`` levels of :func:`convergence_plan`. A
     mechanical study accepts an ``nz`` that does not resolve the layup, as
@@ -147,6 +154,8 @@ def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
         porosity_config=pf_kwargs, ply_angles=cfg["angles"],
         resolutions=[tuple(r) for r in resolutions],
         failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+        porosity_degradation=cfg.get("porosity_degradation",
+                                     _CFG_DEFAULTS["porosity_degradation"]),
         delta_T=None if thermal_mode == "off" else cfg["delta_T"],
         allow_unresolved_layup=thermal_mode == "off",
         **kwargs,

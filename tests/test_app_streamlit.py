@@ -271,6 +271,35 @@ def test_hashin_criterion_shows_the_failure_modes():
     assert "Delamination onset" in list(table["Mode"])
 
 
+def test_porosity_degradation_reaches_the_fe_solve():
+    """The sidebar's FE porosity degradation (default isotropic) reaches the
+    solve and is shown with the element formulation; the directional choice
+    is flagged uncalibrated, and moot for spherical voids."""
+    def captions(at):
+        return " ".join(c.value for c in at.caption)
+
+    at = _fresh_app()
+    assert at.selectbox(key="porosity_degradation").value == "isotropic"
+    assert "Directional degradation is uncalibrated" not in captions(at)
+    at = _run_small_analysis(at)
+    assert not at.exception
+    assert at.session_state["result"]["fe_field"].porosity_degradation == "isotropic"
+    assert "FE element formulation: hex8i; porosity degradation: isotropic." in captions(at)
+
+    at.selectbox(key="porosity_degradation").set_value("directional").run()
+    assert "Directional degradation is uncalibrated" in captions(at)
+    assert "Spherical voids give the same results" in captions(at)
+    _select(at, "Void shape", "penny")
+    assert "Spherical voids give the same results" not in captions(at)
+    _button(at, "Run analysis").click().run()
+    assert not at.exception
+    result = at.session_state["result"]
+    assert result["config"]["porosity_degradation"] == "directional"
+    assert result["fe_field"].porosity_degradation == "directional"
+    assert ("FE element formulation: hex8i; porosity degradation: directional "
+            "(uncalibrated).") in captions(at)
+
+
 def test_uq_expander_reports_percentiles():
     """IMPROVEMENT_PLAN 3.4: the Results tab runs uncertainty propagation."""
     at = _run_small_analysis(_fresh_app())
