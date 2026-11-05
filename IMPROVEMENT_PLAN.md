@@ -32,7 +32,7 @@ polish, (5) architecture cleanups, and (6) CI/packaging/docs/hygiene. Items are
 tagged **[S]**mall (≤ half day), **[M]**edium (1–3 days), **[L]**arge (multi-day
 / design needed).
 
-## Status (2026-10-26)
+## Status (2026-11-05)
 
 The sections below are kept as written on 2026-07-16 (file:line references
 point at that tree). What has landed since, by pull request:
@@ -53,7 +53,14 @@ point at that tree). What has landed since, by pull request:
 | #207 | 5.1 second `fe/solver.py` split, peak-memory fixes; app flexure modes, mesh-convergence check and plot fixes |
 | #208 | 3.6 flexure interior region; `for_flexure(nx=)`; `refinement_study` and the app's convergence check on the D7264 specimen |
 | #209 | Delamination plan ([`DELAMINATION_PLAN.md`](DELAMINATION_PLAN.md)) phases 0 and 2: failure-mode maxima and the app's criterion selector; explicit `Delamination`, crack-face contact, VCCT, B-K criterion and fracture load factor |
-| #210 (open) | Delamination plan phases 1, 3, 4 and 5: interface onset and O'Brien free-edge G; DCB / ENF / MMB specimens against the NASA benchmarks; porosity-dependent toughness and toughness datasets; the app's Defects panel, knockdown by defect, the NCR's delamination assessment (no recommended path), `porosity-analyze --delamination` |
+| #210 | Delamination plan phases 1, 3, 4 and 5: interface onset and O'Brien free-edge G; DCB / ENF / MMB specimens against the NASA benchmarks; porosity-dependent toughness and toughness datasets; the app's Defects panel, knockdown by defect, the NCR's delamination assessment (no recommended path), `porosity-analyze --delamination` |
+| #230 | Delamination plan 0.4, 1.4, 4.5: the `interface` profile scaled to its mean in the FE, opt-in `porosity_degradation='directional'`, the λ_c uncertainty band |
+| #231 | CI and tooling: the FE fingerprint gate, examples run in CI, Python 3.11–3.14, branch coverage with a 95 % floor, Dependabot and `pip-audit`; the NCR `DispositionPolicy`, the interior λ_c, the thick-laminate default mesh, `CompositeMesh` length / width, the factorization memory budget, the 2.0 deprecation register |
+| #232 | GitHub Actions versions (Dependabot) |
+| #233 | `app.py` split into the `porosity_app` package; the app tests run in CI |
+| #234 | Release preparation for 1.3 (changelog, "What's new in 1.3"); the `IM7_8552_epoxy` preset with sourced toughness |
+| #236 | Master kept unreleased at `1.3.0.dev0`; the release check refuses a tag until the release commit |
+| #235, #237, #238 | Validation datasets `olivier_2007` (mode I toughness), `cinquin_2007_qi` / `_shear` (compression, in-plane shear) and `uhl_1988` (compression) |
 
 ---
 
