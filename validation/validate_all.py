@@ -403,6 +403,16 @@ def predict_modulus(dataset: Dict[str, Any], prop_key: str,
     return [float(compute_fn(vp / 100.0) / base_val) for vp in vp_pcts]
 
 
+def _baseline_anchors(vp_pcts, experimental, baseline_pct: float) -> list:
+    """Per point, whether it is a normalization anchor: at the dataset's
+    baseline void content with a normalized value of exactly 1. Its
+    prediction is 1 by construction (every prediction is normalized to the
+    baseline), so it carries no information and is left out of the MAE and
+    the point count. A measured point at the baseline that is not 1 counts."""
+    return [abs(float(v) - baseline_pct) <= 1e-9 and abs(float(e) - 1.0) <= 1e-12
+            for v, e in zip(vp_pcts, experimental, strict=True)]
+
+
 def compute_mae(predicted, experimental) -> float:
     """Mean absolute error in percent between predicted and experimental."""
     predicted = np.asarray(predicted, dtype=float)
@@ -537,13 +547,21 @@ def _run_one_dataset(path: str):
                 }
             else:
                 pred, predicted_band = predict_strength(data, prop_key, vp)
-            mae = compute_mae(pred, exp)
+            anchors = _baseline_anchors(
+                vp, exp, float(data.get('baseline_porosity_pct', 0.0)))
+            scored = [i for i, a in enumerate(anchors) if not a]
+            if not scored:
+                raise ValueError("only baseline points; nothing to validate.")
+            mae = compute_mae([pred[i] for i in scored], [exp[i] for i in scored])
             entry = {
                 'vp_pcts': list(vp),
                 'experimental': list(exp),
                 'predicted': pred,
                 'mae': mae,
-                'n_points': len(vp),
+                # The MAE and the point count leave out the normalization
+                # anchors (_baseline_anchors); the lists above keep them.
+                'n_points': len(scored),
+                'n_baseline_points': len(vp) - len(scored),
                 **extra,
             }
             # Issue #65: surface a per-point 1-sigma validation band when
@@ -804,7 +822,9 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
             f"(n={summary['n_points']} individual data points)",
             '',
             '_The two aggregations weight datasets differently (entries vs. data points); '
-            'point-weighted is the standard convention in regression-error reporting._',
+            'point-weighted is the standard convention in regression-error reporting. '
+            'Each dataset\'s baseline point (normalized to 1, so predicted exactly) is '
+            'left out of the MAE and the point count._',
             '',
         ])
 

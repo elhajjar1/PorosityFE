@@ -893,10 +893,12 @@ in every case.
 (`hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,
 `russell_street_1982`, `vorobyev_2020`) through the law, normalized to each
 baseline group of the same stage, and reports them in a section of their
-own, apart from the strength and modulus MAE: 12.47 % property-weighted,
-13.57 % point-weighted over 8 entries and 22 points. Per entry: Hakim 6.20 %,
-Agius and Fox 1.15 %, Olivier 2.03 %, Asp and Brandt 13.85 % (mode I) and
-2.02 % (mode II), Russell and Street 7.10 % and 16.58 %, Vorobyev 50.86 %. `olivier_2007`
+own, apart from the strength and modulus MAE: 21.38 % property-weighted,
+24.88 % point-weighted over 8 entries and 12 points. Each baseline point,
+normalized to 1 and so predicted exactly, is left out. Per entry: Hakim
+9.30 %, Agius and Fox 2.29 %, Olivier 4.07 %, Asp and Brandt 27.70 % (mode
+I) and 4.04 % (mode II), Russell and Street 14.20 % and 33.16 %, Vorobyev
+76.29 %. `olivier_2007`
 holds the 0.1 and 5.09 % series of Fig. 8; the 15.3 % series is beyond the
 schema's 15 % and the law's 5 % range, and is given in the dataset's notes. The placeholders come in part from
 the same studies, so this is a consistency check, not an independent
