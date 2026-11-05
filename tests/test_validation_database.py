@@ -527,6 +527,7 @@ _MAE_BASELINES = {
     ('tang_1987', 'tensile_strength'): 3.309,
     ('wang_2022', 'tensile_modulus'): 1.325,
     ('wang_2022', 'tensile_strength'): 4.016,
+    ('uhl_1988', 'compression_strength'): 6.491,
     ('wen_2023', 'compression_strength'): 3.63,
     ('wen_2023', 'ilss'): 1.479,
     ('wen_2023', 'shear_strength'): 6.097,
@@ -626,12 +627,13 @@ def test_run_one_dataset_is_picklable():
 def test_headline_mae_pinned(_all_results):
     from validation.validate_all import summarize_mae
     s = summarize_mae(_all_results)
-    assert s['n_entries'] == 38
-    assert s['n_points'] == 260
+    assert s['n_entries'] == 39
+    assert s['n_points'] == 264
     # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling;
-    # 4.495 / 3.891 before the cinquin_2007 datasets (#221).
-    assert s['property_weighted_mae'] == pytest.approx(5.044, abs=0.05)
-    assert s['point_weighted_mae'] == pytest.approx(4.501, abs=0.05)
+    # 4.495 / 3.891 before the cinquin_2007 datasets (#221), 5.044 / 4.501
+    # before uhl_1988.
+    assert s['property_weighted_mae'] == pytest.approx(5.081, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(4.532, abs=0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +713,21 @@ def test_cinquin_2007_datasets():
         np.testing.assert_allclose(block['normalized_values'],
                                    np.asarray(block['absolute_values_MPa']) / ref, atol=1.5e-3)
         assert len(block['void_content_pct']) == 7    # reference + DY5054 + AIBN
+
+
+def test_uhl_1988_dataset():
+    """Fig. 5 read from the scan; the read points follow the printed fit
+    (A = 84893 psi, B = -0.0314 per %) within 0.3 %."""
+    import math
+    from validation.validate_all import load_dataset
+    data = load_dataset(os.path.join(_DATASETS_DIR, 'uhl_1988.json'))
+    block = data['properties']['compression_strength']
+    assert block['void_content_pct'] == [0.34, 1.25, 2.81, 4.05]
+    psi = np.asarray(block['absolute_values_MPa']) / 0.00689476
+    fit = 84893.0 * np.exp(-0.0314 * np.asarray(block['void_content_pct']))
+    np.testing.assert_allclose(psi, fit, rtol=4e-3)
+    np.testing.assert_allclose(block['normalized_values'], psi / psi[0], atol=2e-4)
+    assert math.isclose(data['baseline_porosity_pct'], 0.34)
 
 
 def test_schema_toughness_blocks():
@@ -794,7 +811,7 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert tough['point_weighted_mae'] == pytest.approx(3.565, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
-    assert (s['n_entries'], s['n_points']) == (38, 260)
+    assert (s['n_entries'], s['n_points']) == (39, 264)
 
 
 def test_summaries_split_by_property_key():
@@ -829,5 +846,5 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
     assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
     assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
-    assert 'Property-weighted: **5.04%**' in head
+    assert 'Property-weighted: **5.08%**' in head
     assert 'not an independent validation' in tail
