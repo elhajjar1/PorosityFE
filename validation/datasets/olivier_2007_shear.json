@@ -1,0 +1,26 @@
+{
+  "reference": "Olivier, P.A., Mascaro, B., Margueres, P., & Collombet, F. (2007). CFRP with voids: ultrasonic characterization of localized porosity, acceptance criteria and mechanical characteristics. Proceedings of the 16th International Conference on Composite Materials (ICCM-16), Kyoto, Japan.",
+  "doi": "10.5281/zenodo.15414374",
+  "data_source": "Fig. 6 (enlargement of Fig. 5: tensile ultimate strength against ply angle for each void content; 45 deg = in-plane shear, Section 4.1), read from the vector graphics of the open-access PDF (Zenodo record 15414374, CC-BY-SA-4.0): each 45 deg marker is a vector path, matched to its void content through the fill and shape of the legend markers of Fig. 5, and converted with the plot-frame calibration (0 and 100 MPa, 0.829 pt per MPa; the 25 and 75 MPa gridlines read 24.75 and 74.75, so the reading is good to about 0.3 MPa). Square and circle paths are 0.42 pt narrower on their right and lower edges than the triangles, so their centre is taken 1.918 pt from the upper edge, as the horizontal position on the 45 deg gridline requires (0.25 MPa from the box centre)",
+  "material": {
+    "fiber": "T700",
+    "matrix": "epoxy",
+    "fiber_volume_fraction": 0.56,
+    "n_plies": 16,
+    "ply_angles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "layup_name": "T700GC/M21 [+/-45]_4s coupons (EN ISO 14129); ply_angles in the lamina axes, since the test gives the lamina tau_12"
+  },
+  "porosity_measurement": "resin acid digestion (EN 2564, stated absolute error +/-1 %) and SEM image analysis with ImageJ (+/-0.3 %), Section 3.2. The text says Section 4 uses the image-analysis values, but the Fig. 5 and 6 legend values are the acid-digestion values of the [0]_8 plates of Fig. 4 (1.7, 2.57, 5.82 and 19.28 % at 7, 5, 2 and 0 bar); the legend values are used here. Voids made by the autoclave pressure path only",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "shear_strength": {
+      "test_standard": "EN ISO 14129 (tensile +/-45)",
+      "void_content_pct": [0.0, 1.7, 2.57, 2.66, 5.82, 6.72],
+      "void_content_uncertainty": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+      "normalized_values": [1.0, 1.0239, 0.9618, 0.9529, 0.7251, 0.7109],
+      "absolute_values_MPa": [96.75, 99.06, 93.06, 92.19, 70.15, 68.78],
+      "digitization_method": "direct"
+    }
+  },
+  "notes": "Autoclave-cured T700GC/M21 UD prepreg (Hexcel; M21 is a thermoplastic-toughened epoxy, recorded here as T700 / epoxy, the closest mapped pair, T700_epoxy), 37.4 % resin by weight and Vf0 = 56 % in the prepreg (no cured fibre volume fraction is given), 0.256 mm plies, cured 120 min at 180 C with only the pressure path changed (Fig. 1a; the levels 7, 5, 3, 2 and 0 of Figs. 3 and 4, labelled kPa x 10 there and bar in the French axis title of Fig. 4). The in-plane shear coupons are [+/-45]_4s laminates (Table 1: G_lt and tau_lt,ult); EN ISO 14129 reduces the +/-45 tension test to the lamina tau_12, so ply_angles is given in the lamina axes, where the shear knockdown applies, as in cinquin_2007_shear. The values (about 97 MPa void-free) are lamina shear strengths, not the laminate axial stress. Each legend entry carries a point at 0, 45 and 90 deg, so a void content labels a cure run, not one laminate; Fig. 3 shows that within a run the image-analysis void contents of the [+/-45]_4s, [0]_16 and [0]_8 plates differ little (+/-45: 0.2, 1.2, 3.32, 5.12 and 15.5 % at 7, 5, 3, 2 and 0 bar), so the [0]_8 value stands for the shear coupons too, with an uncertainty of about 1 %: with the image-analysis values (about 0.2 % for the two 7 bar runs, 1.2 % for 5 bar and 5.12 % for 2 bar) the same strengths give a steeper loss. The two runs per pressure (0 and 1.7 %, 2.57 and 2.66 %, 5.82 and 6.72 %, 19.28 and 19.59 %) are kept as separate points. Read strengths at 45 deg: 96.75, 99.06, 93.06, 92.19, 70.15 and 68.78 MPa, normalized to the 0 % run (the 1.7 % run is 2.4 % above it). Left out: the 19.28 and 19.59 % runs (39.9 and 33.9 MPa, normalized 0.412 and 0.351), above the schema's 15 % limit, and the 3 bar run, which is not in Figs. 5 and 6. The number of coupons per point, the cured thicknesses and the fibre volume fraction of each plate are not given, so a fibre-volume or thickness change with voids cannot be excluded. Table 1 lists G_lt as measured, but no shear modulus value is reported. The same paper's mode I toughness is in olivier_2007; its longitudinal and transverse tension (Figs. 5, 6 and 9) and ILSS (Fig. 7) are not used here."
+}
