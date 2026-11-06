@@ -495,45 +495,45 @@ def test_predict_strength_runs_for_transverse_tensile():
 # ---------------------------------------------------------------------------
 
 _MAE_BASELINES = {
-    ('almeida_1994', 'ilss'): 3.908,
-    ('bowles_1992', 'ilss'): 1.648,
-    ('cinquin_2007_qi', 'compression_strength'): 18.224,
-    ('cinquin_2007_shear', 'shear_modulus'): 3.476,
-    ('cinquin_2007_shear', 'shear_strength'): 12.630,
+    ('almeida_1994', 'ilss'): 4.466,
+    ('bowles_1992', 'ilss'): 1.977,
+    ('cinquin_2007_qi', 'compression_strength'): 21.261,
+    ('cinquin_2007_shear', 'shear_modulus'): 4.056,
+    ('cinquin_2007_shear', 'shear_strength'): 14.735,
     ('elhajjar_2025', 'compression_strength'): 1.53,
     ('elhajjar_2025', 'tensile_strength'): 1.364,
-    ('ghiorse_1993', 'flexural_modulus'): 16.219,
-    ('ghiorse_1993', 'ilss'): 10.155,
-    ('jeong_1997', 'ilss'): 1.049,
-    ('liu_2006', 'flexural_modulus'): 7.68,
-    ('liu_2006', 'ilss'): 1.987,
-    ('liu_2006', 'tensile_modulus'): 1.771,
-    ('liu_2006', 'tensile_strength'): 1.581,
-    ('liu_2018', 'tensile_modulus'): 0.858,
-    ('liu_2018', 'tensile_strength'): 1.472,
-    ('liu_2018', 'transverse_tensile_modulus'): 2.756,
-    ('liu_2018', 'transverse_tensile_strength'): 3.354,
-    ('olivier_1995', 'flexural_modulus'): 10.528,
-    ('olivier_1995', 'ilss'): 9.213,
-    ('olivier_1995', 'tensile_strength'): 1.186,
-    ('stamopoulos_2016', 'flexural_modulus'): 2.309,
-    ('stamopoulos_2016', 'ilss'): 3.672,
-    ('stamopoulos_2016', 'shear_modulus'): 14.734,
-    ('stamopoulos_2016', 'shear_strength'): 2.807,
-    ('stamopoulos_2016', 'transverse_tensile_modulus'): 1.489,
-    ('stamopoulos_2016', 'transverse_tensile_strength'): 4.437,
-    ('tang_1987', 'flexural_modulus'): 7.922,
-    ('tang_1987', 'ilss'): 3.824,
-    ('tang_1987', 'tensile_strength'): 3.309,
-    ('wang_2022', 'tensile_modulus'): 1.325,
-    ('wang_2022', 'tensile_strength'): 4.016,
-    ('uhl_1988', 'compression_strength'): 6.491,
-    ('wen_2023', 'compression_strength'): 3.63,
-    ('wen_2023', 'ilss'): 1.479,
-    ('wen_2023', 'shear_strength'): 6.097,
-    ('wen_2023', 'tensile_strength'): 0.637,
-    ('zhang_peek_2025', 'transverse_tensile_modulus'): 5.512,
-    ('zhang_peek_2025', 'transverse_tensile_strength'): 11.866,
+    ('ghiorse_1993', 'flexural_modulus'): 19.463,
+    ('ghiorse_1993', 'ilss'): 12.186,
+    ('jeong_1997', 'ilss'): 1.258,
+    ('liu_2006', 'flexural_modulus'): 8.777,
+    ('liu_2006', 'ilss'): 2.27,
+    ('liu_2006', 'tensile_modulus'): 2.024,
+    ('liu_2006', 'tensile_strength'): 1.807,
+    ('liu_2018', 'tensile_modulus'): 1.03,
+    ('liu_2018', 'tensile_strength'): 1.766,
+    ('liu_2018', 'transverse_tensile_modulus'): 3.307,
+    ('liu_2018', 'transverse_tensile_strength'): 4.025,
+    ('olivier_1995', 'flexural_modulus'): 12.633,
+    ('olivier_1995', 'ilss'): 11.055,
+    ('olivier_1995', 'tensile_strength'): 1.423,
+    ('stamopoulos_2016', 'flexural_modulus'): 3.079,
+    ('stamopoulos_2016', 'ilss'): 4.897,
+    ('stamopoulos_2016', 'shear_modulus'): 19.646,
+    ('stamopoulos_2016', 'shear_strength'): 3.742,
+    ('stamopoulos_2016', 'transverse_tensile_modulus'): 1.985,
+    ('stamopoulos_2016', 'transverse_tensile_strength'): 5.916,
+    ('tang_1987', 'flexural_modulus'): 9.903,
+    ('tang_1987', 'ilss'): 4.78,
+    ('tang_1987', 'tensile_strength'): 4.136,
+    ('uhl_1988', 'compression_strength'): 8.655,
+    ('wang_2022', 'tensile_modulus'): 1.656,
+    ('wang_2022', 'tensile_strength'): 5.02,
+    ('wen_2023', 'compression_strength'): 4.538,
+    ('wen_2023', 'ilss'): 1.849,
+    ('wen_2023', 'shear_strength'): 7.622,
+    ('wen_2023', 'tensile_strength'): 0.796,
+    ('zhang_peek_2025', 'transverse_tensile_modulus'): 6.89,
+    ('zhang_peek_2025', 'transverse_tensile_strength'): 14.832,
 }
 
 
@@ -628,12 +628,14 @@ def test_headline_mae_pinned(_all_results):
     from validation.validate_all import summarize_mae
     s = summarize_mae(_all_results)
     assert s['n_entries'] == 39
-    assert s['n_points'] == 264
-    # 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7 layup re-scaling;
-    # 4.495 / 3.891 before the cinquin_2007 datasets (#221), 5.044 / 4.501
-    # before uhl_1988.
-    assert s['property_weighted_mae'] == pytest.approx(5.081, abs=0.05)
-    assert s['point_weighted_mae'] == pytest.approx(4.532, abs=0.05)
+    assert s['n_points'] == 227
+    # Baseline points (normalized to 1, predicted exactly) are left out of
+    # the MAE and the count: 5.081 / 4.532 over 264 points with them.
+    # Earlier, with them: 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7
+    # layup re-scaling; 4.495 / 3.891 before the cinquin_2007 datasets
+    # (#221), 5.044 / 4.501 before uhl_1988.
+    assert s['property_weighted_mae'] == pytest.approx(6.214, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(5.270, abs=0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -823,21 +825,25 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
                                (olivier, 'I', 'propagation')):
         assert entry['category'] == 'toughness' and entry['mode'] == mode
         assert entry['uncalibrated'] is True and 'placeholder' in entry['law']
-        assert entry['stage'] == [stage] * entry['n_points']
-        assert len(entry['predicted_band']) == entry['n_points']
+        # The tags and the band cover every point, the baseline included.
+        assert entry['stage'] == [stage] * len(entry['vp_pcts'])
+        assert len(entry['predicted_band']) == len(entry['vp_pcts'])
+        assert entry['n_points'] == len(entry['vp_pcts']) - entry['n_baseline_points']
     # Pinned: exp(-6.2 dVp) and exp(-14 dVp) against the normalized data.
-    assert hakim['mae'] == pytest.approx(6.200, abs=0.01)
-    assert agius['mae'] == pytest.approx(1.147, abs=0.01)
-    assert olivier['mae'] == pytest.approx(2.033, abs=0.01)
+    # Baseline points left out: each entry's MAE is over its other points.
+    assert hakim['mae'] == pytest.approx(9.300, abs=0.01)
+    assert agius['mae'] == pytest.approx(2.294, abs=0.01)
+    assert olivier['mae'] == pytest.approx(4.065, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 8 and tough['n_points'] == 22
-    # 3.126 / 3.565 over 3 entries before asp_brandt_1997, russell_street_1982
-    # and vorobyev_2020 (#222).
-    assert tough['property_weighted_mae'] == pytest.approx(12.474, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(13.570, abs=0.01)
+    assert tough['n_entries'] == 8 and tough['n_points'] == 12
+    # Without the baseline points; 12.474 / 13.570 over 22 points with them
+    # (3.126 / 3.565 over 3 entries before asp_brandt_1997,
+    # russell_street_1982 and vorobyev_2020, #222).
+    assert tough['property_weighted_mae'] == pytest.approx(21.381, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(24.879, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
-    assert (s['n_entries'], s['n_points']) == (39, 264)
+    assert (s['n_entries'], s['n_points']) == (39, 227)
 
 
 def test_summaries_split_by_property_key():
@@ -898,6 +904,26 @@ def test_strength_length_mismatch_is_an_entry_error(tmp_path):
     assert summarize_mae({name: results})['n_entries'] == 0
 
 
+def test_baseline_points_are_left_out_of_the_mae(tmp_path):
+    """A point at the baseline void content normalized to exactly 1 is
+    predicted exactly by construction: it is left out of the MAE and the
+    count. A measured point at the baseline that is not 1 still counts, and
+    a block of baseline points only is an entry error."""
+    from validation.validate_all import _baseline_anchors, _run_one_dataset, compute_mae
+    assert _baseline_anchors([0.5, 0.5, 2.0], [1.0, 1.02, 0.9], 0.5) == [True, False, False]
+    path = tmp_path / 'ds.json'
+    path.write_text(json.dumps(_strength_dataset()), encoding='utf-8')
+    _, results = _run_one_dataset(str(path))
+    e = results['ilss']
+    assert (e['n_points'], e['n_baseline_points']) == (2, 1)
+    assert e['predicted'][0] == pytest.approx(1.0)
+    assert e['mae'] == pytest.approx(compute_mae(e['predicted'][1:], e['experimental'][1:]))
+    path.write_text(json.dumps(_strength_dataset(void_content_pct=[0.5],
+                                                 normalized_values=[1.0])), encoding='utf-8')
+    _, results = _run_one_dataset(str(path))
+    assert results['ilss']['error'] == 'only baseline points; nothing to validate.'
+
+
 def test_unreadable_dataset_is_a_load_error_not_a_crash(tmp_path):
     from validation.validate_all import ValidationError, load_dataset, run_all_datasets
     (tmp_path / 'good.json').write_text(json.dumps(_strength_dataset()), encoding='utf-8')
@@ -917,13 +943,13 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     head, _, tail = text.partition('## Interlaminar toughness')
     assert tail, 'toughness section missing'
     assert 'G_Ic' not in head and 'G_IIc' not in head
-    assert '| hakim_2017 | G_Ic | unspecified | unspecified | 3 | 6.20 |' in tail
-    assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 2 | 1.15 |' in tail
-    assert '| olivier_2007 | G_Ic | propagation | unspecified | 2 | 2.03 |' in tail
-    assert '| asp_brandt_1997 | G_Ic | mixed | insert | 4 | 13.85 |' in tail
-    assert '| asp_brandt_1997 | G_IIc | initiation | insert | 2 | 2.02 |' in tail
-    assert '| russell_street_1982 | G_Ic | mixed | insert | 4 | 7.10 |' in tail
-    assert '| russell_street_1982 | G_IIc | initiation | insert | 2 | 16.58 |' in tail
-    assert '| vorobyev_2020 | G_Ic | initiation | insert | 3 | 50.86 |' in tail
-    assert 'Property-weighted: **5.08%**' in head
+    assert '| hakim_2017 | G_Ic | unspecified | unspecified | 2 | 9.30 |' in tail
+    assert '| agius_fox_2015 | G_IIc | unspecified | unspecified | 1 | 2.29 |' in tail
+    assert '| olivier_2007 | G_Ic | propagation | unspecified | 1 | 4.07 |' in tail
+    assert '| asp_brandt_1997 | G_Ic | mixed | insert | 2 | 27.70 |' in tail
+    assert '| asp_brandt_1997 | G_IIc | initiation | insert | 1 | 4.04 |' in tail
+    assert '| russell_street_1982 | G_Ic | mixed | insert | 2 | 14.20 |' in tail
+    assert '| russell_street_1982 | G_IIc | initiation | insert | 1 | 33.16 |' in tail
+    assert '| vorobyev_2020 | G_Ic | initiation | insert | 2 | 76.29 |' in tail
+    assert 'Property-weighted: **6.21%**' in head
     assert 'not an independent validation' in tail

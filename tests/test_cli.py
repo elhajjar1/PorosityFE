@@ -142,7 +142,8 @@ class TestValidatePorosityCLIRun:
         assert "Toughness MAE (property-weighted)" in tail
         assert "(n=1 paper-property entries)" in tail
         report = (out / "validation_detail_report.md").read_text(encoding="utf-8")
-        assert "| synthetic_toughness | G_Ic | initiation | insert | 2 |" in report
+        # One point: the baseline point is left out of the count.
+        assert "| synthetic_toughness | G_Ic | initiation | insert | 1 |" in report
 
     def test_missing_datasets_dir_returns_2(self, tmp_path, capsys):
         from validate_porosity_cli import main

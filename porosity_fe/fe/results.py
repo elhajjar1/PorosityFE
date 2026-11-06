@@ -122,9 +122,8 @@ class FieldResults:
         :data:`porosity_fe.PorosityDegradation`): ``'isotropic'`` (default,
         also for callers that construct ``FieldResults`` directly) or the
         opt-in ``'directional'``. The stiffness, the failure indices and
-        the load factors of the solve follow it. Post-processing that
-        re-evaluates strengths, such as :meth:`delamination_onset`, takes
-        its own ``porosity_degradation`` argument: pass this value.
+        the load factors of the solve follow it, and so does
+        :meth:`delamination_onset` unless given another mapping.
     delta_T : float or None
         Temperature change from the stress-free state (K) of a thermal
         (``loading='thermal'``) or combined (mechanical with ``delta_T=``)
@@ -560,8 +559,7 @@ class FieldResults:
                            interfaces: Iterable[int] | None = None,
                            interior_margin: float | None = None,
                            void_shape_radii: tuple | None = None,
-                           porosity_degradation: PorosityDegradation =
-                           _DEFAULT_POROSITY_DEGRADATION,
+                           porosity_degradation: PorosityDegradation | None = None,
                            ) -> DelaminationOnset:
         """Stress-based delamination onset at the ply interfaces.
 
@@ -570,9 +568,8 @@ class FieldResults:
         averaged over ``x_avg`` (default one ply thickness), with
         porosity-degraded strengths, and the onset load factor. The
         arguments are those of :func:`~porosity_fe.delamination_onset`.
-        ``porosity_degradation`` defaults to ``'isotropic'`` whatever the
-        solve used: pass :attr:`porosity_degradation` for the strengths of
-        the solve.
+        ``porosity_degradation`` defaults to the solve's,
+        :attr:`porosity_degradation`.
 
         Returns
         -------

@@ -1659,7 +1659,8 @@ class TestPorosityDegradation:
         onset = fe.delamination_onset(mesh, material, porosity_degradation="directional")
         np.testing.assert_array_equal(d["fe_onset"].index, onset.index)
         e = onset.evaluated
-        assert np.all(onset.Zt[e] < fe.delamination_onset(mesh, material).Zt[e])
+        assert np.all(onset.Zt[e] < fe.delamination_onset(
+            mesh, material, porosity_degradation="isotropic").Zt[e])
 
     def test_mechanical_load_factor_of_a_combined_solve(self):
         """The load factor without the residual stress takes the solve's

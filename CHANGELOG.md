@@ -1485,6 +1485,23 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Validation MAE leaves out the baseline points.** Each dataset's point
+  at its baseline void content, normalized to exactly 1, is predicted
+  exactly by construction and counted as a zero-error point (40 of 271
+  points). `validate_porosity` now leaves it out of the MAE and the point
+  counts (a measured point at the baseline that is not 1 still counts;
+  `n_baseline_points` records how many were left out). Strength and
+  modulus: 6.21 % property-weighted, 5.27 % point-weighted over 39 entries
+  and 227 points (were 5.08 % / 4.53 % over 264). Toughness: 21.38 % /
+  24.88 % over 12 points (were 12.47 % / 13.57 % over 22). No prediction
+  changes; the per-entry pins and the README table are recomputed.
+- **`delamination_onset` follows the solve's porosity degradation by
+  default.** `porosity_degradation=None` (the new default, for the function
+  and `FieldResults.delamination_onset`) takes
+  `results.porosity_degradation`, so a directional result gets directional
+  interlaminar strengths without being told twice; pass a value to
+  evaluate the onset with the other mapping. It defaulted to
+  `'isotropic'` whatever the solve used. Isotropic results are unchanged.
 - **The Streamlit app is a package, `porosity_app/`** (#224). `app.py` had
   grown to 3,804 lines. Its 135 functions and constants moved, verbatim, to:
   - `config`: the sidebar keys, defaults and cache key, labels;

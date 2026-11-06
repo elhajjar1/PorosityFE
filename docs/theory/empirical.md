@@ -151,7 +151,8 @@ less porosity-sensitive than QI. The validation data do not support that:
 the best-fit scale for UD coupons averages 0.9 to 1.4 depending on the mode,
 so the floor was the largest error source in the database. Replacing it
 lowers the
-property-weighted validation MAE from 7.05 % to 4.49 %. The study behind the
+property-weighted validation MAE from 7.05 % to 4.49 % (on the 13 datasets of
+the time, with baseline points counted). The study behind the
 change is IMPROVEMENT_PLAN item 2.7. `Calibration.F_MD_REF`, `F_MD_FLOOR` and
 `F_MD_FLOOR_ILSS` are deprecated, have no effect, and will be removed in 2.0.
 ```
