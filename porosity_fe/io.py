@@ -201,7 +201,7 @@ _UNITS_UQ = {
     "void_volume_fraction": "dimensionless fraction in [0, 1]",
     "vp_cov": "dimensionless coefficient of variation",
     "coef_cov": "dimensionless coefficient of variation",
-    "percentiles": "%",
+    "percentiles": "keys are percentile levels in % (p5 = 5th); values in the units of their quantity",
 }
 _UNITS_NCR = {
     "failure_stress": "MPa",
@@ -231,23 +231,36 @@ _UNITS_STREAMLIT_EMPIRICAL = {
 
 @functools.lru_cache(maxsize=1)
 def _git_commit_sha() -> str | None:
-    """HEAD commit of the checkout containing this module, or ``None``.
+    """HEAD commit of the PorosityFE checkout containing this module, or ``None``.
 
-    Cached for the life of the process, so each JSON write no longer spawns
-    a ``git`` subprocess; the already-imported code cannot change mid-run.
+    Only a checkout whose top level is the directory holding the package
+    counts: an installed copy inside another project's repository (a
+    ``.venv`` in it, ignored or not) would otherwise report that project's
+    commit. Cached for the life of the process, so each JSON write no
+    longer spawns a ``git`` subprocess; the already-imported code cannot
+    change mid-run.
     """
+    package_dir = Path(__file__).resolve().parent
     try:
         # Run git from the directory containing this module so a CLI invoked
         # from somewhere else still resolves the repo SHA. Graceful fallback
         # to ``None`` for wheel/sdist installs or untracked checkouts.
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5,
-            cwd=Path(__file__).resolve().parent,
+            ["git", "rev-parse", "--show-toplevel", "HEAD"],
+            capture_output=True, text=True, timeout=5, cwd=package_dir,
         )
     except Exception:
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    lines = result.stdout.split()
+    if result.returncode != 0 or len(lines) != 2:
+        return None
+    toplevel, sha = lines
+    try:
+        if Path(toplevel).resolve() != package_dir.parent:
+            return None
+    except OSError:
+        return None
+    return sha
 
 
 def _wrap_envelope(fmt: str, units: dict | None = None,
@@ -417,13 +430,13 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
 
     output = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_EMPIRICAL_SWEEP, seed=seed)
     for name, data in results.items():
-        if name in ('schema_version', 'format', 'units'):
-            # Defensive: a user-named config that collides with envelope
-            # keys would silently overwrite them. Skip with a clear error.
-            # (#131 added 'units' to the reserved set.)
+        if name in output:
+            # Defensive: a user-named config that collides with an
+            # envelope key (schema_version, format, provenance, units)
+            # would silently overwrite it. Refuse with a clear error.
             raise ValueError(
                 f"Configuration name {name!r} collides with the JSON "
-                f"envelope keys ('schema_version', 'format', 'units')."
+                f"envelope keys ({', '.join(repr(k) for k in output)})."
             )
         # Resolve the void_volume_fraction and config dict for both the
         # legacy dict shape and the new ConfigResult shape. The legacy
@@ -509,6 +522,10 @@ def load_results_from_json(filename: str | os.PathLike) -> dict:
             f"{filename}: missing 'schema_version'. "
             f"This file was likely written by a pre-1.0 build of porosity-fe."
         )
+    if not isinstance(sv, str):
+        raise ValueError(
+            f"{filename}: 'schema_version' must be a string such as "
+            f"{JSON_SCHEMA_VERSION!r}, got {sv!r}.")
     major = sv.split('.', 1)[0]
     expected_major = JSON_SCHEMA_VERSION.split('.', 1)[0]
     if major != expected_major:

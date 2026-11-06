@@ -1145,6 +1145,42 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **Layup strings in standard notation were misread** (found by review).
+  `parse_layup`, behind the app's layup box, read a ply-count subscript as
+  part of the angle (`[45_2/0_2]s` became plies of 452° and 2°) and glued a
+  repeat count written without `_` onto the last angle (`[0/90]3s` became
+  4 plies with 903°), and it accepted `nan`, while the box said "valid". It
+  now reads standard notation: `0_2` is two 0° plies, `±45` is +45/−45, the
+  repeat is `_N` or `N` after the brackets and `[0/90]_s` is accepted.
+  Angles must be plain decimal degrees; nested groups and any other suffix
+  raise. An unbracketed `0/90_2` now means 0, 90, 90 (it was the whole list
+  twice).
+- **NCR PDF: `$` in a free-text field** (the note, "prepared by") was read
+  as matplotlib mathtext, garbling the text or failing the export on an
+  unbalanced `$...$`. The text is now printed as typed.
+- **NCR "Analysis mesh"** named the configured coupon mesh even when the FE
+  solve used another mesh (the D2344 short-beam or flexure specimen). It
+  now names the solved mesh and the specimen. A delamination NCR on a
+  short-beam or flexure specimen is now refused, like one on a DCB, ENF
+  or MMB specimen: its fracture margin is the test coupon's, not the
+  part's.
+- **`porosity-analyze --uq` gave different bands on every run**, while the
+  `--seed` help said the seed changed nothing. Without `--seed` the sampling
+  now uses seed 0, the app's, and the help says what the seed does. The
+  `porosity-fe.uq` file now records the seed in its provenance when every
+  entry shares one (it wrote `null`).
+- **Provenance `git_commit`** recorded the commit of whatever repository the
+  package was installed in (a `.venv` inside another project). It is now
+  recorded only from PorosityFE's own checkout.
+- **JSON envelope guards.** A sweep configuration named `provenance`
+  silently replaced the provenance block; every envelope key is now
+  reserved. `load_results_from_json` raises `ValueError`, not
+  `AttributeError`, when `schema_version` is not a string. The UQ units
+  block no longer says percentiles are in %: their keys are percentile
+  levels and their values are in the units of their quantity.
+- **`porosity-analyze` with two levels that share a file label** (0.03 and
+  0.0300004, both `3pct`) wrote one file over the other and exited 0. It
+  now refuses them (exit 2).
 - **Validation: silent errors in `validate_porosity`** (found by review).
   - A strength or modulus block whose `void_content_pct` and
     `normalized_values` differ in length was broadcast by numpy into a

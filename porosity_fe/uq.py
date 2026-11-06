@@ -383,7 +383,10 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
         if not include_samples:
             entry.pop('samples', None)
         payload[label] = entry
-    envelope = _wrap_envelope(FORMAT_UQ, _UNITS_UQ, {'uq': payload})
+    # Record the seed in the provenance when every entry shares one.
+    seeds = {res.get('seed') for res in results.values()}
+    seed = seeds.pop() if len(seeds) == 1 else None
+    envelope = _wrap_envelope(FORMAT_UQ, _UNITS_UQ, {'uq': payload}, seed=seed)
     # Standard JSON: every value is finite, so a non-finite one raises
     # instead of writing NaN.
     _write_json(envelope, Path(filename))

@@ -475,6 +475,20 @@ class TestCLIMain:
         assert rc == 0
         assert (tmp_path / 'porosity_analysis_results_2p5pct.json').exists()
 
+    def test_levels_sharing_a_label_are_refused(self, tmp_path, monkeypatch, capsys):
+        """Review finding: 0.03 and 0.0300004 both wrote ..._3pct.json, the
+        second silently overwriting the first."""
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--vp', '0.03', '0.0300004',
+                                       '--output-dir', str(tmp_path), '--quiet'])
+        assert exc.value.code == 2
+        assert "would write the same output files" in capsys.readouterr().err
+        assert not list(tmp_path.glob('*.json'))
+        # Repeating one level is not a collision.
+        assert porosity_fe_analysis.main(['--vp', '0.02', '0.02', '--output-dir',
+                                          str(tmp_path), '--quiet']) == 0
+
     def test_quiet_silences_progress_banner(
             self, tmp_path, monkeypatch, capsys):
         """Regression for #78: --quiet must suppress the analysis banner,
@@ -811,6 +825,20 @@ class TestCLIUncertainty:
         assert set(data['uq']) == {'compression', 'tension', 'shear', 'ilss',
                                    'transverse_tension'}
         assert data['uq']['ilss']['coef_cov'] == 0.10
+
+    def test_uq_without_seed_is_reproducible(self, tmp_path, monkeypatch):
+        """Review finding: without --seed the bands changed on every run,
+        while the help said the seed changed nothing."""
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        runs = []
+        for out in ('a', 'b'):
+            rc = porosity_fe_analysis.main([
+                '--vp', '0.03', '--output-dir', str(tmp_path / out), '--quiet',
+                '--uq', '--uq-samples', '20'])
+            assert rc == 0
+            runs.append(load_results_from_json(tmp_path / out / 'porosity_uq_3pct.json'))
+        assert runs[0]['provenance']['seed'] == 0
+        assert runs[0]['uq'] == runs[1]['uq']
 
     def test_bad_sample_count_exits_2(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
