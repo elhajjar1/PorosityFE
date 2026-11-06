@@ -35,14 +35,18 @@ class FailureResult:
         ``knockdown * sigma_pristine`` evaluated with the loading-mode-
         specific pristine strength. Reported as a positive magnitude
         regardless of loading sign (compression strengths are stored as
-        positive numbers in :class:`MaterialProperties`).
+        positive numbers in :class:`MaterialProperties`). For the empirical
+        toughness modes (``'mode_I_toughness'``, ``'mode_II_toughness'``)
+        it is the knocked-down toughness ``G_c`` in N/mm, not a stress, and
+        ``nan`` when the material has no pristine toughness.
     knockdown : float
         Knockdown factor in ``(0, 1]``. Same definition the source solver
         used; bit-identical to what the legacy dict / float returns
         produced.
     model : str
         Knockdown model label (``'judd_wright'`` / ``'power_law'`` /
-        ``'linear'`` / ``'user_callable'`` for the empirical solver, and
+        ``'linear'`` / ``'user_callable'`` for the empirical solver,
+        ``'toughness_<law>'`` for its toughness modes, and
         ``'fe_<criterion>'`` for the FE solver's summary).
     details : dict
         Free-form solver-specific extras (e.g. ``'critical_location'`` for

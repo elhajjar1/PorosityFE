@@ -339,6 +339,21 @@ def test_save_uq_results_round_trip(tmp_path):
     assert len(json.loads(path.read_text())['uq']['compression']['samples']['knockdown']) == 20
 
 
+def test_save_uq_results_records_a_shared_seed(tmp_path):
+    """Review finding: the UQ file's provenance had ``seed: null`` even when
+    every result was seeded."""
+    from porosity_fe import load_results_from_json, save_uq_results_to_json
+    path = tmp_path / 'uq.json'
+    same = {m: propagate_uncertainty(0.03, mode=m, n_samples=5, seed=7)
+            for m in ('compression', 'ilss')}
+    save_uq_results_to_json(same, path)
+    assert load_results_from_json(path)['provenance']['seed'] == 7
+    mixed = dict(same, tension=propagate_uncertainty(0.03, mode='tension',
+                                                     n_samples=5, seed=8))
+    save_uq_results_to_json(mixed, path)
+    assert load_results_from_json(path)['provenance']['seed'] is None
+
+
 class TestPerturbClipping:
     """IMPROVEMENT_PLAN 2.8: extreme draws are clipped, not fatal."""
 

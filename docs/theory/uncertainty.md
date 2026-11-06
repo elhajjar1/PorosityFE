@@ -35,7 +35,18 @@ uncertainty.
 Sampling is plain Monte Carlo (`method='monte_carlo'`) or Latin hypercube
 (`'lhs'`). Both are reproducible with `seed=`. Results can be written to
 JSON with {func}`~porosity_fe.save_uq_results_to_json`.
-`porosity-analyze --uq` and the web app expose the same calculation.
+`porosity-analyze --uq` and the web app expose the same calculation for
+the strength modes.
+
+The empirical toughness modes `mode_I_toughness` and `mode_II_toughness`
+({doc}`empirical`, "Toughness modes") go through the same function, with
+the law as `toughness_knockdown=`: `covs={'G_Ic': ...}` (or `'G_IIc'`)
+scatters the pristine toughness, and `coef_cov` the law's $b$ for the mode
+about its nominal value (the uncalibrated placeholder by default; the
+`'exponential'` or `'linear'` law). `failure_stress` is then the toughness
+in N/mm (`failure_stress_units` says so), or `None` when the material has
+no pristine toughness, and the result carries `toughness_uncalibrated`,
+the flag of the nominal result.
 
 ## Delamination load factor
 

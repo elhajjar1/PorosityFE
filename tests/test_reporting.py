@@ -577,6 +577,23 @@ class TestNcrTextLinesAndPdf:
         serialise_ncr_pdf(_ncr({"note": "void " * 1500}))
         assert plt.get_fignums() == []
 
+    def test_dollar_signs_are_printed_as_typed(self, monkeypatch):
+        """Review finding: '$...$' in a free-text field was parsed as
+        mathtext, garbling it or raising on an unbalanced group."""
+        from matplotlib.figure import Figure
+        seen = []
+        real_text = Figure.text
+
+        def spy(self, *args, **kwargs):
+            seen.append(kwargs)
+            return real_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Figure, "text", spy)
+        note = "Cost $C_{rep}$ per part; budget code $x^{2$ (quote $1,200)"
+        pdf = serialise_ncr_pdf(_ncr({"note": note, "prepared_by": "A $B$"}))
+        assert pdf.startswith(b"%PDF")
+        assert seen and all(kw.get("parse_math") is False for kw in seen)
+
 
 class TestDispositionTakesPercent:
     """``recommend_disposition`` takes void content in percent, and says so."""
@@ -898,7 +915,9 @@ class TestDelaminationNcrRecord:
     @pytest.mark.parametrize("change, match", [
         ("no_fe", "needs an FE solve"),
         ("no_toughness", "no fracture load factor"),
-        ("specimen", "fracture test specimen"),
+        ("fracture_geometry", "fracture test specimen"),
+        ("ilss_geometry", "D2344 short-beam specimen, not the part"),
+        ("flexure_geometry", "flexure specimen .* not the part"),
     ])
     def test_refuses_what_it_cannot_assess(self, delaminated_result, change, match):
         import copy
@@ -911,10 +930,32 @@ class TestDelaminationNcrRecord:
                                                      fracture_load_factor=None)
         else:
             mesh = copy.copy(result["mesh"])
-            mesh.fracture_geometry = object()
+            setattr(mesh, change, object())
             result["mesh"] = mesh
         with pytest.raises(ValueError, match=match):
             build_ncr_record(result, self.META)
+
+    @pytest.mark.parametrize("specimen, label", [
+        (None, "10x4x4"),
+        ("ilss_geometry", "10x4x4 (ASTM D2344 short-beam specimen)"),
+        ("flexure_geometry", "10x4x4 (flexure specimen (ASTM D7264 / D790))"),
+        ("fracture_geometry", "10x4x4 (fracture test specimen)"),
+    ])
+    def test_analysis_mesh_is_the_solved_mesh(self, delaminated_result, specimen, label):
+        """Review finding: the record named the configured coupon mesh, not
+        the specimen the FE solve used (e.g. the D2344 short beam)."""
+        import copy
+        result = dict(delaminated_result)
+        result["config"] = dict(result["config"], nx=30, ny=10, nz=24)
+        if specimen is not None:
+            mesh = copy.copy(result["mesh"])
+            setattr(mesh, specimen, object())
+            result["mesh"] = mesh
+        nc = build_ncr_record(result, {})["nonconformance"]
+        assert nc["analysis_mesh"] == label
+        # Without an FE field the configured mesh stays.
+        result["fe_field"] = None
+        assert build_ncr_record(result, {})["nonconformance"]["analysis_mesh"] == "30x10x24"
 
     def test_missing_inputs(self, delaminated_result):
         with pytest.raises(ValueError, match="required_load_factor is required"):

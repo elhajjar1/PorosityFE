@@ -12,6 +12,75 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: three more datasets** (#221, #222), each read in the
+  primary source.
+  - `olivier_2007_shear`: in-plane shear strength (EN ISO 14129, ±45) of
+    the T700GC/M21 laminates of Olivier et al. 2007 (ICCM-16, Zenodo
+    record 15414374), the paper of `olivier_2007`. The strength holds to
+    about 2.7 % voids and is 28 % lower near 6 %. The void contents are
+    the figure legend's: acid digestion of the [0]_8 plates of the same
+    cure runs, about a point above the image-analysis values of the ±45
+    plates.
+  - `carraro_2015_0deg` and `carraro_2015_45deg`: mode I DCB of STS40
+    NCF/EC157 from Carraro et al. 2015 (CC BY 4.0), void-free against
+    1.9 % and 1.23 % voids, initiation and plateau digitized from the
+    R-curves. Voids raise the propagation toughness at both interfaces
+    (1.32 and 1.61 times) and the −45° initiation (1.35 times), the
+    counter-example to the conservative law.
+  - Strength and modulus headline: 6.44 % property-weighted and 5.49 %
+    point-weighted over 40 entries and 232 points (was 6.21 % / 5.27 %
+    over 39 and 227). Toughness: 22.50 % / 25.40 % over 10 entries and 16
+    points (was 21.38 % / 24.88 % over 8 and 12). With Carraro the pooled
+    mode I propagation fit turns negative (b = −0.8), and the placeholders
+    stay uncalibrated.
+  - Examined and held back: Abdelal 2013 (a dissertation), whose panels
+    read 0.4-1.0 % voids by burn-off and 1.5-5.8 % by X-ray CT. Still
+    needing a manual download: Mouritz 2000, Hou, Ye and Mai 1996, the
+    Northrop compression report NOR 82-103 (DTIC ADA303158), Hernández et
+    al. 2013 and Yuan et al. 2011.
+- **Empirical toughness screening modes** (delamination plan 4.3):
+  `EmpiricalSolver` takes the loading modes `'mode_I_toughness'` and
+  `'mode_II_toughness'`, which return the porosity knockdown
+  `G_c(Vp) / G_c0` of `G_Ic` / `G_IIc` with no FE. Additive: no existing
+  result changes.
+  - One law: the modes evaluate the `ToughnessKnockdown` the FE fracture
+    path applies at each front node, given as
+    `EmpiricalSolver(..., toughness_knockdown=...)` (default
+    `'exponential'`, the uncalibrated placeholders `b_I = 6.2`,
+    `b_II = 14`; also through `build_empirical_pipeline(solver_kwargs=)`).
+    At the specimen-average `Vp` the knockdown equals
+    `toughness_knockdown_factor` bit for bit, and the validation runner's
+    toughness predictions equal the modes' ratios on all 8 entries.
+  - `get_failure_load` returns a `FailureResult` whose `failure_stress` is
+    the toughness `G_c0 * KD` in N/mm, `nan` when the material's `G_Ic` /
+    `G_IIc` is `None` (the knockdown is still returned). `model` names the
+    law (`'toughness_exponential'`, ...); `details` carries
+    `fracture_mode`, `pristine_toughness`, `toughness_knockdown` and
+    `toughness_uncalibrated`, `True` when a placeholder is used at
+    `Vp > 0` (the `CrackFront` rule), with the one INFO line per process.
+  - The layup scale is 1 and no discrete-void stress concentration applies.
+    `environment=`, `cycles=` and a callable `model` raise; a strength
+    model name is accepted and does not change the result. Past
+    `Vp = 0.05` the built-in laws warn like the strength laws.
+  - `apply_loading` gives the per-node field, `local_sensitivities` the
+    closed-form partials in `Vp` and `b` (with `toughness_uncalibrated`),
+    `sensitivity_fd` the central differences. `propagate_uncertainty`
+    takes the modes with a new keyword `toughness_knockdown=`: `covs` on
+    `G_Ic` / `G_IIc`, `coef_cov` on the law's `b`; the result gains
+    `failure_stress_units: 'N/mm'`, `toughness_knockdown` and
+    `toughness_uncalibrated`, and `failure_stress` is `None` without a
+    pristine toughness. `save_uq_results_to_json` notes N/mm in its
+    `units` block when such an entry is present.
+  - `LoadingMode` gains the two names; `EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`
+    maps them to `G_Ic` / `G_IIc`. `PRISTINE_STRENGTH_KEY`, `layup_scale`,
+    the `Calibration` strength tables, `get_all_failure_loads`, the sweeps,
+    `porosity-analyze` (`--uq` included), the app and the NCR disposition
+    keep the five strength modes. Like `'transverse_tension'` the modes
+    are not FE loadings, and `FESolver.solve` and `refinement_study`
+    refuse them.
+  - Checks: the strength MAE stays 6.21 % / 5.27 % (39 entries, 227
+    points) and the toughness MAE 21.38 % / 24.88 % (8 entries, 12
+    points); the FE gate is unchanged.
 - **Validation: three more interlaminar-toughness datasets** (#222), all
   tabulated and read in the primary source:
   - `asp_brandt_1997`: Asp and Brandt, ICCM-11 (1997), Zenodo record
@@ -1145,6 +1214,42 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **Layup strings in standard notation were misread** (found by review).
+  `parse_layup`, behind the app's layup box, read a ply-count subscript as
+  part of the angle (`[45_2/0_2]s` became plies of 452° and 2°) and glued a
+  repeat count written without `_` onto the last angle (`[0/90]3s` became
+  4 plies with 903°), and it accepted `nan`, while the box said "valid". It
+  now reads standard notation: `0_2` is two 0° plies, `±45` is +45/−45, the
+  repeat is `_N` or `N` after the brackets and `[0/90]_s` is accepted.
+  Angles must be plain decimal degrees; nested groups and any other suffix
+  raise. An unbracketed `0/90_2` now means 0, 90, 90 (it was the whole list
+  twice).
+- **NCR PDF: `$` in a free-text field** (the note, "prepared by") was read
+  as matplotlib mathtext, garbling the text or failing the export on an
+  unbalanced `$...$`. The text is now printed as typed.
+- **NCR "Analysis mesh"** named the configured coupon mesh even when the FE
+  solve used another mesh (the D2344 short-beam or flexure specimen). It
+  now names the solved mesh and the specimen. A delamination NCR on a
+  short-beam or flexure specimen is now refused, like one on a DCB, ENF
+  or MMB specimen: its fracture margin is the test coupon's, not the
+  part's.
+- **`porosity-analyze --uq` gave different bands on every run**, while the
+  `--seed` help said the seed changed nothing. Without `--seed` the sampling
+  now uses seed 0, the app's, and the help says what the seed does. The
+  `porosity-fe.uq` file now records the seed in its provenance when every
+  entry shares one (it wrote `null`).
+- **Provenance `git_commit`** recorded the commit of whatever repository the
+  package was installed in (a `.venv` inside another project). It is now
+  recorded only from PorosityFE's own checkout.
+- **JSON envelope guards.** A sweep configuration named `provenance`
+  silently replaced the provenance block; every envelope key is now
+  reserved. `load_results_from_json` raises `ValueError`, not
+  `AttributeError`, when `schema_version` is not a string. The UQ units
+  block no longer says percentiles are in %: their keys are percentile
+  levels and their values are in the units of their quantity.
+- **`porosity-analyze` with two levels that share a file label** (0.03 and
+  0.0300004, both `3pct`) wrote one file over the other and exited 0. It
+  now refuses them (exit 2).
 - **Validation: silent errors in `validate_porosity`** (found by review).
   - A strength or modulus block whose `void_content_pct` and
     `normalized_values` differ in length was broadcast by numpy into a
@@ -1494,6 +1599,15 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Docs: the directional porosity option compared with measured
+  out-of-plane data** (`docs/theory/micromechanics.md`). Four studies are
+  compared: ultrasonic C33 in Ishii 2016 and Jeong 1990, curved-beam Zt
+  and Yt in Aratama 2017, and V-notch S13 in Ancelotti 2010.
+  - The directional option is closer to the measured C33.
+  - Neither option comes near the measured Zt or Yt loss.
+  - Nothing is calibrated; the default stays `'isotropic'`.
+  - The page also no longer says the option is missing from the app and
+    the CLI.
 - **Validation MAE leaves out the baseline points.** Each dataset's point
   at its baseline void content, normalized to exactly 1, is predicted
   exactly by construction and counted as a zero-error point (40 of 271

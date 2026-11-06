@@ -25,6 +25,11 @@ There is no transverse-compression mode: no dataset in the validation
 database measures $\sigma_{2c}$ against porosity. The FE failure criteria
 still use $\sigma_{2c}$.
 
+Two further modes, `mode_I_toughness` and `mode_II_toughness`, return the
+porosity knockdown of the interlaminar toughness instead of a strength
+(see [Toughness modes](#toughness-modes)). They are optional: no sweep,
+report or app view includes them.
+
 ## Knockdown laws
 
 Each law takes $V_p$ as a fraction and returns $KD \in (0, 1]$, with
@@ -171,6 +176,92 @@ per-node knockdown field from
 {meth}`~porosity_fe.EmpiricalSolver.apply_loading` evaluates the law at
 each node's local $V_p$. It is meant for visualizing where the porosity
 sits, not as a second failure prediction.
+
+## Toughness modes
+
+`mode_I_toughness` and `mode_II_toughness` screen the interlaminar
+toughness without FE (delamination plan item 4.3), for example for a
+nonconformance report:
+
+$$
+KD = \frac{G_c(\bar V_p)}{G_{c0}} = f_\text{I}(\bar V_p) \ \text{or}\
+f_\text{II}(\bar V_p),
+$$
+
+with $f$ the porosity-toughness law of {doc}`delamination` ("Porosity and
+toughness"), the same {class}`~porosity_fe.ToughnessKnockdown` the FE
+fracture path applies at each crack-front node. The solver takes it as
+`EmpiricalSolver(..., toughness_knockdown=...)`; the default
+`'exponential'` law, $e^{-b V_p}$ with $b_\text{I} = 6.2$ and
+$b_\text{II} = 14$, has uncalibrated placeholder coefficients.
+`KD` equals {func}`~porosity_fe.toughness_knockdown_factor` at the same
+$\bar V_p$, bit for bit.
+
+```python
+import dataclasses
+from porosity_fe import MATERIALS, ToughnessKnockdown, build_empirical_pipeline
+
+# IM7/8552 toughness on the T800 preset, for illustration (N/mm).
+mat = dataclasses.replace(MATERIALS["T800_epoxy"], G_Ic=0.212, G_IIc=0.774)
+_pf, _mesh, emp = build_empirical_pipeline(mat, 0.02)
+res = emp.get_failure_load("mode_II_toughness")
+res.knockdown          # exp(-14 * 0.02) = 0.756
+res.failure_stress     # G_c = 0.774 * 0.756 = 0.585 N/mm, not a stress
+res.details["toughness_uncalibrated"]  # True: the placeholder b_II
+
+_pf, _mesh, own = build_empirical_pipeline(
+    mat, 0.02, solver_kwargs={"toughness_knockdown": ToughnessKnockdown(b_I=4.0, b_II=10.0)})
+```
+
+The result is a {class}`~porosity_fe.FailureResult` like the strength
+modes', with these differences:
+
+- `failure_stress` holds the toughness $G_{c0}\,KD$ in N/mm, with $G_{c0}$
+  the material's `G_Ic` or `G_IIc`. Both fields are optional. When the
+  one needed is `None`, the knockdown is still returned (the law does not
+  use the material), `failure_stress` is `nan` and
+  `details['pristine_toughness']` is `None`. No preset except
+  `IM7_8552_epoxy` sets them.
+- `model` names the law used: `'toughness_exponential'`,
+  `'toughness_linear'`, `'toughness_none'` or
+  `'toughness_<callable name>'`. The `model` argument selects a strength
+  law, so a built-in name is accepted and does not change the result; a
+  callable is refused, because the toughness law is given once, as
+  `toughness_knockdown`.
+- `details['toughness_uncalibrated']` is `True` when the law uses a
+  placeholder coefficient for the mode and $\bar V_p > 0$, the rule of
+  `CrackFront.toughness_uncalibrated` on the FE path; the first such use
+  logs one INFO line per process. `details['toughness_knockdown']`
+  describes the law.
+- The layup scale is 1: the toughness is an interface property, and the
+  modes are not keys of `layup_scale`. The discrete-void stress
+  concentration is a stress effect and does not apply.
+- `environment=` and `cycles=` raise: no hygrothermal or fatigue law of
+  the toughness is calibrated.
+- Above $\bar V_p = 0.05$ the `'exponential'` and `'linear'` laws warn as
+  the strength laws do (the toughness data span $V_p \le 0.05$); a
+  callable law and `'none'` do not.
+
+{meth}`~porosity_fe.EmpiricalSolver.apply_loading` gives the per-node
+field of the law at the local $V_p$, and
+{meth}`~porosity_fe.EmpiricalSolver.local_sensitivities` the closed-form
+partials with respect to $V_p$ and $b$ (those of Judd-Wright for the
+exponential law, of the linear law for the linear one, 0 for `'none'`; a
+callable law has no closed form and goes through
+{meth}`~porosity_fe.EmpiricalSolver.sensitivity_fd`).
+{func}`~porosity_fe.propagate_uncertainty` takes the modes too
+({doc}`uncertainty`).
+
+The modes are in no default sweep:
+{meth}`~porosity_fe.EmpiricalSolver.get_all_failure_loads`,
+{func}`~porosity_fe.compare_configurations`, `porosity-analyze` (its
+`--uq` included), the app and the NCR disposition, whose governing
+knockdown is the lowest strength knockdown, use the five strength modes
+only. The FE solver refuses them, like `transverse_tension`: the FE
+fracture path computes the toughness at the crack front itself. The
+validation runner predicts the toughness datasets with
+{func}`~porosity_fe.toughness_knockdown_factor`, which gives the same
+values (`tests/test_empirical_toughness.py`).
 
 ## Calibrating a new material
 

@@ -1,0 +1,33 @@
+{
+  "reference": "Carraro, P.A., Maragoni, L., & Quaresimin, M. (2015). Influence of manufacturing induced defects on damage initiation and propagation in carbon/epoxy NCF laminates. Advanced Manufacturing: Polymer & Composites Science, 1(1), 44-53.",
+  "doi": "10.1179/2055035914Y.0000000004",
+  "data_source": "Fig. 15 (mode I R-curves of the [(90/0)3]s DCB specimens, three degassed DCB-0-DG-01..03 and three non-degassed DCB-0-NDG-01..03), digitized from the embedded raster figure (539 x 365 px JPEG, 170 ppi) of the open-access typeset PDF in the University of Padua IRIS repository (research.unipd.it, handle 11577/3168660; CC BY 4.0). Axes calibrated from the tick marks (0-30 mm at 14.73 px/mm, 0-1 kJ/m2 at 288 px per kJ/m2). Each marker was read at its bounding-box middle, where the legend line crosses every marker shape (checked on the six legend markers to 0.2 px; triangles, whose thin apex falls below half maximum, corrected by 0.8-1.1 px), and cross-checked against colour-weighted centroids. Reading precision about +-0.004 kJ/m2 (1 px) for isolated markers and +-0.01 kJ/m2 for the six markers stacked at a - a0 = 0 (DG-01's is hidden and read from its first line segment, see notes)",
+  "material": {
+    "fiber": "STS40 F13 24K (Tenax-J) in a Saertex X-C-218 g/m2 +-45 non-crimp fabric",
+    "matrix": "EC157 epoxy (Elantas), W152LR amine hardener",
+    "n_plies": 12,
+    "ply_angles": [90, 0, 90, 0, 90, 0, 0, 90, 0, 90, 0, 90],
+    "layup_name": "[(90/0)3]s from +-45 NCF, aluminium film insert between layers 6 and 7 (0/0 interface)"
+  },
+  "porosity_measurement": "optical microscopy of the polished edges of the DCB specimens: void area fraction by image analysis, 1.9 % on average for the non-degassed specimens; no voids were detectable in the degassed ones (stored as 0)",
+  "baseline_porosity_pct": 0.0,
+  "properties": {
+    "G_Ic": {
+      "test_standard": "ASTM D5528-01 (DCB), compliance calibration; crack length by travelling microscope (x40), 2 mm/min",
+      "test_config": {
+        "n_specimens_per_point": 3,
+        "specimen_width_mm": 25,
+        "specimen_length_mm": 150
+      },
+      "stage": ["initiation", "initiation", "propagation", "propagation"],
+      "precrack": "insert",
+      "void_content_pct": [0.0, 1.9, 0.0, 1.9],
+      "normalized_values": [1.0, 0.879, 1.0, 1.323],
+      "normalized_uncertainty": [0.1, 0.045, 0.091, 0.12],
+      "absolute_values_N_per_mm": [0.320, 0.281, 0.549, 0.727],
+      "absolute_uncertainty_N_per_mm": [0.032, 0.015, 0.050, 0.066],
+      "digitization_method": "webplotdigitizer"
+    }
+  },
+  "notes": "Vacuum infusion of the NCF (inlet 1 bar, outlet 0.05 mbar, room temperature, de-moulded after 3 days, no post-cure). Degassed set: resin degassed 30 min at 0.05 mbar and a long bleeding time (15 min for the DCB panels); non-degassed set: no degassing and 3 min bleeding, giving very irregular inter-tow voids at the polyester stitching tows plus very elongated voids inside the 0 deg tows (Fig. 14). DCB specimens about 150 x 25 x 3.5 mm with a0 about 40 mm from a 10 um aluminium film insert (Fig. 13); no separate precracking is described, so both stages are tagged 'insert'. The initiation value is the R-curve point at a - a0 = 0, 'the values at which the crack is seen to start propagating from the pre-crack front' (visual onset). Initiation per specimen (kJ/m2): DG 0.285, 0.326, 0.348 (mean 0.320, sd 0.032); NDG 0.266, 0.295, 0.282 (mean 0.281, sd 0.015). DG-01's marker at a - a0 = 0 is hidden under the open NDG markers (drawn later, white filled); its value is the least-squares extrapolation (rms 0.13 px) to a - a0 = 0 of its first segment, which meets its 2 mm marker within 1 px; read anywhere along the hidden part of the segment it would be 0.285-0.309. Propagation: the text describes a plateau for a - a0 > 10-15 mm, so each specimen's points at a - a0 >= 15 mm are averaged (DG 0.554, 0.498, 0.597 from 5, 4 and 4 points; NDG 0.802, 0.676, 0.703 from 4, 6 and 4 points), then the three specimens (sd listed). The curves still rise slowly there (DG 0.47-0.67, NDG 0.58-0.87 kJ/m2, up to a - a0 = 27.6 mm); with a 10 mm threshold the ratio is 1.329 instead of 1.323. The uncertainties listed are the specimen sd of each group, absolute and over the degassed mean of the same stage. The authors find the curves of the two sets overlapped in the first part and 'a slightly higher value of the critical ERR for crack propagation' with voids, from more diffuse fibre bridging and secondary cracks started at the elongated voids (Fig. 16): initiation lower, propagation higher, the opposite of the law's sign for propagation. The void content is a 2-D area fraction on the specimen edges, not a volume measurement. Mode I fatigue (two specimens each, R = 0.1) showed no effect of the voids. The same paper gives the -45 deg interface in carraro_2015_45deg."
+}

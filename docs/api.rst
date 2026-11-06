@@ -119,7 +119,9 @@ The toughness at each front node is the material's, knocked down by the
 porosity there: :class:`ToughnessKnockdown` selects the law
 (``FESolver.solve(..., toughness_knockdown=...)``; the default exponential
 law has uncalibrated placeholder coefficients), and
-:func:`toughness_knockdown_factor` evaluates it without FE.
+:func:`toughness_knockdown_factor` evaluates it without FE, as do the
+empirical modes ``'mode_I_toughness'`` and ``'mode_II_toughness'`` of
+:class:`EmpiricalSolver` (``toughness_knockdown=`` on the solver).
 
 .. autosummary::
    :toctree: api
@@ -293,8 +295,13 @@ type checkers use them; at run time each function validates its own input.
 
 .. py:data:: LoadingMode
 
-   ``'compression' | 'tension' | 'shear' | 'ilss' | 'transverse_tension'``,
-   the empirical loading modes.
+   ``'compression' | 'tension' | 'shear' | 'ilss' | 'transverse_tension' |
+   'mode_I_toughness' | 'mode_II_toughness'``, the empirical loading modes.
+   The first five are strength modes, the ones
+   :meth:`EmpiricalSolver.get_all_failure_loads` sweeps; the two toughness
+   modes return the porosity knockdown of ``G_Ic`` and ``G_IIc`` and are in
+   no default sweep. Neither ``'transverse_tension'`` nor the toughness
+   modes are FE loadings.
 
 .. py:data:: FELoadingMode
 

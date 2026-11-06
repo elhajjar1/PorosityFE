@@ -553,9 +553,11 @@ def _build_sidebar_inputs() -> dict | None:
             key="layup_input",
             on_change=_validate_layup_inline,
             help=(
-                "Ply angles separated by '/'. Use '_Ns' for N repeats and "
-                "trailing 's' for symmetric. Examples: [0/45/-45/90]_3s, "
-                "[0/90]_6s, 0/0/0/90/90/90."
+                "Ply angles in degrees separated by '/'. A subscript on an "
+                "angle is a ply count ('0_2' = two 0° plies) and '±45' is "
+                "+45/-45; after the brackets '_N' repeats the group N times "
+                "and a trailing 's' mirrors it. Examples: [0/45/-45/90]_3s, "
+                "[0_2/±45/90]s, [0/90]_6s, 0/0/0/90/90/90."
             ),
         )
         _layup_status = st.session_state.get("_layup_status")

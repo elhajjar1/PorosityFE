@@ -746,6 +746,46 @@ class TestBuildProvenance:
         assert prov['git_commit'] is None
         assert prov['git_sha'] is None
 
+    @pytest.mark.parametrize("own_checkout", [True, False])
+    def test_git_commit_only_from_the_packages_own_checkout(
+            self, monkeypatch, tmp_path, own_checkout):
+        """Review finding: installed inside another project's repository
+        (a ``.venv`` in it), provenance recorded that project's HEAD."""
+        import subprocess as _subprocess
+        from pathlib import Path
+
+        from porosity_fe import io as io_mod
+        package_root = Path(io_mod.__file__).resolve().parent.parent
+        toplevel = package_root if own_checkout else tmp_path
+
+        def _rev_parse(args, **_kwargs):
+            assert args == ["git", "rev-parse", "--show-toplevel", "HEAD"]
+            return _subprocess.CompletedProcess(
+                args, 0, stdout=f"{toplevel}\n{'a' * 40}\n", stderr="")
+
+        monkeypatch.setattr(io_mod.subprocess, "run", _rev_parse)
+        prov = _build_provenance()
+        assert prov['git_commit'] == ('a' * 40 if own_checkout else None)
+
+
+class TestEnvelopeGuards:
+    """Review findings: reserved names and a malformed schema_version."""
+
+    def test_config_named_provenance_is_refused(self, tmp_path):
+        results = compare_configurations(
+            0.02, configs={'provenance': POROSITY_CONFIGS['uniform_spherical']})
+        with pytest.raises(ValueError, match="collides with the JSON envelope keys"):
+            save_results_to_json(results, tmp_path / "out.json")
+        assert not (tmp_path / "out.json").exists()
+
+    @pytest.mark.parametrize("value", [1.2, 1, ["1.3"]])
+    def test_non_string_schema_version_is_a_value_error(self, tmp_path, value):
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps({"schema_version": value,
+                                    "format": "porosity-fe.uq"}))
+        with pytest.raises(ValueError, match="'schema_version' must be a string"):
+            load_results_from_json(path)
+
 
 class TestProvenanceInSaveResultsJson:
     """Integration: provenance is present and valid in save_results_to_json output."""
