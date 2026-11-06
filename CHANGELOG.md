@@ -1573,6 +1573,15 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Docs: the directional porosity option compared with measured
+  out-of-plane data** (`docs/theory/micromechanics.md`). Four studies are
+  compared: ultrasonic C33 in Ishii 2016 and Jeong 1990, curved-beam Zt
+  and Yt in Aratama 2017, and V-notch S13 in Ancelotti 2010.
+  - The directional option is closer to the measured C33.
+  - Neither option comes near the measured Zt or Yt loss.
+  - Nothing is calibrated; the default stays `'isotropic'`.
+  - The page also no longer says the option is missing from the app and
+    the CLI.
 - **Validation MAE leaves out the baseline points.** Each dataset's point
   at its baseline void content, normalized to exactly 1, is predicted
   exactly by construction and counted as a zero-error point (40 of 271
