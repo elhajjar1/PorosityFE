@@ -12,6 +12,32 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: three more datasets** (#221, #222), each read in the
+  primary source.
+  - `olivier_2007_shear`: in-plane shear strength (EN ISO 14129, ±45) of
+    the T700GC/M21 laminates of Olivier et al. 2007 (ICCM-16, Zenodo
+    record 15414374), the paper of `olivier_2007`. The strength holds to
+    about 2.7 % voids and is 28 % lower near 6 %. The void contents are
+    the figure legend's: acid digestion of the [0]_8 plates of the same
+    cure runs, about a point above the image-analysis values of the ±45
+    plates.
+  - `carraro_2015_0deg` and `carraro_2015_45deg`: mode I DCB of STS40
+    NCF/EC157 from Carraro et al. 2015 (CC BY 4.0), void-free against
+    1.9 % and 1.23 % voids, initiation and plateau digitized from the
+    R-curves. Voids raise the propagation toughness at both interfaces
+    (1.32 and 1.61 times) and the −45° initiation (1.35 times), the
+    counter-example to the conservative law.
+  - Strength and modulus headline: 6.44 % property-weighted and 5.49 %
+    point-weighted over 40 entries and 232 points (was 6.21 % / 5.27 %
+    over 39 and 227). Toughness: 22.50 % / 25.40 % over 10 entries and 16
+    points (was 21.38 % / 24.88 % over 8 and 12). With Carraro the pooled
+    mode I propagation fit turns negative (b = −0.8), and the placeholders
+    stay uncalibrated.
+  - Examined and held back: Abdelal 2013 (a dissertation), whose panels
+    read 0.4-1.0 % voids by burn-off and 1.5-5.8 % by X-ray CT. Still
+    needing a manual download: Mouritz 2000, Hou, Ye and Mai 1996, the
+    Northrop compression report NOR 82-103 (DTIC ADA303158), Hernández et
+    al. 2013 and Yuan et al. 2011.
 - **Empirical toughness screening modes** (delamination plan 4.3):
   `EmpiricalSolver` takes the loading modes `'mode_I_toughness'` and
   `'mode_II_toughness'`, which return the porosity knockdown

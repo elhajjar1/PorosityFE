@@ -184,11 +184,12 @@ handling, change it here, not at the call sites.
 
 ### Validation database
 
-`validation/datasets/*.json` holds 22 experimental datasets (16
-strength and modulus, plus 6 interlaminar-toughness ones,
+`validation/datasets/*.json` holds 25 experimental datasets (17
+strength and modulus, plus 8 interlaminar-toughness ones,
 `hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,
-`russell_street_1982` and `vorobyev_2020`, whose MAE is reported apart from the
-strength headline), schema-validated against
+`russell_street_1982`, `vorobyev_2020`, `carraro_2015_0deg` and
+`carraro_2015_45deg`, whose MAE is reported apart from the strength
+headline), schema-validated against
 `validation/schemas/validation_dataset_schema.json`. The datasets are
 tracked in the repository (it is where they are backed up), and CI runs
 the validation tests against them. The PyInstaller spec bundles them into
