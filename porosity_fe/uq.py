@@ -16,7 +16,7 @@ import math
 import os
 import warnings
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +33,7 @@ from ._sampling import (
 )
 from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _build_solver annotation)
     _LAYUP_WARNING_MARKER,
+    _TOUGHNESS_FRACTURE_MODE,
     Calibration,
     EmpiricalSolver,
 )
@@ -124,7 +125,9 @@ def propagate_uncertainty(void_volume_fraction: float,
                           seed: int | None = None,
                           percentiles: tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
                           ply_angles: list[float] | str | None = 'QI',
-                          config: dict | None = None) -> dict:
+                          config: dict | None = None,
+                          toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+                          ) -> dict:
     """Propagate input uncertainty through ``EmpiricalSolver.get_failure_load``.
 
     Perturbs uncertain ``MaterialProperties`` fields (and, optionally, the
@@ -172,6 +175,12 @@ def propagate_uncertainty(void_volume_fraction: float,
         Forwarded to ``EmpiricalSolver`` (layup scaling).
     config : dict, optional
         Forwarded to ``PorosityField`` (distribution / void_shape / ...).
+    toughness_knockdown : ToughnessKnockdown, str, callable or None, optional
+        Keyword-only. The porosity-toughness law of a toughness ``mode``
+        (``'mode_I_toughness'``, ``'mode_II_toughness'``), forwarded to
+        ``EmpiricalSolver(toughness_knockdown=...)``; default
+        ``'exponential'`` with its uncalibrated placeholders. Unused by the
+        strength modes.
 
     Returns
     -------
@@ -180,6 +189,23 @@ def propagate_uncertainty(void_volume_fraction: float,
         'knockdown': {... same ...}, 'nominal': {...},
         'samples': {'failure_stress': np.ndarray, 'knockdown': np.ndarray},
         'seed', 'n_samples', 'method', 'mode', 'model', 'spec', 'vp_cov'}``.
+
+    Notes
+    -----
+    **Toughness modes** (delamination plan 4.3). For ``'mode_I_toughness'``
+    and ``'mode_II_toughness'`` the knockdown is ``G_c(Vp) / G_c0`` from the
+    law, and ``failure_stress`` is the toughness ``G_c`` in N/mm: the
+    result carries ``'failure_stress_units': 'N/mm'``. ``covs={'G_Ic': ...}``
+    (or ``'G_IIc'``) scatters the pristine toughness; ``coef_cov`` scatters
+    the law's ``b`` for the mode (median-preserving lognormal on its
+    nominal value, the placeholder by default), which needs the
+    ``'exponential'`` or ``'linear'`` law; ``model`` does not change the
+    result. When the material leaves the pristine toughness ``None`` the
+    knockdown statistics are still computed, and ``failure_stress``,
+    ``nominal['failure_stress']`` and ``samples['failure_stress']`` are
+    ``None``. The result also carries ``'toughness_knockdown'`` (the law's
+    description) and ``'toughness_uncalibrated'``, the flag of the nominal
+    result (the draws are centred on it).
     """
     if isinstance(material, str):
         if material not in MATERIALS:
@@ -213,8 +239,18 @@ def propagate_uncertainty(void_volume_fraction: float,
             f"coef_cov must be a finite non-negative number, got {coef_cov!r}."
         )
     sample_coef = coef_cov > 0.0
-    if sample_coef and (model not in _UQ_COEF_TABLES
-                        or mode not in _UQ_COEF_TABLES[model][1]):
+    # The toughness modes (delamination plan 4.3) take their law, and the
+    # coefficient coef_cov scatters, from toughness_knockdown.
+    toughness_law = _resolve_toughness_knockdown(toughness_knockdown)
+    toughness_mode = _TOUGHNESS_FRACTURE_MODE.get(mode)
+    if toughness_mode is not None:
+        if sample_coef and not toughness_law._has_coefficients:
+            raise ValueError(
+                f"coef_cov scatters the coefficient b of the toughness law, "
+                f"which needs the 'exponential' or 'linear' law; got "
+                f"{toughness_law.describe()}.")
+    elif sample_coef and (model not in _UQ_COEF_TABLES
+                          or mode not in _UQ_COEF_TABLES[model][1]):
         raise ValueError(
             f"coef_cov needs a built-in model ({sorted(_UQ_COEF_TABLES)}) "
             f"with a calibrated {mode!r} coefficient; got model={model!r}."
@@ -234,6 +270,15 @@ def propagate_uncertainty(void_volume_fraction: float,
 
     config = config or {}
 
+    def _solver_kwargs(coef: float | None) -> dict | None:
+        if toughness_mode is not None:
+            law = toughness_law
+            if coef is not None:
+                law = (replace(law, b_I=coef) if toughness_mode == 'I'
+                       else replace(law, b_II=coef))
+            return {'toughness_knockdown': law}
+        return None if coef is None else {_UQ_COEF_TABLES[model][0]: {mode: coef}}
+
     def _build_solver(material_obj: MaterialProperties, vp_value: float,
                       coef: float | None = None) -> EmpiricalSolver:
         # CompositeMesh prints a banner on construction; the sampling loop
@@ -246,8 +291,7 @@ def propagate_uncertainty(void_volume_fraction: float,
                 ply_angles=ply_angles,
                 mesh_res=(4, 3, 3),
                 porosity_config=config,
-                solver_kwargs=(None if coef is None
-                               else {_UQ_COEF_TABLES[model][0]: {mode: coef}}),
+                solver_kwargs=_solver_kwargs(coef),
             )
             return emp
 
@@ -269,7 +313,12 @@ def propagate_uncertainty(void_volume_fraction: float,
     if sample_vp:
         sigma_ln_vp = np.sqrt(np.log1p(vp_cov * vp_cov))
     if sample_coef:
-        nominal_coef = float(_UQ_COEF_TABLES[model][1][mode])
+        if toughness_mode is not None:
+            b_nominal = toughness_law.coefficient(toughness_mode)
+            assert b_nominal is not None
+            nominal_coef = float(b_nominal)
+        else:
+            nominal_coef = float(_UQ_COEF_TABLES[model][1][mode])
         sigma_ln_coef = np.sqrt(np.log1p(coef_cov * coef_cov))
 
     n_extrapolated = 0
@@ -331,15 +380,19 @@ def propagate_uncertainty(void_volume_fraction: float,
             },
         }
 
-    return {
-        'failure_stress': _summary(fs_samples),
+    # A toughness mode without a pristine toughness has a knockdown but no
+    # absolute value (its failure_stress is nan): report that as None.
+    absolute = toughness_mode is None or getattr(
+        mat, EmpiricalSolver.PRISTINE_TOUGHNESS_KEY[mode]) is not None
+    out = {
+        'failure_stress': _summary(fs_samples) if absolute else None,
         'knockdown': _summary(kd_samples),
         'nominal': {
-            'failure_stress': float(nominal['failure_stress']),
+            'failure_stress': float(nominal['failure_stress']) if absolute else None,
             'knockdown': float(nominal['knockdown']),
         },
         'samples': {
-            'failure_stress': fs_samples,
+            'failure_stress': fs_samples if absolute else None,
             'knockdown': kd_samples,
         },
         'seed': seed,
@@ -354,6 +407,12 @@ def propagate_uncertainty(void_volume_fraction: float,
         'percentiles': list(pcts),
         'spec': {k: list(v) for k, v in resolved.items()},
     }
+    if toughness_mode is not None:
+        out['failure_stress_units'] = 'N/mm'
+        out['toughness_knockdown'] = toughness_law.describe()
+        out['toughness_uncalibrated'] = bool(
+            nominal.details['toughness_uncalibrated'])
+    return out
 
 
 def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLike,
@@ -375,7 +434,10 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
     The file is standard JSON (no ``NaN`` / ``Infinity``). Every value of
     a :func:`propagate_uncertainty` result is finite, so a non-finite one
     raises :class:`ValueError` (naming its location) before the file is
-    written.
+    written. The ``failure_stress`` of a toughness mode without a pristine
+    toughness is ``None`` (``null``). When an entry is a toughness mode
+    (its ``failure_stress_units`` is ``'N/mm'``), the ``units`` block says
+    so for ``failure_stress``.
     """
     payload = {}
     for label, res in results.items():
@@ -383,10 +445,15 @@ def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLik
         if not include_samples:
             entry.pop('samples', None)
         payload[label] = entry
+    units = dict(_UNITS_UQ)
+    if any(res.get('failure_stress_units') == 'N/mm' for res in results.values()):
+        units['failure_stress'] = (
+            "MPa; N/mm (the toughness G_c) for the entries whose "
+            "failure_stress_units is 'N/mm' (the toughness modes)")
     # Record the seed in the provenance when every entry shares one.
     seeds = {res.get('seed') for res in results.values()}
     seed = seeds.pop() if len(seeds) == 1 else None
-    envelope = _wrap_envelope(FORMAT_UQ, _UNITS_UQ, {'uq': payload}, seed=seed)
+    envelope = _wrap_envelope(FORMAT_UQ, units, {'uq': payload}, seed=seed)
     # Standard JSON: every value is finite, so a non-finite one raises
     # instead of writing NaN.
     _write_json(envelope, Path(filename))

@@ -799,7 +799,11 @@ pristine toughness, and is chosen per solve:
 and the same keyword on {func}`~porosity_fe.fracture_load_factors` and
 {func}`~porosity_fe.critical_energy_release_rate`.
 {func}`~porosity_fe.toughness_knockdown_factor` evaluates the factor without
-FE, for screening; no empirical strength mode uses it.
+FE, for screening, and so do the empirical modes `mode_I_toughness` and
+`mode_II_toughness` of {class}`~porosity_fe.EmpiricalSolver`
+(`toughness_knockdown=` on the solver), at the specimen-average $V_p$, with
+the uncertainty and sensitivity helpers of the empirical path
+({doc}`empirical`, "Toughness modes"). No empirical strength mode uses it.
 
 | `toughness_knockdown` | $f(V_p)$ |
 |---|---|
@@ -887,7 +891,8 @@ material at hand. Every result that a placeholder changes is flagged:
 `summary().details` and the JSON `fracture` block) is `True` when the law
 uses a placeholder and some front node has $V_p > 0$, and the first such
 use logs one INFO line per process. `toughness_knockdown` describes the law
-in every case.
+in every case. The empirical toughness modes carry the same key in
+`FailureResult.details`, by the same rule at the specimen-average $V_p$.
 
 **Validation.** `validate_porosity` runs the bundled toughness datasets
 (`hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,

@@ -277,7 +277,9 @@ version-sensitive code.
   from a cited source.
 - **New empirical correlation**: register the law function in
   `_KNOCKDOWN_LAWS` (`porosity_fe/empirical.py`), the one place every
-  solver path looks laws up; add its QI table to `Calibration`, its name to
+  solver path looks strength laws up (the empirical toughness modes
+  `mode_I_toughness` / `mode_II_toughness` take `ToughnessKnockdown` from
+  `porosity_fe/toughness.py` instead); add its QI table to `Calibration`, its name to
   `KnockdownModel`, and a `local_sensitivities` branch. Take `Vp` as a
   fraction in `[0, 1]`, return `KD ∈ (0, 1]`. Document the calibration
   set, the regression form (`ln(KD)` vs `Vp` for Judd-Wright,

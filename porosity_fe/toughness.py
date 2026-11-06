@@ -12,8 +12,11 @@ FE path (:meth:`FESolver.solve(..., toughness_knockdown=...)
 <porosity_fe.FESolver.solve>`, :func:`~porosity_fe.fracture_load_factors`,
 :func:`~porosity_fe.critical_energy_release_rate`) evaluate it at the
 porosity of each crack-front node; :func:`toughness_knockdown_factor`
-evaluates it without FE, for screening. The Benzeggagh-Kenane exponent
-``bk_eta`` is not changed.
+evaluates it without FE, for screening, and so do the empirical modes
+``'mode_I_toughness'`` and ``'mode_II_toughness'`` of
+:class:`~porosity_fe.EmpiricalSolver` (``toughness_knockdown=``), at the
+specimen-average ``Vp``. The Benzeggagh-Kenane exponent ``bk_eta`` is not
+changed.
 
 Laws (``Vp`` a fraction in ``[0, 1]``, ``b`` per unit ``Vp``):
 
@@ -56,7 +59,8 @@ III    = II    no data
 
 Every result that uses a placeholder at a non-zero ``Vp`` is flagged
 (``CrackFront.toughness_uncalibrated``, ``summary().details`` and the JSON
-``fracture`` block), and the first use logs one INFO line per process. The
+``fracture`` block; ``details['toughness_uncalibrated']`` of an empirical
+toughness mode), and the first use logs one INFO line per process. The
 studies span ``Vp <= 0.05``.
 """
 
@@ -152,7 +156,8 @@ class ToughnessKnockdown:
     (:meth:`FESolver.solve(..., toughness_knockdown=...)
     <porosity_fe.FESolver.solve>`, :func:`~porosity_fe.fracture_load_factors`,
     :func:`~porosity_fe.critical_energy_release_rate`,
-    :func:`toughness_knockdown_factor`). It lives outside
+    :func:`toughness_knockdown_factor`) and for the empirical toughness
+    modes (``EmpiricalSolver(..., toughness_knockdown=...)``). It lives outside
     :class:`~porosity_fe.MaterialProperties`: the material holds the
     pristine toughness, this holds the porosity dependence. Those functions
     also take ``None`` (no knockdown), a law name or a callable in its
@@ -387,8 +392,12 @@ def toughness_knockdown_factor(Vp: Any, mode: ToughnessMode = 'I',
     A screening function without FE, e.g. for a nonconformance report: the
     factor that multiplies the pristine ``G_Ic`` (``mode='I'``), ``G_IIc``
     or ``G_IIIc`` at the void fraction ``Vp`` of the interface. The FE
-    fracture outputs apply the same law at every crack-front node. It
-    changes no empirical strength result.
+    fracture outputs apply the same law at every crack-front node, and the
+    empirical modes ``'mode_I_toughness'`` / ``'mode_II_toughness'`` of
+    :meth:`EmpiricalSolver.get_failure_load
+    <porosity_fe.EmpiricalSolver.get_failure_load>` return the same factor
+    at the specimen-average ``Vp``. It changes no empirical strength
+    result.
 
     Parameters
     ----------

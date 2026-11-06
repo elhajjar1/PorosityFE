@@ -12,6 +12,49 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Empirical toughness screening modes** (delamination plan 4.3):
+  `EmpiricalSolver` takes the loading modes `'mode_I_toughness'` and
+  `'mode_II_toughness'`, which return the porosity knockdown
+  `G_c(Vp) / G_c0` of `G_Ic` / `G_IIc` with no FE. Additive: no existing
+  result changes.
+  - One law: the modes evaluate the `ToughnessKnockdown` the FE fracture
+    path applies at each front node, given as
+    `EmpiricalSolver(..., toughness_knockdown=...)` (default
+    `'exponential'`, the uncalibrated placeholders `b_I = 6.2`,
+    `b_II = 14`; also through `build_empirical_pipeline(solver_kwargs=)`).
+    At the specimen-average `Vp` the knockdown equals
+    `toughness_knockdown_factor` bit for bit, and the validation runner's
+    toughness predictions equal the modes' ratios on all 8 entries.
+  - `get_failure_load` returns a `FailureResult` whose `failure_stress` is
+    the toughness `G_c0 * KD` in N/mm, `nan` when the material's `G_Ic` /
+    `G_IIc` is `None` (the knockdown is still returned). `model` names the
+    law (`'toughness_exponential'`, ...); `details` carries
+    `fracture_mode`, `pristine_toughness`, `toughness_knockdown` and
+    `toughness_uncalibrated`, `True` when a placeholder is used at
+    `Vp > 0` (the `CrackFront` rule), with the one INFO line per process.
+  - The layup scale is 1 and no discrete-void stress concentration applies.
+    `environment=`, `cycles=` and a callable `model` raise; a strength
+    model name is accepted and does not change the result. Past
+    `Vp = 0.05` the built-in laws warn like the strength laws.
+  - `apply_loading` gives the per-node field, `local_sensitivities` the
+    closed-form partials in `Vp` and `b` (with `toughness_uncalibrated`),
+    `sensitivity_fd` the central differences. `propagate_uncertainty`
+    takes the modes with a new keyword `toughness_knockdown=`: `covs` on
+    `G_Ic` / `G_IIc`, `coef_cov` on the law's `b`; the result gains
+    `failure_stress_units: 'N/mm'`, `toughness_knockdown` and
+    `toughness_uncalibrated`, and `failure_stress` is `None` without a
+    pristine toughness. `save_uq_results_to_json` notes N/mm in its
+    `units` block when such an entry is present.
+  - `LoadingMode` gains the two names; `EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`
+    maps them to `G_Ic` / `G_IIc`. `PRISTINE_STRENGTH_KEY`, `layup_scale`,
+    the `Calibration` strength tables, `get_all_failure_loads`, the sweeps,
+    `porosity-analyze` (`--uq` included), the app and the NCR disposition
+    keep the five strength modes. Like `'transverse_tension'` the modes
+    are not FE loadings, and `FESolver.solve` and `refinement_study`
+    refuse them.
+  - Checks: the strength MAE stays 6.21 % / 5.27 % (39 entries, 227
+    points) and the toughness MAE 21.38 % / 24.88 % (8 entries, 12
+    points); the FE gate is unchanged.
 - **Validation: three more interlaminar-toughness datasets** (#222), all
   tabulated and read in the primary source:
   - `asp_brandt_1997`: Asp and Brandt, ICCM-11 (1997), Zenodo record

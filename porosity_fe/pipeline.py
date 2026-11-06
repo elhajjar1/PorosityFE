@@ -154,7 +154,8 @@ def build_empirical_pipeline(
     solver_kwargs : dict, optional
         Extra keyword arguments for :class:`EmpiricalSolver`, e.g. the
         coefficient overrides ``judd_wright_alpha`` / ``power_law_n`` /
-        ``linear_beta``.
+        ``linear_beta``, or ``toughness_knockdown``, the law of the toughness
+        modes ``'mode_I_toughness'`` / ``'mode_II_toughness'``.
 
     Returns
     -------

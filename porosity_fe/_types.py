@@ -20,10 +20,16 @@ from __future__ import annotations
 from typing import Literal
 
 #: Loading modes accepted by :class:`~porosity_fe.empirical.EmpiricalSolver`
-#: (``apply_loading`` / ``get_failure_load`` / ``get_all_failure_loads``).
-#: Source of truth: ``EmpiricalSolver.PRISTINE_STRENGTH_KEY`` keys.
+#: (``apply_loading`` / ``get_failure_load`` / ``local_sensitivities``).
+#: The five strength modes are what ``get_all_failure_loads`` sweeps; the
+#: two toughness modes (delamination plan 4.3) return the porosity
+#: knockdown of ``G_Ic`` / ``G_IIc`` and are in no default sweep. Neither
+#: they nor ``'transverse_tension'`` are FE loadings. Source of truth:
+#: ``EmpiricalSolver.PRISTINE_STRENGTH_KEY`` keys, then
+#: ``EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`` keys.
 LoadingMode = Literal[
-    'compression', 'tension', 'shear', 'ilss', 'transverse_tension'
+    'compression', 'tension', 'shear', 'ilss', 'transverse_tension',
+    'mode_I_toughness', 'mode_II_toughness',
 ]
 
 #: Loading modes accepted by :meth:`~porosity_fe.fe.solver.FESolver.solve`.
