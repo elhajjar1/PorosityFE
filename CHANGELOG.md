@@ -1171,6 +1171,15 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   smaller than the host's RAM, so in Docker or Streamlit Cloud the 80 %
   default is set against what the process may use, and the budget check
   fires before the out-of-memory killer.
+- **A memory budget that fits one factorization refused a second load
+  case.** With `FESolver(max_memory_gb=)` set for one factorization, a
+  solve whose constraint set was not cached (shear after compression)
+  raised a `ValueError` because the cached compression factorization
+  counted as held, although it is only a speed-up. The cached
+  factorizations (the load cases' and the contact system's) now give way:
+  the least recently used are freed, each logged at INFO, until the new one
+  fits. A factorization that would not fit even with none cached is still
+  refused, and the cached ones are kept.
 - **App: the G_IIIc help text on a preset with toughness** said an empty
   field used G_IIc; it keeps the preset's G_IIIc (0.78 N/mm on
   `IM7_8552_epoxy`), also when G_IIc is entered.

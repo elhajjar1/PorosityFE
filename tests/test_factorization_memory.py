@@ -3,7 +3,8 @@
 Before SuperLU builds a factorization the solver estimates it
 (``fe/_memory.py``, the model ``refinement_study`` plans with) and refuses
 one that, with what the solve already holds, exceeds the budget
-(``FESolver(max_memory_gb=)``, default 80 % of physical memory). The
+(``FESolver(max_memory_gb=)``, default 80 % of physical memory), after
+freeing the cached factorizations when that makes it fit. The
 knockdown's pristine reference follows the requested linear solver, so
 ``solver='cg'`` factorizes nothing. ``K_ff`` is SPD and is factorized with
 diagonal pivots. Sizes in bytes unless named GB.
@@ -22,7 +23,7 @@ import numpy as np
 import pytest
 
 from porosity_fe import MATERIALS, CompositeMesh, FESolver, PorosityField
-from porosity_fe.fe import _knockdown, _memory
+from porosity_fe.fe import _constrained_solve, _knockdown, _memory
 
 MAT = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=4, t_ply=0.25)
 
@@ -158,19 +159,75 @@ class TestSolverBudget:
         solvers = {k[4] for k in _knockdown._PRISTINE_MEASURE_CACHE}
         assert solvers == {'direct', ('cg', 1e-10)}
 
-    def test_held_factorizations_count(self, lu_alive_at_build):
-        """One factorization fits the budget; a second constraint set, built
-        while the first is cached, does not."""
+    def test_cached_factorizations_give_way(self, lu_alive_at_build, caplog):
+        """One factorization fits the budget: a second constraint set frees
+        the cached one (least recently used first) instead of refusing, and
+        gets the unbudgeted answer."""
         fe = _solver()
         fe.max_memory_gb = _one_factor_budget_gb(fe)
         fe.solve('compression')                 # pristine, freed, then porous
         assert lu_alive_at_build == [1, 1]
         fe.solve('tension')                     # same constraint set: reused
+        assert len(lu_alive_at_build) == 2
+        logging.disable(logging.NOTSET)
+        with caplog.at_level(logging.INFO, logger='porosity_fe_analysis'):
+            shear = fe.solve('shear')           # its pristine frees compression's
+        assert lu_alive_at_build == [1, 1, 1, 1]
+        assert sum('Freed a cached sparse LU factorization' in r.getMessage()
+                   for r in caplog.records) == 1
+        assert [e[2] is not None for e in fe._lu_cache.values()] == [True]
+        # Back to compression: its pristine reference is cached, so only the
+        # porous system is rebuilt, freeing shear's.
+        compression = fe.solve('compression')
+        assert lu_alive_at_build == [1, 1, 1, 1, 1]
+        unbudgeted = _solver(max_memory_gb=math.inf)
+        for result, loading in ((shear, 'shear'), (compression, 'compression')):
+            assert result.knockdown == pytest.approx(
+                unbudgeted.solve(loading).knockdown, rel=1e-12)
+
+    def test_nothing_is_freed_for_a_refusal(self):
+        """A factorization that would not fit even with the caches empty is
+        refused, and the cached ones are kept."""
+        fe = _solver(max_memory_gb=math.inf)
+        fe.solve('compression')
+        cached = list(fe._lu_cache.values())
+        assert [e[2] is not None for e in cached] == [True]
+        fe.max_memory_gb = (fe._held_bytes()
+                            + 0.5 * _memory.lu_bytes_estimate(fe.mesh.n_dof)) / 1e9
         with pytest.raises(ValueError, match='factorizations already held'):
             fe.solve('shear')
-        assert len(lu_alive_at_build) == 2
-        fe.max_memory_gb = math.inf
-        assert fe.solve('shear').knockdown <= 1.0
+        assert list(fe._lu_cache.values()) == cached
+
+    def test_make_room_order(self):
+        """Least recently used first, the new factorization's cache first;
+        entries without a factorization stay."""
+        class _LU:
+            nnz = 1000
+
+        size = _memory.lu_bytes(_LU())
+        new = _memory.lu_bytes_estimate(3000)
+
+        def caches():
+            own = OrderedDict([(b'a', (None, None, _LU())), (b'b', (None, None, None)),
+                               (b'c', (None, None, _LU()))])
+            other = OrderedDict([(b'd', (None, None, _LU()))])
+            return own, other
+
+        own, other = caches()
+        held = _constrained_solve._make_room((own, other), 3000, 1e6,
+                                             1e6 + new + 1.5 * size)
+        assert held == pytest.approx(1e6 + size)
+        assert list(own) == [b'b'] and list(other) == [b'd']
+        own, other = caches()
+        held = _constrained_solve._make_room((own, other), 3000, 1e6,
+                                             1e6 + new + 0.5 * size)
+        assert held == pytest.approx(1e6)
+        assert list(own) == [b'b'] and list(other) == []
+        for budget in (None, 1e6 + new + 3 * size, 1e6 + 0.99 * new):
+            own, other = caches()
+            held = _constrained_solve._make_room((own, other), 3000, 1e6, budget)
+            assert held == pytest.approx(1e6 + 3 * size)
+            assert list(own) == [b'a', b'b', b'c'] and list(other) == [b'd']
 
     def test_default_budget(self, monkeypatch):
         monkeypatch.setattr(_memory, 'physical_memory_bytes', lambda: 10**6)

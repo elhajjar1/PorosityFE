@@ -253,9 +253,12 @@ adds what the solve already holds: 0.15 GB for the interpreter, 30 kB per
 element of assembly arrays, and the factorizations it keeps, at their
 actual size. When the sum exceeds `FESolver(max_memory_gb=...)` (default
 80 % of physical memory, or of a Linux container's cgroup memory limit when
-that is smaller; `math.inf` turns the check off) it raises a
-`ValueError` with the estimate, before SuperLU allocates anything,
-instead of failing late with a `MemoryError` or a swap storm.
+that is smaller; `math.inf` turns the check off), the kept
+factorizations, which only save time, are freed first, least recently used
+first, until the new one fits. When it would not fit even with none kept,
+the solver raises a `ValueError` with the estimate, before SuperLU
+allocates anything and without freeing them, instead of failing late with
+a `MemoryError` or a swap storm.
 {func}`~porosity_fe.refinement_study` plans its levels with the same
 model. The whole estimate was 1.0 to 1.3 times the measured peak on the
 production coupons. Its factor part is 0.97 to 1.04 times the actual
