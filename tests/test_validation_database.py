@@ -838,12 +838,13 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert agius['mae'] == pytest.approx(2.294, abs=0.01)
     assert olivier['mae'] == pytest.approx(4.065, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 8 and tough['n_points'] == 12
-    # Without the baseline points; 12.474 / 13.570 over 22 points with them
-    # (3.126 / 3.565 over 3 entries before asp_brandt_1997,
-    # russell_street_1982 and vorobyev_2020, #222).
-    assert tough['property_weighted_mae'] == pytest.approx(21.381, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(24.879, abs=0.01)
+    assert tough['n_entries'] == 10 and tough['n_points'] == 16
+    # Without the baseline points (21.381 / 24.879 over 8 entries and 12
+    # points before carraro_2015_0deg and carraro_2015_45deg; 3.126 / 3.565
+    # over 3 entries before asp_brandt_1997, russell_street_1982 and
+    # vorobyev_2020, #222).
+    assert tough['property_weighted_mae'] == pytest.approx(22.495, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(25.397, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
     assert (s['n_entries'], s['n_points']) == (40, 232)

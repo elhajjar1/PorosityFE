@@ -526,4 +526,4 @@ class TestValidationRunnerAgrees:
                         for vp in block['void_content_pct']]
                 assert ours == predicted, (path, key)
                 checked += 1
-        assert checked == 8
+        assert checked == 10   # 8 toughness datasets, 10 property entries
