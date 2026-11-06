@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 import numpy as np
@@ -241,10 +241,49 @@ def solve_constrained(
     return part.expand(u_f), rel_res
 
 
+def _make_room(caches: Sequence[OrderedDict[bytes, tuple]], n_dof: int,
+               held_bytes: float, budget: float | None) -> float:
+    """Drop cached factorizations until a new one of an ``n_dof`` system fits.
+
+    ``caches`` are :func:`free_dof_system` caches, the one the new
+    factorization goes into first. Their factorizations count beside
+    ``held_bytes``; while the total and the new one's estimate
+    (:func:`_memory.lu_bytes_estimate
+    <porosity_fe.fe._memory.lu_bytes_estimate>`) exceed ``budget``, the
+    entries holding one are removed, least recently used first and cache by
+    cache, each logged at INFO. Nothing is removed when there is no budget,
+    when the new one fits already, or when it would not fit even with every
+    cache empty: :func:`_memory.check_factorization
+    <porosity_fe.fe._memory.check_factorization>` then refuses it.
+
+    Returns the bytes held after the removals (``held_bytes`` plus what is
+    left in the caches).
+    """
+    cached = [(cache, key, _memory.lu_bytes(entry[2]))
+              for cache in caches for key, entry in cache.items()
+              if entry[2] is not None]
+    held = held_bytes + sum(size for _, _, size in cached)
+    if budget is None:
+        return held
+    new = _memory.lu_bytes_estimate(n_dof)
+    if held + new <= budget or held_bytes + new > budget:
+        return held
+    for cache, key, size in cached:
+        if held + new <= budget:
+            break
+        del cache[key]
+        held -= size
+        logger.info(
+            "Freed a cached sparse LU factorization (%.3g GB) to fit a new "
+            "one in the %.3g GB memory budget.", size / 1e9, budget / 1e9)
+    return held
+
+
 def free_dof_system(
     cache: OrderedDict[bytes, tuple], K: scipy.sparse.spmatrix,
     part: _ConstraintReduction, *, factorize: bool, max_entries: int,
     memory_budget: float | None = None, held_bytes: float = 0.0,
+    evictable: Sequence[OrderedDict[bytes, tuple]] = (),
 ) -> tuple[scipy.sparse.csc_matrix, scipy.sparse.linalg.SuperLU | None]:
     """``K_ff`` and (when ``factorize``) its sparse LU, cached in ``cache``.
 
@@ -267,10 +306,17 @@ def free_dof_system(
     laminate (30 x 10 x 24, 32 M stored entries) takes about 320 MB
     (120 MB on 30 x 10 x 12), so a cache holding two sets holds about
     650 MB. Before a factorization is built, :func:`_memory.check_factorization
-    <porosity_fe.fe._memory.check_factorization>` estimates it and raises a
-    ``ValueError`` when ``held_bytes`` (what the caller holds outside this
-    cache), the factorizations left in the cache and the estimate exceed
-    ``memory_budget`` (bytes; ``None`` for no check).
+    <porosity_fe.fe._memory.check_factorization>` estimates it against
+    ``memory_budget`` (bytes; ``None`` for no check) with ``held_bytes``
+    (what the caller holds outside the caches: the interpreter and the
+    mesh) and the factorizations in ``cache`` and in the ``evictable``
+    caches (the caller's other caches) beside it. The cached factorizations
+    are only a speed-up, so when they are what puts the new one over the
+    budget they give way: the least recently used of ``cache`` and then of
+    each ``evictable`` cache in turn is dropped until it fits
+    (:func:`_make_room`). A ``ValueError`` is raised, and nothing is
+    dropped, only when the new one does not fit beside ``held_bytes``
+    alone.
 
     The factorization is SuperLU's with the symmetric ``MMD_AT_PLUS_A``
     ordering and diagonal pivoting (``SymmetricMode`` with
@@ -293,8 +339,7 @@ def free_dof_system(
     else:
         _, K_ff, lu = entry
     if factorize and lu is None:
-        held = held_bytes + sum(_memory.lu_bytes(e[2]) for e in cache.values()
-                                if e[2] is not None)
+        held = _make_room((cache, *evictable), part.n_dof, held_bytes, memory_budget)
         _memory.check_factorization(part.n_dof, K_ff.shape[0], held, memory_budget)
         # K_ff is SPD: a symmetric fill-reducing ordering with diagonal
         # pivoting (see the docstring).

@@ -188,9 +188,12 @@ class FESolver:
         Keyword-only. Memory budget (GB) of a direct solve. Before each
         sparse LU factorization the solver estimates its size and the
         memory already held (the interpreter, the mesh's assembly arrays
-        and the factorizations it keeps), and raises :class:`ValueError`
-        with the estimate when their sum exceeds the budget, instead of
-        failing late with a ``MemoryError`` or a swap storm. ``None``
+        and the factorizations it keeps). When their sum exceeds the
+        budget, the kept factorizations, which only save time, are freed
+        first, least recently used first; when the new one would not fit
+        even with none kept, it raises :class:`ValueError` with the
+        estimate, instead of failing late with a ``MemoryError`` or a swap
+        storm. ``None``
         (default) is 80 % of physical memory (on Linux, of the container's
         cgroup memory limit when that is smaller), no limit where the
         platform does not report it; ``math.inf`` turns the check off. The whole
@@ -903,7 +906,10 @@ class FESolver:
         first, so load cases that share supports, or two that alternate,
         factorize once; another set evicts the least recently used before
         its own factorization is built, and a new ``K`` clears them all
-        (``_constrained_solve.free_dof_system``). The thermal 3-2-1 set
+        (``_constrained_solve.free_dof_system``). Under
+        :attr:`max_memory_gb` the cached factorizations, these and the
+        contact system's, give way to a new one, least recently used first.
+        The thermal 3-2-1 set
         takes a slot only while the unit-``delta_T`` thermal solution is
         computed (:meth:`_thermal_unit_solution`). About 320 MB per
         factorization on the 30 x 10 x 24 production mesh.
@@ -911,7 +917,7 @@ class FESolver:
         return _constrained_solve.free_dof_system(
             self._lu_cache, K, part, factorize=factorize,
             max_entries=self._LU_CACHE_SIZE, memory_budget=self._memory_budget(),
-            held_bytes=self._held_bytes(self._contact_lu_cache))
+            held_bytes=self._held_bytes(), evictable=(self._contact_lu_cache,))
 
     def _contact_system(
         self, K: scipy.sparse.spmatrix, part: _ConstraintReduction,
@@ -922,7 +928,7 @@ class FESolver:
         return _constrained_solve.free_dof_system(
             self._contact_lu_cache, K, part, factorize=factorize, max_entries=1,
             memory_budget=self._memory_budget(),
-            held_bytes=self._held_bytes(self._lu_cache))
+            held_bytes=self._held_bytes(), evictable=(self._lu_cache,))
 
     def _memory_budget(self) -> float | None:
         """:attr:`max_memory_gb` in bytes, or its default (``_memory.resolve_budget``)."""
@@ -1015,12 +1021,13 @@ class FESolver:
         (``_knockdown.pristine_stiffness_measure``), solved with the same
         linear ``solver`` (at ``rtol`` when iterative). :meth:`solve` calls it
         before it assembles the porous model; its factorization counts
-        against :attr:`max_memory_gb` with this solver's."""
+        against :attr:`max_memory_gb` with this solver's, which give way to
+        it when they are what puts it over."""
         return _knockdown.pristine_stiffness_measure(
             loading, self.mesh, self.material, self.porosity_field,
             self.formulation, self.bc_handler, solver=solver, rtol=rtol,
-            memory_budget=self._memory_budget(),
-            held_bytes=self._held_bytes(self._lu_cache, self._contact_lu_cache))
+            memory_budget=self._memory_budget(), held_bytes=self._held_bytes(),
+            evictable=(self._lu_cache, self._contact_lu_cache))
 
     #: Empty per-mode failure-index dict (see :mod:`porosity_fe.fe.failure`).
     _EMPTY_MODE_FI: dict[str, float] = failure.EMPTY_MODE_FI

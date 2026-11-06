@@ -17,6 +17,7 @@ import functools
 import hashlib
 import logging
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import astuple
 from typing import Literal
 
@@ -133,6 +134,7 @@ def pristine_stiffness_measure(
     bc_handler: BoundaryHandler, *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
     rtol: float = 1e-9,
     memory_budget: float | None = None, held_bytes: float = 0.0,
+    evictable: Sequence[OrderedDict[bytes, tuple]] = (),
 ) -> float:
     """:func:`_stiffness_measure` of ``mesh`` with no porosity, voids or
     delamination, cached.
@@ -143,7 +145,9 @@ def pristine_stiffness_measure(
     solve (at ``rtol`` when iterative), so an iterative solve factorizes
     nothing (#228). Its
     factorization is checked against ``memory_budget`` with ``held_bytes``
-    beside it (``_memory.check_factorization``). On a delaminated mesh
+    and the factorizations of the ``evictable`` caches (the solver's)
+    beside it, which give way to it when they are what puts it over
+    (``_constrained_solve.free_dof_system``). On a delaminated mesh
     every duplicated interface pair is tied in it, so it is the undamaged
     laminate (plan decision D6) and does not change with the delamination
     size. Its assembly and factorization are local to this call and freed
@@ -199,7 +203,8 @@ def pristine_stiffness_measure(
         BoundaryHandler(pristine), key_loading, strain, load)
     K0 = assembler.stiffness()
     system = functools.partial(free_dof_system, OrderedDict(), max_entries=1,
-                               memory_budget=memory_budget, held_bytes=held_bytes)
+                               memory_budget=memory_budget, held_bytes=held_bytes,
+                               evictable=evictable)
     u0, _ = solve_constrained(K0, F, constrained, system=system,
                               ties=_mesh_ties(pristine), solver=solver, rtol=rtol)
     measure = _stiffness_measure(key_loading, K0, u0, strain, load)
