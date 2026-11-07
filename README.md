@@ -738,16 +738,18 @@ varies with the material system; if you have biaxial coupon
 calibration data, override it per-material via
 `MaterialProperties(tsai_wu_F12=...)`. The value is the **normalized**
 coefficient `F*_12 = F_12 / sqrt(F_11 * F_22)` (dimensionless, so `-0.5`
-is the default) and must lie in `[-1, 0]` for a closed envelope.
+is the default) and must lie in `[-0.5, 0]`: with `F13` mirroring
+`F12` and `F*_23 = -0.5`, a value below `-0.5` opens the 3-D envelope
+under triaxial normal stress.
 
 ## Validation
 
-PorosityFE is validated against **16 experimental datasets**
+PorosityFE is validated against **17 experimental datasets**
 of strength and modulus (13 peer-reviewed papers, the ICCM-16
-conference paper of Cinquin et al. 2007 as two, and Uhl et al. 1988 from
-the QNDE proceedings), covering carbon/epoxy, IM7/toughened epoxy,
+conference papers of Cinquin et al. 2007 as two and Olivier et al. 2007,
+and Uhl et al. 1988 from the QNDE proceedings), covering carbon/epoxy, IM7/toughened epoxy,
 T300/epoxy systems, an intermediate-modulus carbon/180 °C epoxy with
-artificial porosity, and CF/PEEK thermoplastic, plus 3 exploratory
+artificial porosity, and CF/PEEK thermoplastic, plus 8 exploratory
 interlaminar toughness datasets reported separately (below). Validation is automated via `validate_porosity`
 CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
 or in-process via `validation/validate_all.py`.

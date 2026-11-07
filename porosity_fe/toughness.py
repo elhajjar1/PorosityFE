@@ -73,6 +73,8 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 
+from ._vp import check_fraction
+
 logger = logging.getLogger("porosity_fe_analysis")
 
 #: Fracture modes of the law: opening, sliding and tearing.
@@ -122,18 +124,7 @@ def _check_mode(mode: object) -> ToughnessMode:
 
 def _check_Vp(Vp: Any) -> np.ndarray:
     """``Vp`` as a float array, checked to be a fraction in ``[0, 1]``."""
-    arr = np.asarray(Vp, dtype=float)
-    if arr.size == 0:
-        return arr
-    finite = np.isfinite(arr)
-    if finite.all() and arr.min() >= 0.0 and arr.max() <= 1.0:
-        return arr
-    worst = float(arr[~finite][0]) if not finite.all() else (
-        float(arr.max()) if arr.max() > 1.0 else float(arr.min()))
-    hint = (f" Did you pass a percent? Use {worst / 100:.4f} instead of {worst:g}."
-            if math.isfinite(worst) and worst >= 1.001 else "")
-    raise ValueError(
-        f"Vp must be a void fraction in [0, 1] (0.02 for 2 %), got {worst!r}.{hint}")
+    return check_fraction(Vp)
 
 
 def _check_coefficient(name: str, value: Any) -> float:

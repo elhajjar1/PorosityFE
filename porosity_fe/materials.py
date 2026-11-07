@@ -77,9 +77,10 @@ class MaterialProperties:
         failure check uses ``F_12 = F*_12 * sqrt(F_11 * F_22)`` with each
         element's degraded strengths. ``None`` (default) is Tsai's
         recommendation ``F*_12 = -0.5`` (Tsai & Wu 1971). When provided,
-        must lie in ``[-1, 0]`` so the quadratic failure envelope stays
-        closed; for critical applications, calibrate against biaxial
-        coupon data.
+        must lie in ``[-0.5, 0]``: the 3-D criterion takes
+        ``F*_13 = F*_12`` and ``F*_23 = -0.5``, and below ``-0.5`` its
+        envelope opens under triaxial normal stress. For critical
+        applications, calibrate against biaxial coupon data.
     fiber_poisson : float, optional
         Fiber Poisson's ratio ``nu_f`` used by the micromechanics (default
         0.2, typical of carbon fiber), in ``(-1, 0.5)``.
@@ -438,21 +439,26 @@ class MaterialProperties:
 
         # Normalized Tsai-Wu interaction coefficient F*_12 (issue #145).
         # ``None`` defers to Tsai's recommendation F*_12 = -0.5. When the
-        # user supplies a value, require a finite number in [-1, 0] so the quadratic
-        # failure envelope stays closed (physically meaningful). The exact
-        # value within that range is left to user judgement / biaxial
-        # calibration data.
+        # user supplies a value, require a finite number in [-0.5, 0]. The
+        # 3-D criterion takes F*_13 = F*_12 (transverse isotropy) and
+        # F*_23 = -0.5, so its normalized normal block
+        # [[1, a, a], [a, 1, -0.5], [a, -0.5, 1]] has determinant
+        # 0.75 - 3 a^2: below -0.5 it is indefinite and the envelope opens
+        # under triaxial normal stress (a failure index below 1 at stresses
+        # past every allowable). The 2-D bound [-1, 0] does not carry over.
         if self.tsai_wu_F12 is not None:
             if (not isinstance(self.tsai_wu_F12, (int, float, np.integer,
                                                   np.floating))
                     or isinstance(self.tsai_wu_F12, bool)
                     or not np.isfinite(float(self.tsai_wu_F12))
-                    or not (-1.0 <= float(self.tsai_wu_F12) <= 0.0)):
+                    or not (-0.5 <= float(self.tsai_wu_F12) <= 0.0)):
                 raise ValueError(
                     f"MaterialProperties.tsai_wu_F12 must be None or a "
-                    f"finite number in [-1, 0] (Tsai-Wu interaction "
-                    f"coefficient; values outside this range open the "
-                    f"failure envelope), got {self.tsai_wu_F12!r}."
+                    f"finite number in [-0.5, 0] (the normalized Tsai-Wu "
+                    f"interaction coefficient F*_12; with F*_13 = F*_12 and "
+                    f"F*_23 = -0.5 a value below -0.5 opens the 3-D failure "
+                    f"envelope under triaxial normal stress), got "
+                    f"{self.tsai_wu_F12!r}."
                 )
 
         self._validate_thermal_fields()
@@ -616,10 +622,11 @@ class MaterialProperties:
 
         Implements the standard Chamis / Springer matrix-property ratio::
 
-            F_env = sqrt((T_g_wet - T) / (T_g_dry - T_ref))
+            F_env = sqrt((T_g(M) - T) / (T_g(M_ref) - T_ref))
 
-        where ``T_g_wet ~= T_g_dry - 25 * M`` (the Springer rule of thumb
-        for epoxy matrices, with moisture ``M`` in wt%). The square-root
+        where ``T_g(M) ~= T_g_dry - 25 * M`` (the Springer rule of thumb
+        for epoxy matrices, with moisture ``M`` in wt%), so the factor is 1
+        at the reference condition ``(T_ref, M_ref)``. The square-root
         form was proposed by Chamis (NASA-TM-83320, 1983) for matrix
         modulus / strength retention as the service temperature approaches
         the wet glass transition.
@@ -679,10 +686,14 @@ class MaterialProperties:
         T_ref = float(self.T_ref)
 
         T_g_wet = T_g_dry - self._SPRINGER_MOISTURE_TG_SLOPE * M_eff
-        denom = T_g_dry - T_ref
+        # The reference condition (T_ref, M_ref) has factor 1: its own wet
+        # T_g, not the dry one (M_ref = 0 by default, where they agree).
+        T_g_ref = T_g_dry - self._SPRINGER_MOISTURE_TG_SLOPE * float(self.M_ref)
+        denom = T_g_ref - T_ref
         if denom <= 0.0:
-            # Pathological calibration (T_ref above T_g_dry); the matrix is
-            # already above its dry transition at the reference. Refuse to
+            # Pathological calibration (T_ref at or above the reference
+            # T_g); the matrix is already past its transition at the
+            # reference. Refuse to
             # scale rather than divide by zero.
             return 1.0
 

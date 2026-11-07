@@ -548,7 +548,7 @@ def _tsai_wu_coefficients(
         F22_F33 = max(F22 * F33, 0.0)
         # Issue #145: honour a user-supplied interaction coefficient. It is
         # the normalized F*_12 = F_12 / sqrt(F_11 * F_22) (dimensionless,
-        # validated to [-1, 0] by MaterialProperties.__post_init__), so it
+        # validated to [-0.5, 0] by MaterialProperties.__post_init__), so it
         # scales with this element's degraded strengths like the default.
         F12_star = -0.5 if tsai_wu_F12 is None else float(tsai_wu_F12)
         F12 = F12_star * np.sqrt(F11_F22)
@@ -578,7 +578,8 @@ def evaluate_tsai_wu(s_all: np.ndarray,
     system and ideally comes from biaxial coupon calibration. The
     default may be overridden per-material by setting
     :attr:`MaterialProperties.tsai_wu_F12` to the normalized coefficient
-    ``F*_12`` in ``[-1, 0]``; the solver then uses
+    ``F*_12`` in ``[-0.5, 0]`` (below ``-0.5`` the 3-D envelope opens,
+    with ``F_13`` mirroring ``F_12`` and ``F*_23 = -0.5``); the solver then uses
     ``F_12 = F*_12 * sqrt(F_11 * F_22)``, so ``-0.5`` reproduces the
     default.
     ``F_13`` continues to mirror ``F_12``, and ``F_23`` retains the

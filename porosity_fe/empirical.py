@@ -14,6 +14,7 @@ import numpy as np
 from ._layup import _membrane_energy_partition
 from ._ply_angles import _PLY_ANGLES_QI, _PLY_ANGLES_UD, _resolve_ply_angles
 from ._types import KnockdownModel, LoadingMode
+from ._vp import check_fraction
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
@@ -1417,6 +1418,10 @@ class EmpiricalSolver:
         self._check_mode(mode)
         if Vp is None:
             Vp = self.mesh.porosity_field.Vp
+        else:
+            # A user value: a percent or a negative fraction raises instead
+            # of being clipped into [0, 1].
+            Vp = float(check_fraction(Vp))
         Vp = self._check_internal_Vp(Vp)
         if mode in self.PRISTINE_TOUGHNESS_KEY:
             self._knockdown_law_entry(model, callable_ok=False)

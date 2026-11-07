@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 
 import numpy as np
 
 from ._types import PorosityDegradation
+from ._vp import check_fraction
 from .materials import MaterialProperties
 from .transforms import rotate_stiffness_3d
 from .void_geometry import VOID_SHAPES
@@ -63,7 +65,15 @@ def _mt_effective_stiffness(C_m: np.ndarray, Vp: float,
     # function. An isotropic 6x6 stiffness is fully determined by
     # (lam+2mu, mu); both diagonal slots act as a content fingerprint so
     # different materials never collide.
-    radii_key = tuple(round(float(r), 6) for r in void_shape_radii)
+    # Only the radius ratios set the Eshelby tensor: key (and compute) on
+    # the radii over the largest, so radii in any unit agree and a small
+    # radius is not rounded to zero (a crack).
+    radii = tuple(float(r) for r in void_shape_radii)
+    if len(radii) != 3 or not all(math.isfinite(r) and r > 0.0 for r in radii):
+        raise ValueError(
+            f"void_shape_radii must be three finite radii > 0, got {void_shape_radii!r}.")
+    scale = max(radii)
+    radii_key = tuple(round(r / scale, 12) for r in radii)
     C00 = round(float(C_m[0, 0]), 4)
     C33 = round(float(C_m[3, 3]), 4)
     Vp_key = round(float(Vp), 6)
@@ -593,13 +603,14 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
     ----------
     material : MaterialProperties
     ply_angles : list of float  (degrees)
-    Vp : float  void volume fraction (0–1)
+    Vp : float  void volume fraction in [0, 1] (a percent raises ValueError)
     method : str  ignored (kept for API symmetry); always uses Mori-Tanaka.
 
     Returns
     -------
     dict with keys: 'Ex', 'Ey', 'Gxy' (all in MPa)
     """
+    Vp = float(check_fraction(Vp))
     void_shape_radii = VOID_SHAPES['spherical']  # spherical default
     C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
 
@@ -629,13 +640,14 @@ def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
     ----------
     material : MaterialProperties
     ply_angles : list of float  (degrees)
-    Vp : float  void volume fraction (0–1)
+    Vp : float  void volume fraction in [0, 1] (a percent raises ValueError)
     method : str  ignored; always uses Mori-Tanaka.
 
     Returns
     -------
     dict with key: 'Ef_x' (MPa)
     """
+    Vp = float(check_fraction(Vp))
     void_shape_radii = VOID_SHAPES['spherical']
     C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
 

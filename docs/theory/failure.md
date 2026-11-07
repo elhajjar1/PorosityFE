@@ -132,8 +132,14 @@ $F_{23} = -\tfrac12\sqrt{F_{22}F_{33}}$. When `tau_13` is set,
 $F_{55} = 1/S_{13}^2$.
 
 where $F^*_{12}$ is `MaterialProperties.tsai_wu_F12`. By default it is
-$-0.5$, Tsai's recommendation (Tsai & Wu 1971). It must lie in $[-1, 0]$
-for the envelope to stay closed. The default is an empirical choice; when
+$-0.5$, Tsai's recommendation (Tsai & Wu 1971). It must lie in
+$[-0.5, 0]$. The normal-stress block of the normalized coefficients,
+$\begin{bmatrix} 1 & F^*_{12} & F^*_{12} \\ F^*_{12} & 1 & -\tfrac12 \\
+F^*_{12} & -\tfrac12 & 1 \end{bmatrix}$, has determinant
+$0.75 - 3 F^{*2}_{12}$: below $-0.5$ it is indefinite and the envelope
+opens under triaxial normal stress, so the plane-stress bound $[-1, 0]$
+does not carry over to 3-D. The default sits on the bound, where the block
+is semi-definite and the linear terms close the envelope. The default is an empirical choice; when
 comparing with another code, check its $F_{12}$ convention, and calibrate
 $F^*_{12}$ from biaxial tests when they exist. Tsai-Wu does not separate
 failure modes, so the per-mode indices are reported as `NaN` (`null` in

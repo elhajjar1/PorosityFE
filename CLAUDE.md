@@ -235,7 +235,8 @@ collection puts `test_cli.py` first.
   engineering vs. tensor strain, and compression-sign conventions.
 - **Tsai-Wu `F_12`**: default is Tsai's `F_12 = -0.5·√(F_11·F_22)`; users
   can override via `MaterialProperties(tsai_wu_F12=...)` (must be in
-  `[-1, 0]`).
+  `[-0.5, 0]`: with `F_13` mirroring `F_12` and `F*_23 = -0.5`, lower
+  values open the 3-D envelope).
 - **Interlaminar strengths**: optional `sigma_3t` (`Z_t`) and `tau_13`
   (`S_13`); when `None` every criterion keeps its stand-in (`sigma_2t`;
   `tau_12` in Tsai-Wu and maximum stress, `tau_ilss` in Hashin), so the

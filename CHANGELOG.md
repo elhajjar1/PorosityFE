@@ -1214,6 +1214,49 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **Core-physics review, November 2026.** Each defect was reproduced
+  first; the regression tests are in `tests/test_review_core_fixes.py`.
+  - **`MaterialProperties.tsai_wu_F12` below −0.5 opened the 3-D Tsai-Wu
+    envelope.** With `F*_13 = F*_12` (transverse isotropy) and
+    `F*_23 = −0.5`, the normalized normal block has determinant
+    0.75 − 3 F*_12². With −0.8, a stress 1.5 times every normal allowable
+    gave FI 0.095 and an infinite first-ply-failure load factor. The
+    accepted range is now [−0.5, 0] (was [−1, 0]), and the docs no longer
+    carry the plane-stress bound over to 3-D. **A value in [−1, −0.5) now
+    raises `ValueError`.**
+  - **An explicit layup longer than `material.n_plies` was cut silently**
+    by `CompositeMesh` to its first `n_plies` plies, and
+    `layup_discrepancies()` did not see it. A `[90_8/0_8]` layup on an
+    8-ply material was meshed as `[90]_8`, with E_x 9.5 GPa instead of
+    75 GPa. It now raises; the `'QI'` / `'UD'` patterns are still cut or
+    tiled to fit.
+  - **Void-shape radii were not checked, and the Mori-Tanaka cache rounded
+    them to 1e-6 in absolute terms.**
+    - `(3e-6, 3e-6, 3e-7)` (radii in metres) lost its third radius: the
+      directional C33 came out at 3 MPa instead of 8070, and the
+      isotropic stiffness changed with the units.
+    - Zero or negative radii gave non-physical stiffness; a negative
+      radius doubled it.
+    - `PorosityField` now requires three finite radii > 0, and the cache
+      keys and computes on the ratios to the largest radius. The presets'
+      results are unchanged (FE fingerprint deviation 0).
+  - **A porosity field built for another laminate** put its clustered band
+    or interfaces in the wrong place (a 24-ply field on an 8-ply mesh
+    averaged 1.4 % for a requested 3 %). `CompositeMesh` now raises when
+    the field's `n_plies` or `t_ply` differ from the material's.
+  - **`distribution='interface'` on one ply** gave zero porosity
+    everywhere while `Vp` said 3 %. It now raises.
+  - **A percent passed as `Vp`.** `EmpiricalSolver.local_sensitivities(Vp=3.0)`
+    returned the values at Vp = 1, `Vp=-0.5` those at 0, and
+    `compute_degraded_clt_moduli` / `compute_degraded_clt_flexural_modulus`
+    returned pristine moduli for a negative value and failed on a percent.
+    They now raise `ValueError` with the percent hint, through the check
+    the toughness law already used (`porosity_fe/_vp.py`).
+  - **`MaterialProperties.M_ref` was validated but never used**: the
+    hygrothermal factor at the reference condition itself was 0.92 for
+    `M_ref = 1`. The denominator is now `T_g(M_ref) − T_ref`, so the factor
+    is 1 at `(T_ref, M_ref)`. The default `M_ref = 0` gives the same
+    results as before.
 - **Layup strings in standard notation were misread** (found by review).
   `parse_layup`, behind the app's layup box, read a ply-count subscript as
   part of the angle (`[45_2/0_2]s` became plies of 452° and 2°) and glued a
