@@ -46,6 +46,7 @@ from .config import (
     _FRACTURE_UQ_SAMPLES,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
+    _fracture_specimen_mesh,
     _resolving_nz,
 )
 
@@ -446,21 +447,6 @@ def _fe_load_kwargs(loading: str) -> dict:
         return {"applied_load": _FE_FRACTURE_LOAD_N}
     return {"applied_strain": (-_FE_APPLIED_STRAIN if loading == "compression"
                                else _FE_APPLIED_STRAIN)}
-
-
-def _fracture_specimen_mesh(loading: str, porosity_field, material, cfg: dict):
-    """The fracture specimen of ``loading`` ('dcb', 'enf', 'mmb') with the
-    laminate, ``nz``, crack length and MMB mode ratio of ``cfg``."""
-    kwargs = {"nz": cfg["nz"], "ply_angles": cfg["angles"]}
-    if cfg.get("crack_length") is not None:
-        kwargs["crack_length"] = float(cfg["crack_length"])
-    if loading == "dcb":
-        return CompositeMesh.for_dcb(porosity_field, material, **kwargs)
-    if loading == "enf":
-        return CompositeMesh.for_enf(porosity_field, material, **kwargs)
-    if cfg.get("mmb_mode_ratio") is not None:
-        kwargs["mode_ratio"] = float(cfg["mmb_mode_ratio"])
-    return CompositeMesh.for_mmb(porosity_field, material, **kwargs)
 
 
 def _fracture_specimen_info(mesh, loading: str, cfg: dict) -> dict:

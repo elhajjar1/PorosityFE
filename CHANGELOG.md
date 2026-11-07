@@ -1214,6 +1214,53 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **App and plot review, November 2026.** Each defect was reproduced
+  first; the tests are in `tests/test_app.py` (`TestAppReviewFixes`),
+  `tests/test_app_streamlit.py` (`TestSidebarReviewFixes`) and
+  `tests/test_viz.py` (`TestReviewVizFixes`).
+  - **A Vp above the 5 % calibration bound was not flagged in the app.**
+    The library's warning went to the log only. The Overview and Results
+    tabs now warn, the results chart's footnote says the empirical
+    knockdowns are extrapolated, and the Vp help names the bound.
+  - **The Mesh tab's "Stiffness Retention" was the solid fraction 1 − Vp**
+    (`mesh.stiffness_reduction`). With 3 % penny voids it read 97 %, while
+    the FE's transverse stiffness retention is about 88 %. It is now
+    labelled as the solid fraction.
+  - **The Stress tab drew zero-by-symmetry fields as patterns.**
+    - It opened on σ11 for a [90]_n coupon in tension, a field of
+      4e-11 MPa shown on a full colour scale.
+    - It opened on τ13 for ILSS, which is about zero in the 90° plies.
+    - A field everywhere below 1e-9 of the section's largest stress is
+      now drawn as 0 and labelled "0 (round-off of zero)".
+    - A [90]_n coupon opens on σ22.
+    - ILSS, ENF and MMB open on a new component, the interlaminar shear
+      magnitude √(τ13² + τ23²), whatever the ply angle.
+  - **`FEVisualizer.plot_damage_contour` (the CLI's `porosity_damage_*.png`)
+    plotted the last knockdown evaluated** (transverse tension, linear law,
+    after `get_all_failure_loads`) under a "Stiffness Reduction" title. It
+    now takes `mode` and `model` (default compression, Judd-Wright),
+    evaluates them, and labels the map with them. A bare `nodal_knockdown`
+    is labelled "Nodal knockdown", and the fallback "Solid fraction 1 - Vp".
+  - **`FEVisualizer` plots:**
+    - `plot_knockdown_curves` had no legend for its three model colours
+      and two line styles.
+    - `plot_mesh_detail` gave a uniform field a colourbar offset
+      (`1e-13+3`).
+    - The hex-element schematic had mm axes on a unit cube.
+  - **A one-ply layup in Expert mode raised** (`nz = 1` below the slider's
+    minimum of 2) and hid the rest of the sidebar, including Run.
+  - **For DCB, ENF and MMB the sidebar described the coupon mesh**
+    (30 × 10 × nz), while the FE solves the specimen's graded mesh, e.g.
+    151 × 36 × 4 = 21,744 elements for an ENF of 4 plies. The sidebar now
+    builds the specimen mesh (about 10 ms) and gives its size. The coarse,
+    fine and element-cap checks use it, and a warning says a run above
+    20,000 elements can take minutes.
+  - **Thermal only with a fracture mode or a delamination.** The
+    specimen's crack-length and lever inputs were still shown (and still
+    entered the cache key), and the knockdown-split checkbox was silently
+    ignored. Both are now replaced by a note.
+  - **The results footnote mentioned a hatched FE bar when the FE solve
+    was skipped.** It now says the solve was skipped.
 - **Core-physics review, November 2026.** Each defect was reproduced
   first; the regression tests are in `tests/test_review_core_fixes.py`.
   - **`MaterialProperties.tsai_wu_F12` below −0.5 opened the 3-D Tsai-Wu

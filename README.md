@@ -487,7 +487,7 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_profile_*.png` | Through-thickness porosity profiles |
 | `porosity_mesh_3d_*.png` | 3D mesh with hexahedral elements |
 | `porosity_mesh_detail_*.png` | Cross-section element detail |
-| `porosity_damage_*.png` | Stiffness reduction contour maps |
+| `porosity_damage_*.png` | Midplane map of the compression (Judd-Wright) strength knockdown |
 | `porosity_comparison_*.png` | Model comparison bar charts |
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |

@@ -339,13 +339,14 @@ def test_layup_default_comes_from_session_state_only():
 
 class TestStressComponentDefault:
     def test_opens_on_the_load_case_and_keeps_the_users_pick(self):
-        """ILSS opens on τ₁₃; a component the user picks survives a new
+        """ILSS opens on the interlaminar shear magnitude (τ₁₃ in the 0°
+        plies, τ₂₃ in the 90° ones); a component the user picks survives a new
         run with another default (following the default between runs is
         covered headlessly in test_app.py)."""
         at = _select(_fresh_app(), "Loading mode", "ilss")
         at = _run_small_analysis(at)
         assert not at.exception
-        assert at.selectbox(key="stress_component").value == "τ₁₃ (interlaminar)"
+        assert at.selectbox(key="stress_component").value == "Interlaminar shear √(τ₁₃² + τ₂₃²)"
         at.selectbox(key="stress_component").set_value("Von Mises").run()
         _select(at, "Loading mode", "shear")
         _button(at, "Run analysis").click().run()
@@ -617,3 +618,40 @@ class TestDefectsPanel:
         at.number_input(key="frac_mmb_ratio").set_value(0.8).run()
         assert any(c.value.startswith("Lever length c =") for c in at.caption)
         assert not at.exception
+
+
+class TestSidebarReviewFixes:
+    """Regression tests for the app review of November 2026."""
+
+    def test_one_ply_layup_in_expert_mode(self):
+        """nz = 1 (one ply) is the default; the slider started at 2 and
+        raised, hiding the rest of the sidebar and the Run button."""
+        at = _fresh_app()
+        at.text_input(key="layup_input").set_value("0").run()
+        at.toggle[0].set_value(True).run()
+        assert not at.exception
+        assert at.slider(key="mesh_nz").value == 1
+        assert any(b.label == "Run analysis" for b in at.button)
+
+    def test_fracture_specimen_mesh_is_described_and_guarded(self):
+        """The DCB / ENF / MMB solve meshes the specimen, not the coupon:
+        the sidebar now gives its size and warns before a long run."""
+        at = _select(_fresh_app(), "Loading mode", "enf")
+        at.text_input(key="layup_input").set_value("0/0/0/0").run()
+        captions = [c.value for c in at.caption]
+        assert any("meshed 151 × 36 × 4 = 21,744 elements" in c for c in captions)
+        assert not any(c.startswith("Default mesh:") for c in captions)
+        assert any("can take several minutes" in w.value for w in at.warning)
+
+    def test_thermal_only_drops_the_specimen_inputs(self):
+        """Thermal only solves the free-standing coupon: the crack length
+        and the knockdown split no longer appear."""
+        at = _fresh_app()
+        _select(at, "Material", "AS4_3501_6_epoxy")
+        _select(at, "Loading mode", "dcb")
+        assert any(n.key == "frac_a0_dcb" for n in at.number_input)
+        at.radio(key="thermal_choice").set_value(
+            "Thermal only (residual stress, no mechanical load)").run()
+        assert not at.exception
+        assert not any(n.key == "frac_a0_dcb" for n in at.number_input)
+        assert any("the specimen's inputs do not apply" in c.value for c in at.caption)

@@ -520,7 +520,8 @@ def _write_vp_plots(viz, results: dict, artifacts: dict, output_dir: Path,
         viz.plot_damage_contour(
             art.mesh,
             art.empirical_solver,
-            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
+            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png",
+            mode='compression', model='judd_wright')
     viz.plot_model_comparison(
         results,
         save_path=output_dir / f"porosity_comparison_{Vp_label}.png")

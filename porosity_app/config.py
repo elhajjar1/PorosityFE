@@ -7,12 +7,26 @@ from __future__ import annotations
 
 import math
 
+from porosity_fe import CompositeMesh
+from porosity_fe.empirical import _VP_CALIBRATION_MAX
 from porosity_fe.fracture_specimens import (
     _D5528_CRACK_LENGTH,
     _D6671_CRACK_LENGTH,
     _D7905_CRACK_LENGTH,
 )
 from porosity_fe.homogenization import _DEFAULT_POROSITY_DEGRADATION
+
+
+def calibration_note(vp_percent: float) -> str | None:
+    """The extrapolation note for a void content (in percent) above the
+    empirical laws' calibration bound, or ``None`` within it."""
+    bound = 100.0 * _VP_CALIBRATION_MAX
+    if vp_percent <= bound:
+        return None
+    return (f"Vp = {vp_percent:.1f} % is beyond the {bound:g} % calibration bound of "
+            f"the empirical knockdown laws: their results are extrapolated and "
+            f"may be inaccurate.")
+
 
 # Repo README link for in-app guidance (e.g. when FE solve is skipped, #129).
 _README_URL = (
@@ -240,3 +254,18 @@ def _resolving_nz(nz: int, n_plies: int) -> int:
     layers, which the thermal solve needs (``CompositeMesh.layup_discrepancies``).
     """
     return int(n_plies) * max(1, math.ceil(int(nz) / int(n_plies)))
+
+
+def _fracture_specimen_mesh(loading: str, porosity_field, material, cfg: dict):
+    """The fracture specimen of ``loading`` ('dcb', 'enf', 'mmb') with the
+    laminate, ``nz``, crack length and MMB mode ratio of ``cfg``."""
+    kwargs = {"nz": cfg["nz"], "ply_angles": cfg["angles"]}
+    if cfg.get("crack_length") is not None:
+        kwargs["crack_length"] = float(cfg["crack_length"])
+    if loading == "dcb":
+        return CompositeMesh.for_dcb(porosity_field, material, **kwargs)
+    if loading == "enf":
+        return CompositeMesh.for_enf(porosity_field, material, **kwargs)
+    if cfg.get("mmb_mode_ratio") is not None:
+        kwargs["mode_ratio"] = float(cfg["mmb_mode_ratio"])
+    return CompositeMesh.for_mmb(porosity_field, material, **kwargs)
