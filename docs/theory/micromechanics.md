@@ -212,9 +212,66 @@ fraction. The Mori-Tanaka cache rounds $V_p$ to $10^{-6}$, so through it the
 same ratios read 1.010, 0.999, 1.003 at $\gamma = 10^{-2}$ to $10^{-4}$,
 where $V_p$ is $2 \times 10^{-3}$ to $2 \times 10^{-5}$.
 
-The directional mapping is not calibrated against measured $E_{33}$,
-$G_{13}$ or $G_{23}$ of porous laminates, and it is not exposed in the app
-or the CLI.
+The directional mapping is not calibrated. It is selectable in the app
+(sidebar "FE porosity degradation") and in `porosity-analyze
+--porosity-degradation`.
+
+### Comparison with measured out-of-plane data
+
+A literature pass (November 2026, 15 sources examined) found no static
+$E_{33}$, $G_{13}$ or $G_{23}$ measured against void content. It found the
+through-thickness stiffness $C_{33} = \rho V^2$ from ultrasonic velocity,
+curved-beam $Z_t$ (ASTM D6415) and V-notch $S_{13}$ (ASTM D5379). The
+ratios below are against each study's lowest-void specimen. The
+predictions use the void shape the study reports, or the assumption
+marked, with the preset closest to the material:
+
+| Study | Property | Void content | Measured | Isotropic | Directional |
+|---|---|---|---|---|---|
+| Ishii et al. 2016[^ishii] (UTS50/135 UD) | $C_{33}$ (2.25 MHz) | 0 to 7.1 % | 0.648 at 7.1 % | 0.852 | 0.751 |
+| Jeong 1990[^jeong] (carbon/epoxy UD, QI) | $C_{33}$ (2 and 5 MHz) | 0.2 to 6.5 % | 0.56 to 0.63 at 6.5 % (UD) | 0.855 | 0.712 |
+| Aratama et al. 2017[^aratama] (UTS50/135 UD) | $Z_t$, curved beam | 0 to 6.0 % | 0.50 at 6.0 % | 0.933 | 0.872 |
+| Aratama et al. 2017 | $Y_t$, D3039 | 0 to 7.1 % | 0.76 at 7.1 % | 0.922 | 0.922 |
+| Ancelotti et al. 2010[^ancelotti] (F584 8HS fabric) | $S_{13}$, V-notch | 0.3 to 8.8 % | 0.838 at 8.8 % | 0.901 | 0.876 |
+
+Shapes, as radii (along the fibres, across them, through the thickness):
+
+- **Ishii and Aratama:** the CT shape, (10, 1.9, 1). The two papers very probably test the same panels.
+- **Jeong UD:** an assumed (10, 3, 1).
+- **Ancelotti:** an assumed (1, 1, 0.5).
+
+The predictions are the library's own ratios, `T700_epoxy` standing in for
+UTS50.
+
+- **Stiffness.** Where the two options differ, the directional one is
+  closer. The mean absolute error over each $C_{33}$ series is:
+  - Ishii: 0.054 directional against 0.109 isotropic;
+  - Jeong: 0.011 to 0.095 against 0.087 to 0.170.
+
+  The isotropic option keeps $E_{22}$ and $E_{33}$ in step. On the UTS50
+  laminates $E_{22}$ stays at 0.88 or more at 7.1 % voids while $C_{33}$
+  falls to 0.65.
+
+  Both options under-predict the loss with the measured shape. An
+  effective penny about 5 to 6 times as wide as it is thick, radii about
+  (1, 1, 0.17), fits the $C_{33}$ of both studies with the directional
+  option to an rms error of 0.03 to 0.05. That is a fit to dynamic
+  velocities and absorbs effects the smeared model leaves out, such as
+  interply resin layers that thicken with porosity. It is not adopted.
+- **Strength.** Neither option comes near. The square-root rule gives
+  about 1 to 2 % of $Y_t$ per 1 % voids against 3.8 % measured. Curved-beam
+  $Z_t$ falls 8.3 % per 1 % voids, against about 1 % predicted. The
+  directional option's extra $Z_t$ penalty goes the right way: with the
+  `penny` preset it matches the measured $Z_t / Y_t$ at 3 % voids, 0.855
+  against 0.848, but not at 6 %.
+- **Not calibrated.** One study gives $Z_t$ and $Y_t$ on the same
+  laminates. The base strength rule would have to be calibrated before the
+  directional ratio, so neither is, and the default stays `'isotropic'`.
+
+[^ishii]: Ishii, Y., Biwa, S., Kuraishi, A. (2016). Compos. Struct. 152, 645, doi:10.1016/j.compstruct.2016.05.054; author manuscript at hdl.handle.net/2433/230378.
+[^jeong]: Jeong, H. (1990). Ultrasonic characterization of elastic constants and defects in composite materials. PhD thesis, Iowa State University, doi:10.31274/rtd-180813-12812.
+[^aratama]: Aratama, S., Hashizume, Y., Koga, K., Nishikawa, M., Hojo, M. (2017). J. Japan Soc. Compos. Mater. 43(5), 181, doi:10.6089/jscm.43.181.
+[^ancelotti]: Ancelotti Jr., A.C., Pardini, L.C., Bezerra, E.M., Roach, J.D. (2010). Materials Research 13(1), 63, doi:10.1590/S1516-14392010000100014.
 
 ## Verification against a periodic unit cell
 

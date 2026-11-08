@@ -77,6 +77,11 @@ def _parse_delamination(spec: str) -> Delamination:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+#: Seed of the ``--uq`` sampling when ``--seed`` is not given: the app's
+#: value, so a repeat run gives the same bands.
+_UQ_DEFAULT_SEED = 0
+
+
 def _vp_label(Vp: float) -> str:
     """Stable, filesystem-safe label for a void fraction.
 
@@ -164,8 +169,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Recorded in JSON provenance for reproducibility. The pipeline "
-            "is deterministic (RNG-free), so this does not alter results."
+            "Seed of the --uq sampling (default 0, as in the app, so repeat "
+            "runs agree), recorded in the JSON provenance. The sweep itself "
+            "is deterministic (RNG-free): the seed does not alter it."
         ),
     )
     parser.add_argument(
@@ -411,7 +417,7 @@ def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
             coef_cov=args.uq_coef_cov,
             n_samples=args.uq_samples,
             method='lhs',
-            seed=args.seed,
+            seed=_UQ_DEFAULT_SEED if args.seed is None else args.seed,
         )
         kd = results[mode]['knockdown']['percentiles']
         logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f",
@@ -514,7 +520,8 @@ def _write_vp_plots(viz, results: dict, artifacts: dict, output_dir: Path,
         viz.plot_damage_contour(
             art.mesh,
             art.empirical_solver,
-            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png")
+            save_path=output_dir / f"porosity_damage_{name}_{Vp_label}.png",
+            mode='compression', model='judd_wright')
     viz.plot_model_comparison(
         results,
         save_path=output_dir / f"porosity_comparison_{Vp_label}.png")
@@ -582,6 +589,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"float in [0, 1] (a void *fraction*, not a percentage)."
                 f"{hint}"
             )
+    # Each level's files are named by its label (to 1e-4 %): two distinct
+    # levels with one label would overwrite each other's output.
+    labelled: dict[str, float] = {}
+    for Vp in args.vp:
+        label = _vp_label(Vp)
+        other = labelled.setdefault(label, Vp)
+        if other != Vp:
+            parser.error(
+                f"--vp values {other!r} and {Vp!r} would write the same output "
+                f"files (label {label!r}); levels must differ by at least "
+                f"1e-6 as a fraction (1e-4 %).")
 
     output_dir = Path(args.output_dir)
     try:

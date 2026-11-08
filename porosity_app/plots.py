@@ -16,12 +16,11 @@ from matplotlib.ticker import MaxNLocator, ScalarFormatter
 from porosity_fe import (
     LABEL_KNOCKDOWN,
     LABEL_POROSITY_PCT,
-    LABEL_STIFFNESS_RETENTION,
     LABEL_X_MM,
     LABEL_Z_MM,
 )
 
-from .config import _FLEXURE_MODES, _FRACTURE_MODES
+from .config import _FLEXURE_MODES, _FRACTURE_MODES, calibration_note
 from .summaries import _crack_front, _distribution_text, front_order
 
 
@@ -136,6 +135,12 @@ _SECTION_MARGINS_IN = {"left": 1.3, "right": 0.4, "top": 0.95,
 _CONSTANT_FIELD_RTOL = 1e-6
 
 
+#: A field everywhere below this fraction of the section's largest stress
+#: is the round-off of a zero (e.g. sigma_11 of a [90]_n coupon in tension),
+#: drawn as a uniform 0, not as a full colour scale over noise.
+_ZERO_FIELD_RTOL = 1e-9
+
+
 #: Half-range of a single-signed stress scale, relative to the mean, below
 #: which the colorbar label calls the field nearly uniform.
 _NEARLY_UNIFORM_SPREAD = 0.05
@@ -222,14 +227,18 @@ def _set_titles(ax, title: str, subtitle: str | None = None) -> None:
                     ha="left", va="bottom", fontsize=10, color="0.35")
 
 
-def _colour_limits(values, *, floor: float, robust: bool = False
-                   ) -> tuple[float, float, bool]:
+def _colour_limits(values, *, floor: float, robust: bool = False,
+                   scale: float | None = None) -> tuple[float, float, bool]:
     """Colour-scale limits ``(vmin, vmax, constant)`` of the finite ``values``.
 
     A field whose spread is at most ``_CONSTANT_FIELD_RTOL`` of its
     magnitude (or 1e-12 absolute) is constant: a scale over its round-off
     would show an offset and meaningless ticks, so the limits are the value
-    plus or minus the larger of 1 % of it and ``floor``. Otherwise they are
+    plus or minus the larger of 1 % of it and ``floor``. ``scale`` is the
+    magnitude the field is read against (e.g. the largest stress component
+    of the section): a field within ``_ZERO_FIELD_RTOL`` of it everywhere is
+    the round-off of a zero (a component that vanishes by symmetry) and is
+    constant at 0. Otherwise they are
     the data range or, with ``robust``, its 2nd and 98th percentiles, so a
     few singular peaks do not wash out the rest (the colorbar marks the
     clipped ends). ``(0, 1, False)`` when no value is finite.
@@ -239,6 +248,8 @@ def _colour_limits(values, *, floor: float, robust: bool = False
     if v.size == 0:
         return 0.0, 1.0, False
     lo, hi = float(v.min()), float(v.max())
+    if scale is not None and max(abs(lo), abs(hi)) <= _ZERO_FIELD_RTOL * scale:
+        return -floor, floor, True
     if hi - lo <= max(_CONSTANT_FIELD_RTOL * max(abs(lo), abs(hi)), 1e-12):
         mid = 0.5 * (lo + hi)
         half = max(0.01 * abs(mid), floor)
@@ -302,16 +313,17 @@ _STRESS_CMAP_POSITIVE = _sequential_cmap("Reds")
 _STRESS_CMAP_MAGNITUDE = "cividis"
 
 
-def _stress_colour_scale(values, *, magnitude: bool = False):
+def _stress_colour_scale(values, *, magnitude: bool = False, scale: float | None = None):
     """``(cmap, norm, extend, constant)`` for a stress field (MPa).
 
     The diverging map only when the field crosses zero, otherwise a
     sequential one over the field's range (see ``_STRESS_CMAP_*``), so a
     field of one sign shows its variation instead of one flat colour. The
     range is the 2nd to 98th percentile; a constant field gets its value
-    ±1 % (at least ±1 MPa).
+    ±1 % (at least ±1 MPa), and one within round-off of zero against
+    ``scale`` (the section's largest stress) is a uniform 0.
     """
-    vmin, vmax, constant = _colour_limits(values, floor=1.0, robust=True)
+    vmin, vmax, constant = _colour_limits(values, floor=1.0, robust=True, scale=scale)
     if magnitude:
         cmap = _STRESS_CMAP_MAGNITUDE
     elif vmin < 0.0 < vmax:
@@ -341,7 +353,10 @@ def plot_profile(result: dict):
 
 
 def plot_mesh(result: dict):
-    """Mid-y cross-section coloured by stiffness retention with void overlays."""
+    """Mid-y cross-section coloured by the solid fraction ``1 - Vp`` (the
+    mesh's ``stiffness_reduction``), with void overlays. It is not a
+    stiffness ratio: the FE degrades the stiffness by Mori-Tanaka, which
+    depends on the void shape."""
     mesh = result["mesh"]
     section = mesh.mid_y_section_indices()   # (nz + 1, nx + 1)
     X = mesh.nodes[section, 0]
@@ -351,14 +366,14 @@ def plot_mesh(result: dict):
 
     vmin, vmax, constant = _colour_limits(Sr, floor=1.0)
     if constant:
-        vmax = min(vmax, 100.0)      # retention never exceeds 100 %
+        vmax = min(vmax, 100.0)      # the solid fraction never exceeds 100 %
     else:
         # 100 % (pristine) anchors the top of the scale.
         vmin, vmax = max(0.0, vmin - 1.0), max(100.0, vmax)
     im = ax.pcolormesh(X, Z, Sr, shading="gouraud", cmap="cividis",
                        vmin=vmin, vmax=vmax)
     cb = fig.colorbar(im, cax=cax, orientation="horizontal")
-    label = LABEL_STIFFNESS_RETENTION
+    label = "Solid fraction 1 − Vp (%)"
     if constant:
         value = float(np.mean(Sr))
         label += f" · uniform: {value:.1f} %"
@@ -409,7 +424,7 @@ def plot_mesh(result: dict):
         subtitle += f" · {n_voids} void elements (white, red outline)"
     if _draw_delaminations(ax, mesh, section, X, Z):
         subtitle += " · delamination in red"
-    _set_titles(ax, "FE mesh: stiffness retention", subtitle)
+    _set_titles(ax, "FE mesh: solid fraction (1 − Vp)", subtitle)
     return fig
 
 
@@ -502,7 +517,10 @@ def plot_results(result: dict, layup_str: str):
 
     note = ("Solid bars = strength knockdown (at mean Vp); "
             "hatched bar = stiffness knockdown (FE)")
-    if fe_field is not None and not has_fe:
+    if fe_field is None:
+        note = ("Solid bars = strength knockdown (at mean Vp); the FE solve "
+                "was skipped (see the Overview), so there is no FE bar")
+    elif not has_fe:
         note = ("Solid bars = strength knockdown (at mean Vp); the FE "
                 "thermal-only solve has no stiffness knockdown (n/a)")
         if fracture:
@@ -511,6 +529,9 @@ def plot_results(result: dict, layup_str: str):
     if flexure:
         note += ("\nFLEXURE: FE beam-stiffness knockdown only; there is no "
                  "empirical flexure model")
+    if calibration_note(cfg["Vp"]):
+        note += (f"\nVp = {cfg['Vp']:.1f} % is beyond the 5 % calibration bound: "
+                 "the empirical knockdowns are extrapolated")
     amplified = {m: s for m, s in layup_scale.items() if s > 1.0}
     if amplified:
         factors = ", ".join(f"{m} x{s:.2f}" for m, s in sorted(amplified.items()))
@@ -535,33 +556,49 @@ _STRESS_COMPONENTS = {
     "τ₂₃ (interlaminar)": (3, r"$\tau_{23}$ local (MPa)"),
     "τ₁₃ (interlaminar)": (4, r"$\tau_{13}$ local (MPa)"),
     "τ₁₂ (in-plane shear)": (5, r"$\tau_{12}$ local (MPa)"),
+    "Interlaminar shear √(τ₁₃² + τ₂₃²)": (
+        -2, r"$\sqrt{\tau_{13}^2 + \tau_{23}^2}$ (MPa)"),
     "Von Mises": (-1, "Von Mises Stress (MPa)"),
 }
 
 
 #: File-name slug of each stress component (by component index).
 _STRESS_SLUGS = {0: "s11", 1: "s22", 2: "s33", 3: "t23", 4: "t13", 5: "t12",
-                 -1: "von_mises"}
+                 -1: "von_mises", -2: "t_interlaminar"}
 
 
 def default_stress_component(result: dict) -> str:
     """The stress component the Stress tab opens on for ``result``.
 
-    The one that governs the load case: τ₁₃ for ILSS (interlaminar shear)
-    and the ENF and MMB specimens, σ₃₃ for the DCB (crack opening), σ₂₂ for
-    a thermal-only solve (transverse stress, where residual cracking
-    starts), τ₁₂ for in-plane shear, σ₁₁ otherwise (fibre stress, also in
-    flexure).
+    The one that governs the load case:
+
+    - for ILSS and the ENF and MMB specimens, the interlaminar shear
+      magnitude √(τ₁₃² + τ₂₃²): in ply axes the shear is τ₁₃ in a 0° ply and
+      τ₂₃ in a 90° ply, so either alone reads zero in some plies;
+    - σ₃₃ for the DCB (crack opening);
+    - σ₂₂ for a thermal-only solve (transverse stress, where residual
+      cracking starts);
+    - τ₁₂ for in-plane shear;
+    - otherwise the fibre stress σ₁₁ (also in flexure), or σ₂₂ when no ply
+      lies within 45° of the load axis (a [90]_n coupon carries the load
+      transverse to its fibres, and its σ₁₁ is round-off).
     """
     fe_loading = result.get("fe_loading")
     if fe_loading in ("ilss", "enf", "mmb"):
-        return "τ₁₃ (interlaminar)"
+        return "Interlaminar shear √(τ₁₃² + τ₂₃²)"
     if fe_loading == "dcb":
         return "σ₃₃ (through-thickness)"
     if fe_loading == "thermal":
         return "σ₂₂ (transverse)"
     if fe_loading == "shear":
         return "τ₁₂ (in-plane shear)"
+    mesh = result.get("mesh")
+    angles = getattr(mesh, "ply_angles", None)
+    if angles is not None and len(angles):
+        # Angle to the x axis folded into [0, 90] degrees.
+        folded = np.abs((np.asarray(angles, dtype=float) + 90.0) % 180.0 - 90.0)
+        if folded.min() > 45.0 + 1e-9:
+            return "σ₂₂ (transverse)"
     return "σ₁₁ (fiber)"
 
 
@@ -602,16 +639,18 @@ def plot_stress(result: dict, comp_name: str):
     stress_local = fe_field.stress_local
     comp_idx, label = _STRESS_COMPONENTS.get(comp_name, (0, comp_name + " (MPa)"))
 
+    s = stress_local.mean(axis=1)
     if comp_idx == -1:
-        s = stress_local.mean(axis=1)
         s1, s2, s3 = s[:, 0], s[:, 1], s[:, 2]
         s4, s5, s6 = s[:, 3], s[:, 4], s[:, 5]
         elem_stress = np.sqrt(0.5 * (
             (s1 - s2) ** 2 + (s2 - s3) ** 2 + (s3 - s1) ** 2
             + 6.0 * (s4 ** 2 + s5 ** 2 + s6 ** 2)
         ))
+    elif comp_idx == -2:
+        elem_stress = np.hypot(s[:, 4], s[:, 3])
     else:
-        elem_stress = stress_local.mean(axis=1)[:, comp_idx]
+        elem_stress = s[:, comp_idx]
 
     # Mid-y element row (nz, nx) and its nodes (nz + 1, nx + 1); the
     # structured mesh makes the nodes the corners of the element cells.
@@ -636,7 +675,13 @@ def plot_stress(result: dict, comp_name: str):
     Xc, Zc = X[:, i0:i1 + 2], Z[:, i0:i1 + 2]
 
     fig, ax, cax, factor = _section_figure((Xc.min(), Xc.max()), (Zc.min(), Zc.max()))
-    cmap, norm, extend, constant = _stress_colour_scale(sv, magnitude=comp_idx == -1)
+    # Read the field against the section's largest stress component, so a
+    # component that is zero by symmetry shows as 0, not as its round-off.
+    section_all = s[elems][:, cols]
+    finite_all = np.abs(section_all[np.isfinite(section_all)])
+    scale = float(finite_all.max()) if finite_all.size else None
+    cmap, norm, extend, constant = _stress_colour_scale(
+        sv, magnitude=comp_idx < 0, scale=scale)
     # One flat cell per element: the element-averaged stress, which jumps
     # between plies (a contour would smear it across the interfaces).
     qm = ax.pcolormesh(Xc, Zc, np.ma.masked_invalid(sv), cmap=cmap, norm=norm,
@@ -644,7 +689,12 @@ def plot_stress(result: dict, comp_name: str):
     cb = fig.colorbar(qm, cax=cax, orientation="horizontal", extend=extend)
     if constant:
         value = float(np.nanmean(sv))
-        label += f" · uniform: {value:.4g} MPa"
+        if scale is not None and abs(value) <= _ZERO_FIELD_RTOL * scale:
+            # Round-off of a component that vanishes by symmetry.
+            label += " · 0 (round-off of zero)"
+            value = 0.0
+        else:
+            label += f" · uniform: {value:.4g} MPa"
         _mark_uniform_value(cb, value)
     elif norm.vmin * norm.vmax > 0.0:
         # A sequential scale over a narrow range makes small differences

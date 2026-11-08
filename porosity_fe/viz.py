@@ -7,12 +7,12 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from ._style import (
     LABEL_KNOCKDOWN,
     LABEL_POROSITY_PCT,
     LABEL_SCF,
-    LABEL_STIFFNESS_RETENTION_FRAC,
     LABEL_X_MM,
     LABEL_Y_MM,
     LABEL_Z_MM,
@@ -26,6 +26,23 @@ logger = logging.getLogger("porosity_fe_analysis")
 # ============================================================
 # SECTION 7: VISUALIZATION
 # ============================================================
+
+def _contour_levels(values) -> int | np.ndarray:
+    """Contour levels of a field: 20 over its range, or, for a field that is
+    constant to round-off, three levels around its value (a 20-level scale
+    over round-off showed an offset such as ``1e-13+3`` and meaningless
+    ticks)."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return 20
+    lo, hi = float(v.min()), float(v.max())
+    if hi - lo > max(1e-6 * max(abs(lo), abs(hi)), 1e-12):
+        return 20
+    mid = 0.5 * (lo + hi)
+    half = max(0.01 * abs(mid), 1e-6)
+    return np.array([mid - half, mid, mid + half])
+
 
 def _label_to_pct(label: str) -> float:
     """Porosity percent from a CLI label: ``'3pct'`` -> 3.0, ``'2p5pct'`` -> 2.5."""
@@ -122,8 +139,10 @@ class FEVisualizer:
         Z = mesh.nodes[section, 2]
         P = mesh.porosity[section]
 
-        im = axes[0].contourf(X, Z, P * 100, levels=20, cmap='YlOrRd')
-        plt.colorbar(im, ax=axes[0], label=LABEL_POROSITY_PCT)
+        im = axes[0].contourf(X, Z, P * 100, levels=_contour_levels(P * 100), cmap='YlOrRd')
+        cb = plt.colorbar(im, ax=axes[0], label=LABEL_POROSITY_PCT)
+        cb.formatter.set_useOffset(False)
+        cb.update_ticks()
         axes[0].set_xlabel(LABEL_X_MM)
         axes[0].set_ylabel(LABEL_Z_MM)
         axes[0].set_title('Cross-Section Porosity')
@@ -146,18 +165,30 @@ class FEVisualizer:
             ax.annotate(str(idx), (c[0] + c[1]*0.3 + 0.05, c[2] + c[1]*0.3 + 0.05),
                        fontweight='bold')
         ax.set_title('8-Node Hexahedral Element')
-        # Use the same (mm) units as the sibling cross-section panel so the
-        # hex-element diagram is not ambiguous within the same figure (#53).
-        ax.set_xlabel(LABEL_X_MM)
-        ax.set_ylabel(LABEL_Z_MM)
+        # A schematic of the node numbering, not drawn to the mesh's scale:
+        # its axes are the element's directions, without units.
+        ax.set_xlabel('x (element axis)')
+        ax.set_ylabel('z (element axis)')
+        ax.set_xticks([])
+        ax.set_yticks([])
         ax.set_aspect('equal')
 
         plt.tight_layout()
         return _finish(fig, save_path)
 
     @staticmethod
-    def plot_damage_contour(mesh: CompositeMesh, solver, save_path: str | os.PathLike | None = None):
-        """2D stiffness reduction map at midplane."""
+    def plot_damage_contour(mesh: CompositeMesh, solver, save_path: str | os.PathLike | None = None,
+                            *, mode: str = 'compression', model: str = 'judd_wright'):
+        """Midplane map of the empirical strength knockdown of one loading
+        ``mode`` and ``model``.
+
+        With an :class:`~porosity_fe.EmpiricalSolver` the map is the nodal
+        knockdown of ``apply_loading(mode, model)`` (which it sets on the
+        solver). An object with only a ``nodal_knockdown`` array is plotted
+        as given. Without either, the map is the mesh's solid fraction
+        ``1 - Vp`` (``mesh.stiffness_reduction``), labelled as such: it is
+        not a stiffness ratio.
+        """
         fig, ax = plt.subplots(figsize=(10, 4))
 
         # Get midplane slice
@@ -169,21 +200,31 @@ class FEVisualizer:
         X = mesh.nodes[start:end, 0].reshape(ny1, nx1)
         Y = mesh.nodes[start:end, 1].reshape(ny1, nx1)
 
-        if solver.nodal_knockdown is not None:
+        if hasattr(solver, 'apply_loading'):
+            # The nodal knockdown is whatever was evaluated last (after
+            # get_all_failure_loads, transverse_tension / linear): evaluate
+            # the requested pair so the map says what it shows.
+            solver.apply_loading(mode, model)
             kd = solver.nodal_knockdown[start:end].reshape(ny1, nx1)
+            label = f"Strength knockdown, {mode} ({model.replace('_', '-')}) (-)"
+            title = f'Strength Knockdown at Midplane: {mode}, {model.replace("_", "-")}'
+        elif getattr(solver, 'nodal_knockdown', None) is not None:
+            kd = solver.nodal_knockdown[start:end].reshape(ny1, nx1)
+            label = 'Nodal knockdown (-)'
+            title = 'Knockdown at Midplane'
         else:
             kd = mesh.stiffness_reduction[start:end].reshape(ny1, nx1)
+            label = 'Solid fraction 1 - Vp (-)'
+            title = 'Solid Fraction at Midplane'
 
-        im = ax.contourf(X, Y, kd, levels=20, cmap='cividis')
-        # GUI version uses "Stiffness Retention (%)"; static PNG was using
-        # "Stiffness Retention (fraction)" and a 0..1 scale. The two paths
-        # plot the same physical quantity (``stiffness_reduction`` is a
-        # 0..1 retention fraction), so report it consistently as a
-        # percentage and the GUI/PNG units cannot drift again (#53).
-        plt.colorbar(im, ax=ax, label=LABEL_STIFFNESS_RETENTION_FRAC)
+        levels = _contour_levels(kd)
+        im = ax.contourf(X, Y, kd, levels=levels, cmap='cividis')
+        cb = plt.colorbar(im, ax=ax, label=label)
+        cb.formatter.set_useOffset(False)
+        cb.update_ticks()
         ax.set_xlabel(LABEL_X_MM)
         ax.set_ylabel(LABEL_Y_MM)
-        ax.set_title('Stiffness Reduction at Midplane')
+        ax.set_title(title)
         ax.set_aspect('equal')
 
         plt.tight_layout()
@@ -251,6 +292,13 @@ class FEVisualizer:
             ax.set_ylabel(LABEL_KNOCKDOWN)
             ax.set_title(mode.upper())
             ax.set_ylim(0, 1.1)
+
+        # Colour is the model, line style the configuration.
+        handles = [Line2D([], [], color=c, label=m.replace('_', '-'))
+                   for m, c in colors.items()]
+        handles += [Line2D([], [], color='0.3', linestyle='-', label='uniform configurations'),
+                    Line2D([], [], color='0.3', linestyle='--', label='other configurations')]
+        axes[0].legend(handles=handles, loc='lower left', fontsize=8)
 
         plt.suptitle('Porosity Knockdown Curves')
         plt.tight_layout()

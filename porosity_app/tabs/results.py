@@ -11,7 +11,7 @@ from porosity_fe import (
     EmpiricalSolver,
 )
 
-from ..config import _FLEXURE_MODES, _config_to_key
+from ..config import _FLEXURE_MODES, _config_to_key, calibration_note
 from ..convergence import (
     _CONVERGENCE_LEVELS,
     convergence_plan,
@@ -41,6 +41,9 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     if result is None:
         _placeholder_tab()
         return
+    extrapolated = calibration_note(result["config"]["Vp"])
+    if extrapolated:
+        st.warning(f"⚠ {extrapolated}")
     _show_figure(plot_results(result, layup_for_title), "knockdown_results",
                  "dl_png_results")
     _build_fe_failure_results(result)

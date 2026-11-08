@@ -6,6 +6,8 @@ Split out of ``app.py`` (#224); ``app`` re-exports every name.
 from __future__ import annotations
 
 import dataclasses
+import logging
+import warnings
 
 import streamlit as st
 
@@ -13,6 +15,7 @@ from porosity_fe import (
     MATERIALS,
     CompositeMesh,
     Delamination,
+    PorosityField,
     mmb_lever_length,
 )
 from porosity_fe.fracture_specimens import (
@@ -37,6 +40,7 @@ from .config import (
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
     _delta_T_suggestion,
+    _fracture_specimen_mesh,
     _resolving_nz,
 )
 
@@ -82,6 +86,33 @@ def _flexure_specimen_caption(loading: str, n_plies: int, t_ply: float, nz: int)
             f"13 mm wide, about {1.2 * 32 * h:.0f} mm long, with {nz} element "
             f"layers (nz from this setting; nx and ny follow the span). There "
             f"is no empirical flexure knockdown.")
+
+
+def _fracture_specimen_size(loading_mode: str, material_name: str, angles: list,
+                            t_ply: float, nz: int, crack_length: float | None,
+                            mode_ratio: float | None) -> tuple[int, int, int] | None:
+    """``(nx, ny, nz)`` of the DCB / ENF / MMB specimen the FE solves, or
+    ``None`` when it cannot be built (the run reports why). Built the way
+    the run builds it (about 10 ms): the specimen ignores the coupon's nx
+    and ny, and its graded mesh is usually far larger."""
+    try:
+        material = dataclasses.replace(MATERIALS[material_name], n_plies=len(angles),
+                                       t_ply=float(t_ply))
+        cfg = {"nz": int(nz), "angles": list(angles), "crack_length": crack_length,
+               "mmb_mode_ratio": mode_ratio}
+        logger = logging.getLogger("porosity_fe_analysis")
+        level = logger.level
+        logger.setLevel(logging.WARNING)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                mesh = _fracture_specimen_mesh(
+                    loading_mode, PorosityField(material, 0.0), material, cfg)
+        finally:
+            logger.setLevel(level)
+    except (ValueError, KeyError):
+        return None
+    return int(mesh.nx), int(mesh.ny), int(mesh.nz)
 
 
 def _validate_layup_inline():
@@ -207,6 +238,17 @@ def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
     if loading_mode not in _FRACTURE_MODES:
         return None, None
     standard, specimen, a0_default, load = _FRACTURE_MODES[loading_mode]
+    # The thermal choice comes later in the sidebar: read it from the
+    # session. Thermal only solves the free-standing coupon, not the
+    # specimen, so its inputs would change nothing (but the cache key).
+    if (MATERIALS[material_name].has_cte
+            and _THERMAL_OPTIONS.get(st.session_state.get("thermal_choice"))
+            == "thermal_only"):
+        st.caption(
+            f"Thermal only (below): the FE solves the free-standing laminate, "
+            f"not the {standard} {specimen}, so the specimen's inputs do not "
+            f"apply.")
+        return None, None
     st.caption(
         f"FE only, for test planning: the {standard} {specimen} with the "
         f"laminate above (the standards test unidirectional laminates, e.g. "
@@ -375,6 +417,10 @@ def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
         problem = str(exc)
         st.error(problem)
         return None, False, problem
+    if thermal_mode == "thermal_only":
+        st.caption("The knockdown split by defect needs a mechanical load; "
+                   "thermal only has none, so it is not computed.")
+        return delamination, False, problem
     split = st.checkbox(
         "Split the knockdown by defect (2 more FE solves)", value=True,
         key="delam_split",
@@ -553,9 +599,11 @@ def _build_sidebar_inputs() -> dict | None:
             key="layup_input",
             on_change=_validate_layup_inline,
             help=(
-                "Ply angles separated by '/'. Use '_Ns' for N repeats and "
-                "trailing 's' for symmetric. Examples: [0/45/-45/90]_3s, "
-                "[0/90]_6s, 0/0/0/90/90/90."
+                "Ply angles in degrees separated by '/'. A subscript on an "
+                "angle is a ply count ('0_2' = two 0° plies) and '±45' is "
+                "+45/-45; after the brackets '_N' repeats the group N times "
+                "and a trailing 's' mirrors it. Examples: [0/45/-45/90]_3s, "
+                "[0_2/±45/90]s, [0/90]_6s, 0/0/0/90/90/90."
             ),
         )
         _layup_status = st.session_state.get("_layup_status")
@@ -573,7 +621,9 @@ def _build_sidebar_inputs() -> dict | None:
             min_value=0.1, max_value=15.0, value=3.0, step=0.5, format="%.1f",
             help=(
                 "Enter a percentage: 3.0 means 3 % voids (a volume fraction "
-                "of 0.03). Typical range: 0.5–5 % for autoclave, 2–10 % for OOA."
+                "of 0.03). Typical range: 0.5–5 % for autoclave, 2–10 % for OOA. "
+                "The empirical knockdown laws are calibrated to 5 %; above it "
+                "their results are extrapolated, and the results say so."
             ),
         )
         distribution_label = st.selectbox(
@@ -698,9 +748,20 @@ def _build_sidebar_inputs() -> dict | None:
             # the "Use nz = ..." button can set it; it follows the layup's
             # default until the user moves it.
             _sync_default_nz(nz0)
-            nz = st.slider("nz", min_value=2, max_value=_NZ_SLIDER_MAX, step=1,
+            nz = st.slider("nz", min_value=1, max_value=_NZ_SLIDER_MAX, step=1,
                            key="mesh_nz")
-            total_elems = nx * ny * nz
+        else:
+            nx, ny, nz = nx0, ny0, nz0
+        # A DCB / ENF / MMB solve meshes the specimen (graded along its
+        # length, nx and ny ignored): describe and guard that mesh.
+        fracture_size = (
+            _fracture_specimen_size(loading_mode, material_name, entered_layup,
+                                    t_ply, nz, crack_length, mmb_mode_ratio)
+            if specimen and entered_layup else None)
+        total_elems = (fracture_size[0] * fracture_size[1] * fracture_size[2]
+                       if fracture_size else nx * ny * nz)
+        reduce_hint = "Reduce nz" if fracture_size else "Reduce nx, ny or nz"
+        if expert:
             if total_elems < 100:
                 st.warning(
                     f"⚠ Mesh is very coarse ({total_elems} elements). "
@@ -712,21 +773,32 @@ def _build_sidebar_inputs() -> dict | None:
                 st.error(
                     f"Mesh has {total_elems:,} elements, above the "
                     f"{CompositeMesh._MAX_TOTAL_ELEMENTS:,}-element cap. "
-                    f"Reduce nx, ny or nz to run."
+                    f"{reduce_hint} to run."
                 )
             elif total_elems > 50_000:
                 # Very rough time estimate; tune from real benchmarks if available.
                 est_min = total_elems / 8000
                 st.warning(
-                    f"⚠ Mesh is very fine ({total_elems} elements). "
+                    f"⚠ Mesh is very fine ({total_elems:,} elements). "
                     f"Estimated solve time: ~{est_min:.0f} minutes. "
                     f"Consider reducing for iteration."
                 )
-        else:
-            nx, ny, nz = nx0, ny0, nz0
+        elif not fracture_size:
             st.caption(f"Default mesh: {nx} × {ny} × {nz}, {mesh_note} "
                        f"(enable Expert mode to change).")
-        if loading_mode == "ilss" and thermal_mode != "thermal_only":
+        if fracture_size:
+            standard, specimen_name = _FRACTURE_MODES[loading_mode][:2]
+            fx, fy, fz = fracture_size
+            st.caption(
+                f"The FE solves the {standard} {specimen_name}, meshed "
+                f"{fx} × {fy} × {fz} = {total_elems:,} elements (nz from this "
+                f"setting; nx and ny do not apply: the specimen's mesh is "
+                f"graded along its length).")
+            if not expert and total_elems > 20_000:
+                st.warning(
+                    f"⚠ The specimen mesh has {total_elems:,} elements: the FE "
+                    f"solve can take several minutes.")
+        elif loading_mode == "ilss" and thermal_mode != "thermal_only":
             st.caption(_ilss_specimen_caption(n_plies, t_ply, nz))
         elif loading_mode in _FLEXURE_MODES and thermal_mode != "thermal_only":
             st.caption(_flexure_specimen_caption(loading_mode, n_plies, t_ply, nz))
@@ -761,7 +833,7 @@ def _build_sidebar_inputs() -> dict | None:
         _defect_problem = delam_problem or tough_problem
         _run_disabled = (
             _layup_bad
-            or nx * ny * nz > CompositeMesh._MAX_TOTAL_ELEMENTS
+            or total_elems > CompositeMesh._MAX_TOTAL_ELEMENTS
             or _missing_dT
             or _defect_problem is not None
         )

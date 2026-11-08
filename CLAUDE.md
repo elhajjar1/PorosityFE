@@ -184,11 +184,12 @@ handling, change it here, not at the call sites.
 
 ### Validation database
 
-`validation/datasets/*.json` holds 22 experimental datasets (16
-strength and modulus, plus 6 interlaminar-toughness ones,
+`validation/datasets/*.json` holds 25 experimental datasets (17
+strength and modulus, plus 8 interlaminar-toughness ones,
 `hakim_2017`, `agius_fox_2015`, `olivier_2007`, `asp_brandt_1997`,
-`russell_street_1982` and `vorobyev_2020`, whose MAE is reported apart from the
-strength headline), schema-validated against
+`russell_street_1982`, `vorobyev_2020`, `carraro_2015_0deg` and
+`carraro_2015_45deg`, whose MAE is reported apart from the strength
+headline), schema-validated against
 `validation/schemas/validation_dataset_schema.json`. The datasets are
 tracked in the repository (it is where they are backed up), and CI runs
 the validation tests against them. The PyInstaller spec bundles them into
@@ -234,7 +235,8 @@ collection puts `test_cli.py` first.
   engineering vs. tensor strain, and compression-sign conventions.
 - **Tsai-Wu `F_12`**: default is Tsai's `F_12 = -0.5·√(F_11·F_22)`; users
   can override via `MaterialProperties(tsai_wu_F12=...)` (must be in
-  `[-1, 0]`).
+  `[-0.5, 0]`: with `F_13` mirroring `F_12` and `F*_23 = -0.5`, lower
+  values open the 3-D envelope).
 - **Interlaminar strengths**: optional `sigma_3t` (`Z_t`) and `tau_13`
   (`S_13`); when `None` every criterion keeps its stand-in (`sigma_2t`;
   `tau_12` in Tsai-Wu and maximum stress, `tau_ilss` in Hashin), so the
@@ -277,7 +279,9 @@ version-sensitive code.
   from a cited source.
 - **New empirical correlation**: register the law function in
   `_KNOCKDOWN_LAWS` (`porosity_fe/empirical.py`), the one place every
-  solver path looks laws up; add its QI table to `Calibration`, its name to
+  solver path looks strength laws up (the empirical toughness modes
+  `mode_I_toughness` / `mode_II_toughness` take `ToughnessKnockdown` from
+  `porosity_fe/toughness.py` instead); add its QI table to `Calibration`, its name to
   `KnockdownModel`, and a `local_sensitivities` branch. Take `Vp` as a
   fraction in `[0, 1]`, return `KD ∈ (0, 1]`. Document the calibration
   set, the regression form (`ln(KD)` vs `Vp` for Judd-Wright,

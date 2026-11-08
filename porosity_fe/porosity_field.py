@@ -198,6 +198,13 @@ class PorosityField:
                 f"Unknown distribution {distribution!r}. "
                 f"Use one of {list(self._DISTRIBUTIONS)}."
             )
+        if distribution == 'interface' and int(material.n_plies) < 2:
+            # One ply has no interface: the profile would be zero everywhere
+            # while Vp says otherwise.
+            raise ValueError(
+                f"distribution='interface' needs at least two plies (it puts "
+                f"the voids at the ply interfaces), got n_plies="
+                f"{material.n_plies}. Use 'uniform' or 'clustered'.")
         if cluster_location not in self._CLUSTER_OFFSETS:
             raise ValueError(
                 f"Unknown cluster_location {cluster_location!r}. "
@@ -224,7 +231,16 @@ class PorosityField:
                 )
             self.void_shape_radii = VOID_SHAPES[void_shape]
         else:
-            self.void_shape_radii = tuple(void_shape)
+            radii = tuple(void_shape)
+            if len(radii) != 3 or not all(
+                    isinstance(r, (int, float, np.integer, np.floating))
+                    and not isinstance(r, bool) and np.isfinite(r) and r > 0
+                    for r in radii):
+                raise ValueError(
+                    f"void_shape must be one of {sorted(VOID_SHAPES)} or three "
+                    f"finite radii > 0 (a1, a2, a3; only their ratios matter), "
+                    f"got {void_shape!r}.")
+            self.void_shape_radii = (float(radii[0]), float(radii[1]), float(radii[2]))
 
     def _distributed_porosity(self, z: np.ndarray) -> np.ndarray:
         """Through-thickness distributed porosity profile."""

@@ -32,58 +32,96 @@ import numbers
 import re
 import textwrap
 
+#: One bracketed group and what follows it: ``[0/45/-45/90]_3s``.
+_LAYUP_GROUP = re.compile(r'^\[(?P<body>[^\[\]]*)\](?P<suffix>.*)$')
+#: A ply token: a decimal angle in degrees (``+``, ``-``, ``±`` or ``∓``
+#: prefix) with an optional ply-count subscript, ``0_2`` = two 0° plies.
+_PLY_TOKEN = re.compile(
+    r'^(?P<sign>[+\-±∓]?)(?P<angle>\d+(?:\.\d*)?|\.\d+)(?:_(?P<count>\d+))?$')
+#: After the group: an optional ``_``, a repeat count, a symmetry ``s``.
+_GROUP_SUFFIX = re.compile(r'^_?(?P<repeat>[^sS]*?)(?P<sym>[sS])?$')
 
-def _is_float(s: str) -> bool:
-    try:
-        float(s)
-        return True
-    except ValueError:
-        return False
+
+def _parse_group_suffix(suffix: str, text: str) -> tuple[int, bool]:
+    """``(repeat, symmetric)`` of the text after the closing bracket."""
+    if not suffix:
+        return 1, False
+    m = _GROUP_SUFFIX.match(suffix)
+    repeat_token = suffix.lstrip('_') if m is None else m['repeat']
+    if m is None or (not repeat_token and not m['sym']) or (
+            repeat_token and not re.fullmatch(r'-?\d+', repeat_token)):
+        raise ValueError(
+            f"Invalid repeat count {repeat_token or suffix!r} in layup {text!r}; "
+            f"expected an integer and/or 's' after the brackets (e.g. "
+            f"'[0/90]_3s', '[0/90]3s' or '[0/90]s').")
+    repeat = int(repeat_token) if repeat_token else 1
+    if repeat < 1:
+        raise ValueError(
+            f"Repeat count must be >= 1, got {repeat} in layup {text!r}.")
+    return repeat, m['sym'] is not None
 
 
 def parse_layup(text: str) -> list:
     """Parse a layup string like '[0/45/-45/90]_3s' to a flat angle list.
 
+    Standard laminate notation: ply angles in degrees, separated by ``/``
+    (or ``,``), in one bracketed group.
+
+    - A subscript on an angle is a ply count: ``[0_2/90_2]s`` is
+      ``[0, 0, 90, 90, 90, 90, 0, 0]``.
+    - ``±45`` is ``+45, -45`` (``∓45`` the reverse); a count repeats the
+      pair.
+    - After the brackets, ``_N`` or ``N`` repeats the group ``N`` times and
+      a trailing ``s`` mirrors the result: ``[0/90]_2s``, ``[0/90]2s``,
+      ``[0/90]s``.
+    - Without brackets the text is a plain ply list (``0/0/90``, ply counts
+      allowed, no group suffix).
+
     Raises ValueError on malformed input rather than silently substituting
-    a default — see issue #9.
+    a default (issue #9): an angle that is not a plain decimal number of
+    degrees (``nan``, ``1e2`` and digit-group underscores are refused),
+    nested groups, or a suffix that is not a repeat count and/or ``s``.
     """
     text = (text or "").strip()
     if not text:
         raise ValueError("Layup string is empty.")
 
-    cleaned = text.replace("[", "").replace("]", "")
-
-    symmetric = cleaned.endswith("s")
-    if symmetric:
-        cleaned = cleaned[:-1]
-
-    repeat = 1
-    if "_" in cleaned:
-        cleaned, repeat_token = cleaned.rsplit("_", 1)
-        try:
-            repeat = int(repeat_token)
-        except ValueError as exc:
+    if "[" in text or "]" in text:
+        m = _LAYUP_GROUP.match(text)
+        if m is None:
             raise ValueError(
-                f"Invalid repeat count {repeat_token!r} in layup {text!r}; "
-                f"expected an integer after the '_' (e.g. '[0/90]_3s')."
-            ) from exc
-        if repeat < 1:
-            raise ValueError(
-                f"Repeat count must be >= 1, got {repeat} in layup {text!r}."
-            )
+                f"Malformed layup {text!r}: expected one bracketed group "
+                f"such as '[0/45/-45/90]_3s' (nested groups are not "
+                f"supported; write the plies out).")
+        body, suffix = m["body"], m["suffix"].strip()
+    else:
+        body, suffix = text, ""
+    repeat, symmetric = _parse_group_suffix(suffix, text)
 
-    sep = "/" if "/" in cleaned else ","
-    tokens = [a.strip() for a in cleaned.split(sep) if a.strip()]
+    sep = "/" if "/" in body else ","
+    tokens = [a.strip() for a in body.split(sep) if a.strip()]
     if not tokens:
         raise ValueError(f"No ply angles found in layup {text!r}.")
-    try:
-        angles = [float(a) for a in tokens]
-    except ValueError as exc:
-        bad = next((a for a in tokens if not _is_float(a)), tokens[0])
-        raise ValueError(
-            f"Invalid ply angle {bad!r} in layup {text!r}; "
-            f"expected numeric degrees (e.g. '[0/45/-45/90]_3s')."
-        ) from exc
+    angles: list[float] = []
+    for token in tokens:
+        ply = _PLY_TOKEN.match(token.replace("−", "-"))
+        if ply is None:
+            raise ValueError(
+                f"Invalid ply angle {token!r} in layup {text!r}; expected "
+                f"degrees, optionally with a ply count (e.g. '45', '-45', "
+                f"'±45' or '0_2' for two 0° plies), as in "
+                f"'[0_2/±45/90]_3s'.")
+        count = int(ply["count"]) if ply["count"] else 1
+        if count < 1:
+            raise ValueError(
+                f"Ply count must be >= 1, got {token!r} in layup {text!r}.")
+        theta = float(ply["angle"])
+        sign = ply["sign"]
+        if sign in ("±", "∓"):
+            pair = [theta, -theta] if sign == "±" else [-theta, theta]
+            angles += pair * count
+        else:
+            angles += [-theta if sign == "-" else theta] * count
 
     angles = angles * repeat
     if symmetric:
@@ -777,6 +815,29 @@ def _governing_front_node(front) -> dict | None:
     }
 
 
+def _test_specimen_name(mesh) -> str | None:
+    """The test specimen an FE mesh models (short-beam or flexure), or ``None``."""
+    if getattr(mesh, "ilss_geometry", None) is not None:
+        return "ASTM D2344 short-beam specimen"
+    if getattr(mesh, "flexure_geometry", None) is not None:
+        return "flexure specimen (ASTM D7264 / D790)"
+    return None
+
+
+def _analysis_mesh_label(result: dict, configured: str) -> str:
+    """The mesh the FE solve used, ``nx x ny x nz`` and the specimen it
+    models; ``configured`` (the coupon mesh of the inputs) when no FE
+    field was solved."""
+    mesh = result.get("mesh")
+    if mesh is None or result.get("fe_field") is None:
+        return configured
+    label = f"{mesh.nx}x{mesh.ny}x{mesh.nz}"
+    specimen = _test_specimen_name(mesh)
+    if specimen is None and getattr(mesh, "fracture_geometry", None) is not None:
+        specimen = "fracture test specimen"
+    return label if specimen is None else f"{label} ({specimen})"
+
+
 def _delamination_inputs(result: dict) -> tuple:
     """The FE field, its crack front and the mesh of a delamination NCR.
 
@@ -797,6 +858,12 @@ def _delamination_inputs(result: dict) -> tuple:
         raise ValueError(
             "The FE solve is a fracture test specimen (DCB, ENF, MMB), not an "
             "NDI indication; assess a delamination of the part.")
+    specimen = _test_specimen_name(mesh)
+    if specimen is not None:
+        raise ValueError(
+            f"The FE solve is the {specimen}, not the part: its fracture "
+            f"margin is the test coupon's. Assess a delamination of the part "
+            f"with a coupon loading (compression, tension or shear).")
     if fe.fracture_load_factor is None:
         raise ValueError(
             "The FE solve has no fracture load factor: the material has no "
@@ -958,7 +1025,7 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
             "measured_Vp_percent": Vp,
             "distribution": cfg["distribution"],
             "void_shape": cfg["void_shape"],
-            "analysis_mesh": cfg["mesh"],
+            "analysis_mesh": _analysis_mesh_label(result, cfg["mesh"]),
         },
         "engineering_analysis": {
             "governing_mode": worst["mode"],
@@ -1342,6 +1409,9 @@ def serialise_ncr_pdf(ncr: dict) -> bytes:
                 0.07, 0.96, "\n".join(page),
                 family="monospace", fontsize=8.5,
                 va="top", ha="left",
+                # Free text (notes, names, part numbers) is printed as
+                # typed: '$...$' would otherwise be read as mathtext.
+                parse_math=False, usetex=False,
             )
             pdf.savefig(fig)
             plt.close(fig)

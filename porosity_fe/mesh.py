@@ -281,7 +281,9 @@ class CompositeMesh:
     ----------
     porosity_field : PorosityField
         Source of nodal porosity values. Sampled by
-        :meth:`generate_mesh` at every node coordinate.
+        :meth:`generate_mesh` at every node coordinate. It must be built
+        for a laminate of the same plies (``n_plies``, ``t_ply``) as
+        ``material``, or ``ValueError`` is raised.
     material : MaterialProperties
         Composite material; supplies ``total_thickness`` (``L_z``) and
         ``n_plies`` for the per-element ply id assignment.
@@ -295,7 +297,9 @@ class CompositeMesh:
         Per-ply orientation in degrees, OR a string sentinel — ``'QI'``
         (default, expands to the 8-ply quasi-isotropic baseline
         ``[0, 90, 45, -45]_s``) or ``'UD'`` (all-zero unidirectional).
-        Explicit lists shorter than ``n_plies`` are tiled. Passing
+        Explicit lists shorter than ``n_plies`` are tiled; a longer one
+        raises ``ValueError`` (the sentinels are patterns, cut or tiled to
+        ``n_plies``). Passing
         ``None`` is deprecated and is currently resolved to all-zero
         plies (the historical default) with a
         :class:`DeprecationWarning` (#44 item 2); this back-compat path
@@ -514,6 +518,32 @@ class CompositeMesh:
         # ``_resolve_ply_angles``.
         self._input_ply_angles = _resolve_ply_angles(
             ply_angles, none_means='QI', caller='CompositeMesh.ply_angles')
+        # An explicit layup longer than the laminate would be cut to its
+        # first n_plies plies, a different laminate than the one asked for
+        # (the 'QI' / 'UD' sentinels are patterns, cut or tiled to fit).
+        if (ply_angles is not None and not isinstance(ply_angles, str)
+                and self._input_ply_angles is not None
+                and len(self._input_ply_angles) > material.n_plies):
+            raise ValueError(
+                f"CompositeMesh: the layup has {len(self._input_ply_angles)} "
+                f"plies but the material has n_plies={material.n_plies}; an "
+                f"explicit layup must not be longer than the laminate. Set "
+                f"n_plies to the layup's length (dataclasses.replace(material, "
+                f"n_plies=...)) or pass the laminate's plies.")
+        # The porosity field lays its through-thickness profile over its own
+        # material's plies: a field of another laminate would put the
+        # clustered band or the interfaces in the wrong place.
+        field_material = getattr(porosity_field, 'material', None)
+        if field_material is not None and (
+                int(field_material.n_plies) != int(material.n_plies)
+                or not np.isclose(float(field_material.t_ply), float(material.t_ply),
+                                  rtol=1e-9, atol=0.0)):
+            raise ValueError(
+                f"CompositeMesh: the porosity field was built for a laminate of "
+                f"{field_material.n_plies} plies of {field_material.t_ply} mm, the "
+                f"mesh's material has {material.n_plies} plies of "
+                f"{material.t_ply} mm. Build the PorosityField with the mesh's "
+                f"material.")
         self.generate_mesh()
 
     @classmethod

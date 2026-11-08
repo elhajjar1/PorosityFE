@@ -12,6 +12,75 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation: three more datasets** (#221, #222), each read in the
+  primary source.
+  - `olivier_2007_shear`: in-plane shear strength (EN ISO 14129, ±45) of
+    the T700GC/M21 laminates of Olivier et al. 2007 (ICCM-16, Zenodo
+    record 15414374), the paper of `olivier_2007`. The strength holds to
+    about 2.7 % voids and is 28 % lower near 6 %. The void contents are
+    the figure legend's: acid digestion of the [0]_8 plates of the same
+    cure runs, about a point above the image-analysis values of the ±45
+    plates.
+  - `carraro_2015_0deg` and `carraro_2015_45deg`: mode I DCB of STS40
+    NCF/EC157 from Carraro et al. 2015 (CC BY 4.0), void-free against
+    1.9 % and 1.23 % voids, initiation and plateau digitized from the
+    R-curves. Voids raise the propagation toughness at both interfaces
+    (1.32 and 1.61 times) and the −45° initiation (1.35 times), the
+    counter-example to the conservative law.
+  - Strength and modulus headline: 6.44 % property-weighted and 5.49 %
+    point-weighted over 40 entries and 232 points (was 6.21 % / 5.27 %
+    over 39 and 227). Toughness: 22.50 % / 25.40 % over 10 entries and 16
+    points (was 21.38 % / 24.88 % over 8 and 12). With Carraro the pooled
+    mode I propagation fit turns negative (b = −0.8), and the placeholders
+    stay uncalibrated.
+  - Examined and held back: Abdelal 2013 (a dissertation), whose panels
+    read 0.4-1.0 % voids by burn-off and 1.5-5.8 % by X-ray CT. Still
+    needing a manual download: Mouritz 2000, Hou, Ye and Mai 1996, the
+    Northrop compression report NOR 82-103 (DTIC ADA303158), Hernández et
+    al. 2013 and Yuan et al. 2011.
+- **Empirical toughness screening modes** (delamination plan 4.3):
+  `EmpiricalSolver` takes the loading modes `'mode_I_toughness'` and
+  `'mode_II_toughness'`, which return the porosity knockdown
+  `G_c(Vp) / G_c0` of `G_Ic` / `G_IIc` with no FE. Additive: no existing
+  result changes.
+  - One law: the modes evaluate the `ToughnessKnockdown` the FE fracture
+    path applies at each front node, given as
+    `EmpiricalSolver(..., toughness_knockdown=...)` (default
+    `'exponential'`, the uncalibrated placeholders `b_I = 6.2`,
+    `b_II = 14`; also through `build_empirical_pipeline(solver_kwargs=)`).
+    At the specimen-average `Vp` the knockdown equals
+    `toughness_knockdown_factor` bit for bit, and the validation runner's
+    toughness predictions equal the modes' ratios on all 8 entries.
+  - `get_failure_load` returns a `FailureResult` whose `failure_stress` is
+    the toughness `G_c0 * KD` in N/mm, `nan` when the material's `G_Ic` /
+    `G_IIc` is `None` (the knockdown is still returned). `model` names the
+    law (`'toughness_exponential'`, ...); `details` carries
+    `fracture_mode`, `pristine_toughness`, `toughness_knockdown` and
+    `toughness_uncalibrated`, `True` when a placeholder is used at
+    `Vp > 0` (the `CrackFront` rule), with the one INFO line per process.
+  - The layup scale is 1 and no discrete-void stress concentration applies.
+    `environment=`, `cycles=` and a callable `model` raise; a strength
+    model name is accepted and does not change the result. Past
+    `Vp = 0.05` the built-in laws warn like the strength laws.
+  - `apply_loading` gives the per-node field, `local_sensitivities` the
+    closed-form partials in `Vp` and `b` (with `toughness_uncalibrated`),
+    `sensitivity_fd` the central differences. `propagate_uncertainty`
+    takes the modes with a new keyword `toughness_knockdown=`: `covs` on
+    `G_Ic` / `G_IIc`, `coef_cov` on the law's `b`; the result gains
+    `failure_stress_units: 'N/mm'`, `toughness_knockdown` and
+    `toughness_uncalibrated`, and `failure_stress` is `None` without a
+    pristine toughness. `save_uq_results_to_json` notes N/mm in its
+    `units` block when such an entry is present.
+  - `LoadingMode` gains the two names; `EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`
+    maps them to `G_Ic` / `G_IIc`. `PRISTINE_STRENGTH_KEY`, `layup_scale`,
+    the `Calibration` strength tables, `get_all_failure_loads`, the sweeps,
+    `porosity-analyze` (`--uq` included), the app and the NCR disposition
+    keep the five strength modes. Like `'transverse_tension'` the modes
+    are not FE loadings, and `FESolver.solve` and `refinement_study`
+    refuse them.
+  - Checks: the strength MAE stays 6.21 % / 5.27 % (39 entries, 227
+    points) and the toughness MAE 21.38 % / 24.88 % (8 entries, 12
+    points); the FE gate is unchanged.
 - **Validation: three more interlaminar-toughness datasets** (#222), all
   tabulated and read in the primary source:
   - `asp_brandt_1997`: Asp and Brandt, ICCM-11 (1997), Zenodo record
@@ -1145,6 +1214,132 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **App and plot review, November 2026.** Each defect was reproduced
+  first; the tests are in `tests/test_app.py` (`TestAppReviewFixes`),
+  `tests/test_app_streamlit.py` (`TestSidebarReviewFixes`) and
+  `tests/test_viz.py` (`TestReviewVizFixes`).
+  - **A Vp above the 5 % calibration bound was not flagged in the app.**
+    The library's warning went to the log only. The Overview and Results
+    tabs now warn, the results chart's footnote says the empirical
+    knockdowns are extrapolated, and the Vp help names the bound.
+  - **The Mesh tab's "Stiffness Retention" was the solid fraction 1 − Vp**
+    (`mesh.stiffness_reduction`). With 3 % penny voids it read 97 %, while
+    the FE's transverse stiffness retention is about 88 %. It is now
+    labelled as the solid fraction.
+  - **The Stress tab drew zero-by-symmetry fields as patterns.**
+    - It opened on σ11 for a [90]_n coupon in tension, a field of
+      4e-11 MPa shown on a full colour scale.
+    - It opened on τ13 for ILSS, which is about zero in the 90° plies.
+    - A field everywhere below 1e-9 of the section's largest stress is
+      now drawn as 0 and labelled "0 (round-off of zero)".
+    - A [90]_n coupon opens on σ22.
+    - ILSS, ENF and MMB open on a new component, the interlaminar shear
+      magnitude √(τ13² + τ23²), whatever the ply angle.
+  - **`FEVisualizer.plot_damage_contour` (the CLI's `porosity_damage_*.png`)
+    plotted the last knockdown evaluated** (transverse tension, linear law,
+    after `get_all_failure_loads`) under a "Stiffness Reduction" title. It
+    now takes `mode` and `model` (default compression, Judd-Wright),
+    evaluates them, and labels the map with them. A bare `nodal_knockdown`
+    is labelled "Nodal knockdown", and the fallback "Solid fraction 1 - Vp".
+  - **`FEVisualizer` plots:**
+    - `plot_knockdown_curves` had no legend for its three model colours
+      and two line styles.
+    - `plot_mesh_detail` gave a uniform field a colourbar offset
+      (`1e-13+3`).
+    - The hex-element schematic had mm axes on a unit cube.
+  - **A one-ply layup in Expert mode raised** (`nz = 1` below the slider's
+    minimum of 2) and hid the rest of the sidebar, including Run.
+  - **For DCB, ENF and MMB the sidebar described the coupon mesh**
+    (30 × 10 × nz), while the FE solves the specimen's graded mesh, e.g.
+    151 × 36 × 4 = 21,744 elements for an ENF of 4 plies. The sidebar now
+    builds the specimen mesh (about 10 ms) and gives its size. The coarse,
+    fine and element-cap checks use it, and a warning says a run above
+    20,000 elements can take minutes.
+  - **Thermal only with a fracture mode or a delamination.** The
+    specimen's crack-length and lever inputs were still shown (and still
+    entered the cache key), and the knockdown-split checkbox was silently
+    ignored. Both are now replaced by a note.
+  - **The results footnote mentioned a hatched FE bar when the FE solve
+    was skipped.** It now says the solve was skipped.
+- **Core-physics review, November 2026.** Each defect was reproduced
+  first; the regression tests are in `tests/test_review_core_fixes.py`.
+  - **`MaterialProperties.tsai_wu_F12` below −0.5 opened the 3-D Tsai-Wu
+    envelope.** With `F*_13 = F*_12` (transverse isotropy) and
+    `F*_23 = −0.5`, the normalized normal block has determinant
+    0.75 − 3 F*_12². With −0.8, a stress 1.5 times every normal allowable
+    gave FI 0.095 and an infinite first-ply-failure load factor. The
+    accepted range is now [−0.5, 0] (was [−1, 0]), and the docs no longer
+    carry the plane-stress bound over to 3-D. **A value in [−1, −0.5) now
+    raises `ValueError`.**
+  - **An explicit layup longer than `material.n_plies` was cut silently**
+    by `CompositeMesh` to its first `n_plies` plies, and
+    `layup_discrepancies()` did not see it. A `[90_8/0_8]` layup on an
+    8-ply material was meshed as `[90]_8`, with E_x 9.5 GPa instead of
+    75 GPa. It now raises; the `'QI'` / `'UD'` patterns are still cut or
+    tiled to fit.
+  - **Void-shape radii were not checked, and the Mori-Tanaka cache rounded
+    them to 1e-6 in absolute terms.**
+    - `(3e-6, 3e-6, 3e-7)` (radii in metres) lost its third radius: the
+      directional C33 came out at 3 MPa instead of 8070, and the
+      isotropic stiffness changed with the units.
+    - Zero or negative radii gave non-physical stiffness; a negative
+      radius doubled it.
+    - `PorosityField` now requires three finite radii > 0, and the cache
+      keys and computes on the ratios to the largest radius. The presets'
+      results are unchanged (FE fingerprint deviation 0).
+  - **A porosity field built for another laminate** put its clustered band
+    or interfaces in the wrong place (a 24-ply field on an 8-ply mesh
+    averaged 1.4 % for a requested 3 %). `CompositeMesh` now raises when
+    the field's `n_plies` or `t_ply` differ from the material's.
+  - **`distribution='interface'` on one ply** gave zero porosity
+    everywhere while `Vp` said 3 %. It now raises.
+  - **A percent passed as `Vp`.** `EmpiricalSolver.local_sensitivities(Vp=3.0)`
+    returned the values at Vp = 1, `Vp=-0.5` those at 0, and
+    `compute_degraded_clt_moduli` / `compute_degraded_clt_flexural_modulus`
+    returned pristine moduli for a negative value and failed on a percent.
+    They now raise `ValueError` with the percent hint, through the check
+    the toughness law already used (`porosity_fe/_vp.py`).
+  - **`MaterialProperties.M_ref` was validated but never used**: the
+    hygrothermal factor at the reference condition itself was 0.92 for
+    `M_ref = 1`. The denominator is now `T_g(M_ref) − T_ref`, so the factor
+    is 1 at `(T_ref, M_ref)`. The default `M_ref = 0` gives the same
+    results as before.
+- **Layup strings in standard notation were misread** (found by review).
+  `parse_layup`, behind the app's layup box, read a ply-count subscript as
+  part of the angle (`[45_2/0_2]s` became plies of 452° and 2°) and glued a
+  repeat count written without `_` onto the last angle (`[0/90]3s` became
+  4 plies with 903°), and it accepted `nan`, while the box said "valid". It
+  now reads standard notation: `0_2` is two 0° plies, `±45` is +45/−45, the
+  repeat is `_N` or `N` after the brackets and `[0/90]_s` is accepted.
+  Angles must be plain decimal degrees; nested groups and any other suffix
+  raise. An unbracketed `0/90_2` now means 0, 90, 90 (it was the whole list
+  twice).
+- **NCR PDF: `$` in a free-text field** (the note, "prepared by") was read
+  as matplotlib mathtext, garbling the text or failing the export on an
+  unbalanced `$...$`. The text is now printed as typed.
+- **NCR "Analysis mesh"** named the configured coupon mesh even when the FE
+  solve used another mesh (the D2344 short-beam or flexure specimen). It
+  now names the solved mesh and the specimen. A delamination NCR on a
+  short-beam or flexure specimen is now refused, like one on a DCB, ENF
+  or MMB specimen: its fracture margin is the test coupon's, not the
+  part's.
+- **`porosity-analyze --uq` gave different bands on every run**, while the
+  `--seed` help said the seed changed nothing. Without `--seed` the sampling
+  now uses seed 0, the app's, and the help says what the seed does. The
+  `porosity-fe.uq` file now records the seed in its provenance when every
+  entry shares one (it wrote `null`).
+- **Provenance `git_commit`** recorded the commit of whatever repository the
+  package was installed in (a `.venv` inside another project). It is now
+  recorded only from PorosityFE's own checkout.
+- **JSON envelope guards.** A sweep configuration named `provenance`
+  silently replaced the provenance block; every envelope key is now
+  reserved. `load_results_from_json` raises `ValueError`, not
+  `AttributeError`, when `schema_version` is not a string. The UQ units
+  block no longer says percentiles are in %: their keys are percentile
+  levels and their values are in the units of their quantity.
+- **`porosity-analyze` with two levels that share a file label** (0.03 and
+  0.0300004, both `3pct`) wrote one file over the other and exited 0. It
+  now refuses them (exit 2).
 - **Validation: silent errors in `validate_porosity`** (found by review).
   - A strength or modulus block whose `void_content_pct` and
     `normalized_values` differ in length was broadcast by numpy into a
@@ -1494,6 +1689,15 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   `porosity_fe/__init__.py` as the only literal to bump at release.
 
 ### Changed
+- **Docs: the directional porosity option compared with measured
+  out-of-plane data** (`docs/theory/micromechanics.md`). Four studies are
+  compared: ultrasonic C33 in Ishii 2016 and Jeong 1990, curved-beam Zt
+  and Yt in Aratama 2017, and V-notch S13 in Ancelotti 2010.
+  - The directional option is closer to the measured C33.
+  - Neither option comes near the measured Zt or Yt loss.
+  - Nothing is calibrated; the default stays `'isotropic'`.
+  - The page also no longer says the option is missing from the app and
+    the CLI.
 - **Validation MAE leaves out the baseline points.** Each dataset's point
   at its baseline void content, normalized to exactly 1, is predicted
   exactly by construction and counted as a zero-error point (40 of 271

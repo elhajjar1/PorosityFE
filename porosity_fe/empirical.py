@@ -1,4 +1,5 @@
-"""Empirical (analytical) porosity-strength knockdown solver."""
+"""Empirical (analytical) porosity knockdown solver: strength, and the
+interlaminar toughness modes of delamination plan item 4.3."""
 
 from __future__ import annotations
 
@@ -13,13 +14,35 @@ import numpy as np
 from ._layup import _membrane_energy_partition
 from ._ply_angles import _PLY_ANGLES_QI, _PLY_ANGLES_UD, _resolve_ply_angles
 from ._types import KnockdownModel, LoadingMode
+from ._vp import check_fraction
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
 from .results import FailureResult
-from .toughness import _TOUGHNESS_B_PLACEHOLDER
+from .toughness import (
+    _TOUGHNESS_B_PLACEHOLDER,
+    _TOUGHNESS_LAWS,
+    ToughnessKnockdown,
+    ToughnessKnockdownSpec,
+    ToughnessMode,
+    _log_uncalibrated_once,
+    _placeholder_applied,
+    _resolve_toughness_knockdown,
+)
 
 logger = logging.getLogger("porosity_fe_analysis")
+
+#: Empirical toughness modes (delamination plan 4.3) and the fracture mode
+#: of the porosity-toughness law (:class:`~porosity_fe.ToughnessKnockdown`)
+#: each one evaluates. They return ``G_c(Vp) / G_c0`` at the
+#: specimen-average ``Vp``; :attr:`EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`
+#: names the pristine value. Like ``'transverse_tension'`` they are
+#: empirical only (not :data:`~porosity_fe.FELoadingMode`), and they are in
+#: no default sweep (:meth:`EmpiricalSolver.get_all_failure_loads`).
+_TOUGHNESS_FRACTURE_MODE: dict[str, ToughnessMode] = {
+    'mode_I_toughness': 'I',
+    'mode_II_toughness': 'II',
+}
 
 #: Upper porosity bound (as a fraction) over which the empirical knockdown
 #: coefficients were calibrated (Elhajjar 2025, ``Vp ≲ 0.05``). Evaluating a
@@ -143,8 +166,11 @@ class Calibration:
     #: Uncalibrated placeholder exponents ``b`` (per unit ``Vp``) of the
     #: default toughness law ``G_c = G_c0 exp(-b Vp)``, by fracture mode
     #: (``'I'``, ``'II'``; mode III follows mode II). Two-point literature
-    #: estimates; the same object as the toughness module's table. No
-    #: empirical strength mode uses it.
+    #: estimates; the same object as the toughness module's table. The
+    #: empirical toughness modes (``'mode_I_toughness'``,
+    #: ``'mode_II_toughness'``) use it through the default law of
+    #: :class:`EmpiricalSolver` (``toughness_knockdown='exponential'``); no
+    #: strength mode uses it.
     TOUGHNESS_B_PLACEHOLDER: dict[str, float] = _TOUGHNESS_B_PLACEHOLDER
 
     # ------------------------------------------------------------------
@@ -256,6 +282,10 @@ def _layup_scales(material: MaterialProperties,
     continuous in ply angle, invariant to stacking order, and snapped to
     exactly 1.0 within ``_LAYUP_SCALE_TOL`` so QI permutations and
     in-plane-isotropic layups are bit-identical to QI.
+
+    The keys are the strength modes only. The toughness modes
+    (:data:`_TOUGHNESS_FRACTURE_MODE`) are layup-independent: their law
+    takes no layup scale (:meth:`EmpiricalSolver._layup_scale` gives 1.0).
     """
     scales = {mode: 1.0 for mode in EmpiricalSolver.PRISTINE_STRENGTH_KEY}
     alpha = Calibration.JUDD_WRIGHT_ALPHA_QI
@@ -292,6 +322,15 @@ class EmpiricalSolver:
     Knockdowns are evaluated at the specimen-average porosity (Vp_mean),
     matching how the original correlations were calibrated — not at the
     local peak Vp that clustered distributions produce.
+
+    Two optional modes screen the interlaminar toughness instead of a
+    strength (delamination plan 4.3): ``'mode_I_toughness'`` and
+    ``'mode_II_toughness'`` return ``G_c(Vp) / G_c0`` from the
+    porosity-toughness law ``toughness_knockdown``
+    (:class:`~porosity_fe.ToughnessKnockdown`, the law the FE fracture path
+    applies at each crack-front node), with no FE solve and no layup scale.
+    They are in no default sweep (:meth:`get_all_failure_loads`); see
+    :meth:`get_failure_load`.
     """
 
     # Calibration constants now live on :class:`Calibration` (#121). The
@@ -312,6 +351,13 @@ class EmpiricalSolver:
         'shear': 'tau_12', 'ilss': 'tau_ilss',
         'transverse_tension': 'sigma_2t',
     }
+    # The toughness modes (delamination plan 4.3) and the optional material
+    # field (N/mm, default None) that holds each pristine toughness. Kept
+    # apart from PRISTINE_STRENGTH_KEY, which the CLI's --uq and the app's
+    # uncertainty panel iterate as "every strength mode".
+    PRISTINE_TOUGHNESS_KEY = {
+        'mode_I_toughness': 'G_Ic', 'mode_II_toughness': 'G_IIc',
+    }
     _MATRIX_DOMINATED_MODES = Calibration.MATRIX_DOMINATED_MODES
     # Deprecated, no effect (removal in 2.0); see Calibration.F_MD_REF.
     _F_MD_REF = _DeprecatedConstant(0.5, _F_MD_RETIRED)
@@ -323,7 +369,8 @@ class EmpiricalSolver:
                  *,
                  judd_wright_alpha: dict[str, float] | None = None,
                  power_law_n: dict[str, float] | None = None,
-                 linear_beta: dict[str, float] | None = None):
+                 linear_beta: dict[str, float] | None = None,
+                 toughness_knockdown: ToughnessKnockdownSpec = 'exponential'):
         """Empirical knockdown solver.
 
         Parameters
@@ -356,6 +403,16 @@ class EmpiricalSolver:
             ``shear`` / ``ilss`` / ``transverse_tension`` override, the
             scale is 1.0 and a passed-in ``alpha`` is the value used
             directly.
+        toughness_knockdown : ToughnessKnockdown, str, callable or None, optional
+            Keyword-only. The porosity-toughness law of the toughness modes
+            ``'mode_I_toughness'`` and ``'mode_II_toughness'``, as
+            ``FESolver.solve(toughness_knockdown=...)`` takes it: a
+            :class:`~porosity_fe.ToughnessKnockdown`, a law name, a callable
+            ``f(Vp, mode)`` with ``mode`` ``'I'`` or ``'II'``, or ``None``
+            for no knockdown. Default ``'exponential'``, whose placeholder
+            coefficients (``b_I = 6.2``, ``b_II = 14``) are uncalibrated.
+            Stored resolved as :attr:`toughness_knockdown`. The strength
+            modes do not use it.
 
         Attributes
         ----------
@@ -370,7 +427,10 @@ class EmpiricalSolver:
             (2.56) and ``alpha_QI['shear'] / alpha_QI['compression']``
             (1.16) for ``[90]_n``. Values above 1 are outside the validated
             range: they are recorded in ``FailureResult.details`` and flagged
-            with a :class:`UserWarning`.
+            with a :class:`UserWarning`. The toughness modes are not keys:
+            they take no layup scale.
+        toughness_knockdown : ToughnessKnockdown
+            The law of the toughness modes, resolved from the argument.
         matrix_energy_fraction : float
             Share of the pristine CLT membrane strain energy under a unit
             ``N_x`` load stored in the ply transverse and shear components
@@ -412,6 +472,10 @@ class EmpiricalSolver:
         # ``_resolve_ply_angles``.
         ply_angles_resolved = _resolve_ply_angles(
             ply_angles, none_means='QI', caller='EmpiricalSolver.ply_angles')
+        # The toughness modes' law, checked here so a bad one raises before
+        # any solve (delamination plan 4.3).
+        self.toughness_knockdown: ToughnessKnockdown = _resolve_toughness_knockdown(
+            toughness_knockdown)
 
         # Resolve coefficient dicts: per-mode merge of class default with override.
         alpha_qi = self._merge_coefficient_override(
@@ -461,9 +525,12 @@ class EmpiricalSolver:
         valid_modes = set(cls.PRISTINE_STRENGTH_KEY)
         unknown = set(override) - valid_modes
         if unknown:
+            hint = (" The toughness modes take their coefficients from "
+                    "toughness_knockdown=ToughnessKnockdown(b_I=..., b_II=...)."
+                    if unknown & set(cls.PRISTINE_TOUGHNESS_KEY) else "")
             raise ValueError(
                 f"{name} has unknown mode keys {sorted(unknown)}. "
-                f"Use a subset of {sorted(valid_modes)}."
+                f"Use a subset of {sorted(valid_modes)}.{hint}"
             )
         for mode, value in override.items():
             if not isinstance(value, (int, float, np.floating, np.integer)):
@@ -506,7 +573,10 @@ class EmpiricalSolver:
         Thin accessor for :attr:`layup_scale`, computed once in ``__init__``
         by :func:`_layup_scales`. See the TestEmpiricalLayupScaling and
         TestLayupScaleRegressionPin classes in ``tests/test_empirical.py``.
+        The toughness modes are layup-independent: 1.0.
         """
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            return 1.0
         return self.layup_scale[mode]
 
     def _local_vp_peak(self) -> float:
@@ -684,6 +754,14 @@ class EmpiricalSolver:
         ``callable_ok`` only changes the error message: entry points that
         also accept a user callable say so.
         """
+        law, coef_attr = self._knockdown_law_entry(model, callable_ok=callable_ok)
+        return law, getattr(self, coef_attr)[mode]
+
+    @staticmethod
+    def _knockdown_law_entry(model: object, *, callable_ok: bool = True
+                             ) -> tuple[Callable[[Any, float], Any], str]:
+        """The :data:`_KNOCKDOWN_LAWS` entry of a built-in model name;
+        :class:`ValueError` for any other value."""
         entry = _KNOCKDOWN_LAWS.get(model) if isinstance(model, str) else None
         if entry is None:
             alternative = " or pass a callable" if callable_ok else ""
@@ -691,8 +769,7 @@ class EmpiricalSolver:
                 f"Unknown knockdown model {model!r}. "
                 f"Use one of {sorted(_KNOCKDOWN_LAWS)}{alternative}."
             )
-        law, coef_attr = entry
-        return law, getattr(self, coef_attr)[mode]
+        return entry
 
     def _builtin_kd(self, model: str, Vp: float, mode: str) -> float:
         """Scalar knockdown for a built-in model at a single ``Vp``."""
@@ -725,15 +802,117 @@ class EmpiricalSolver:
         return self._builtin_kd('linear', Vp, mode)
 
     def _check_mode(self, mode: str) -> None:
-        if mode not in self.PRISTINE_STRENGTH_KEY:
+        if mode not in self.PRISTINE_STRENGTH_KEY and \
+                mode not in self.PRISTINE_TOUGHNESS_KEY:
             raise ValueError(
-                f"Unknown loading mode {mode!r}. "
-                f"Use one of {sorted(self.PRISTINE_STRENGTH_KEY)}."
+                f"Unknown loading mode {mode!r}. Use one of "
+                f"{sorted(self.PRISTINE_STRENGTH_KEY)} or the toughness modes "
+                f"{sorted(self.PRISTINE_TOUGHNESS_KEY)}."
             )
 
     def _get_pristine_strength(self, mode: str) -> float:
         self._check_mode(mode)
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            raise ValueError(
+                f"{mode!r} is a toughness mode; its pristine value is the "
+                f"toughness {self.PRISTINE_TOUGHNESS_KEY[mode]} (N/mm).")
         return getattr(self.material, self.PRISTINE_STRENGTH_KEY[mode])
+
+    def _get_pristine_toughness(self, mode: str) -> float | None:
+        """Pristine toughness (N/mm) of a toughness mode; ``None`` when the
+        material does not set it (``G_Ic`` / ``G_IIc`` are optional)."""
+        value = getattr(self.material, self.PRISTINE_TOUGHNESS_KEY[mode])
+        return None if value is None else float(value)
+
+    # ------------------------------------------------------------------
+    # Toughness modes (delamination plan 4.3)
+    # ------------------------------------------------------------------
+
+    def _check_toughness_request(self, model: object,
+                                 cycles: float | None,
+                                 environment: dict[str, float] | None) -> None:
+        """Validate the arguments a toughness mode takes but does not use.
+
+        The law is :attr:`toughness_knockdown`, so a strength ``model``
+        name is accepted (an unknown one raises as for a strength mode) and
+        does not change the result; a callable ``model`` would be a second
+        way to give a toughness law and is refused. No hygrothermal or S-N
+        law of the toughness is calibrated, so ``environment`` and
+        ``cycles`` are refused rather than ignored.
+        """
+        if callable(model):
+            raise ValueError(
+                "A toughness mode takes its law from the solver's "
+                "toughness_knockdown, not from a callable model: pass "
+                "EmpiricalSolver(..., toughness_knockdown=f) with "
+                "f(Vp, mode) -> float in [0, 1] and mode 'I' or 'II'.")
+        self._knockdown_law_entry(model, callable_ok=False)
+        if environment is not None:
+            raise ValueError(
+                "environment= has no effect a toughness mode could use: no "
+                "hygrothermal law of the interlaminar toughness is calibrated "
+                "(the environment knockdown is a strength law).")
+        if cycles is not None:
+            raise ValueError(
+                "cycles= has no effect a toughness mode could use: the S-N "
+                "knockdown is a strength law; fatigue delamination growth is "
+                "not modelled.")
+
+    def _toughness_model_label(self) -> str:
+        """``FailureResult.model`` of a toughness mode: the law it used."""
+        law = self.toughness_knockdown.law
+        name = law if isinstance(law, str) else getattr(
+            law, '__name__', 'user_callable')
+        return f"toughness_{name}"
+
+    def _toughness_warning_model(self) -> str | None:
+        """What :meth:`_warn_if_extrapolated` checks for a toughness mode.
+
+        The built-in forms (``'exponential'``, ``'linear'``) rest on data up
+        to ``Vp = 0.05``, like the strength laws, so they warn beyond it; a
+        callable owns its range and ``'none'`` is 1, so they are exempt.
+        """
+        law = self.toughness_knockdown.law
+        return law if isinstance(law, str) and law in _TOUGHNESS_LAWS else None
+
+    def _populate_toughness_knockdown(self, mode: str) -> None:
+        """``nodal_knockdown`` of a toughness mode: the law at each node's
+        local ``Vp``. No discrete-void stress concentration applies: it is
+        a stress effect, and the toughness is not a stress."""
+        Vp_arr = self.mesh.porosity
+        assert Vp_arr is not None, "CompositeMesh.porosity not populated"
+        # The overshoot tolerance of _check_internal_Vp, per node.
+        Vp_arr = np.clip(np.asarray(Vp_arr, dtype=float), 0.0, 1.0)
+        law = self.toughness_knockdown
+        fracture_mode = _TOUGHNESS_FRACTURE_MODE[mode]
+        self.nodal_knockdown = law.factor(Vp_arr, fracture_mode)  # type: ignore[assignment]  # lazy-init attr starts None
+        if _placeholder_applied(law, Vp_arr, (fracture_mode,)):
+            _log_uncalibrated_once(law)
+
+    def _toughness_failure_result(self, mode: str) -> FailureResult:
+        """The specimen-average toughness knockdown of a toughness mode."""
+        law = self.toughness_knockdown
+        fracture_mode = _TOUGHNESS_FRACTURE_MODE[mode]
+        Vp_mean = self._check_internal_Vp(self.mesh.porosity_field.Vp)
+        kd = float(law.factor(Vp_mean, fracture_mode))
+        uncalibrated = _placeholder_applied(law, Vp_mean, (fracture_mode,))
+        if uncalibrated:
+            _log_uncalibrated_once(law)
+        G_c0 = self._get_pristine_toughness(mode)
+        details: dict[str, Any] = {
+            'critical_location': [0.0, 0.0, 0.0],
+            'mode': mode,
+            'fracture_mode': fracture_mode,
+            'pristine_toughness': G_c0,
+            'toughness_knockdown': law.describe(),
+            'toughness_uncalibrated': bool(uncalibrated),
+        }
+        return FailureResult(
+            failure_stress=math.nan if G_c0 is None else float(G_c0 * kd),
+            knockdown=kd,
+            model=self._toughness_model_label(),
+            details=details,
+        )
 
     def _environment_knockdown_factor(self, mode: str,
                                       environment: dict[str, float] | None
@@ -850,9 +1029,17 @@ class EmpiricalSolver:
 
         Parameters
         ----------
-        mode : {'compression', 'tension', 'shear', 'ilss', 'transverse_tension'}
+        mode : str
+            One of ``'compression'``, ``'tension'``, ``'shear'``, ``'ilss'``,
+            ``'transverse_tension'``, ``'mode_I_toughness'`` or
+            ``'mode_II_toughness'`` (:data:`~porosity_fe.LoadingMode`).
             Loading mode that selects the pristine strength and the
-            mode-specific empirical coefficient.
+            mode-specific empirical coefficient. The two toughness modes
+            evaluate :attr:`toughness_knockdown` at each node's local ``Vp``
+            instead (see :meth:`get_failure_load`); no discrete-void stress
+            concentration applies to them, and the first use of a
+            placeholder coefficient at a non-zero ``Vp`` logs one INFO line
+            per process.
         model : str or callable
             Empirical knockdown form. A string in
             ``{'judd_wright', 'power_law', 'linear'}`` dispatches to the
@@ -863,7 +1050,8 @@ class EmpiricalSolver:
             coefficients, so the internal layup scaling is bypassed; the
             discrete-void SCF post-step still applies so caller-defined
             knockdowns and explicit voids compose the same way as the
-            built-in models.
+            built-in models. A toughness mode accepts a built-in name
+            without using it and refuses a callable.
         cycles : int or float, optional
             Number of load cycles ``N`` for an S-N fatigue knockdown
             (issue #59). When ``None`` (default) no fatigue effect is
@@ -894,6 +1082,11 @@ class EmpiricalSolver:
         **signed** FE stresses and strains in Voigt order
         ``[11, 22, 33, 23, 13, 12]`` (engineering shear).
         """
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            self._check_toughness_request(model, cycles, environment)
+            self._populate_toughness_knockdown(mode)
+            self._warn_if_extrapolated(self._toughness_warning_model(), nodal=True)
+            return
         _, env_kd, fat_kd = self._prepare_loading(
             mode, model, cycles, environment, R)
         self._populate_nodal_knockdown(mode, model, env_kd, fat_kd)
@@ -1015,7 +1208,55 @@ class EmpiricalSolver:
             etc.) is preserved via the :class:`FailureResult`
             ``__getitem__`` shim and will be removed in 2.0 — prefer
             attribute access.
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``mode`` or ``model``; for a toughness mode, also
+            for a callable ``model``, ``environment`` or ``cycles``.
+
+        Notes
+        -----
+        **Toughness modes** (delamination plan 4.3). ``'mode_I_toughness'``
+        and ``'mode_II_toughness'`` screen the interlaminar toughness, with
+        no FE: ``knockdown`` is ``G_c(Vp) / G_c0`` from
+        :attr:`toughness_knockdown` (fracture mode ``'I'`` or ``'II'``) at
+        the specimen-average ``Vp``, the value
+        :func:`~porosity_fe.toughness_knockdown_factor` gives for the same
+        law. The FE fracture path applies the same law at each crack-front
+        node.
+
+        - ``failure_stress`` holds the knocked-down toughness
+          ``G_c0 * knockdown`` in **N/mm** (not a stress), with ``G_c0`` the
+          material's ``G_Ic`` or ``G_IIc``. Those fields are optional: when
+          the one needed is ``None`` the knockdown is still returned, and
+          ``failure_stress`` is ``nan``.
+        - ``model`` names the law used (``'toughness_exponential'``,
+          ``'toughness_linear'``, ``'toughness_none'`` or
+          ``'toughness_<callable name>'``). A built-in strength ``model``
+          name is accepted and does not change the result; a callable is
+          refused (give a toughness law as ``toughness_knockdown``).
+        - ``details`` carries ``'fracture_mode'``, ``'pristine_toughness'``
+          (N/mm or ``None``), ``'toughness_knockdown'`` (the law's
+          :meth:`~porosity_fe.ToughnessKnockdown.describe`) and
+          ``'toughness_uncalibrated'``: ``True`` when the law uses a
+          placeholder coefficient for this mode and ``Vp > 0``, the rule of
+          ``CrackFront.toughness_uncalibrated``. The first such use logs one
+          INFO line per process.
+        - The layup scale is 1, no discrete-void stress concentration
+          applies, and ``environment`` / ``cycles`` raise: no hygrothermal
+          or fatigue law of the toughness is calibrated. Past
+          ``Vp = 0.05`` the ``'exponential'`` and ``'linear'`` laws warn as
+          the strength laws do (their data span ``Vp <= 0.05``).
+
+        Neither mode is in :meth:`get_all_failure_loads`, the sweeps, the
+        app or the NCR disposition.
         """
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            self._check_toughness_request(model, cycles, environment)
+            self._populate_toughness_knockdown(mode)
+            self._warn_if_extrapolated(self._toughness_warning_model(), nodal=False)
+            return self._toughness_failure_result(mode)
         model_func, env_kd, fat_kd = self._prepare_loading(
             mode, model, cycles, environment, R)
         self._populate_nodal_knockdown(mode, model, env_kd, fat_kd)
@@ -1164,11 +1405,27 @@ class EmpiricalSolver:
             :attr:`layup_scale` (also for user overrides). Unlike
             :meth:`get_failure_load` this method does not warn about a
             layup scale above 1.
+
+            For a toughness mode the partials are those of
+            :attr:`toughness_knockdown` for its fracture mode, with ``coef``
+            the law's ``b`` (no layup scale): ``'exponential'`` as
+            Judd-Wright, ``'linear'`` as linear, ``'none'`` 0 and 0, and a
+            callable law raises :class:`NotImplementedError` (use
+            :meth:`sensitivity_fd`). ``model`` must be a built-in name and
+            does not change them. The dict also carries
+            ``'toughness_uncalibrated'``, as on :meth:`get_failure_load`.
         """
         self._check_mode(mode)
         if Vp is None:
             Vp = self.mesh.porosity_field.Vp
+        else:
+            # A user value: a percent or a negative fraction raises instead
+            # of being clipped into [0, 1].
+            Vp = float(check_fraction(Vp))
         Vp = self._check_internal_Vp(Vp)
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            self._knockdown_law_entry(model, callable_ok=False)
+            return self._toughness_sensitivities(mode, Vp)
         law, coef = self._builtin_law(model, mode, callable_ok=False)
         kd = float(law(Vp, coef))
         match model:
@@ -1203,6 +1460,29 @@ class EmpiricalSolver:
                 )
         return {'KD': kd, 'dKD_dVp': d_dVp, 'dKD_dcoef': d_dcoef}
 
+    def _toughness_sensitivities(self, mode: str, Vp: float) -> dict[str, float]:
+        """:meth:`local_sensitivities` of a toughness mode at ``Vp``."""
+        law = self.toughness_knockdown
+        fracture_mode = _TOUGHNESS_FRACTURE_MODE[mode]
+        if callable(law.law):
+            raise NotImplementedError(
+                f"No analytic sensitivities for the toughness law "
+                f"{law.describe()}; use sensitivity_fd() instead.")
+        kd = float(law.factor(Vp, fracture_mode))
+        b = law.coefficient(fracture_mode)
+        if b is None or (law.law == 'linear' and kd <= 0.0):
+            # 'none' is 1 everywhere; the linear law is clipped at 0.
+            d_dVp = d_dcoef = 0.0
+        elif law.law == 'exponential':
+            d_dVp = float(-b * kd)
+            d_dcoef = float(-Vp * kd)
+        else:  # 'linear', not clipped
+            d_dVp = float(-b)
+            d_dcoef = float(-Vp)
+        return {'KD': kd, 'dKD_dVp': d_dVp, 'dKD_dcoef': d_dcoef,
+                'toughness_uncalibrated': _placeholder_applied(
+                    law, Vp, (fracture_mode,))}
+
     def sensitivity_fd(self, mode: str = 'compression',
                        model: str = 'judd_wright',
                        param: str = 'Vp',
@@ -1231,8 +1511,18 @@ class EmpiricalSolver:
         float
             ``(KD(x+h) - KD(x-h)) / (2*h)`` evaluated at the same
             ``Vp_mean`` :meth:`get_failure_load` uses.
+
+            For a toughness mode the difference is taken on
+            :attr:`toughness_knockdown` (``coef`` is its ``b``; ``model``
+            must be a built-in name and does not change it). ``'none'``
+            gives 0; a callable law has no coefficient, so it takes
+            ``param='Vp'`` only, at a ``Vp_mean`` at least ``h`` from 0 and
+            1.
         """
         self._check_mode(mode)
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            self._knockdown_law_entry(model, callable_ok=False)
+            return self._toughness_sensitivity_fd(mode, param, h)
         law, coef = self._builtin_law(model, mode, callable_ok=False)
         if param not in ('Vp', 'coef'):
             raise ValueError(
@@ -1250,6 +1540,38 @@ class EmpiricalSolver:
             return float((f(Vp0 + h, coef0) - f(Vp0 - h, coef0)) / (2.0 * h))
         # param == 'coef'
         return float((f(Vp0, coef0 + h) - f(Vp0, coef0 - h)) / (2.0 * h))
+
+    def _toughness_sensitivity_fd(self, mode: str, param: str, h: float) -> float:
+        """:meth:`sensitivity_fd` of a toughness mode."""
+        if param not in ('Vp', 'coef'):
+            raise ValueError(
+                f"param must be 'Vp' or 'coef', got {param!r}."
+            )
+        law = self.toughness_knockdown
+        fracture_mode = _TOUGHNESS_FRACTURE_MODE[mode]
+        Vp0 = float(self.mesh.porosity_field.Vp)
+        if law.law == 'none':
+            return 0.0
+        if callable(law.law):
+            if param == 'coef':
+                raise ValueError(
+                    f"The toughness law {law.describe()} has no coefficient; "
+                    "use param='Vp'.")
+            # law.factor checks that Vp0 -/+ h is a fraction in [0, 1].
+            return float((law.factor(Vp0 + h, fracture_mode)
+                          - law.factor(Vp0 - h, fracture_mode)) / (2.0 * h))
+        # The built-in form itself (_TOUGHNESS_LAWS, the one implementation
+        # the law evaluates), so the coefficient can be perturbed.
+        form = _TOUGHNESS_LAWS[law.law]
+        b0 = law.coefficient(fracture_mode)
+        assert b0 is not None
+
+        def f(Vp_val: float, b_val: float) -> float:
+            return float(form(np.asarray(Vp_val, dtype=float), b_val))
+
+        if param == 'Vp':
+            return float((f(Vp0 + h, b0) - f(Vp0 - h, b0)) / (2.0 * h))
+        return float((f(Vp0, b0 + h) - f(Vp0, b0 - h)) / (2.0 * h))
 
 
 # Wire the fatigue calibration into ``Calibration`` after the fatigue

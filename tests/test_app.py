@@ -831,7 +831,9 @@ class TestSectionPlots:
 
 class TestDefaultStressComponent:
     @pytest.mark.parametrize("fe_loading, expected", [
-        ("ilss", "τ₁₃ (interlaminar)"),
+        ("ilss", "Interlaminar shear √(τ₁₃² + τ₂₃²)"),
+        ("enf", "Interlaminar shear √(τ₁₃² + τ₂₃²)"),
+        ("mmb", "Interlaminar shear √(τ₁₃² + τ₂₃²)"),
         ("thermal", "σ₂₂ (transverse)"),
         ("shear", "τ₁₂ (in-plane shear)"),
         ("compression", "σ₁₁ (fiber)"),
@@ -845,7 +847,7 @@ class TestDefaultStressComponent:
 
     def test_results_map_to_their_default(self, ilss_result, thermal_result,
                                           comp_result):
-        assert app.default_stress_component(ilss_result) == "τ₁₃ (interlaminar)"
+        assert app.default_stress_component(ilss_result) == "Interlaminar shear √(τ₁₃² + τ₂₃²)"
         assert app.default_stress_component(thermal_result) == "σ₂₂ (transverse)"
         assert app.default_stress_component(comp_result) == "σ₁₁ (fiber)"
 
@@ -1592,7 +1594,7 @@ class TestFractureSpecimens:
         plt.close(fig)
         assert app.default_stress_component(r) == "σ₃₃ (through-thickness)"
         assert app.default_stress_component(specimen_results["enf"]) == \
-            "τ₁₃ (interlaminar)"
+            "Interlaminar shear √(τ₁₃² + τ₂₃²)"
         fig = app.plot_mesh(r)
         from matplotlib.text import Text
         texts = [t.get_text() for t in fig.axes[0].findobj(Text)]
@@ -1690,3 +1692,54 @@ class TestPorosityDegradation:
         for cfg in (_base_cfg(), _base_cfg(porosity_degradation="directional")):
             app.run_convergence_check(cfg, [(4, 2, 4), (6, 3, 4)])
         assert [kw["porosity_degradation"] for kw in calls] == ["isotropic", "directional"]
+
+
+class TestAppReviewFixes:
+    """Regression tests for the app review of November 2026."""
+
+    def test_calibration_note_flags_vp_beyond_the_bound(self):
+        from porosity_app.config import calibration_note
+        assert calibration_note(5.0) is None
+        note = calibration_note(8.0)
+        assert "beyond the 5 % calibration bound" in note and "extrapolated" in note
+
+    def test_results_footnote_flags_extrapolation(self):
+        r = app.run_analysis(_base_cfg(Vp=8.0))
+        fig = app.plot_results(r, "[0/90]s")
+        texts = [t.get_text() for t in fig.axes[0].texts]
+        assert any("beyond the 5 % calibration bound" in t for t in texts)
+        plt.close(fig)
+
+    def test_results_footnote_when_the_fe_solve_was_skipped(self, comp_result):
+        r = dict(comp_result, fe_field=None, fe_skipped_reason="test")
+        fig = app.plot_results(r, "[0/90]s")
+        texts = [t.get_text() for t in fig.axes[0].texts]
+        assert any("FE solve was skipped" in t for t in texts)
+        assert not any("hatched bar" in t for t in texts)
+        plt.close(fig)
+
+    def test_mesh_map_is_labelled_as_solid_fraction(self, comp_result):
+        """It plots 1 - Vp, not a stiffness ratio (the FE's E22 retention
+        at 3 % penny voids is about 88 %, not 97 %)."""
+        fig = app.plot_mesh(comp_result)
+        _, cax, _ = _section_parts(fig)
+        assert cax.get_xlabel().startswith("Solid fraction 1 − Vp (%)")
+        from matplotlib.text import Text
+        assert any("solid fraction (1 − Vp)" in t.get_text() for t in fig.findobj(Text))
+        plt.close(fig)
+
+    def test_stress_default_on_a_transverse_layup(self):
+        r = app.run_analysis(_base_cfg(angles=[90.0] * 4, loading_mode="tension", nz=4))
+        assert app.default_stress_component(r) == "σ₂₂ (transverse)"
+        fig = app.plot_stress(r, "σ₁₁ (fiber)")
+        _, cax, _ = _section_parts(fig)
+        assert "0 (round-off of zero)" in cax.get_xlabel()
+        plt.close(fig)
+
+    def test_interlaminar_shear_magnitude(self, ilss_result):
+        fig = app.plot_stress(ilss_result, "Interlaminar shear √(τ₁₃² + τ₂₃²)")
+        _, cax, _ = _section_parts(fig)
+        assert "tau_{13}^2 + \\tau_{23}^2" in cax.get_xlabel()
+        assert app._STRESS_SLUGS[app._STRESS_COMPONENTS[
+            "Interlaminar shear √(τ₁₃² + τ₂₃²)"][0]] == "t_interlaminar"
+        plt.close(fig)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ..config import _README_URL
+from ..config import _README_URL, calibration_note
 from ..sidebar import _offer_nz_fix
 from ..summaries import _crack_front, delamination_text
 
@@ -32,9 +32,11 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
         added to the FE solve, with the interlaminar toughness you enter.
 
         - **Profile** — through-thickness porosity distribution
-        - **Mesh** — mid-y cross-section of the FE mesh, coloured by
-          stiffness retention (thin sections are drawn with the thickness
-          exaggerated; the axis label gives the factor)
+        - **Mesh** — mid-y cross-section of the FE mesh, coloured by the
+          solid fraction 1 − Vp (not a stiffness ratio: the FE degrades the
+          stiffness by Mori-Tanaka, which depends on the void shape; thin
+          sections are drawn with the thickness exaggerated, and the axis
+          label gives the factor)
         - **Results** — empirical knockdown bar chart with the FE stiffness
           knockdown overlaid, the short-beam, flexure and thermal
           residual-stress results of the FE solve, the defect results
@@ -75,6 +77,9 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
         f"{cfg_r['distribution']}, {mesh_note}."
         + thermal_note + delamination_note
     )
+    extrapolated = calibration_note(cfg_r["Vp"])
+    if extrapolated:
+        st.warning(f"⚠ {extrapolated}")
     front = _crack_front(result)
     if front is not None and front.toughness_uncalibrated:
         st.warning("⚠ The fracture results use the uncalibrated placeholder "
@@ -86,7 +91,7 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
             f"**Empirical knockdown results are still valid** and are shown in the "
             f"other tabs. FE would have added per-element stress fields; you don't "
             f"need it for the headline knockdown numbers.\n\n"
-            f"To retry with FE: adjust the mesh (Expert tab) or pick a different "
+            f"To retry with FE: adjust the mesh (Expert mode) or pick a different "
             f"loading mode. See the [README]({_README_URL}) for the FE-supported modes."
         )
         _offer_nz_fix(result.get("fe_nz_suggestion"), key="nz_fix_overview")

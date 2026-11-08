@@ -487,7 +487,7 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_profile_*.png` | Through-thickness porosity profiles |
 | `porosity_mesh_3d_*.png` | 3D mesh with hexahedral elements |
 | `porosity_mesh_detail_*.png` | Cross-section element detail |
-| `porosity_damage_*.png` | Stiffness reduction contour maps |
+| `porosity_damage_*.png` | Midplane map of the compression (Judd-Wright) strength knockdown |
 | `porosity_comparison_*.png` | Model comparison bar charts |
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
@@ -738,16 +738,18 @@ varies with the material system; if you have biaxial coupon
 calibration data, override it per-material via
 `MaterialProperties(tsai_wu_F12=...)`. The value is the **normalized**
 coefficient `F*_12 = F_12 / sqrt(F_11 * F_22)` (dimensionless, so `-0.5`
-is the default) and must lie in `[-1, 0]` for a closed envelope.
+is the default) and must lie in `[-0.5, 0]`: with `F13` mirroring
+`F12` and `F*_23 = -0.5`, a value below `-0.5` opens the 3-D envelope
+under triaxial normal stress.
 
 ## Validation
 
-PorosityFE is validated against **16 experimental datasets**
+PorosityFE is validated against **17 experimental datasets**
 of strength and modulus (13 peer-reviewed papers, the ICCM-16
-conference paper of Cinquin et al. 2007 as two, and Uhl et al. 1988 from
-the QNDE proceedings), covering carbon/epoxy, IM7/toughened epoxy,
+conference papers of Cinquin et al. 2007 as two and Olivier et al. 2007,
+and Uhl et al. 1988 from the QNDE proceedings), covering carbon/epoxy, IM7/toughened epoxy,
 T300/epoxy systems, an intermediate-modulus carbon/180 °C epoxy with
-artificial porosity, and CF/PEEK thermoplastic, plus 3 exploratory
+artificial porosity, and CF/PEEK thermoplastic, plus 8 exploratory
 interlaminar toughness datasets reported separately (below). Validation is automated via `validate_porosity`
 CLI (pre-built for Linux/macOS/Windows on the [Releases page](https://github.com/elhajjar1/PorosityFE/releases))
 or in-process via `validation/validate_all.py`.
@@ -763,22 +765,22 @@ or in-process via `validation/validate_all.py`.
 | Transverse tensile strength | 3 | 8.3% |
 | Flexural modulus (D-matrix CLT) | 5 | 10.8% |
 | Compression strength | 4 | 9.0% |
-| Shear strength | 3 | 8.7% |
+| Shear strength | 4 | 10.4% |
 | Shear modulus (A-matrix CLT) | 2 | 11.9% |
 
-The compression and shear rows include Cinquin et al. 2007 (ICCM-16; `cinquin_2007_qi`, `cinquin_2007_shear`), whose porosity was made with foaming agents and is read exactly from the PDF's vector charts. Its quasi-isotropic coupons keep 0.79 to 0.83 of their compression strength at 7.8 to 11 % voids, where the Judd-Wright law, calibrated to 5 %, falls to 0.46 to 0.58: that dataset's compression MAE is 21.3 %, 6.8 % over its points up to 2.1 %. Its ±45 coupons lose about 25 % of their in-plane shear strength by 0.8 % voids, faster than the law (MAE 14.7 %). The quasi-isotropic graphite/epoxy of Uhl et al. 1988 (`uhl_1988`) loses 10.6 % from 0.34 to 4.05 % voids, within the bound, where the law gives 22.6 % (MAE 8.7 %).
+The compression and shear rows include Cinquin et al. 2007 (ICCM-16; `cinquin_2007_qi`, `cinquin_2007_shear`), whose porosity was made with foaming agents and is read exactly from the PDF's vector charts. Its quasi-isotropic coupons keep 0.79 to 0.83 of their compression strength at 7.8 to 11 % voids, where the Judd-Wright law, calibrated to 5 %, falls to 0.46 to 0.58: that dataset's compression MAE is 21.3 %, 6.8 % over its points up to 2.1 %. Its ±45 coupons lose about 25 % of their in-plane shear strength by 0.8 % voids, faster than the law (MAE 14.7 %). The quasi-isotropic graphite/epoxy of Uhl et al. 1988 (`uhl_1988`) loses 10.6 % from 0.34 to 4.05 % voids, within the bound, where the law gives 22.6 % (MAE 8.7 %). The ±45 T700GC/M21 coupons of Olivier et al. 2007 (`olivier_2007_shear`) keep their in-plane shear strength to about 2.7 % voids and lose 28 % near 6 %, where the law loses it from the start (MAE 15.3 %); their void contents are the paper's legend values, acid digestion of the [0]_8 plates of the same cure runs, about a point above the image-analysis values of the ±45 plates.
 
 Transverse compression strength (`sigma_2c`) has no empirical loading mode because no dataset measures it against porosity. The FE failure criteria still use it.
 
 Overall MAE:
-- Property-weighted: **6.21%** across 39 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
-- Point-weighted: **5.27%** across 227 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
+- Property-weighted: **6.44%** across 40 (paper, property) pairs (each entry weighted equally — what `validate_porosity` reports as the headline).
+- Point-weighted: **5.49%** across 232 individual (Vp, normalized) data points (each measurement weighted equally — the standard convention in regression-error reporting).
 
-Each dataset's baseline point, normalized to 1 and so predicted exactly by construction, is left out of both and of the point counts; with it they were 5.08 % and 4.53 % over 264 points.
+Each dataset's baseline point, normalized to 1 and so predicted exactly by construction, is left out of both and of the point counts (before `olivier_2007_shear`, with the baseline points, they were 5.08 % and 4.53 % over 264 points; without them 6.21 % and 5.27 % over 227).
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
 
-**Interlaminar toughness (exploratory, not in the headline).** Six more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1), Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract), Olivier et al. 2007 (T700GC/M21 DCB, propagation G_Ic 0.348 / 0.266 N/mm at 0.1 / 5.09 % voids, the means of the Fig. 8 R-curves read from the PDF's vector graphics), Asp & Brandt 1997 (HTA/6376C DCB and ENF, void-free / 0.9 %: mode I initiation unchanged, propagation +74 %, mode II −8 %), Russell & Street 1982 (AS1/3501-6, 2.1 %: mode I initiation +5 %, mode II +12 %) and Vorobyev et al. 2020 (infused UD carbon/epoxy DCB, G_Ic 0.25 / 0.13 / 0.11 N/mm at 0.41 / 1.12 / 5.23 %). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: 21.38 % property-weighted, 24.88 % point-weighted over 8 entries and 12 points (baseline points left out). The studies contradict each other (toughness falls, holds or rises with voids; a least-squares b per mode and stage runs from −2.9 to 15.9, per study from −62 to 18.6), so the placeholders stay uncalibrated; see the delamination theory page. The headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Carraro et al. 2015 report R-curves only in figures and are not included.
+**Interlaminar toughness (exploratory, not in the headline).** Eight more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1), Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract), Olivier et al. 2007 (T700GC/M21 DCB, propagation G_Ic 0.348 / 0.266 N/mm at 0.1 / 5.09 % voids, the means of the Fig. 8 R-curves read from the PDF's vector graphics), Asp & Brandt 1997 (HTA/6376C DCB and ENF, void-free / 0.9 %: mode I initiation unchanged, propagation +74 %, mode II −8 %), Russell & Street 1982 (AS1/3501-6, 2.1 %: mode I initiation +5 %, mode II +12 %) Vorobyev et al. 2020 (infused UD carbon/epoxy DCB, G_Ic 0.25 / 0.13 / 0.11 N/mm at 0.41 / 1.12 / 5.23 %) and Carraro et al. 2015 (STS40 NCF/EC157 DCB, two files for the 0° and −45° interfaces, void-free against 1.9 % and 1.23 %: initiation 0.88 and 1.35 times the void-free value, propagation 1.32 and 1.61 times, read from the R-curves of Figs. 15 and 18). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: 22.50 % property-weighted, 25.40 % point-weighted over 10 entries and 16 points (baseline points left out). The studies contradict each other (toughness falls, holds or rises with voids; a least-squares b per mode and stage runs from −2.9 to 15.9, per study from −62 to 18.6), so the placeholders stay uncalibrated; see the delamination theory page. The headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Abdelal 2013 (a dissertation, glass/epoxy) was examined and held back: its panels read 0.4–1.0 % voids by burn-off and 1.5–5.8 % by X-ray CT.
 
 ## Limitations
 

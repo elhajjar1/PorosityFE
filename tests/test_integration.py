@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import json
+import re
 
 from porosity_fe_analysis import (MATERIALS, VoidGeometry, PorosityField, POROSITY_CONFIGS, CompositeMesh,
                                    EmpiricalSolver, FEVisualizer,
@@ -867,6 +868,41 @@ class TestLayupParser:
     def test_no_angles_raises(self):
         with pytest.raises(ValueError, match="No ply angles"):
             self.parse_layup('[]_3s')
+
+    @pytest.mark.parametrize("text, expected", [
+        # A subscript on an angle is a ply count, not part of the angle.
+        ('[0_2/90_2]s', [0, 0, 90, 90, 90, 90, 0, 0]),
+        ('[45_2/0]', [45, 45, 0]),
+        ('0_3/90', [0, 0, 0, 90]),
+        # The group repeat with or without '_', and '_s'.
+        ('[0/90]2s', [0, 90, 0, 90, 90, 0, 90, 0]),
+        ('[0/90]3', [0, 90, 0, 90, 0, 90]),
+        ('[0/90]_s', [0, 90, 90, 0]),
+        ('[0/90]S', [0, 90, 90, 0]),
+        # +-theta pairs and a Unicode minus.
+        ('[±45]_2s', [45, -45, 45, -45, -45, 45, -45, 45]),
+        ('[0/∓30_2]', [0, -30, 30, -30, 30]),
+        ('[0/\u221245/+45]', [0, -45, 45]),
+    ])
+    def test_standard_notation(self, text, expected):
+        """Review finding: '0_2' was read as one ply of 2 degrees, '45_2' as
+        452 and ']2s' glued the 2 onto the last angle (902)."""
+        assert self.parse_layup(text) == [float(a) for a in expected]
+
+    @pytest.mark.parametrize("text, match", [
+        ('[0/nan/90]', "Invalid ply angle 'nan'"),
+        ('[0/inf]', "Invalid ply angle 'inf'"),
+        ('[1e2/0]', "Invalid ply angle '1e2'"),
+        ('[45_2_3]', "Invalid ply angle '45_2_3'"),
+        ('[0/45_0]', "Ply count must be >= 1"),
+        ('[[0/90]_2/45]s', "nested groups"),
+        ('[0/90]_', "Invalid repeat count"),
+        ('[0/90]ss', "Invalid repeat count"),
+        ('[0/90]_3_0', "Invalid repeat count '3_0'"),
+    ])
+    def test_malformed_notation_raises(self, text, match):
+        with pytest.raises(ValueError, match=re.escape(match)):
+            self.parse_layup(text)
 
 
 class TestExportHelpers:

@@ -32,7 +32,7 @@ polish, (5) architecture cleanups, and (6) CI/packaging/docs/hygiene. Items are
 tagged **[S]**mall (≤ half day), **[M]**edium (1–3 days), **[L]**arge (multi-day
 / design needed).
 
-## Status (2026-11-05)
+## Status (2026-11-06)
 
 The sections below are kept as written on 2026-07-16 (file:line references
 point at that tree). What has landed since, by pull request:
@@ -61,6 +61,9 @@ point at that tree). What has landed since, by pull request:
 | #234 | Release preparation for 1.3 (changelog, "What's new in 1.3"); the `IM7_8552_epoxy` preset with sourced toughness |
 | #236 | Master kept unreleased at `1.3.0.dev0`; the release check refuses a tag until the release commit |
 | #235, #237, #238 | Validation datasets `olivier_2007` (mode I toughness), `cinquin_2007_qi` / `_shear` (compression, in-plane shear) and `uhl_1988` (compression) |
+| #239, #240 | Toughness datasets `asp_brandt_1997`, `russell_street_1982`, `vorobyev_2020`; the directional porosity option recorded on results and exposed in the app and CLI; the validation MAE without the baseline points; review fixes (validator input checks, CG on the DCB, the container memory limit) |
+| #241 | Cached factorizations give way to the memory budget |
+| #242 | Review fixes (layup notation, NCR PDF text and analysis mesh, the CLI's UQ seed, JSON provenance); delamination plan 4.3 (empirical toughness modes); datasets `olivier_2007_shear`, `carraro_2015_0deg` / `_45deg`; measured out-of-plane data compared with the directional option |
 
 ---
 

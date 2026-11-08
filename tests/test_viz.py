@@ -23,12 +23,12 @@ from porosity_fe import (
     LABEL_KNOCKDOWN,
     LABEL_POROSITY_PCT,
     LABEL_SCF,
-    LABEL_STIFFNESS_RETENTION_FRAC,
     LABEL_X_MM,
     LABEL_Y_MM,
     LABEL_Z_MM,
     MATERIALS,
     CompositeMesh,
+    EmpiricalSolver,
     FEVisualizer,
     PorosityField,
     VoidGeometry,
@@ -178,8 +178,11 @@ class TestMeshDetailPlot:
         left, right, cbar = fig.axes
         assert left.get_title() == 'Cross-Section Porosity'
         assert right.get_title() == '8-Node Hexahedral Element'
-        for ax in (left, right):
-            assert (ax.get_xlabel(), ax.get_ylabel()) == (LABEL_X_MM, LABEL_Z_MM)
+        assert (left.get_xlabel(), left.get_ylabel()) == (LABEL_X_MM, LABEL_Z_MM)
+        # The hex diagram is a schematic of the node numbering: no mm axes.
+        assert (right.get_xlabel(), right.get_ylabel()) == \
+            ('x (element axis)', 'z (element axis)')
+        assert list(right.get_xticks()) == [] and list(right.get_yticks()) == []
         assert cbar.get_ylabel() == LABEL_POROSITY_PCT
 
     def test_hex_diagram_numbers_all_eight_nodes(self, clustered):
@@ -235,13 +238,35 @@ class TestDamageContourPlot:
         assert 0.8 - 1e-12 <= cs.levels[-1] < 5.0
 
     def test_labels(self, clustered):
-        """x-y axes in mm, colorbar reports a dimensionless retention fraction."""
+        """x-y axes in mm; a bare nodal knockdown is labelled as such, not as
+        a stiffness."""
         _, mesh = clustered
         solver = types.SimpleNamespace(nodal_knockdown=self._ramp_field(mesh))
         ax, cbar = FEVisualizer.plot_damage_contour(mesh, solver).axes
         assert (ax.get_xlabel(), ax.get_ylabel()) == (LABEL_X_MM, LABEL_Y_MM)
-        assert ax.get_title() == 'Stiffness Reduction at Midplane'
-        assert cbar.get_ylabel() == LABEL_STIFFNESS_RETENTION_FRAC
+        assert ax.get_title() == 'Knockdown at Midplane'
+        assert cbar.get_ylabel() == 'Nodal knockdown (-)'
+        no_solver = types.SimpleNamespace(nodal_knockdown=None)
+        ax, cbar = FEVisualizer.plot_damage_contour(mesh, no_solver).axes
+        assert ax.get_title() == 'Solid Fraction at Midplane'
+        assert cbar.get_ylabel() == 'Solid fraction 1 - Vp (-)'
+
+    def test_empirical_solver_plots_the_requested_strength_knockdown(self, clustered):
+        """Review finding: after get_all_failure_loads the map showed the last
+        pair evaluated (transverse_tension, linear) under a stiffness label."""
+        pf, mesh = clustered
+        solver = EmpiricalSolver(mesh, mesh.material)
+        solver.get_all_failure_loads()
+        ax, cbar = FEVisualizer.plot_damage_contour(mesh, solver).axes
+        assert cbar.get_ylabel() == 'Strength knockdown, compression (judd-wright) (-)'
+        mid = self._midplane_mask(mesh)
+        vp = mesh.porosity[mid]
+        expected = np.exp(-6.9 * vp)
+        np.testing.assert_allclose(solver.nodal_knockdown[mid], expected, rtol=1e-12)
+        ax, cbar = FEVisualizer.plot_damage_contour(
+            mesh, solver, mode='ilss', model='linear').axes
+        assert cbar.get_ylabel() == 'Strength knockdown, ilss (linear) (-)'
+        assert 'ilss' in ax.get_title()
 
 
 class TestVoidSCFPlot:
@@ -411,3 +436,27 @@ class TestModelComparisonPlot:
         fig = FEVisualizer.plot_model_comparison(self._results())
         labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
         assert labels == ['uniform\nspherical', 'clustered\nmidplane', 'interface\npenny']
+
+
+class TestReviewVizFixes:
+    """Regression tests for the app review of November 2026."""
+
+    def test_knockdown_curves_have_a_legend(self):
+        results = {label: {'uniform_spherical': _fake_result(lambda m, mo: 0.9),
+                           'clustered_penny': _fake_result(lambda m, mo: 0.8)}
+                   for label in ('1pct', '3pct')}
+        fig = FEVisualizer.plot_knockdown_curves(results)
+        legend = fig.axes[0].get_legend()
+        assert legend is not None
+        labels = [t.get_text() for t in legend.get_texts()]
+        assert {'judd-wright', 'power-law', 'linear'} <= set(labels)
+        assert 'uniform configurations' in labels
+
+    def test_mesh_detail_uniform_field_has_plain_ticks(self, material):
+        mesh = CompositeMesh(PorosityField(material, 0.03), material, nx=4, ny=2, nz=4)
+        fig = FEVisualizer.plot_mesh_detail(mesh)
+        cbar = fig.axes[2]
+        fig.canvas.draw()
+        assert cbar.yaxis.get_offset_text().get_text() == ''
+        ticks = cbar.get_yticks()
+        assert ticks.min() < 3.0 < ticks.max() and ticks.max() - ticks.min() < 1.0

@@ -516,6 +516,7 @@ _MAE_BASELINES = {
     ('olivier_1995', 'flexural_modulus'): 12.633,
     ('olivier_1995', 'ilss'): 11.055,
     ('olivier_1995', 'tensile_strength'): 1.423,
+    ('olivier_2007_shear', 'shear_strength'): 15.306,
     ('stamopoulos_2016', 'flexural_modulus'): 3.079,
     ('stamopoulos_2016', 'ilss'): 4.897,
     ('stamopoulos_2016', 'shear_modulus'): 19.646,
@@ -627,15 +628,17 @@ def test_run_one_dataset_is_picklable():
 def test_headline_mae_pinned(_all_results):
     from validation.validate_all import summarize_mae
     s = summarize_mae(_all_results)
-    assert s['n_entries'] == 39
-    assert s['n_points'] == 227
+    assert s['n_entries'] == 40
+    assert s['n_points'] == 232
     # Baseline points (normalized to 1, predicted exactly) are left out of
-    # the MAE and the count: 5.081 / 4.532 over 264 points with them.
+    # the MAE and the count: 5.273 / 4.714 over 270 points with them.
     # Earlier, with them: 7.050 / 6.531 before the IMPROVEMENT_PLAN 2.7
     # layup re-scaling; 4.495 / 3.891 before the cinquin_2007 datasets
-    # (#221), 5.044 / 4.501 before uhl_1988.
-    assert s['property_weighted_mae'] == pytest.approx(6.214, abs=0.05)
-    assert s['point_weighted_mae'] == pytest.approx(5.270, abs=0.05)
+    # (#221), 5.044 / 4.501 before uhl_1988, 5.081 / 4.532 before
+    # olivier_2007_shear. Without them: 6.214 / 5.270 over 39 entries and
+    # 227 points before olivier_2007_shear.
+    assert s['property_weighted_mae'] == pytest.approx(6.442, abs=0.05)
+    assert s['point_weighted_mae'] == pytest.approx(5.486, abs=0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -835,15 +838,16 @@ def test_run_all_includes_toughness_apart_from_the_headline(_all_results):
     assert agius['mae'] == pytest.approx(2.294, abs=0.01)
     assert olivier['mae'] == pytest.approx(4.065, abs=0.01)
     tough = summarize_toughness_mae(_all_results)
-    assert tough['n_entries'] == 8 and tough['n_points'] == 12
-    # Without the baseline points; 12.474 / 13.570 over 22 points with them
-    # (3.126 / 3.565 over 3 entries before asp_brandt_1997,
-    # russell_street_1982 and vorobyev_2020, #222).
-    assert tough['property_weighted_mae'] == pytest.approx(21.381, abs=0.01)
-    assert tough['point_weighted_mae'] == pytest.approx(24.879, abs=0.01)
+    assert tough['n_entries'] == 10 and tough['n_points'] == 16
+    # Without the baseline points (21.381 / 24.879 over 8 entries and 12
+    # points before carraro_2015_0deg and carraro_2015_45deg; 3.126 / 3.565
+    # over 3 entries before asp_brandt_1997, russell_street_1982 and
+    # vorobyev_2020, #222).
+    assert tough['property_weighted_mae'] == pytest.approx(22.495, abs=0.01)
+    assert tough['point_weighted_mae'] == pytest.approx(25.397, abs=0.01)
     # The strength / modulus headline does not see them.
     s = summarize_mae(_all_results)
-    assert (s['n_entries'], s['n_points']) == (39, 227)
+    assert (s['n_entries'], s['n_points']) == (40, 232)
 
 
 def test_summaries_split_by_property_key():
@@ -951,5 +955,5 @@ def test_report_has_a_separate_toughness_section(_all_results, tmp_path):
     assert '| russell_street_1982 | G_Ic | mixed | insert | 2 | 14.20 |' in tail
     assert '| russell_street_1982 | G_IIc | initiation | insert | 1 | 33.16 |' in tail
     assert '| vorobyev_2020 | G_Ic | initiation | insert | 2 | 76.29 |' in tail
-    assert 'Property-weighted: **6.21%**' in head
+    assert 'Property-weighted: **6.44%**' in head
     assert 'not an independent validation' in tail
