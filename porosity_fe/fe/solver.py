@@ -658,11 +658,17 @@ class FESolver:
                 self.assembler.element_batch(), self.mesh, u, verbose=verbose)
 
             # 7. Knockdown: porous / pristine structural stiffness (1.0 for
-            #    a pristine mesh or a zero load), and the reactions and
+            #    a pristine mesh; NaN at a zero load, where no stiffness is
+            #    measured, as the modulus is None), and the reactions and
             #    modulus, all from the mechanical solve.
-            knockdown = 1.0 if pristine is None else _knockdown.knockdown(
-                loading, _stiffness_measure(loading, K, u, applied_strain,
-                                            applied_load), pristine)
+            if _knockdown.zero_load(loading, applied_load, applied_strain):
+                knockdown = float('nan')
+            elif pristine is None:
+                knockdown = 1.0
+            else:
+                knockdown = _knockdown.knockdown(
+                    loading, _stiffness_measure(loading, K, u, applied_strain,
+                                                applied_load), pristine)
             reactions, effective_modulus = self._reactions_and_modulus(
                 loading, K, u, F, applied_strain, constrained,
                 applied_load=applied_load, ties=ties)

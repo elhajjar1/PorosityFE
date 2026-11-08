@@ -396,7 +396,8 @@ applied state is held for every $\lambda$ (see
   `fracture_governing_node`, `interior_fracture_load_factor`,
   `interior_fracture_governing_node`, `interface_forces`, `crack_contact`,
   `contact_iterations`, `contact_pairs` and `contact_converged`, all `None`
-  without a delaminated pair; `summary().details` carries them, with
+  without a delaminated pair (`interface_forces` is an array whenever the
+  mesh has duplicated interface nodes, all of them bonded included); `summary().details` carries them, with
   `toughness_knockdown` (a description of the porosity-toughness law) and
   `toughness_uncalibrated`, which the front table holds as
   `crack_front.toughness_knockdown` and `crack_front.toughness_uncalibrated`.

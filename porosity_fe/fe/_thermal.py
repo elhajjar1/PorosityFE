@@ -55,6 +55,16 @@ def check_layup_for_thermal(mesh: CompositeMesh, material: MaterialProperties,
     unsymmetric: the free laminate then warps, which linear theory
     captures only while the deflection is small next to the thickness.
     """
+    geometry = getattr(mesh, 'fracture_geometry', None)
+    if geometry is not None and geometry.plane_strain:
+        # The thermal state is solved free-standing on 3-2-1 supports,
+        # without the plane-strain u_y = 0 of the specimen: its residual
+        # state would be three-dimensional and depend on ny.
+        raise ValueError(
+            "A thermal load (delta_T) on a plane-strain fracture specimen is "
+            "not supported: the residual state is solved free-standing in "
+            "3-D, without the specimen's u_y = 0, so the result would depend "
+            "on ny. Build the specimen with plane_strain=False.")
     issues = mesh.layup_discrepancies()
     layup = ", ".join(f"{a:g}" for a in mesh.element_layup)
     n_plies = material.n_plies
