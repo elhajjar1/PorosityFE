@@ -9,7 +9,7 @@ its output redirected to ``tmp_path`` by ``POROSITY_FE_EXAMPLES_OUTPUT``.
 ``distribution_comparison.py`` also checks the two tables the README
 quotes from it ("Numbers reproduced by ``python
 examples/distribution_comparison.py``"): the empirical Judd-Wright
-compression knockdown and the FE Tsai-Wu compression knockdown for each
+compression knockdown and the FE (stiffness) compression knockdown for each
 distribution, at the README's printed precision. A change that moves them
 updates the README in the same PR. The script runs at its own default mesh
 (12 x 4 x 24, the one the README names), about 20 s.
@@ -95,8 +95,8 @@ def test_distribution_comparison_matches_the_readme(tmp_path, monkeypatch, capsy
     for title, section, model in (
             ('mode = compression, model = judd_wright, Vp_mean = 3 %',
              'Empirical knockdowns', 'judd_wright'),
-            ('mode = compression, FE Tsai-Wu, Vp_mean = 3 %',
-             'FE knockdowns', 'fe_tsai_wu')):
+            ('mode = compression, FE (stiffness), Vp_mean = 3 %',
+             'FE knockdowns', 'fe_stiffness')):
         readme = _readme_block(title)
         script = _script_row(out, section, model)
         for label in LABELS:
@@ -104,5 +104,5 @@ def test_distribution_comparison_matches_the_readme(tmp_path, monkeypatch, capsy
             assert script[label] == pytest.approx(value, abs=0.5 * 10.0 ** -decimals + 1e-12), \
                 f"{title}: {label} prints {script[label]}, the README says {value}"
     # The README's reading of the FE table: the interface case is the lowest.
-    fe = _script_row(out, 'FE knockdowns', 'fe_tsai_wu')
+    fe = _script_row(out, 'FE knockdowns', 'fe_stiffness')
     assert min(fe, key=fe.__getitem__) == 'interface'
