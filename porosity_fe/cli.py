@@ -95,6 +95,17 @@ def _vp_label(Vp: float) -> str:
     return f"{pct:.4f}".rstrip('0').rstrip('.').replace('.', 'p') + "pct"
 
 
+class _DefaultsHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Append ``(default: ...)`` only for a real default: an option whose
+    default is ``None`` states its effective default in its own help, which
+    "(default: None)" contradicted."""
+
+    def _get_help_string(self, action: argparse.Action) -> str | None:
+        if action.default is None:
+            return action.help
+        return super()._get_help_string(action)
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Construct the argparse driver for the analysis pipeline."""
     parser = argparse.ArgumentParser(
@@ -103,7 +114,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Run the porosity-degraded composite laminate analysis over one "
             "or more void volume fractions and write JSON results."
         ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_DefaultsHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -269,9 +280,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="G",
         help=("Interlaminar toughness G_IC G_IIC BK_ETA [G_IIIC]: mode I and "
               "II toughness (N/mm), the Benzeggagh-Kenane exponent and "
-              "optionally the mode III toughness (default G_IIC). No preset "
-              "has them; without them the screening reports energy release "
-              "rates only, no fracture load factor."))
+              "optionally the mode III toughness (default G_IIC). Of the "
+              "presets only IM7_8552_epoxy carries them (these override it); "
+              "for the others, without them the screening reports energy "
+              "release rates only, no fracture load factor."))
     delam.add_argument(
         "--toughness-knockdown", choices=('exponential', 'none'), default=None,
         help=("Porosity knockdown of the toughness at the front: "

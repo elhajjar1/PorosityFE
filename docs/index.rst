@@ -65,7 +65,9 @@ For the empirical (closed-form) knockdown models, use
          f"(knockdown {result.knockdown:.3f})")
 
 ``Vp`` is always a fraction in ``[0, 1]`` in the Python API (``0.02`` is
-2 %); only the CLI's ``--vp-pct`` and the web app take percent.
+2 %); only the CLI's ``--vp-pct``, the web app's Vp field and the NCR
+disposition (``recommend_disposition(Vp_percent, ...)``,
+``DispositionPolicy.vp_percent_bounds``) take percent.
 
 Contents
 --------

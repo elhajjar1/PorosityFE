@@ -442,8 +442,8 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   - App sidebar: a delamination of the FE mesh (an NDI indication:
     interface, ellipse / rectangle / through-width strip, position and full
     size in mm) with the knockdown split by defect; the interlaminar
-    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; no preset carries
-    them) and its porosity knockdown (the placeholder exponential law,
+    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; of the presets
+    only `IM7_8552_epoxy`, added in this release, carries them) and its porosity knockdown (the placeholder exponential law,
     none, or your `b_I`, `b_II`); an interface onset check (Brewer-Lagace,
     with `x_avg`); and the FE-only loading modes `dcb`, `enf` and `mmb`
     (test planning, with the crack length and the MMB mode ratio that sets
@@ -632,8 +632,9 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     the phase 4 entry below.
   - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
     (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
-    `None` by default; no preset sets them. Without them the solve reports
-    the energy release rates only. The theory page lists sourced values.
+    `None` by default; of the presets only `IM7_8552_epoxy` (added in this
+    release) sets them. Without them the solve reports the energy release
+    rates only. The theory page lists sourced values.
   - New optional `FieldResults` fields `crack_front`,
     `fracture_load_factor`, `fracture_governing_node`, `interface_forces`,
     `crack_contact`, `contact_iterations`, `contact_pairs` and

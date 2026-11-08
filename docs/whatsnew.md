@@ -62,7 +62,8 @@ cohesive zone or buckling.
   the production mesh a first solve became about 5 times faster and a
   repeat solve about 60 times.
 - **A memory budget** (`FESolver(max_memory_gb=...)`, default 80 % of
-  physical memory). Each factorization is estimated before it is built,
+  physical memory, or of a Linux container's memory limit when that is
+  smaller). Each factorization is estimated before it is built,
   and refused with the estimate and the alternatives when it does not
   fit. With `solver='cg'` nothing is factorized, the knockdown's pristine
   reference included.
