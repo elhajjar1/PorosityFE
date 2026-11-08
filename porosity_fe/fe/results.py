@@ -245,8 +245,9 @@ class FieldResults:
         contact was not enforced.
     contact_converged : bool or None
         Whether the contact active set settled within the iteration cap
-        (a warning is logged when it did not); ``None`` when contact was
-        not enforced.
+        (a warning is logged when it did not); ``False`` too when the set
+        cycled and the loop stopped early on the cycle's set with the
+        fewest pairs in contact; ``None`` when contact was not enforced.
     load_point_compliance : float or None
         Load-point compliance ``C = (F . u) / P^2`` (mm/N) of the fracture
         tests ('dcb', 'enf', 'mmb'), with ``F`` the applied nodal forces,

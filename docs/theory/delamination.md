@@ -220,7 +220,13 @@ pairs in contact:
    $\varepsilon = 10^{-9}$ for the direct solver, $100\,\text{rtol}$ for
    conjugate gradients.
 3. Repeat until the set does not change: at most 30 solves, with a warning
-   (and `contact_converged = False`) if it still changes.
+   (and `contact_converged = False`) if it still changes. A set that comes
+   back stops the loop early, also with `contact_converged = False`: with a
+   thermal prestress the thermal part is solved on the 3-2-1 support and the
+   mechanical part on the load case's, so no single set may satisfy both
+   conditions (a pair penetrates when free and pulls when tied). The result
+   is then the solve of the cycle's set with the fewest pairs in contact, so
+   it does not depend on the iteration cap.
 
 Only the ties change between solves; $\mathbf K$ is assembled once. Every new
 active set is a new reduced matrix $\mathbf T^\mathsf T \mathbf K \mathbf T$,

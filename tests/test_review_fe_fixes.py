@@ -106,3 +106,39 @@ class TestCltFlexuralModulus:
         expected = 12.0 / (h ** 3 * np.linalg.inv(D)[0, 0])
         ef = compute_degraded_clt_flexural_modulus(mat, layup, 0.03)['Ef_x']
         assert ef == pytest.approx(expected, rel=1e-12)
+
+
+class TestContactCycle:
+    """With a thermal prestress the thermal (3-2-1) and mechanical supports
+    differ, so a crack-face pair can penetrate when free and pull when
+    tied: the active set cycled to the 30-solve cap, and the result
+    depended on the cap's parity."""
+
+    @staticmethod
+    def _solve(cap):
+        mat = dataclasses.replace(MAT, alpha_1=-0.5e-6, alpha_2=30e-6)
+        layup = [-45, -45, 90, 90]
+        pf = PorosityField(mat, 0.03)
+        crack = Delamination.ellipse(2, (5.89327432919602, 3.789431724392347),
+                                     (1.8454338138908746, 1.589502062084048))
+        mesh = CompositeMesh(pf, mat, nx=12, ny=6, nz=4, length=12.0, width=6.0,
+                             ply_angles=layup, delaminations=[crack])
+        solver = FESolver(mesh, mat, pf, ply_angles=layup)
+        solver._CONTACT_MAX_ITERATIONS = cap
+        return mesh, solver.solve('compression', delta_T=-120.0,
+                                  allow_unresolved_layup=True)
+
+    def test_a_cycle_stops_early_and_does_not_depend_on_the_cap(self):
+        mesh, r = self._solve(30)
+        assert r.contact_converged is False
+        assert r.contact_iterations <= 3
+        # The cycle's set with the fewest pairs in contact, and fields that
+        # belong to it (no tie, so no contact force, a slight penetration).
+        assert r.contact_pairs == 0
+        originals, duplicates = mesh.interface_node_pairs()
+        open_ = ~mesh.bonded_pairs()
+        assert np.all(r.interface_forces[open_, 2] == 0.0)
+        gap = (r.displacement[duplicates, 2] - r.displacement[originals, 2])[open_]
+        assert -1e-4 < gap.min() < 0.0
+        _, r29 = self._solve(29)
+        assert r29.fracture_load_factor == r.fracture_load_factor

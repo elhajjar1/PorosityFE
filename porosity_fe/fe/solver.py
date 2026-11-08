@@ -491,7 +491,9 @@ class FESolver:
             delaminated pairs, re-solved until no pair penetrates and none
             carries a tensile contact force (at most
             :attr:`_CONTACT_MAX_ITERATIONS` solves; a warning if the set
-            still changes). Only the ties change between solves, never
+            still changes, and an early stop on the cycle's set with the
+            fewest pairs in contact if a set comes back). Only the ties
+            change between solves, never
             ``K``. With ``delta_T`` the contact is that of the total
             (residual plus mechanical) state, and both solves use its
             active set. ``False`` lets the faces interpenetrate (the
@@ -843,7 +845,10 @@ class FESolver:
         when the last set's system is still in the cache. The active set
         the loop converges to does not depend on where it starts (up to
         pairs whose opening and contact force are both within round-off of
-        zero).
+        zero). A loop that cycles (possible with a thermal prestress, whose
+        thermal and mechanical parts are solved on different supports)
+        stops when a set comes back and keeps the cycle's set with the
+        fewest pairs in contact, not converged.
 
         Returns the unit thermal solution (or ``None``), the mechanical
         displacement (or ``None``) and the contact state.

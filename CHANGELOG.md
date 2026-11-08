@@ -1242,11 +1242,19 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     full ABD inverse, which the FE beam reproduces. It now takes the
     bending block of the full inverse. Symmetric layups (B = 0), and with
     them the validation datasets, are unchanged.
-  - **Not fixed:** a thermal prestress combined with crack-face contact can
-    cycle between two active sets (`contact_converged=False`). The thermal
-    and mechanical solves have different supports, so one active set
-    cannot satisfy both. The fix is a change of formulation, open for a
-    decision.
+  - **Crack-face contact with a thermal prestress could cycle to the cap.**
+    The thermal part is solved on the 3-2-1 support and the mechanical
+    part on the load case's, so a pair can penetrate when free and pull
+    when tied, and no active set satisfies both. The loop alternated
+    between two sets for all 30 solves, and the result depended on
+    whether the cap was odd or even. A set
+    that comes back now stops the loop (`contact_converged=False`, with a
+    warning) and the result is the solve of the cycle's set with the
+    fewest pairs in contact, which does not depend on the cap; in the
+    reproduction it penetrates by 9e-6 mm. Loops that settle are
+    unchanged, and so is the FE fingerprint. The full fix, solving the
+    thermal contact first and the mechanical increment from it, is a
+    change of formulation, open for a decision.
 - **App and plot review, November 2026.** Each defect was reproduced
   first; the tests are in `tests/test_app.py` (`TestAppReviewFixes`),
   `tests/test_app_streamlit.py` (`TestSidebarReviewFixes`) and
