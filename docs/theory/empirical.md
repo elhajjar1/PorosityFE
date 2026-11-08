@@ -142,9 +142,11 @@ The per-mode values are on the solver's `layup_scale` attribute
 ({class}`~porosity_fe.EmpiricalSolver`).
 
 ```{note}
-**Scales above 1 are unvalidated.** None of the 13 bundled validation
-datasets uses an angle-ply, off-axis or 90°-rich layup. Ten are UD, two are
-cross-ply and one is QI, and all of them get $s = 1$. The amplification
+**Scales above 1 are unvalidated.** None of the 17 bundled strength and
+modulus datasets is modelled with an angle-ply, off-axis or 90°-rich layup.
+Twelve are UD (including the two ±45 in-plane shear datasets, given in
+lamina axes), two are cross-ply and three are QI, and all of them get
+$s = 1$. The amplification
 therefore rests only on CLT and the calibrated mode alphas.
 {meth}`~porosity_fe.EmpiricalSolver.get_failure_load` records any scale
 above 1 in `details['layup_scale']` and emits one `UserWarning` per call.

@@ -24,7 +24,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
 - **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
-- **Four loading modes**: Compression, tension, shear, ILSS
+- **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Nine material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK, AS4/3501-6, HTA/EHkF420 and IM7/8552 (or define your own)
@@ -78,8 +78,9 @@ porosity, loading mode, FE thermal load, delamination and toughness, mesh) and t
 knockdown bar chart, FE stress maps, and result downloads (including the FE
 field as a `.vtu` file for ParaView).
 
-The empirical knockdowns of compression, tension, shear and ILSS are always
-all computed; the loading mode selects the FE solve. ILSS runs on the ASTM
+The empirical knockdowns of compression, tension, shear, ILSS and
+transverse tension are always all computed; the loading mode selects the
+FE solve. ILSS runs on the ASTM
 D2344 short-beam specimen. `flexure_3pt` and `flexure_4pt` are FE only
 (ASTM D7264 procedures A and B on the `CompositeMesh.for_flexure`
 specimen, span 32 thicknesses, 13 mm wide). They report the FE flexural
@@ -91,7 +92,10 @@ The Mesh and Stress tabs draw the mid-width section of the laminate with
 the thickness exaggerated (the z axis label gives the factor). The stress
 map uses a diverging scale centred on zero only when the stress changes
 sign, and the Stress tab opens on the component that governs the load
-case (τ13 for ILSS, σ22 for thermal only, τ12 for shear, σ11 otherwise).
+case: the interlaminar shear √(τ13² + τ23²) for ILSS, ENF and MMB, σ33
+for the DCB, σ22 for thermal only, τ12 for shear, and σ11 otherwise (σ22
+when no ply lies within 45° of the load). A component that is zero by
+symmetry is drawn as 0, not as its round-off.
 The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
@@ -171,7 +175,7 @@ Community Cloud.
 ```bash
 porosity-analyze
 ```
-Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
+Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations and writes the JSON results; `--plots` adds the PNG figures (off by default, they are slow).
 
 An opt-in FE delamination screening of the coupon adds, at each porosity
 level, the fracture results and the knockdown split by defect
@@ -308,9 +312,9 @@ python -m sphinx -b html docs docs/_build/html   # open docs/_build/html/index.h
 ## Examples
 
 Runnable scripts under [`examples/`](examples/) cover the most common
-configurations end-to-end. Each script is standalone (~30–50 lines), prints
-a short result table, and saves a single PNG to `examples/output/` (which
-is gitignored). Run any of them from the repo root:
+configurations end-to-end. Each script is standalone (60 to 260 lines),
+prints a short result table, and saves its figures (one PNG, two for
+`distribution_comparison.py`) to `examples/output/` (which is gitignored). Run any of them from the repo root:
 
 ```bash
 python examples/uniform_spherical.py
@@ -347,7 +351,8 @@ python -m PyInstaller ValidatePorosity.spec --noconfirm --clean
 ```
 
 Pre-built executables for all three platforms are produced automatically
-by GitHub Actions on every push; download them from the Actions tab
+by GitHub Actions on pushes to `master` and `feature/**` branches, on
+`v*` tags and on manual dispatch; download them from the Actions tab
 (artifact names: `validate_porosity-linux`, `-macos`, `-windows`) or
 from the Releases page for tagged versions.
 
@@ -361,7 +366,7 @@ validate_porosity --quiet            # suppress progress output
 
 ## Porosity Distribution Choice
 
-`PorosityField` supports four through-thickness shapes, all renormalized
+`PorosityField` supports five through-thickness shapes, all renormalized
 so the *specimen-average* void volume fraction equals the input `Vp`:
 
 | `distribution` (+ `cluster_location`) | Through-thickness shape |
@@ -369,6 +374,7 @@ so the *specimen-average* void volume fraction equals the input `Vp`:
 | `uniform` | Constant `Vp` at every `z`. |
 | `clustered` + `cluster_location='midplane'` | Gaussian peak at the midplane (`sigma = Lz / 6`). |
 | `clustered` + `cluster_location='surface'` | Gaussian peak at the laminate surface. |
+| `clustered` + `cluster_location='quarter'` | Gaussian peak at a quarter of the thickness. |
 | `interface` | Sum of Gaussians centred on every ply-to-ply interface (`sigma = 0.35 * t_ply`). |
 
 **Note on terminology.** There is no preset literally named `stack`; the
@@ -398,7 +404,7 @@ peak-vs-mean difference. Running the same four cases through `FESolver`
 gives distinct compression knockdowns even at matched mean:
 
 ```
-mode = compression, FE Tsai-Wu, Vp_mean = 3 %
+mode = compression, FE (stiffness), Vp_mean = 3 %
   uniform               0.9924
   clustered (midplane)  0.9925
   clustered (surface)   0.9928
@@ -465,8 +471,10 @@ an element layer spanning plies of different angles keeps only one of
 them: with `nz = 12`, a 24-ply `'QI'` layup becomes `[90, -45, 45, 0]`
 three times over, which is not symmetric. The production mesh
 (`build_empirical_pipeline`, `compare_configurations`, the app) is
-30 x 10 x `n_plies`, which resolves every preset; above 48 plies `nz`
-stops at 48, so pass `mesh_res` to resolve a thicker laminate. `FESolver`
+30 x 10 x `n_plies`, which resolves every preset. Above 48 plies it takes
+the largest `nz` up to 48 whose element layers each hold plies of one
+angle (e.g. 40 for 60 plies in blocks of 6), and stays at 48 with a
+warning only when there is none; pass `mesh_res` to choose another. `FESolver`
 logs a warning with the element layup, and
 `CompositeMesh.layup_discrepancies()` returns the same findings.
 
@@ -484,7 +492,7 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 
 | File Pattern | Description |
 |---|---|
-| `porosity_profile_*.png` | Through-thickness porosity profiles |
+| `porosity_profile_*.png` | Through-thickness porosity profiles (`--plots`, as every PNG here) |
 | `porosity_mesh_3d_*.png` | 3D mesh with hexahedral elements |
 | `porosity_mesh_detail_*.png` | Cross-section element detail |
 | `porosity_damage_*.png` | Midplane map of the compression (Judd-Wright) strength knockdown |
@@ -661,8 +669,9 @@ values as `EmpiricalSolver.layup_scale`.
 | `[±45]_2s` | 1.94 | 1.14 | 7.56 / 7.88 |
 | `[90]_8`   | 2.56 | 1.16 | 10.0 / 8.0 |
 
-> **Scales above 1 are not validated.** None of the 13 bundled datasets
-> uses an angle-ply, off-axis or 90°-rich layup, so the amplification rests
+> **Scales above 1 are not validated.** None of the 17 strength and modulus
+> datasets is modelled with a layup whose scale exceeds 1 (the two ±45
+> shear datasets are given in lamina axes), so the amplification rests
 > only on CLT and the calibrated mode alphas. When a scale above 1 is used,
 > `get_failure_load` records it in `details['layup_scale']` (with
 > `details['layup_extrapolated'] = True`) and emits a `UserWarning`. The

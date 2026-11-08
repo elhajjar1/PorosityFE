@@ -120,9 +120,9 @@ class MaterialProperties:
         explicit :class:`~porosity_fe.Delamination`
         (:func:`~porosity_fe.critical_energy_release_rate`); without them
         the energy release rates are still computed, and the critical load
-        factor is ``None``. No preset sets them: pass measured values (the
-        theory page "Delamination" lists sourced ones). Positive and
-        finite.
+        factor is ``None``. Of the presets only ``IM7_8552_epoxy`` sets
+        them; for the others pass measured values (the theory page
+        "Delamination" lists sourced ones). Positive and finite.
     G_IIIc : float, optional
         Mode III (tearing shear) toughness in N/mm; ``None`` (default)
         uses ``G_IIc``. Positive and finite.

@@ -58,6 +58,9 @@ class FieldResults:
         Stiffness knockdown factor: porous over pristine structural
         stiffness from a pristine reference solve of the same mesh (``E_x``
         or ``G_xy`` ratio; beam-stiffness ratio for ILSS and flexure).
+        Exactly 1.0 for a mesh without porosity, voids or delamination;
+        NaN for a thermal-only solve and at a zero mechanical load, where
+        no stiffness is measured (``effective_modulus`` is ``None`` then).
     per_element_failure_index : np.ndarray or None
         Shape (n_elem,) max-over-Gauss-point failure index per element.
         Optional (defaults to ``None`` for back-compatibility with callers
@@ -242,8 +245,9 @@ class FieldResults:
         contact was not enforced.
     contact_converged : bool or None
         Whether the contact active set settled within the iteration cap
-        (a warning is logged when it did not); ``None`` when contact was
-        not enforced.
+        (a warning is logged when it did not); ``False`` too when the set
+        cycled and the loop stopped early on the cycle's set with the
+        fewest pairs in contact; ``None`` when contact was not enforced.
     load_point_compliance : float or None
         Load-point compliance ``C = (F . u) / P^2`` (mm/N) of the fracture
         tests ('dcb', 'enf', 'mmb'), with ``F`` the applied nodal forces,

@@ -1311,7 +1311,8 @@ class TestDirichletElimination:
         with _minres_warns(solver_name):
             r = solver.solve('compression', applied_strain=0.0, solver=solver_name)
         assert np.all(r.displacement == 0.0)
-        assert r.knockdown == 1.0
+        # Undefined at zero load, like the modulus (it read 1.0, "no loss").
+        assert np.isnan(r.knockdown)
         assert r.effective_modulus is None
 
 

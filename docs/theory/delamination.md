@@ -220,7 +220,13 @@ pairs in contact:
    $\varepsilon = 10^{-9}$ for the direct solver, $100\,\text{rtol}$ for
    conjugate gradients.
 3. Repeat until the set does not change: at most 30 solves, with a warning
-   (and `contact_converged = False`) if it still changes.
+   (and `contact_converged = False`) if it still changes. A set that comes
+   back stops the loop early, also with `contact_converged = False`: with a
+   thermal prestress the thermal part is solved on the 3-2-1 support and the
+   mechanical part on the load case's, so no single set may satisfy both
+   conditions (a pair penetrates when free and pulls when tied). The result
+   is then the solve of the cycle's set with the fewest pairs in contact, so
+   it does not depend on the iteration cap.
 
 Only the ties change between solves; $\mathbf K$ is assembled once. Every new
 active set is a new reduced matrix $\mathbf T^\mathsf T \mathbf K \mathbf T$,
@@ -396,7 +402,8 @@ applied state is held for every $\lambda$ (see
   `fracture_governing_node`, `interior_fracture_load_factor`,
   `interior_fracture_governing_node`, `interface_forces`, `crack_contact`,
   `contact_iterations`, `contact_pairs` and `contact_converged`, all `None`
-  without a delaminated pair; `summary().details` carries them, with
+  without a delaminated pair (`interface_forces` is an array whenever the
+  mesh has duplicated interface nodes, all of them bonded included); `summary().details` carries them, with
   `toughness_knockdown` (a description of the porosity-toughness law) and
   `toughness_uncalibrated`, which the front table holds as
   `crack_front.toughness_knockdown` and `crack_front.toughness_uncalibrated`.

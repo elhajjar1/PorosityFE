@@ -29,7 +29,7 @@ pip install -e ".[web]"
 streamlit run app.py                          # http://localhost:8501
 
 # Batch analysis CLI (entry points from pyproject.toml [project.scripts])
-porosity-analyze                              # sweep 5 Vp × 5 configs, PNG + JSON
+porosity-analyze                              # sweep 5 Vp × 5 configs, JSON (--plots adds PNGs)
 validate_porosity --help                      # run vs. bundled validation datasets
 
 # Standalone CLI executable (PyInstaller)
@@ -56,7 +56,7 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
 ### Package layout (post #119 split)
 
 The implementation lives in the `porosity_fe/` package. The top-level
-`porosity_fe_analysis.py` is a 62-line **compatibility shim** that re-exports
+`porosity_fe_analysis.py` is a short **compatibility shim** that re-exports
 everything from `porosity_fe` so legacy `from porosity_fe_analysis import X`
 callers keep working. **New code should import from `porosity_fe` directly**;
 do not add new symbols to `porosity_fe_analysis.py`.
@@ -76,8 +76,10 @@ different numerical answers for the same inputs**, not the same answer:
   knockdown applied **once at the laminate level** using the
   specimen-average `Vp`. The distribution shape (`uniform` vs `clustered`
   vs `interface`) has **no effect** here because all are renormalized to
-  the same mean. Layup enters through `EmpiricalSolver._layup_scales()`
-  (`porosity_fe/_layup.py`, IMPROVEMENT_PLAN 2.7): `shear` / `ilss` /
+  the same mean. Layup enters through `_layup_scales(material, ply_angles)`
+  in `porosity_fe/empirical.py` (read per mode by
+  `EmpiricalSolver._layup_scale(mode)`; the CLT energy partition is in
+  `porosity_fe/_layup.py`, IMPROVEMENT_PLAN 2.7): `shear` / `ilss` /
   `transverse_tension` are layup-independent, and `tension` /
   `compression` scale by `max(1, CLT-energy blend / alpha_QI)`, so QI
   layups are unchanged and a scale above 1 is flagged as unvalidated. The

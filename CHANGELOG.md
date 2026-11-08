@@ -442,8 +442,8 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   - App sidebar: a delamination of the FE mesh (an NDI indication:
     interface, ellipse / rectangle / through-width strip, position and full
     size in mm) with the knockdown split by defect; the interlaminar
-    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; no preset carries
-    them) and its porosity knockdown (the placeholder exponential law,
+    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; of the presets
+    only `IM7_8552_epoxy`, added in this release, carries them) and its porosity knockdown (the placeholder exponential law,
     none, or your `b_I`, `b_II`); an interface onset check (Brewer-Lagace,
     with `x_avg`); and the FE-only loading modes `dcb`, `enf` and `mmb`
     (test planning, with the crack length and the MMB mode ratio that sets
@@ -632,8 +632,9 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     the phase 4 entry below.
   - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
     (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
-    `None` by default; no preset sets them. Without them the solve reports
-    the energy release rates only. The theory page lists sourced values.
+    `None` by default; of the presets only `IM7_8552_epoxy` (added in this
+    release) sets them. Without them the solve reports the energy release
+    rates only. The theory page lists sourced values.
   - New optional `FieldResults` fields `crack_front`,
     `fracture_load_factor`, `fracture_governing_node`, `interface_forces`,
     `crack_contact`, `contact_iterations`, `contact_pairs` and
@@ -1214,6 +1215,46 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **FE orchestration review, November 2026.** Each defect was reproduced
+  first; the tests are in `tests/test_review_fe_fixes.py` (and the
+  zero-load ones in `test_fe_solver.py` and `test_fe_flexure.py`).
+  - **A load that releases no energy gave a finite fracture load factor.**
+    Examples: a UD laminate under a uniform temperature, or the mid-plane
+    of a symmetric laminate in shear. G_T is round-off there (about 1e-29),
+    so `lambda_c` came out between 1e7 and 1e14, with a governing node and
+    a mode mix that meant nothing. A front node whose G_T is below 1e-6 of
+    its tie force times the solve's largest displacement over its area
+    releases no energy, and its factor is now `inf`, as
+    `FieldResults.fracture_load_factor` documents. Measured: about 1e-16
+    for a direct solve and 1e-8 for CG at its default tolerance, against
+    5e-5 to 3e-3 on a front that opens. The FE fingerprint does not move.
+  - **The FE knockdown at a zero mechanical load read 1.0** ("no stiffness
+    loss") on a porous mesh. No stiffness is measured at zero load, so the
+    knockdown is now NaN there, as for a thermal-only solve, and the
+    modulus stays `None`.
+  - **A thermal load on a `plane_strain=True` fracture specimen** solved
+    the residual state free-standing in 3-D, without the specimen's
+    `u_y = 0`. The onset factor of a cross-ply DCB then moved from 1.01 to
+    0.77 with `ny`. It now raises; the app and CLI do not use plane strain.
+  - **`compute_degraded_clt_flexural_modulus` ignored bending-stretching
+    coupling.** It inverted D alone, so an unsymmetric layup's beam was
+    about twice too stiff: [0_4/90_4] read 76.5 GPa against 33.5 from the
+    full ABD inverse, which the FE beam reproduces. It now takes the
+    bending block of the full inverse. Symmetric layups (B = 0), and with
+    them the validation datasets, are unchanged.
+  - **Crack-face contact with a thermal prestress could cycle to the cap.**
+    The thermal part is solved on the 3-2-1 support and the mechanical
+    part on the load case's, so a pair can penetrate when free and pull
+    when tied, and no active set satisfies both. The loop alternated
+    between two sets for all 30 solves, and the result depended on
+    whether the cap was odd or even. A set
+    that comes back now stops the loop (`contact_converged=False`, with a
+    warning) and the result is the solve of the cycle's set with the
+    fewest pairs in contact, which does not depend on the cap; in the
+    reproduction it penetrates by 9e-6 mm. Loops that settle are
+    unchanged, and so is the FE fingerprint. The full fix, solving the
+    thermal contact first and the mechanical increment from it, is a
+    change of formulation, open for a decision.
 - **App and plot review, November 2026.** Each defect was reproduced
   first; the tests are in `tests/test_app.py` (`TestAppReviewFixes`),
   `tests/test_app_streamlit.py` (`TestSidebarReviewFixes`) and

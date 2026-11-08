@@ -6,8 +6,8 @@ Installing the package puts two commands on ``PATH``
 generated from the argument parsers themselves, so they match the installed
 version.
 
-Porosity is given in **percent** on the command line (``--vp-pct 2`` means
-2 %); the Python API always takes a fraction (``Vp=0.02``).
+``--vp`` takes a void **fraction** (``--vp 0.02`` means 2 %), like the
+Python API (``Vp=0.02``); ``--vp-pct`` takes percent (``--vp-pct 2``).
 
 porosity-analyze
 ----------------
@@ -15,8 +15,8 @@ porosity-analyze
 Runs the empirical analysis over one or more porosity levels and the five
 standard porosity configurations (:data:`porosity_fe.POROSITY_CONFIGS`),
 and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
-uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or a
-failed analysis.
+uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or an
+output that cannot be written, ``3`` on a failed analysis.
 
 ``--delamination SPEC`` adds an opt-in FE delamination screening at each
 porosity level: the production coupon (``'QI'`` layup) with the
@@ -31,9 +31,9 @@ the ``knockdown_decomposition`` block, and prints one summary line.
 ``SPEC`` is ``strip:K:X_START:X_END``, ``rectangle:K:XC:YC:LX:WY`` or
 ``ellipse:K:XC:YC:LX:WY``: the interface ``K`` (between ply ``K`` and
 ``K + 1`` from the bottom, 0-based) and lengths in mm on the 50 x 20 mm
-coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. No preset
-has interlaminar toughness, so the fracture load factor needs
-``--toughness`` (N/mm). ``--porosity-degradation directional`` solves the
+coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. Of the
+presets only ``IM7_8552_epoxy`` carries interlaminar toughness; for the
+others the fracture load factor needs ``--toughness`` (N/mm). ``--porosity-degradation directional`` solves the
 screening with the opt-in, uncalibrated direction-aware porosity
 degradation (``FESolver(porosity_degradation='directional')``: flat voids
 weaken the out-of-plane stiffness and the interlaminar strengths more than

@@ -458,7 +458,9 @@ class TestFlexureSolve:
         solver = FESolver(mesh, THIN, mesh.porosity_field, ply_angles='UD')
         r = solver.solve('flexure_3pt', applied_load=0.0)
         assert not r.displacement.any()
-        assert r.knockdown == 1.0
+        # No stiffness is measured at zero load: the knockdown is undefined,
+        # like the modulus (it read 1.0, "no loss", on a porous mesh).
+        assert np.isnan(r.knockdown)
         assert r.effective_modulus is None
 
     def test_pristine_reference_is_keyed_on_the_test_geometry(self):
