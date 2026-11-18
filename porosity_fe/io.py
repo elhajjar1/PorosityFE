@@ -221,6 +221,12 @@ _UNITS_NCR_DELAMINATION = {
     "Vp": "dimensionless fraction in [0, 1]",
     "bk_eta": "dimensionless",
 }
+#: Units of the ``allowable_porosity`` block of an NCR's engineering
+#: analysis, added only when the block is written.
+_UNITS_NCR_ALLOWABLE = {
+    "allowable_Vp_percent": "%",
+    "required_knockdown": "dimensionless fraction in (0, 1]",
+}
 _UNITS_STREAMLIT_EMPIRICAL = {
     "failure_stress": "MPa",
     "knockdown": "dimensionless fraction in (0, 1]",

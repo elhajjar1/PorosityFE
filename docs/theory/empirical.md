@@ -179,6 +179,56 @@ per-node knockdown field from
 each node's local $V_p$. It is meant for visualizing where the porosity
 sits, not as a second failure prediction.
 
+## Allowable porosity
+
+The laws can be read the other way: which void content still leaves a
+required share $r$ of the pristine strength? With $f$ the product of the
+hygrothermal and fatigue factors (1 without them), the largest
+$\bar V_p$ with $KD \, f \ge r$ is
+
+$$
+\bar V_p^{\max} = \frac{\ln(f/r)}{\alpha}, \qquad
+\bar V_p^{\max} = 1 - (r/f)^{1/n}, \qquad
+\bar V_p^{\max} = \frac{1 - r/f}{\beta}
+$$
+
+for the Judd-Wright, power and linear laws.
+{meth}`~porosity_fe.EmpiricalSolver.allowable_porosity` returns it as a
+{class}`~porosity_fe.PorosityAllowable`:
+
+```python
+from porosity_fe import MATERIALS, build_empirical_pipeline
+
+_, _, solver = build_empirical_pipeline(MATERIALS['T700_epoxy'], 0.02)
+allowable = solver.allowable_porosity(0.9, 'ilss')      # keep 90 % of the ILSS
+allowable.Vp            # 0.0105: 1.05 % voids
+solver.allowable_porosity(required_stress=1000.0)       # MPa, compression
+```
+
+The requirement is a knockdown in $(0, 1]$ or a stress in MPa. The solver
+finds the crossing by bisection on the law, so a new law or a user callable
+needs no inverse of its own; the result is rounded towards the safe side
+and meets the requirement. Three cases are marked on the result:
+
+- `achievable` is false, and `Vp` is `nan`, when the void-free laminate is
+  already below the requirement ($r > f$, or a required stress above the
+  pristine strength).
+- `extrapolated` is true when the allowable lies beyond the
+  $V_p \le 0.05$ of the calibration data, and a warning says so.
+- `details` carries the layup scale when it is above 1, with its warning.
+
+{meth}`~porosity_fe.EmpiricalSolver.get_all_allowable_porosities` gives the
+table for the five strength modes and the three laws; a dict of mode to
+requirement sets a different requirement per mode. The smallest entry
+governs (`porosity_fe.reporting.governing_allowable`). The toughness modes
+are inverted the same way, with the law of `toughness_knockdown`.
+
+The allowable depends on the material, the layup and the coefficients. It
+does not depend on the distribution, like every specimen-average result of
+this solver. It is the void content at which the *predicted* strength
+meets the requirement: the porosity allowable of the released drawing or
+process specification remains the acceptance limit.
+
 ## Toughness modes
 
 `mode_I_toughness` and `mode_II_toughness` screen the interlaminar

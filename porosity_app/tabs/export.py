@@ -119,6 +119,20 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
                     "for any Use-As-Is."
                 ),
             )
+            required_retained = st.number_input(
+                "Required retained strength (% of pristine, optional)",
+                min_value=1.0, max_value=100.0, value=None, step=1.0,
+                format="%.4g", key="ncr_required_retained",
+                placeholder="optional",
+                help=(
+                    "Adds the allowable void content to the summary: the "
+                    "largest void content at which every strength mode "
+                    "still retains this share of its pristine strength, "
+                    "from the empirical knockdown laws. Take it from your "
+                    "margin of safety; it does not change the recommended "
+                    "path."
+                ),
+            )
         indication, required = "porosity", None
         if delamination_ncr:
             c3, c4 = st.columns(2)
@@ -172,6 +186,8 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
     if indication != "porosity":
         meta["indication"] = indication
         meta["required_load_factor"] = float(required)
+    if required_retained is not None:
+        meta["required_knockdown"] = float(required_retained) / 100.0
     ncr = build_ncr_record(result, meta)
     dp = ncr["recommended_disposition"]
     assessment = ncr.get("delamination", {}).get("assessment")
@@ -191,6 +207,10 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
             f"{assessment['statement']}"
         )
         st.info(assessment["disclaimer"])
+    allowable = ncr["engineering_analysis"].get("allowable_porosity")
+    if allowable is not None:
+        st.info(f"**Allowable void content.** {allowable['statement']}  \n"
+                f"{allowable['basis']}")
 
     ncr_md = serialise_ncr_markdown(ncr)
     stem = (

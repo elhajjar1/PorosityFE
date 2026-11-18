@@ -98,6 +98,10 @@ cohesive zone or buckling.
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.
+- **Allowable porosity**: `EmpiricalSolver.allowable_porosity` gives the
+  largest void content that still retains a required strength, the
+  inverse of the knockdown laws. The NCR form takes an optional required
+  retained strength and reports the governing allowable void content.
 - **JSON exports** carry a `units` block. The results schema is at 1.3,
   with additive blocks only.
 - **An `IM7_8552_epoxy` material preset** carries interlaminar toughness

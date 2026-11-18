@@ -62,6 +62,7 @@ Empirical solver
    Calibration
    FatigueModel
    FailureResult
+   PorosityAllowable
 
 Finite-element solver
 ---------------------

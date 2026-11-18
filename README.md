@@ -26,6 +26,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
 - **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
+- **Allowable porosity**: the largest void content that still retains a required strength, per mode and law, with the governing one in the NCR summary
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Nine material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK, AS4/3501-6, HTA/EHkF420 and IM7/8552 (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
@@ -690,6 +691,19 @@ remains available as a legacy descriptor.
 #### Validity bounds
 
 The calibration data covers `Vp ≲ 0.05`. Beyond that, both forms should be treated as extrapolations. `Vp` alone does not capture void *morphology* (size, aspect ratio, clustering), which is a known source of scatter — use the FE solver path when spatial stress-concentration detail is needed.
+
+#### Allowable porosity
+
+`EmpiricalSolver.allowable_porosity` inverts the laws: it returns the largest specimen-average `Vp` (a fraction) at which a mode still retains a required share of its pristine strength.
+
+```python
+_, _, solver = build_empirical_pipeline(MATERIALS['T700_epoxy'], 0.02)
+solver.allowable_porosity(0.9, 'ilss').Vp           # 0.0105: 1.05 % voids keep 90 % of the ILSS
+solver.allowable_porosity(required_stress=1000.0)   # the requirement as a stress in MPa (compression)
+solver.get_all_allowable_porosities(0.9)            # {mode: {model: PorosityAllowable}}
+```
+
+The result says when no void content meets the requirement (`achievable` is false and `Vp` is `nan`) and when the allowable lies beyond the 5 % of the calibration data (`extrapolated`). The fatigue and environment factors of `get_failure_load` are accepted and lower it. In the web app, the NCR form takes an optional required retained strength and adds the governing allowable void content to the summary. It is a predicted value: the porosity allowable of the released drawing or process specification remains the acceptance limit.
 
 #### Calibrating `alpha` / `n` for a custom material
 

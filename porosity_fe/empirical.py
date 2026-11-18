@@ -18,7 +18,7 @@ from ._vp import check_fraction
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
-from .results import FailureResult
+from .results import FailureResult, PorosityAllowable
 from .toughness import (
     _TOUGHNESS_B_PLACEHOLDER,
     _TOUGHNESS_LAWS,
@@ -259,6 +259,47 @@ _KNOCKDOWN_LAWS: dict[str, tuple[Callable[[Any, float], Any], str]] = {
     'power_law': (_kd_power_law, 'POWER_LAW_N'),
     'linear': (_kd_linear, 'LINEAR_BETA'),
 }
+
+
+#: Void contents at which a user callable is sampled to bracket its first
+#: crossing with a requirement (:func:`_largest_vp_meeting`).
+_ALLOWABLE_GRID = 201
+
+
+def _largest_vp_meeting(kd: Callable[[float], float], required: float, *,
+                        monotone: bool) -> float:
+    """Largest ``Vp`` in ``[0, 1]`` with ``kd >= required`` from 0 up to it.
+
+    ``nan`` when ``kd(0) < required`` (nothing meets the requirement) and
+    ``1.0`` when it holds everywhere. ``monotone`` says ``kd`` does not
+    increase with ``Vp``, so ``[0, 1]`` brackets the one crossing; otherwise
+    ``kd`` is sampled on :data:`_ALLOWABLE_GRID` points and the first
+    interval where it falls below is bisected. The bisection keeps
+    ``kd(lo) >= required > kd(hi)`` and ends when no float lies between
+    them, returning ``lo``: the result meets the requirement.
+    """
+    if kd(0.0) < required:
+        return math.nan
+    lo, hi = 0.0, 1.0
+    if monotone:
+        if kd(1.0) >= required:
+            return 1.0
+    else:
+        for Vp in np.linspace(0.0, 1.0, _ALLOWABLE_GRID)[1:]:
+            if kd(float(Vp)) < required:
+                hi = float(Vp)
+                break
+            lo = float(Vp)
+        else:
+            return 1.0
+    while True:
+        mid = 0.5 * (lo + hi)
+        if not lo < mid < hi:
+            return lo
+        if kd(mid) >= required:
+            lo = mid
+        else:
+            hi = mid
 
 
 def _layup_scales(material: MaterialProperties,
@@ -1358,6 +1399,271 @@ class EmpiricalSolver:
             self._defer_layup_warning = False
         self._warn_if_layup_amplified(
             'judd_wright', tuple(sorted(Calibration.FIBER_DIRECTION_MODES)))
+        return results
+
+    # ------------------------------------------------------------------
+    # Allowable porosity: the inverse of get_failure_load
+    # ------------------------------------------------------------------
+
+    def _required_knockdown(self, required_knockdown: float | None,
+                            required_stress: float | None,
+                            pristine: float | None, unit: str) -> float:
+        """The requirement as a knockdown, from exactly one of its two forms.
+
+        ``required_knockdown`` must lie in ``(0, 1]``. ``required_stress``
+        (in ``unit``, like ``pristine``) may exceed the pristine value: the
+        knockdown is then above 1 and no void content meets it.
+        """
+        if (required_knockdown is None) == (required_stress is None):
+            raise ValueError(
+                "Give exactly one of required_knockdown (a fraction of the "
+                f"pristine value) and required_stress ({unit}).")
+        name, value = (('required_knockdown', required_knockdown)
+                       if required_stress is None
+                       else ('required_stress', required_stress))
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.floating)) \
+                or not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be a finite number above 0; got {value!r}.")
+        if required_stress is None:
+            if value > 1.0:
+                raise ValueError(
+                    f"required_knockdown is the fraction of the pristine value "
+                    f"to retain, in (0, 1]; got {value!r}. A percent? Pass "
+                    f"{value / 100.0:g}.")
+            return float(value)
+        if pristine is None:
+            raise ValueError(
+                f"required_stress needs the pristine value ({unit}), which "
+                f"this material does not set; give required_knockdown instead.")
+        return float(value) / float(pristine)
+
+    def _allowable_porosity(
+            self, required_knockdown: float | None, mode: str,
+            model: KnockdownModel | Callable[[float, str], float],
+            required_stress: float | None, cycles: float | None,
+            environment: dict[str, float] | None, R: float | None,
+    ) -> PorosityAllowable:
+        """:meth:`allowable_porosity` without its warnings."""
+        details: dict[str, Any]
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            self._check_toughness_request(model, cycles, environment)
+            law = self.toughness_knockdown
+            fracture_mode = _TOUGHNESS_FRACTURE_MODE[mode]
+            G_c0 = self._get_pristine_toughness(mode)
+            required = self._required_knockdown(
+                required_knockdown, required_stress, G_c0, 'N/mm')
+
+            def kd(Vp: float) -> float:
+                return float(law.factor(Vp, fracture_mode))
+
+            builtin = self._toughness_warning_model() is not None
+            # A 'none' law is constant, a built-in form decreases with Vp.
+            monotone = isinstance(law.law, str)
+            label = self._toughness_model_label()
+            details = {
+                'pristine_toughness': G_c0,
+                'required_stress': None if G_c0 is None else required * G_c0,
+                'knockdown_at_zero_porosity': kd(0.0),
+                'fracture_mode': fracture_mode,
+                'toughness_knockdown': law.describe(),
+            }
+        else:
+            model_func, env_kd, fat_kd = self._prepare_loading(
+                mode, model, cycles, environment, R)
+            sigma_0 = self._get_pristine_strength(mode)
+            required = self._required_knockdown(
+                required_knockdown, required_stress, sigma_0, 'MPa')
+
+            def kd(Vp: float) -> float:
+                # The expression of get_failure_load, so the two agree.
+                return float(model_func(Vp, mode)) * env_kd * fat_kd
+
+            builtin = monotone = isinstance(model, str)
+            label = str(model if builtin else getattr(
+                model, '__name__', 'user_callable'))
+            details = {
+                'pristine_strength': float(sigma_0),
+                'required_stress': required * float(sigma_0),
+                'knockdown_at_zero_porosity': kd(0.0),
+            }
+            if environment is not None:
+                details['environment_knockdown'] = float(env_kd)
+            if cycles is not None:
+                details['fatigue_knockdown'] = float(fat_kd)
+            amplified = self._amplified_modes(model, (mode,))
+            if amplified:
+                details['layup_scale'] = float(amplified[mode])
+                details['layup_extrapolated'] = True
+
+        Vp = _largest_vp_meeting(kd, required, monotone=monotone)
+        achievable = not math.isnan(Vp)
+        if mode in self.PRISTINE_TOUGHNESS_KEY:
+            details['toughness_uncalibrated'] = bool(
+                achievable and _placeholder_applied(
+                    self.toughness_knockdown, Vp, (details['fracture_mode'],)))
+        return PorosityAllowable(
+            Vp=Vp, required_knockdown=required, achievable=achievable,
+            extrapolated=bool(builtin and achievable and Vp > _VP_CALIBRATION_MAX),
+            mode=mode, model=label, details=details)
+
+    @staticmethod
+    def _warn_if_allowable_extrapolated(results: list[PorosityAllowable]) -> None:
+        """One ``UserWarning`` for the allowables past the calibration bound."""
+        beyond = [r for r in results if r.extrapolated]
+        if not beyond:
+            return
+        parts = ", ".join(f"{r.mode} / {r.model}: Vp = {r.Vp:.4g}" for r in beyond)
+        warnings.warn(
+            f"Allowable porosity beyond the calibration bound "
+            f"(Vp <= {_VP_CALIBRATION_MAX}): {parts}. The laws are "
+            f"extrapolated there and the allowable may be inaccurate.",
+            UserWarning, stacklevel=3)
+
+    def allowable_porosity(self, required_knockdown: float | None = None,
+                           mode: LoadingMode = 'compression',
+                           model: KnockdownModel | Callable[[float, str], float]
+                           = 'judd_wright',
+                           *,
+                           required_stress: float | None = None,
+                           cycles: float | None = None,
+                           environment: dict[str, float] | None = None,
+                           R: float | None = None) -> PorosityAllowable:
+        """Largest void content that still meets a retained-strength requirement.
+
+        The inverse of :meth:`get_failure_load`: the largest
+        specimen-average ``Vp`` at which the knockdown of ``mode`` is still
+        at least the requirement, and stays so at every smaller ``Vp``. It
+        depends on the material, the layup and the coefficients only: the
+        mesh's own porosity and its discrete voids do not enter.
+
+        Parameters
+        ----------
+        required_knockdown : float, optional
+            Fraction of the pristine strength to retain, in ``(0, 1]``
+            (``0.9`` keeps 90 %). Give this or ``required_stress``.
+        mode : str
+            Loading mode; see :meth:`apply_loading`. The toughness modes
+            are accepted and invert :attr:`toughness_knockdown`.
+        model : str or callable
+            Knockdown model, as :meth:`get_failure_load` takes it.
+        required_stress : float, optional
+            Keyword-only. The requirement as a stress in MPa (N/mm for a
+            toughness mode), divided by the pristine value. One above the
+            pristine value is not achievable.
+        cycles, environment, R : optional
+            The fatigue and hygrothermal factors of
+            :meth:`get_failure_load`. They multiply the knockdown at every
+            ``Vp``, so they lower the allowable.
+
+        Returns
+        -------
+        PorosityAllowable
+            ``Vp`` (a fraction), ``achievable``, ``extrapolated`` and the
+            ``details`` of the requirement. ``Vp`` is ``1.0`` when every
+            void content meets the requirement.
+
+        Raises
+        ------
+        ValueError
+            If not exactly one of the two requirements is given, if it is
+            not a finite number above 0, if ``required_knockdown`` exceeds
+            1, or as :meth:`get_failure_load` for ``mode`` and ``model``.
+
+        Notes
+        -----
+        A built-in law decreases with ``Vp``, so the allowable is its one
+        crossing with the requirement, found by bisection to the last bit
+        and rounded towards the safe side: ``get_failure_load`` at the
+        returned ``Vp`` gives a knockdown of at least the requirement. A
+        user callable need not decrease: it is first sampled at 201 void
+        contents from 0 to 1 and the crossing is taken in the first interval
+        where it falls below, so a dip narrower than 0.005 is not seen.
+
+        The built-in laws are calibrated to ``Vp <= 0.05``. An allowable
+        beyond that sets ``extrapolated`` and emits one
+        :class:`UserWarning`; a layup scale above 1 warns as in
+        :meth:`get_failure_load`.
+
+        Examples
+        --------
+        >>> from porosity_fe import MATERIALS, build_empirical_pipeline
+        >>> _, _, solver = build_empirical_pipeline(MATERIALS['T700_epoxy'], 0.02)
+        >>> allowable = solver.allowable_porosity(0.9, 'ilss')
+        >>> round(allowable.Vp, 4)
+        0.0105
+        """
+        result = self._allowable_porosity(
+            required_knockdown, mode, model, required_stress, cycles,
+            environment, R)
+        self._warn_if_allowable_extrapolated([result])
+        if mode in self.PRISTINE_STRENGTH_KEY:
+            self._warn_if_layup_amplified(model, (mode,))
+        return result
+
+    def get_all_allowable_porosities(
+            self,
+            required_knockdown: float | dict[str, float],
+            extra_models: dict[str, Callable[[float, str], float]] | None = None,
+            *,
+            cycles: float | None = None,
+            environment: dict[str, float] | None = None,
+            R: float | None = None,
+    ) -> dict[str, dict[str, PorosityAllowable]]:
+        """Allowable porosity of the strength modes for every built-in model.
+
+        The table of :meth:`allowable_porosity`, laid out like
+        :meth:`get_all_failure_loads`: ``{mode: {model: PorosityAllowable}}``.
+
+        Parameters
+        ----------
+        required_knockdown : float or dict
+            One requirement for the five strength modes, or a dict of mode
+            to requirement that evaluates only the modes it names (a
+            margin of safety differs from one loading mode to the next).
+        extra_models : dict[str, callable], optional
+            User knockdown callables to add, as in
+            :meth:`get_all_failure_loads`.
+        cycles, environment, R : optional
+            Passed to every :meth:`allowable_porosity` call.
+
+        Raises
+        ------
+        ValueError
+            For a dict that is empty or names a mode that is not a strength
+            mode (invert a toughness mode with :meth:`allowable_porosity`).
+
+        Notes
+        -----
+        The extrapolation and layup warnings are emitted once for the table,
+        not once per entry.
+        """
+        modes = ['compression', 'tension', 'shear', 'ilss', 'transverse_tension']
+        if isinstance(required_knockdown, dict):
+            unknown = set(required_knockdown) - set(modes)
+            if unknown or not required_knockdown:
+                raise ValueError(
+                    f"required_knockdown must name at least one strength mode "
+                    f"of {modes}; got {sorted(required_knockdown)}. A toughness "
+                    f"mode is inverted with allowable_porosity().")
+            required = {m: required_knockdown[m] for m in modes
+                        if m in required_knockdown}
+        else:
+            required = {m: required_knockdown for m in modes}
+        all_models: list[tuple[str, str | Callable[[float, str], float]]] = [
+            (name, name) for name in ('judd_wright', 'power_law', 'linear')]
+        if extra_models:
+            all_models += [(str(label), fn) for label, fn in extra_models.items()]
+        results: dict[str, dict[str, PorosityAllowable]] = {}
+        for mode, value in required.items():
+            results[mode] = {
+                label: self._allowable_porosity(
+                    value, mode, model, None, cycles, environment, R)
+                for label, model in all_models}
+        self._warn_if_allowable_extrapolated(
+            [r for row in results.values() for r in row.values()])
+        self._warn_if_layup_amplified(
+            'judd_wright', tuple(m for m in sorted(Calibration.FIBER_DIRECTION_MODES)
+                                 if m in results))
         return results
 
     def local_sensitivities(self, mode: str = 'compression',

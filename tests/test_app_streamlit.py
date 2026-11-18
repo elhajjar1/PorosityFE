@@ -113,6 +113,22 @@ class TestAppRender:
                    and "not taken from a cited standard" in c.value for c in at.caption)
         # ...and all ten download buttons (4 PNG + 3 export + 3 NCR) coexist.
         assert len(at.get("download_button")) == 10
+        # No required retained strength was entered: no allowable is shown.
+        assert not any("Allowable void content" in i.value for i in at.info)
+
+    def test_ncr_required_retained_strength_adds_the_allowable(self):
+        """The optional required retained strength (percent in the form, a
+        fraction in the record) adds the allowable void content."""
+        at = _run_small_analysis(_fresh_app())
+        at.number_input(key="ncr_required_retained").set_value(90.0)
+        _button(at, "Generate summary").click().run()
+        assert not at.exception
+        shown = [i.value for i in at.info if "Allowable void content" in i.value]
+        assert len(shown) == 1
+        assert shown[0].startswith(
+            "**Allowable void content.** Governing allowable void content: ")
+        assert "at 90% of pristine strength retained" in shown[0]
+        assert "does not replace the porosity allowable" in shown[0]
 
 
 _THERMAL_ONLY = "Thermal only (residual stress, no mechanical load)"

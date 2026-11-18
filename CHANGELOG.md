@@ -12,6 +12,38 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Allowable porosity: the inverse of the empirical knockdown.**
+  `EmpiricalSolver.allowable_porosity(required_knockdown, mode, model)`
+  returns the largest specimen-average void content at which a mode still
+  retains a required share of its pristine strength. Additive: no existing
+  result changes.
+  - The requirement is a knockdown in `(0, 1]` or
+    `required_stress=` in MPa. `cycles`, `environment` and `R` are
+    accepted as in `get_failure_load`, and lower the allowable.
+  - The result is a `PorosityAllowable`: `Vp` (a fraction), `achievable`
+    (false, with `Vp = nan`, when the void-free laminate is already below
+    the requirement), `extrapolated` (true beyond the `Vp <= 0.05` of the
+    calibration data, with one `UserWarning`) and `details`.
+  - The crossing is found by bisection on the law itself, to the last
+    bit and rounded to the safe side. It agrees with the closed-form
+    inverses of the three laws to 1e-12 relative, and a new law or a user
+    callable needs no inverse of its own. A callable is first sampled at
+    201 void contents, so a dip narrower than 0.005 is not seen.
+  - `get_all_allowable_porosities` gives the table for the five strength
+    modes and the three laws (one requirement, or one per mode), with one
+    warning for the table. The toughness modes are inverted with the law
+    of `toughness_knockdown`.
+  - NCR: `build_ncr_record(result, {"required_knockdown": ...})` adds
+    `engineering_analysis["allowable_porosity"]`: the allowable per mode
+    and law in percent, the governing (smallest) one, and whether the
+    measured void content is within it. The Markdown, PDF and JSON carry
+    it, the results schema describes it (additive, 1.3), and the app's NCR
+    form has an optional "Required retained strength" field. The
+    recommended disposition path does not use it.
+  - It is the void content at which the predicted strength meets the
+    requirement. The summary says that the porosity allowable of the
+    released drawing or process specification remains the acceptance
+    limit.
 - **Validation: three more datasets** (#221, #222), each read in the
   primary source.
   - `olivier_2007_shear`: in-plane shear strength (EN ISO 14129, ±45) of
