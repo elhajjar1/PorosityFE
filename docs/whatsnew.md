@@ -98,6 +98,11 @@ cohesive zone or buckling.
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.
+- **`validate_porosity --fe`** runs the FE solver against the strength
+  and modulus datasets. The FE moduli match the data (7.2 % mean absolute
+  error); the FE first-ply-failure strengths, which rest on an
+  uncalibrated heuristic, do not (21.7 %, against 6.0 % for the empirical
+  laws).
 - **Allowable porosity**: `EmpiricalSolver.allowable_porosity` gives the
   largest void content that still retains a required strength, the
   inverse of the knockdown laws. The NCR form takes an optional required

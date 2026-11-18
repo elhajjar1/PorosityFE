@@ -198,6 +198,12 @@ the validation tests against them. The PyInstaller spec bundles them into
 the CLI executable so end users get an offline-runnable validator. `validate_porosity_cli.py` calls
 `validation/validate_all.py` to run every dataset through the empirical
 pipeline and emit `validation_master_report.png` + `validation_detail_report.md`.
+`validate_porosity --fe` (`run_all_datasets_fe`) also runs the FE solver
+against the strength and modulus datasets, one solve per data point, and
+reports its MAE apart from the headline: the FE moduli match the data, the
+FE first-ply-failure strengths (the uncalibrated `sqrt` heuristic) do not.
+Its full-database numbers are pinned by a test behind
+`POROSITY_FE_VALIDATION=1` (about a minute).
 
 ### Streamlit app bootstrap
 
@@ -253,7 +259,8 @@ Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
 `{3.11, 3.12, 3.13, 3.14}` against an editable install; the ubuntu/3.12
 cell also measures statement and branch coverage with a 95 % floor
 (`--cov-fail-under`), uploads `coverage.xml` as an artifact, and
-runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`
+and the FE validation headline via `POROSITY_FE_VALIDATION=1`),
 `fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
 ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
 baseline, run on the runner's BLAS kernel and again on Sandybridge's; see

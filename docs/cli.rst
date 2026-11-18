@@ -71,6 +71,16 @@ starter crack of each entry. They never enter the headline MAE or the PNG
 executable of this command is built from ``ValidatePorosity.spec`` with
 PyInstaller and attached to each GitHub release.
 
+``--fe`` also runs the FE solver against the strength and modulus
+datasets, one solve per data point of the test each property comes from
+(about a minute for the bundled datasets). It prints the FE mean absolute
+error, overall and for the moduli and the strengths beside the empirical
+pipeline's, and adds an "FE path" section to
+``validation_detail_report.md``. The headline MAE and the PNG do not
+change. The FE moduli match the data as laminate theory does; the FE
+strengths rest on an uncalibrated heuristic and do not (see
+:doc:`theory/failure`, "Degraded strengths").
+
 Exit codes: ``0`` when the report was written (datasets that failed to
 load are listed as ``[ERROR]`` in the summary), ``2`` when the datasets
 directory or the validation module could not be found.

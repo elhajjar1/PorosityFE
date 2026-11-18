@@ -12,6 +12,41 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Validation of the FE path against the experimental datasets**
+  (`validate_porosity --fe`, `validation.validate_all.run_all_datasets_fe`).
+  Opt-in and reported apart: the headline MAE, the PNG and every existing
+  result are unchanged.
+  - One FE solve per data point of the test each property comes from:
+    compression, tension, shear, the D2344 short beam and three-point
+    flexure, with a transverse test as a tension test of the layup turned
+    by 90°. Uniform spherical porosity, one element layer per ply,
+    normalized at each dataset's baseline. About a minute for the 232
+    points.
+  - A modulus is the FE structural stiffness. A strength is the
+    first-ply-failure load of the interior elements (Tsai-Wu): the load
+    factor of the force-controlled short beam, the factor times the
+    effective modulus for the strain-controlled coupons. The interior
+    factor does not move with the mesh; the whole-model one drifts by
+    0.5 % from 6 x 4 to 24 x 8 in-plane elements, with the grip corners.
+  - **Result.** Moduli: 7.20 % property-weighted over 13 entries, against
+    7.27 % for laminate theory with the same Mori-Tanaka ply. Strengths:
+    21.71 % over 27 entries, against 6.04 % for the Judd-Wright law.
+    Overall 16.99 % property-weighted and 19.05 % point-weighted over 40
+    entries and 232 points.
+  - The FE strength under-predicts the knockdown because its ply
+    strengths follow the heuristic `sqrt(stiffness retention)`, which is
+    not fitted to coupon data. At 10 % voids it leaves a UD laminate
+    99.9 % of its tensile strength and a short beam 91 % of its
+    interlaminar strength, where Olivier et al. 1995 measured 67 % and
+    46 %. The README, the failure theory page and the report say so.
+    **Not changed:** the heuristic itself. Replacing it with a law fitted
+    to the coupon data would change every FE failure index and the
+    fingerprint baseline, and is open for a decision.
+  - The detail report gains an "FE path" section (the MAE overall and by
+    category, a row per entry beside the empirical MAE), and
+    `summarize_fe_mae` gives the numbers. The full-database numbers are
+    pinned by a test that runs with `POROSITY_FE_VALIDATION=1`, set on the
+    coverage cell in CI.
 - **Allowable porosity: the inverse of the empirical knockdown.**
   `EmpiricalSolver.allowable_porosity(required_knockdown, mode, model)`
   returns the largest specimen-average void content at which a mode still

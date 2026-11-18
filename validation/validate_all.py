@@ -39,7 +39,7 @@ from porosity_fe_analysis import (
     compute_degraded_clt_flexural_modulus,
     compute_degraded_clt_moduli,
 )
-from porosity_fe import ToughnessKnockdown, toughness_knockdown_factor
+from porosity_fe import FESolver, ToughnessKnockdown, toughness_knockdown_factor
 
 # Share the project-wide rcParams (fonts, DPI, cividis colormap, etc.)
 # with the static-PNG path in ``porosity_fe_analysis`` and the Streamlit
@@ -403,6 +403,110 @@ def predict_modulus(dataset: Dict[str, Any], prop_key: str,
     return [float(compute_fn(vp / 100.0) / base_val) for vp in vp_pcts]
 
 
+#: FE validation (opt-in, :func:`run_all_datasets_fe`). Per property: the FE
+#: loading that reproduces the test, and the rotation (degrees) of the
+#: dataset layup that puts the test direction on the FE ``x`` axis (the FE
+#: solver has no transverse loading, so a transverse test is a tension test
+#: of the layup turned by 90 degrees).
+_FE_PROPERTY_LOADING = {
+    'compression_strength': ('compression', 0.0),
+    'tensile_strength': ('tension', 0.0),
+    'transverse_tensile_strength': ('tension', 90.0),
+    'shear_strength': ('shear', 0.0),
+    'ilss': ('ilss', 0.0),
+    'tensile_modulus': ('tension', 0.0),
+    'transverse_tensile_modulus': ('tension', 90.0),
+    'shear_modulus': ('shear', 0.0),
+    'flexural_modulus': ('flexure_3pt', 0.0),
+}
+
+#: In-plane elements ``(nx, ny)`` of the FE validation meshes; each has one
+#: element layer per ply. The coupon is fine enough to have interior
+#: elements, away from the grips, whose first-ply-failure factor does not
+#: move with the mesh; the porosity is uniform, so the normalized
+#: predictions need no finer one.
+_FE_VALIDATION_MESH = {
+    'coupon': (12, 8),
+    'ilss': (12, 2),
+    'flexure_3pt': (24, 2),
+}
+
+
+def _fe_value(mat: MaterialProperties, ply_angles, vp_frac: float,
+              loading: str, strength: bool) -> float:
+    """One FE solve of a validation test: its stiffness, or its strength.
+
+    The stiffness is the structural stiffness over the pristine one
+    (``FieldResults.knockdown``). The strength is the first-ply-failure
+    load of the interior elements (Tsai-Wu): the load factor itself for the
+    force-controlled short-beam test, the factor times the effective
+    modulus for the strain-controlled coupons, whose factor multiplies the
+    applied strain. Only ratios of two values of one test are meaningful.
+    """
+    pf = PorosityField(mat, vp_frac, distribution='uniform',
+                       void_shape='spherical')
+    nz = mat.n_plies
+    if loading == 'ilss':
+        nx, ny = _FE_VALIDATION_MESH['ilss']
+        mesh = CompositeMesh.for_ilss(pf, mat, nx=nx, ny=ny, nz=nz,
+                                      ply_angles=ply_angles)
+    elif loading == 'flexure_3pt':
+        nx, ny = _FE_VALIDATION_MESH['flexure_3pt']
+        mesh = CompositeMesh.for_flexure(pf, mat, nx=nx, ny=ny, nz=nz,
+                                         ply_angles=ply_angles)
+    else:
+        nx, ny = _FE_VALIDATION_MESH['coupon']
+        mesh = CompositeMesh(pf, mat, nx=nx, ny=ny, nz=nz,
+                             ply_angles=ply_angles)
+    with warnings.catch_warnings():
+        # Thin plies on a coarse in-plane mesh: the aspect-ratio warning of
+        # every solve says nothing about a ratio of two of them.
+        warnings.simplefilter('ignore', UserWarning)
+        fe = FESolver(mesh, mat, pf, ply_angles=ply_angles).solve(loading)
+    if not strength:
+        return float(fe.knockdown)
+    factor = fe.interior_first_ply_failure_load_factor
+    if factor is None:
+        factor = fe.first_ply_failure_load_factor
+    if loading == 'ilss':
+        return float(factor)
+    return float(factor) * float(fe.effective_modulus)
+
+
+def predict_fe(dataset: Dict[str, Any], prop_key: str, vp_pcts) -> list:
+    """Predict a normalized property at each porosity level with the FE solver.
+
+    Each level is one :class:`~porosity_fe.FESolver` solve of the test the
+    property comes from (:data:`_FE_PROPERTY_LOADING`) on a uniform
+    spherical porosity field, normalized like every prediction by the same
+    solve at the dataset's ``baseline_porosity_pct``.
+
+    - A modulus is the FE structural stiffness (the Mori-Tanaka ply
+      stiffness at the local porosity).
+    - A strength is the FE first-ply-failure load (Tsai-Wu, interior
+      elements). The FE path degrades the ply strengths with the heuristic
+      ``sqrt(stiffness retention)``, which is not fitted to coupon data, so
+      this is a check of that heuristic, not a calibrated prediction.
+
+    Raises
+    ------
+    ValueError
+        For a property with no FE test (the toughness properties: the FE
+        fracture path is verified against the NASA benchmarks instead).
+    """
+    if prop_key not in _FE_PROPERTY_LOADING:
+        raise ValueError(f"No FE validation test for property {prop_key!r}.")
+    loading, rotation = _FE_PROPERTY_LOADING[prop_key]
+    mat = resolve_material(dataset)
+    ply_angles = [float(a) + rotation for a in dataset['material']['ply_angles']]
+    strength = prop_key not in _MODULUS_PROPS
+    baseline_vp = dataset.get('baseline_porosity_pct', 0.0) / 100.0
+
+    base = _fe_value(mat, ply_angles, baseline_vp, loading, strength)
+    return [float(_fe_value(mat, ply_angles, vp / 100.0, loading, strength) / base)
+            for vp in vp_pcts]
+
+
 def _baseline_anchors(vp_pcts, experimental, baseline_pct: float) -> list:
     """Per point, whether it is a normalization anchor: at the dataset's
     baseline void content with a normalized value of exactly 1. Its
@@ -583,6 +687,63 @@ def _run_one_dataset(path: str):
     return name, dataset_results
 
 
+def _run_one_dataset_fe(path: str):
+    """The FE counterpart of :func:`_run_one_dataset`, for one dataset file.
+
+    ``(name, dataset_results)`` with one entry per strength or modulus
+    property: the keys of the empirical entry (``vp_pcts``,
+    ``experimental``, ``predicted``, ``mae``, ``n_points``,
+    ``n_baseline_points``) plus ``loading`` (the FE loading) and
+    ``quantity`` (``'stiffness'`` or ``'first_ply_failure'``). The
+    toughness properties are left out. Top-level, so it can be sent to a
+    worker process.
+    """
+    name = os.path.basename(path).replace('.json', '')
+    try:
+        data = load_dataset(path)
+    except ValidationError as e:
+        logger.warning("Skipping dataset %s: %s", name, e)
+        return name, {'error': str(e), 'error_type': type(e).__name__}
+
+    dataset_results = {}
+    for prop_key, prop_data in data['properties'].items():
+        if prop_key in _TOUGHNESS_PROPS:
+            continue
+        vp = prop_data['void_content_pct']
+        exp = prop_data['normalized_values']
+        try:
+            if not vp:
+                raise ValueError("no data points.")
+            if len(vp) != len(exp):
+                raise ValueError(
+                    f"{len(vp)} void contents for {len(exp)} values.")
+            pred = predict_fe(data, prop_key, vp)
+            anchors = _baseline_anchors(
+                vp, exp, float(data.get('baseline_porosity_pct', 0.0)))
+            scored = [i for i, a in enumerate(anchors) if not a]
+            if not scored:
+                raise ValueError("only baseline points; nothing to validate.")
+            dataset_results[prop_key] = {
+                'vp_pcts': list(vp),
+                'experimental': list(exp),
+                'predicted': pred,
+                'mae': compute_mae([pred[i] for i in scored],
+                                   [exp[i] for i in scored]),
+                'n_points': len(scored),
+                'n_baseline_points': len(vp) - len(scored),
+                'loading': _FE_PROPERTY_LOADING[prop_key][0],
+                'quantity': ('stiffness' if prop_key in _MODULUS_PROPS
+                             else 'first_ply_failure'),
+            }
+        except Exception as e:
+            logger.exception("FE prediction failed for %s/%s", name, prop_key)
+            dataset_results[prop_key] = {
+                'error': str(e),
+                'error_type': type(e).__name__,
+            }
+    return name, dataset_results
+
+
 def _resolve_n_jobs(n_jobs: int) -> int:
     """Map the public ``n_jobs`` contract onto a concrete worker count.
 
@@ -618,6 +779,11 @@ def run_all_datasets(datasets_dir: str = None,
         regardless of ``n_jobs``.  Results are always assembled in sorted
         dataset order, so dict iteration order is deterministic too.
     """
+    return _run_datasets(_run_one_dataset, datasets_dir, n_jobs)
+
+
+def _run_datasets(worker, datasets_dir: str | None, n_jobs: int) -> Dict[str, Any]:
+    """``worker`` over every dataset file, serially or across processes."""
     if datasets_dir is None:
         datasets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     'datasets')
@@ -627,19 +793,33 @@ def run_all_datasets(datasets_dir: str = None,
 
     if workers <= 1 or len(paths) <= 1:
         # Serial path: byte-identical to the historical implementation.
-        return {name: res for name, res in (_run_one_dataset(p)
-                                            for p in paths)}
+        return {name: res for name, res in (worker(p) for p in paths)}
 
     # Parallel path: dispatch independent per-dataset tasks across processes,
     # then reassemble in sorted (== input) order so the result dict is
     # deterministic and identical to the serial path.
     by_name = {}
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        for name, dataset_results in executor.map(_run_one_dataset, paths):
+        for name, dataset_results in executor.map(worker, paths):
             by_name[name] = dataset_results
     return {os.path.basename(p).replace('.json', ''):
             by_name[os.path.basename(p).replace('.json', '')]
             for p in paths}
+
+
+def run_all_datasets_fe(datasets_dir: str = None,
+                        n_jobs: int = 1) -> Dict[str, Any]:
+    """Run the FE solver against the strength and modulus datasets.
+
+    The counterpart of :func:`run_all_datasets` for the FE path
+    (:func:`predict_fe`): one FE solve per data point, on coarse meshes
+    with one element layer per ply (about a minute for the bundled
+    datasets, serially). The result has the shape of
+    :func:`run_all_datasets`, without the toughness properties (a dataset
+    with nothing else maps to an empty dict), so :func:`summarize_mae`
+    summarizes it. It is reported apart from the empirical headline.
+    """
+    return _run_datasets(_run_one_dataset_fe, datasets_dir, n_jobs)
 
 
 
@@ -739,8 +919,117 @@ def _toughness_report_lines(results: Dict[str, Any]) -> list:
     return lines
 
 
+_FE_REPORT_NOTE = (
+    "_One FE solve per data point (uniform spherical porosity, one element "
+    "layer per ply), normalized at each dataset's baseline. A modulus is "
+    "the FE structural stiffness. A strength is the FE first-ply-failure "
+    "load (Tsai-Wu, interior elements): the FE path scales the ply "
+    "strengths with the heuristic sqrt(stiffness retention), which is not "
+    "fitted to coupon data, so the strength rows test that heuristic. Not "
+    "in the overall MAE above._"
+)
+
+
+def _fe_category_mae(fe_results: Dict[str, Any], results: Dict[str, Any],
+                     modulus: bool) -> Dict[str, Any]:
+    """MAE of the FE entries of one category (moduli or strengths), with the
+    empirical-pipeline MAE of the same entries."""
+    fe_mae, emp_mae, npts = [], [], []
+    for ds_name, ds_results in fe_results.items():
+        if 'error' in ds_results:
+            continue
+        for prop, r in ds_results.items():
+            if 'mae' not in r or (prop in _MODULUS_PROPS) != modulus:
+                continue
+            fe_mae.append(r['mae'])
+            npts.append(r['n_points'])
+            other = results.get(ds_name, {}).get(prop, {})
+            emp_mae.append(other.get('mae', float('nan')))
+    if not fe_mae:
+        return {'n_entries': 0, 'n_points': 0, 'fe_mae': float('nan'),
+                'reference_mae': float('nan')}
+    return {'n_entries': len(fe_mae), 'n_points': int(sum(npts)),
+            'fe_mae': float(np.mean(fe_mae)),
+            'reference_mae': float(np.mean(emp_mae))}
+
+
+def summarize_fe_mae(fe_results: Dict[str, Any],
+                     results: Dict[str, Any]) -> Dict[str, Any]:
+    """FE-path MAE summary, beside the empirical pipeline's on the same entries.
+
+    Parameters
+    ----------
+    fe_results:
+        The result of :func:`run_all_datasets_fe`.
+    results:
+        The result of :func:`run_all_datasets` on the same datasets.
+
+    Returns
+    -------
+    dict
+        ``overall`` (:func:`summarize_mae` of ``fe_results``) and, for
+        ``modulus`` and ``strength``, ``n_entries``, ``n_points``,
+        ``fe_mae`` and ``reference_mae``: the property-weighted MAE of the
+        FE path and of the empirical pipeline (the CLT moduli, the
+        Judd-Wright strengths) over the entries of that category.
+    """
+    return {
+        'overall': summarize_mae(fe_results),
+        'modulus': _fe_category_mae(fe_results, results, modulus=True),
+        'strength': _fe_category_mae(fe_results, results, modulus=False),
+    }
+
+
+def _fe_report_lines(fe_results: Dict[str, Any], results: Dict[str, Any]) -> list:
+    """Markdown lines of the FE section of the report (after the toughness one)."""
+    summary = summarize_fe_mae(fe_results, results)
+    overall = summary['overall']
+    if not overall['n_entries']:
+        return []
+    lines = [
+        '',
+        '## FE path (stiffness and first-ply failure)',
+        '',
+        f"- Property-weighted: **{overall['property_weighted_mae']:.2f}%** "
+        f"(n={overall['n_entries']} paper-property entries)",
+        f"- Point-weighted:    **{overall['point_weighted_mae']:.2f}%** "
+        f"(n={overall['n_points']} individual data points)",
+    ]
+    for key, label, reference in (
+            ('modulus', 'Moduli', 'CLT'),
+            ('strength', 'Strengths', 'empirical Judd-Wright')):
+        cat = summary[key]
+        if cat['n_entries']:
+            lines.append(
+                f"- {label}: **{cat['fe_mae']:.2f}%** property-weighted over "
+                f"{cat['n_entries']} entries ({reference}: "
+                f"{cat['reference_mae']:.2f}%)")
+    lines.extend([
+        '',
+        _FE_REPORT_NOTE,
+        '',
+        '| Dataset | Property | FE loading | N points | FE MAE (%) | Empirical MAE (%) |',
+        '|---|---|---|---|---|---|',
+    ])
+    for ds_name, ds_results in sorted(fe_results.items()):
+        if 'error' in ds_results:
+            lines.append(f"| {ds_name} | LOAD ERROR | - | - | - | - |")
+            continue
+        for prop in sorted(ds_results):
+            r = ds_results[prop]
+            if 'error' in r:
+                lines.append(f"| {ds_name} | {prop} | - | - | ERROR | - |")
+                continue
+            other = results.get(ds_name, {}).get(prop, {})
+            emp = f"{other['mae']:.2f}" if 'mae' in other else '-'
+            lines.append(f"| {ds_name} | {prop} | {r['loading']} | "
+                         f"{r['n_points']} | {r['mae']:.2f} | {emp} |")
+    return lines
+
+
 def generate_master_report(results: Dict[str, Any], output_dir: str = None,
-                           emit_band_pngs: bool = False):
+                           emit_band_pngs: bool = False,
+                           fe_results: Dict[str, Any] | None = None):
     """Generate master validation report (PNG plot + Markdown table).
 
     Parameters
@@ -755,6 +1044,12 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
         showing the +/-1-sigma Vp confidence band around the predicted
         curve.  Defaults to False for back-compat with existing call
         sites and CI artefact lists.
+    fe_results:
+        The result of :func:`run_all_datasets_fe`, optional. When given,
+        the Markdown report gains a section "FE path" after the toughness
+        one: the FE MAE, overall and by category, and a row per entry
+        beside the empirical MAE. The plot and the overall MAE do not
+        change.
     """
     if output_dir is None:
         # Default to cwd, not the package directory: when running inside a
@@ -850,6 +1145,8 @@ def generate_master_report(results: Dict[str, Any], output_dir: str = None,
                 md_lines.append(f"| {ds_name} | {prop} | {r['n_points']} | {r['mae']:.2f} |")
 
     md_lines.extend(_toughness_report_lines(results))
+    if fe_results is not None:
+        md_lines.extend(_fe_report_lines(fe_results, results))
 
     md_path = os.path.join(output_dir, 'validation_detail_report.md')
     with open(md_path, 'w', encoding='utf-8', newline='') as f:
