@@ -26,9 +26,11 @@ from porosity_fe.reporting import (
     allowable_porosity_record,
     build_ncr_record,
     governing_allowable,
+    serialise_allowable_json,
     serialise_ncr_json,
     serialise_ncr_markdown,
     serialise_ncr_pdf,
+    write_allowable_json,
 )
 
 MODES = ('compression', 'tension', 'shear', 'ilss', 'transverse_tension')
@@ -567,3 +569,50 @@ class TestNcrAllowableBlock:
         del result["config"]["angles"]
         with pytest.raises(ValueError, match=r"no mesh, config\['angles'\]"):
             build_ncr_record(result, {"required_knockdown": 0.9})
+
+
+class TestAllowableExport:
+    """The stand-alone JSON of ``porosity-analyze --required-knockdown``."""
+
+    def _record(self):
+        return allowable_porosity_record(
+            _quiet(_solver().get_all_allowable_porosities, 0.9))
+
+    def test_envelope_and_payload(self):
+        from porosity_fe import FORMAT_ALLOWABLE, JSON_SCHEMA_VERSION
+        record = self._record()
+        laminate = {'material': 'T700_epoxy', 'ply_angles': [0.0, 90.0],
+                    'n_plies': 2, 't_ply_mm': 0.125}
+        doc = json.loads(serialise_allowable_json(record, laminate))
+        assert list(doc)[:4] == ['schema_version', 'format', 'provenance', 'units']
+        assert doc['schema_version'] == JSON_SCHEMA_VERSION
+        assert doc['format'] == FORMAT_ALLOWABLE == 'porosity-fe.allowable-porosity'
+        assert doc['laminate'] == laminate
+        assert doc['allowable_porosity'] == record
+        assert doc['units'] == {
+            'allowable_Vp_percent': '%',
+            'required_knockdown': 'dimensionless fraction in (0, 1]',
+            'measured_Vp_percent': '%', 'ply_angles': 'degrees', 't_ply_mm': 'mm'}
+
+    def test_without_a_laminate(self):
+        doc = json.loads(serialise_allowable_json(self._record()))
+        assert 'laminate' not in doc and 'ply_angles' not in doc['units']
+
+    def test_written_file_loads_and_validates(self, tmp_path):
+        from porosity_fe import load_results_from_json
+        path = tmp_path / 'allowable.json'
+        write_allowable_json(path, self._record(), {'material': 'T700_epoxy'})
+        doc = load_results_from_json(path)
+        assert doc['allowable_porosity']['governing']['mode'] == 'ilss'
+        jsonschema = pytest.importorskip("jsonschema")
+        import pathlib
+        schema = json.loads((pathlib.Path(__file__).parent.parent / "validation"
+                             / "schemas" / "porosity_results_schema.json").read_text())
+        jsonschema.validate(doc, schema)
+
+    def test_a_requirement_nothing_meets_is_null_not_nan(self):
+        record = allowable_porosity_record({'ilss': {'linear': _entry(math.nan)}})
+        text = serialise_allowable_json(record)
+        assert 'NaN' not in text
+        assert json.loads(text)['allowable_porosity']['governing'][
+            'allowable_Vp_percent'] is None

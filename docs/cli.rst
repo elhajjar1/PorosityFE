@@ -18,8 +18,38 @@ and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
 uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or an
 output that cannot be written, ``3`` on a failed analysis.
 
+The laminate and the scope of a run are options:
+
+- ``--layup SPEC`` and ``--t-ply MM`` set the laminate: ``'QI'`` (the
+  default), ``'UD'``, or laminate notation such as ``'[0/45/-45/90]_2s'``
+  (the ply angles in degrees; an explicit layup sets the ply count). They
+  apply to the sweep and to every option below, and each configuration
+  entry of the JSON records its ``laminate`` (``ply_angles``, ``n_plies``,
+  ``t_ply_mm``).
+- ``--configs NAME [NAME ...]`` analyses only the named configurations.
+- ``--fe LOADING`` adds an FE solve of every analysed configuration at
+  each porosity level (``compression``, ``tension``, ``shear`` on the
+  production coupon mesh; ``ilss`` on the ASTM D2344 short beam;
+  ``flexure_3pt`` / ``flexure_4pt`` on the ASTM D7264 specimen), written
+  to ``porosity_fe_<loading>_<config>_<Vp>.json`` with one summary line.
+  The FE strength rests on an uncalibrated heuristic
+  (:doc:`theory/failure`): take the size of a strength knockdown from the
+  sweep.
+- ``--required-knockdown R`` adds the allowable porosity of the laminate:
+  the largest void content at which each strength mode still retains the
+  fraction ``R`` of its pristine strength, for the three laws, with the
+  governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
+  It is printed and written to ``porosity_allowable.json``. It does not
+  depend on ``--vp`` or the configurations.
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --t-ply 0.2 \
+       --configs uniform_spherical interface_penny \
+       --fe compression --required-knockdown 0.9
+
 ``--delamination SPEC`` adds an opt-in FE delamination screening at each
-porosity level: the production coupon (``'QI'`` layup) with the
+porosity level: the production coupon (the laminate of ``--layup``) with the
 delamination, solved under ``--delam-loading`` with the porosity of
 ``--delam-config``, and its knockdown split into porosity-only and
 delamination-only parts (:func:`~porosity_fe.knockdown_decomposition`;
@@ -42,7 +72,8 @@ the in-plane ones; see :doc:`theory/micromechanics`) instead of the default
 ``solver`` block of the JSON, and with penny voids
 (``--delam-config interface_penny``) it changes the results; spherical
 voids give the same results under both. Without ``--delamination`` the run
-is unchanged, and its options are refused (see :doc:`theory/delamination`).
+is unchanged, and its options are refused (``--porosity-degradation`` is
+also taken by ``--fe``; see :doc:`theory/delamination`).
 
 .. code-block:: bash
 

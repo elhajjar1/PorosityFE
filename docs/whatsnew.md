@@ -94,7 +94,10 @@ cohesive zone or buckling.
   The app is now the `porosity_app` package; `streamlit run app.py` is
   unchanged.
 - **`porosity-analyze`** gained `--jobs N` (parallel sweeps), `--uq`
-  (uncertainty propagation) and delamination screening.
+  (uncertainty propagation) and delamination screening. It also takes the
+  laminate (`--layup`, `--t-ply`), a choice of configurations
+  (`--configs`), an FE solve per configuration (`--fe LOADING`) and the
+  allowable porosity (`--required-knockdown`).
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.

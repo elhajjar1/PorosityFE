@@ -183,7 +183,9 @@ FORMAT_EMPIRICAL_SWEEP = "porosity-fe.empirical-sweep"
 FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
 FORMAT_UQ = "porosity-fe.uq"
-_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ}
+FORMAT_ALLOWABLE = "porosity-fe.allowable-porosity"
+_KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ,
+                  FORMAT_ALLOWABLE}
 
 
 # Per-format units descriptors for the self-documenting ``units`` envelope
@@ -226,6 +228,12 @@ _UNITS_NCR_DELAMINATION = {
 _UNITS_NCR_ALLOWABLE = {
     "allowable_Vp_percent": "%",
     "required_knockdown": "dimensionless fraction in (0, 1]",
+}
+#: Units of a ``laminate`` block (a sweep entry, an allowable-porosity
+#: export), added only when one is written.
+_UNITS_LAMINATE = {
+    "ply_angles": "degrees",
+    "t_ply_mm": "mm",
 }
 _UNITS_STREAMLIT_EMPIRICAL = {
     "failure_stress": "MPa",
@@ -396,11 +404,13 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
         Output JSON path. ``pathlib.Path`` objects are accepted.
     artifacts : dict, optional
         Parallel ``Dict[str, ConfigArtifacts]`` from
-        ``compare_configurations(..., return_artifacts=True)``. Used
-        only to recover the seed for the provenance block when
-        ``results`` is the lightweight ``ConfigResult`` shape (no live
-        ``porosity_field`` carried). Optional; the JSON is still written
-        if absent, just with ``seed=None`` in provenance.
+        ``compare_configurations(..., return_artifacts=True)``. Used to
+        recover the seed for the provenance block when ``results`` is the
+        lightweight ``ConfigResult`` shape (no live ``porosity_field``
+        carried), and to record each configuration's ``laminate``
+        (``ply_angles`` in degrees, bottom ply first, ``n_plies`` and
+        ``t_ply_mm``). Optional; the JSON is still written if absent, with
+        ``seed=None`` in provenance and no ``laminate`` blocks.
 
     Raises
     ------
@@ -434,7 +444,12 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
 
     filename = Path(filename)
 
-    output = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, _UNITS_EMPIRICAL_SWEEP, seed=seed)
+    laminates = {name: _laminate_record(art) for name, art in (artifacts or {}).items()}
+    laminates = {name: lam for name, lam in laminates.items() if lam is not None}
+    units = dict(_UNITS_EMPIRICAL_SWEEP)
+    if laminates:
+        units.update(_UNITS_LAMINATE)
+    output = _wrap_envelope(FORMAT_EMPIRICAL_SWEEP, units, seed=seed)
     for name, data in results.items():
         if name in output:
             # Defensive: a user-named config that collides with an
@@ -473,12 +488,30 @@ def save_results_to_json(results: dict, filename: str | os.PathLike,
                     'failure_stress_MPa': r['failure_stress'],
                     'knockdown': r['knockdown'],
                 }
+        if name in laminates:
+            entry['laminate'] = laminates[name]
         output[name] = entry
 
     # Standard JSON only: every value here is finite for a valid sweep, so
     # a non-finite one raises (naming its location) rather than writing NaN.
     _write_json(output, filename)
     logger.info("Saved: %s", filename)
+
+
+def _laminate_record(artifacts) -> dict | None:
+    """The laminate of one configuration's artifacts: the ply angles
+    (degrees, bottom ply first), the ply count and the ply thickness (mm).
+    ``None`` for artifacts without a generated mesh."""
+    mesh = getattr(artifacts, 'mesh', None)
+    layup = getattr(mesh, '_ply_layup', None)
+    material = getattr(mesh, 'material', None)
+    if layup is None or material is None:
+        return None
+    return {
+        'ply_angles': [float(a) for a in layup],
+        'n_plies': int(material.n_plies),
+        't_ply_mm': float(material.t_ply),
+    }
 
 
 def load_results_from_json(filename: str | os.PathLike) -> dict:

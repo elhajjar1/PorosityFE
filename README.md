@@ -178,6 +178,19 @@ porosity-analyze
 ```
 Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations and writes the JSON results; `--plots` adds the PNG figures (off by default, they are slow).
 
+The laminate, the configurations and two further analyses are options:
+
+```bash
+porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --t-ply 0.2 \
+    --configs uniform_spherical interface_penny \
+    --fe compression --required-knockdown 0.9
+```
+
+- `--layup` takes `QI` (default), `UD` or laminate notation, and `--t-ply` the ply thickness in mm; the JSON records the laminate of each entry.
+- `--configs` selects among the five named configurations.
+- `--fe LOADING` adds an FE solve per configuration and level (`compression`, `tension`, `shear`, `ilss`, `flexure_3pt`, `flexure_4pt`), written to `porosity_fe_<loading>_<config>_<Vp>.json`.
+- `--required-knockdown R` adds the allowable porosity of the laminate (`porosity_allowable.json`): the largest void content at which each strength mode still retains the fraction `R` of its pristine strength.
+
 An opt-in FE delamination screening of the coupon adds, at each porosity
 level, the fracture results and the knockdown split by defect
 (`porosity_delamination_<Vp>.json`; three FE solves per level):
@@ -502,6 +515,8 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
 | `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
 | `porosity_delamination_*.json` | FE delamination screening: fracture results and knockdown decomposition (`--delamination`) |
+| `porosity_fe_<loading>_<config>_*.json` | FE solve of one configuration: stiffness knockdown, failure indices, first-ply-failure load factor (`--fe`) |
+| `porosity_allowable.json` | Allowable void content per strength mode and law at a required retained strength (`--required-knockdown`) |
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView.
 

@@ -30,6 +30,8 @@ streamlit run app.py                          # http://localhost:8501
 
 # Batch analysis CLI (entry points from pyproject.toml [project.scripts])
 porosity-analyze                              # sweep 5 Vp × 5 configs, JSON (--plots adds PNGs)
+porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --fe compression \
+    --required-knockdown 0.9                  # laminate, FE solve, allowable porosity
 validate_porosity --help                      # run vs. bundled validation datasets
 
 # Standalone CLI executable (PyInstaller)
@@ -171,7 +173,9 @@ re-implement sentinel handling at a call site.
 ### Sweep orchestration
 
 `porosity_fe/pipeline.py` owns the multi-config sweep. `_analyze_one` is
-the parallel worker invoked by `compare_configurations`; `_DEFAULT_MESH_RES
+the parallel worker invoked by `compare_configurations` (which takes the
+laminate as `ply_angles=` / `t_ply=`; the default laminate adds nothing to
+the worker's task tuple); `_DEFAULT_MESH_RES
 = (30, 10, None)` is the single source of truth for production mesh size:
 `nz = None` means one element layer per ply, capped at `_DEFAULT_NZ_MAX`
 (48, the `nz_max` of `build_empirical_pipeline`), resolved by

@@ -520,6 +520,46 @@ def allowable_porosity_record(table: dict,
     }
 
 
+def serialise_allowable_json(record: dict, laminate: dict | None = None) -> str:
+    """Standard JSON of an allowable-porosity record.
+
+    Parameters
+    ----------
+    record : dict
+        The record of :func:`allowable_porosity_record`.
+    laminate : dict, optional
+        What the allowables hold for, written beside them: e.g.
+        ``material``, ``ply_angles`` (degrees), ``n_plies``, ``t_ply_mm``.
+
+    Returns
+    -------
+    str
+        The envelope (``format`` :data:`~porosity_fe.FORMAT_ALLOWABLE`)
+        with ``laminate`` (when given) and ``allowable_porosity``.
+    """
+    from porosity_fe import FORMAT_ALLOWABLE
+    from porosity_fe.io import (
+        _UNITS_LAMINATE,
+        _UNITS_NCR_ALLOWABLE,
+        _dumps_json,
+        _wrap_envelope,
+    )
+    units = {**_UNITS_NCR_ALLOWABLE, "measured_Vp_percent": "%"}
+    payload: dict = {}
+    if laminate is not None:
+        units.update(_UNITS_LAMINATE)
+        payload["laminate"] = dict(laminate)
+    payload["allowable_porosity"] = record
+    return _dumps_json(_wrap_envelope(FORMAT_ALLOWABLE, units, payload))
+
+
+def write_allowable_json(filepath, record: dict, laminate: dict | None = None) -> None:
+    """Write :func:`serialise_allowable_json` to ``filepath``."""
+    text = serialise_allowable_json(record, laminate)   # raises before the file is opened
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
 def _allowable_porosity_of(result: dict, required_knockdown) -> dict:
     """The allowable-porosity record of an analysis result at a requirement.
 

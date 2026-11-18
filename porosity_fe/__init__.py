@@ -128,6 +128,7 @@ from .homogenization import (  # noqa: F401, E402
 )
 from .homogenization import compute_degraded_clt_moduli as compute_degraded_clt_moduli  # noqa: F401, E402
 from .io import _KNOWN_FORMATS as _KNOWN_FORMATS  # noqa: F401, E402
+from .io import FORMAT_ALLOWABLE as FORMAT_ALLOWABLE  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
@@ -271,6 +272,7 @@ __all__ = [
     "FORMAT_FE_FIELDS",
     "FORMAT_NCR",
     "FORMAT_UQ",
+    "FORMAT_ALLOWABLE",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",

@@ -259,6 +259,12 @@ Results I/O
 
    ``format`` tag of an uncertainty-propagation export.
 
+.. py:data:: FORMAT_ALLOWABLE
+   :type: str
+
+   ``format`` tag of an allowable-porosity export
+   (``porosity-analyze --required-knockdown``).
+
 Plotting
 --------
 

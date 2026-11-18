@@ -32,6 +32,8 @@ from porosity_fe import (
     PorosityField,
     build_empirical_pipeline,
     compare_configurations,
+    load_results_from_json,
+    save_results_to_json,
     sweep_configurations,
 )
 from porosity_fe import pipeline
@@ -540,3 +542,115 @@ def test_empty_configs_run_nothing():
     from porosity_fe import compare_configurations, sweep_configurations
     assert compare_configurations(0.02, configs={}) == {}
     assert sweep_configurations([0.02, 0.04], configs={}) == {0.02: {}, 0.04: {}}
+
+
+# ----------------------------------------------------------------------
+# The laminate of a sweep (layup and ply thickness)
+# ----------------------------------------------------------------------
+
+class TestSweepLaminate:
+    def test_default_laminate_is_the_call_without_it(self):
+        assert compare_configurations(0.02, configs=TWO_CONFIGS, ply_angles='QI') == \
+            compare_configurations(0.02, configs=TWO_CONFIGS)
+
+    def test_an_explicit_layup_sets_the_ply_count(self):
+        angles = [0.0, 45.0, -45.0, 90.0, 90.0, -45.0, 45.0, 0.0]
+        results, artifacts = compare_configurations(
+            0.02, configs=TWO_CONFIGS, ply_angles=angles, t_ply=0.2,
+            return_artifacts=True)
+        for name in TWO_CONFIGS:
+            mesh = artifacts[name].mesh
+            assert mesh.material.n_plies == 8 and mesh.material.t_ply == 0.2
+            assert list(mesh._ply_layup) == angles
+            assert mesh.nodes[:, 2].max() == pytest.approx(1.6)
+            assert artifacts[name].empirical_solver.layup_scale['tension'] == 1.0
+        assert results[next(iter(TWO_CONFIGS))].Vp == 0.02
+
+    def test_the_layup_changes_the_knockdown(self):
+        qi = compare_configurations(0.02, configs=TWO_CONFIGS)
+        with pytest.warns(UserWarning, match="layup amplification"):
+            pm45 = compare_configurations(0.02, configs=TWO_CONFIGS,
+                                          ply_angles=[45, -45, -45, 45])
+        name = next(iter(TWO_CONFIGS))
+        kd = lambda r: r[name].empirical['tension']['judd_wright'].knockdown  # noqa: E731
+        assert kd(pm45) < kd(qi)
+
+    def test_parallel_and_sweep_match_serial(self):
+        angles = (0.0, 90.0, 90.0, 0.0)
+        serial = compare_configurations(0.03, configs=TWO_CONFIGS, ply_angles=angles,
+                                        t_ply=0.15)
+        assert compare_configurations(0.03, configs=TWO_CONFIGS, ply_angles=angles,
+                                      t_ply=0.15, n_jobs=2) == serial
+        swept = sweep_configurations([0.02, 0.03], configs=TWO_CONFIGS,
+                                     ply_angles=angles, t_ply=0.15)
+        assert swept[0.03] == serial
+
+    def test_task_tuples_carry_the_laminate_only_when_given(self, monkeypatch):
+        calls = []
+        real = pipeline._run_config_tasks
+
+        def spy(tasks, workers):
+            calls.append(list(tasks))
+            return real(tasks, workers)
+
+        monkeypatch.setattr(pipeline, '_run_config_tasks', spy)
+        compare_configurations(0.02, configs=TWO_CONFIGS)
+        compare_configurations(0.02, configs=TWO_CONFIGS, t_ply=0.2)
+        sweep_configurations([0.02], configs=TWO_CONFIGS, ply_angles='UD')
+        assert all(len(t) == 6 for t in calls[0])
+        assert all(t[6:] == ('QI', 0.2) for t in calls[1])
+        assert all(t[6:] == ('UD', None) for t in calls[2])
+
+    @pytest.mark.parametrize("kwargs, match", [
+        ({'ply_angles': []}, "ply_angles is empty"),
+        ({'t_ply': 0.0}, "positive ply thickness"),
+        ({'t_ply': -0.1}, "positive ply thickness"),
+        ({'t_ply': float('nan')}, "positive ply thickness"),
+        ({'t_ply': True}, "positive ply thickness"),
+        ({'t_ply': '0.2'}, "positive ply thickness"),
+    ])
+    def test_a_bad_laminate_raises_before_any_work(self, monkeypatch, kwargs, match):
+        def unreachable(*args, **kwargs):
+            raise AssertionError("no task should run")
+        monkeypatch.setattr(pipeline, '_run_config_tasks', unreachable)
+        with pytest.raises(ValueError, match=match):
+            compare_configurations(0.02, configs=TWO_CONFIGS, **kwargs)
+        with pytest.raises(ValueError, match=match):
+            sweep_configurations([0.02], configs=TWO_CONFIGS, **kwargs)
+
+    def test_laminate_material(self):
+        preset = MATERIALS['T800_epoxy']
+        assert pipeline._laminate_material(preset) is preset
+        assert pipeline._laminate_material(preset, 'UD') is preset
+        changed = pipeline._laminate_material(preset, [0, 90], 0.3)
+        assert (changed.n_plies, changed.t_ply, changed.E11) == (2, 0.3, preset.E11)
+        assert pipeline._sweep_material('T800_epoxy', [0, 90]).n_plies == 2
+
+
+class TestSweepJsonLaminate:
+    def test_entries_record_the_laminate_of_their_artifacts(self, tmp_path):
+        results, artifacts = compare_configurations(
+            0.02, configs=TWO_CONFIGS, ply_angles=[0, 90, 90, 0], t_ply=0.2,
+            return_artifacts=True)
+        path = tmp_path / 'sweep.json'
+        save_results_to_json(results, path, artifacts=artifacts)
+        doc = load_results_from_json(path)
+        for name in TWO_CONFIGS:
+            assert doc[name]['laminate'] == {
+                'ply_angles': [0.0, 90.0, 90.0, 0.0], 'n_plies': 4, 't_ply_mm': 0.2}
+        assert doc['units']['ply_angles'] == 'degrees'
+        assert doc['units']['t_ply_mm'] == 'mm'
+
+    def test_without_artifacts_the_file_is_what_it_was(self, tmp_path):
+        results = compare_configurations(0.02, configs=TWO_CONFIGS)
+        path = tmp_path / 'sweep.json'
+        save_results_to_json(results, path)
+        doc = load_results_from_json(path)
+        for name in TWO_CONFIGS:
+            assert set(doc[name]) == {'config', 'void_volume_fraction', 'empirical'}
+        assert 'ply_angles' not in doc['units']
+
+    def test_artifacts_without_a_mesh_record_nothing(self):
+        from porosity_fe.io import _laminate_record
+        assert _laminate_record(None) is None
+        assert _laminate_record(object()) is None

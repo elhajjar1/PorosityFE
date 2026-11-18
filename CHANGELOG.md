@@ -12,6 +12,35 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **`porosity-analyze` takes the laminate, a choice of configurations, an
+  FE solve and the allowable porosity.** A run without the new options
+  computes what it did.
+  - `--layup SPEC` (`QI`, `UD` or laminate notation such as
+    `[0/45/-45/90]_2s`; an explicit layup sets the ply count) and
+    `--t-ply MM`. They apply to the sweep, `--uq`, `--fe`,
+    `--delamination` and `--required-knockdown`. The CLI could only run
+    the quasi-isotropic layup of the preset.
+  - `--configs NAME [NAME ...]` analyses only the named configurations.
+  - `--fe LOADING` (`compression`, `tension`, `shear`, `ilss`,
+    `flexure_3pt`, `flexure_4pt`) adds an FE solve of every analysed
+    configuration at each porosity level: the production coupon mesh, or
+    the ASTM D2344 / D7264 specimen. Each writes
+    `porosity_fe_<loading>_<config>_<Vp>.json` (the FE field export) and
+    prints the stiffness knockdown, the effective modulus, the maximum
+    failure index and the first-ply-failure load factor.
+    `--porosity-degradation` now applies to `--fe` as well as
+    `--delamination`.
+  - `--required-knockdown R` prints the allowable porosity of the laminate
+    per strength mode and law, with the governing one, and writes
+    `porosity_allowable.json` (new format tag
+    `porosity-fe.allowable-porosity`, `FORMAT_ALLOWABLE`; the results
+    schema describes it, additive, 1.3).
+  - `compare_configurations` and `sweep_configurations` take the
+    keyword-only `ply_angles=` and `t_ply=`.
+  - **JSON, additive:** each configuration entry of a sweep saved with its
+    artifacts (as the CLI does) now records its `laminate`: `ply_angles`
+    (degrees, bottom ply first), `n_plies` and `t_ply_mm`. The file did
+    not say which laminate it was for.
 - **`fit_knockdown`: a knockdown-law coefficient from coupon data, with a
   confidence interval.** `fit_knockdown(Vp, strength, model, mode=...)`
   regresses the Judd-Wright, power or linear law on strengths measured
