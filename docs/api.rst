@@ -24,6 +24,8 @@ Materials and porosity
    VoidGeometry
    Delamination
    PorosityField
+   PorosityMap
+   PorosityPatch
    CompositeMesh
    FlexureGeometry
    check_mesh_quality

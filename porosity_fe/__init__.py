@@ -152,6 +152,8 @@ from .pipeline import compare_configurations as compare_configurations  # noqa: 
 from .pipeline import sweep_configurations as sweep_configurations  # noqa: F401, E402
 from .porosity_field import POROSITY_CONFIGS as POROSITY_CONFIGS  # noqa: F401, E402
 from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
+from .porosity_map import PorosityMap as PorosityMap  # noqa: F401, E402
+from .porosity_map import PorosityPatch as PorosityPatch  # noqa: F401, E402
 from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
 from .results import ConfigResult as ConfigResult  # noqa: F401, E402
 from .results import FailureResult as FailureResult  # noqa: F401, E402
@@ -197,6 +199,8 @@ __all__ = [
     # Porosity field
     "POROSITY_CONFIGS",
     "PorosityField",
+    "PorosityMap",
+    "PorosityPatch",
     # Mesh
     "CompositeMesh",
     "FlexureGeometry",

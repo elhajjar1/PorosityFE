@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .results import ConfigArtifacts
 
 from .homogenization import _DEFAULT_POROSITY_DEGRADATION
+from .porosity_map import PorosityMap
 from .results import ConfigResult
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -43,6 +44,9 @@ def _json_default(o):
     # config dict without an explicit asdict() at the call site.
     if dataclasses.is_dataclass(o) and not isinstance(o, type):
         return dataclasses.asdict(o)
+    # A porosity map in a configuration dict (PorosityField(in_plane_map=)).
+    if isinstance(o, PorosityMap):
+        return o.to_dict()
     raise TypeError(
         f"Object of type {type(o).__name__} is not JSON serializable"
     )

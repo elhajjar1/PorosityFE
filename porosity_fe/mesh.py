@@ -1261,6 +1261,18 @@ class CompositeMesh:
         pf = self.porosity_field
         x, y, z = self.nodes[:, 0], self.nodes[:, 1], self.nodes[:, 2]
         self.porosity_renormalization = 1.0
+        porosity_map = getattr(pf, 'in_plane_map', None)
+        if porosity_map is not None:
+            x0, x1, y0, y1 = porosity_map.extent
+            tol = 1e-9 * max(x1 - x0, y1 - y0)
+            if x.min() < x0 - tol or x.max() > x1 + tol \
+                    or y.min() < y0 - tol or y.max() > y1 + tol:
+                logger.warning(
+                    "The mesh (x in [%g, %g], y in [%g, %g] mm) extends beyond "
+                    "the porosity map (x in [%g, %g], y in [%g, %g] mm): "
+                    "outside the map its edge values are used, and the mesh "
+                    "average is not the field's Vp.",
+                    x.min(), x.max(), y.min(), y.max(), x0, x1, y0, y1)
         if pf.distribution != 'interface' or pf.Vp == 0.0:
             return pf.local_porosity(x, y, z)
         layers = pf._distributed_porosity(z_layers)
@@ -1268,7 +1280,7 @@ class CompositeMesh:
                      / (z_layers[-1] - z_layers[0]))
         if mean > 0.0:
             self.porosity_renormalization = pf.Vp / mean
-        dist = pf._distributed_porosity(z) * self.porosity_renormalization
+        dist = pf._distributed(x, y, z) * self.porosity_renormalization
         return pf._with_discrete_voids(dist, x, y, z)
 
     def field_porosity(self, node_ids) -> np.ndarray:

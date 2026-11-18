@@ -152,6 +152,16 @@ The empirical path has no delamination. The linear VCCT load factor is
 growth *onset* only: no propagation, cohesive zone or buckling.
 `DELAMINATION_PLAN.md` holds the plan, its status and the open decisions.
 
+### Porosity field sampling
+
+`PorosityField` is a through-thickness profile (`_distributed_porosity(z)`)
+plus discrete voids, with an optional in-plane `PorosityMap`
+(`in_plane_map=`, `PorosityField.from_map`; `porosity_fe/porosity_map.py`).
+Sample the distributed part with `_distributed(x, y, z)`, which applies the
+map over its mean and equals the profile without one: `CompositeMesh.
+_sample_porosity` and `EmpiricalSolver._local_vp_peak` do. `Vp` is the
+specimen average, the map's area mean with `from_map`.
+
 ### `Vp` is always a fraction, never a percent
 
 `PorosityField.__init__` enforces `Vp ∈ [0, 1]` and emits a percent-vs-fraction

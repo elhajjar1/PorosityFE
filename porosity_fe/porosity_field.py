@@ -8,6 +8,7 @@ import numpy as np
 
 from ._types import ClusterLocation, Distribution
 from .materials import MaterialProperties
+from .porosity_map import PorosityMap
 from .void_geometry import VOID_SHAPES, VoidGeometry
 
 # ============================================================
@@ -122,6 +123,14 @@ class PorosityField:
         Recorded into provenance for a future stochastic placement mode
         (#55). The current pipeline is RNG-free, so this argument has no
         effect on the produced field.
+    in_plane_map : PorosityMap, optional
+        Keyword-only. In-plane variation of the distributed porosity: at
+        ``(x, y)`` the through-thickness profile is multiplied by
+        ``in_plane_map(x, y) / in_plane_map.mean``, so the map gives the
+        pattern and ``void_volume_fraction`` stays the average over the
+        map's extent. :meth:`from_map` takes the average from the map
+        itself, which keeps the map's absolute values. ``None`` (default):
+        no in-plane variation.
 
     Attributes
     ----------
@@ -142,11 +151,23 @@ class PorosityField:
         ``material.total_thickness``.
     seed : int or None
         The seed argument, kept for provenance.
+    in_plane_map : PorosityMap or None
+        The in-plane map, when one was given.
+
+    Notes
+    -----
+    With an ``in_plane_map`` the local porosity is
+    ``Vp(x, y, z) = profile(z) * map(x, y) / map.mean`` (clipped at 1), and
+    ``Vp`` is the average over the map's extent. The FE path samples it at
+    the mesh nodes, in the mesh's coordinates: a mesh larger than the map
+    sees the map's edge values outside it. The empirical failure load uses
+    the specimen average alone, so a map changes it only through its mean.
 
     Examples
     --------
     A 2 % uniformly-distributed spherical porosity field:
 
+    >>> from porosity_fe import MATERIALS, PorosityField
     >>> mat = MATERIALS['T800_epoxy']
     >>> field = PorosityField(mat, void_volume_fraction=0.02,
     ...                       distribution='uniform',
@@ -169,7 +190,8 @@ class PorosityField:
                  distribution: Distribution = 'uniform', void_shape: str | tuple = 'spherical',
                  cluster_location: ClusterLocation = 'midplane',
                  discrete_voids: list[VoidGeometry] | None = None,
-                 seed: int | None = None):
+                 seed: int | None = None, *,
+                 in_plane_map: PorosityMap | None = None):
         if void_volume_fraction is None:
             raise ValueError("void_volume_fraction is None; expected a finite float in [0, 1].")
         if not isinstance(void_volume_fraction, (int, float, np.floating, np.integer)):
@@ -221,6 +243,16 @@ class PorosityField:
         # contract to honor (#55).
         self.seed = seed
         self.Lz = material.total_thickness
+        if in_plane_map is not None:
+            if not isinstance(in_plane_map, PorosityMap):
+                raise TypeError(
+                    f"in_plane_map must be a PorosityMap or None; got "
+                    f"{type(in_plane_map).__name__}.")
+            if Vp > 0.0 and not in_plane_map.mean > 0.0:
+                raise ValueError(
+                    "in_plane_map is zero everywhere: it gives no pattern to "
+                    "spread a non-zero void_volume_fraction over.")
+        self.in_plane_map = in_plane_map
 
         # Resolve void shape
         if isinstance(void_shape, str):
@@ -261,9 +293,34 @@ class PorosityField:
                     f"Use one of {list(self._DISTRIBUTIONS)}."
                 )
 
+    @classmethod
+    def from_map(cls, material: MaterialProperties, porosity_map: PorosityMap,
+                 **kwargs) -> PorosityField:
+        """A field whose in-plane void content is ``porosity_map``.
+
+        The specimen-average ``Vp`` is the map's area mean, so the
+        through-thickness average of the field at ``(x, y)`` is the map's
+        value there. ``kwargs`` are the other constructor arguments
+        (``distribution``, ``void_shape``, ``cluster_location``,
+        ``discrete_voids``, ``seed``).
+        """
+        if not isinstance(porosity_map, PorosityMap):
+            raise TypeError(
+                f"porosity_map must be a PorosityMap; got {type(porosity_map).__name__}.")
+        return cls(material, porosity_map.mean, in_plane_map=porosity_map, **kwargs)
+
+    def _distributed(self, x, y, z) -> np.ndarray:
+        """The distributed porosity at ``(x, y, z)``: the through-thickness
+        profile, times the in-plane map over its mean when there is one."""
+        dist = self._distributed_porosity(z)
+        m = self.in_plane_map
+        if m is None or not m.mean > 0.0:
+            return dist
+        return dist * (m(x, y) / m.mean)
+
     def local_porosity(self, x, y, z) -> np.ndarray:
         x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
-        return self._with_discrete_voids(self._distributed_porosity(z), x, y, z)
+        return self._with_discrete_voids(self._distributed(x, y, z), x, y, z)
 
     def _with_discrete_voids(self, Vp_dist: np.ndarray, x, y, z) -> np.ndarray:
         """``Vp_dist`` with the discrete voids added (``1`` inside one),
@@ -305,7 +362,8 @@ class PorosityField:
         return z_coords, Vp_vals
 
     def __repr__(self) -> str:
+        mapped = "" if self.in_plane_map is None else f", in_plane_map={self.in_plane_map!r}"
         return (f"PorosityField(Vp={self.Vp:.4f}, "
                 f"distribution='{self.distribution}', "
                 f"void_shape={self.void_shape_radii}, "
-                f"n_discrete_voids={len(self.discrete_voids)})")
+                f"n_discrete_voids={len(self.discrete_voids)}{mapped})")

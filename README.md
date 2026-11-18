@@ -23,6 +23,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
 - **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
+- **In-plane porosity maps**: a C-scan or CT grid of void content, or a background with local zones, resolved by the FE path (`PorosityMap`, `PorosityField.from_map`)
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
 - **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
@@ -576,6 +577,21 @@ mesh that resolves every ply (`nz` a multiple of `n_plies`); see
 
 `Vp` stays a fraction everywhere here; the app's front table shows the
 porosity at the crack plane in percent for display only.
+
+### In-plane porosity maps
+
+The distributions above vary through the thickness only. A `PorosityMap` adds the in-plane variation: the through-thickness average void content on a grid (`x`, `y` in mm, `Vp` as fractions), interpolated bilinearly.
+
+```python
+from porosity_fe import PorosityField, PorosityMap, PorosityPatch
+
+porosity_map = PorosityMap.from_csv("cscan.csv")            # header x, y, Vp; one row per grid point
+porosity_map = PorosityMap.from_patches(                    # or: 6 % voids in an ellipse, 1 % elsewhere
+    50.0, 20.0, 0.01, [PorosityPatch((25.0, 10.0), (8.0, 5.0), 0.06)])
+field = PorosityField.from_map(material, porosity_map)      # Vp is the map's area mean
+```
+
+The FE path samples the map at the mesh nodes and resolves the hot spots; build the map on the planform of the mesh (50 x 20 mm for the default coupon). The empirical failure load uses the specimen average, so a map changes it only through its mean. The app and the CLI do not take a map yet.
 
 ### Per-ply vs. specimen-average porosity
 

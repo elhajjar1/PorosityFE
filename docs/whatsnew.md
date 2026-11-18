@@ -36,6 +36,14 @@ smeared porosity ({doc}`theory/delamination`):
 The load factor predicts growth onset only: there is no propagation,
 cohesive zone or buckling.
 
+## Porosity
+
+- **In-plane porosity maps**: `PorosityMap` holds the void content on an
+  in-plane grid (from a CSV of a C-scan or CT, or a background with
+  `PorosityPatch` zones), and `PorosityField.from_map` makes it the
+  in-plane variation of the field. The FE path resolves it; the empirical
+  failure load sees its mean.
+
 ## Specimens and load cases
 
 - **`'ilss'` is the ASTM D2344 short-beam test** on its own specimen mesh

@@ -629,8 +629,8 @@ class EmpiricalSolver:
         distributed (through-thickness) component of the field.
         """
         if self._local_vp_peak_cache is None:
-            z = self.mesh.nodes[:, 2]
-            dist = self.mesh.porosity_field._distributed_porosity(z) * float(
+            x, y, z = self.mesh.nodes.T
+            dist = self.mesh.porosity_field._distributed(x, y, z) * float(
                 getattr(self.mesh, 'porosity_renormalization', 1.0))
             self._local_vp_peak_cache = float(np.max(dist))
         return self._local_vp_peak_cache

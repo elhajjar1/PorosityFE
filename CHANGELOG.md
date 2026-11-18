@@ -12,6 +12,36 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **In-plane porosity maps.** `PorosityMap` holds the through-thickness
+  average void content on a rectilinear in-plane grid, and
+  `PorosityField.from_map(material, porosity_map)` (or
+  `PorosityField(..., in_plane_map=...)`) makes it the in-plane variation
+  of the field. The profiles varied through the thickness only. Additive:
+  a field without a map is sampled as before, and the FE fingerprint does
+  not move.
+  - The local porosity is `profile(z) * map(x, y) / map.mean`, clipped at
+    1: the map gives the pattern and `Vp` the average over the map's
+    extent. `from_map` takes `Vp` from the map's area mean, which keeps
+    its absolute values.
+  - `PorosityMap(x, y, Vp)` takes the grid (mm, fractions) and
+    interpolates bilinearly, with its edge values outside the grid.
+    `PorosityMap.from_csv` reads a table with the columns `x`, `y`, `Vp`,
+    one row per grid point, and refuses an incomplete grid.
+    `PorosityMap.from_patches(length, width, background, patches)` draws
+    `PorosityPatch` zones (ellipses or rectangles with their own void
+    content) on a background.
+  - The FE path resolves the map: `CompositeMesh` samples it at the
+    nodes, the `'interface'` renormalization still applies, and a mesh
+    that extends beyond the map logs a warning. The empirical failure
+    load uses the specimen average, so a map changes it only through its
+    mean; its per-node knockdown field and extrapolation warning follow
+    the local peak.
+  - Example: a 16 x 10 mm elliptical zone of 6 % voids in a 1 %
+    background on the 50 x 20 mm T700 coupon (mean 1.62 %). The FE
+    first-ply-failure load of the interior is 1.1 % below that of a
+    uniform 1.62 % (0.864 against 0.874), the stiffness knockdown agrees
+    to four digits, and the empirical knockdowns are identical.
+  - Not done: the app and the CLI do not take a map yet.
 - **`porosity-analyze` takes the laminate, a choice of configurations, an
   FE solve and the allowable porosity.** A run without the new options
   computes what it did.
