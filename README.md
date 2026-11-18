@@ -715,6 +715,19 @@ If your material system differs significantly from the calibration set:
 4. Normalize each datum by the void-free baseline: `KD = σ(Vp) / σ(0)`.
 5. Regress `ln(KD)` vs `Vp` (slope `= −alpha`) for Judd-Wright, or `ln(KD)` vs `ln(1 − Vp)` (slope `= n`) for the power law.
 
+`fit_knockdown` does steps 4 and 5 and returns the coefficient with its confidence interval:
+
+```python
+from porosity_fe import fit_knockdown
+
+fit = fit_knockdown(Vp, strength, 'judd_wright', mode='ilss')   # Vp as fractions, strength in any one unit
+fit.coefficient, fit.interval      # alpha and its 95 % interval
+fit.pristine_strength              # the void-free strength, fitted unless pristine_strength= is given
+solver = EmpiricalSolver(mesh, material, judd_wright_alpha=fit.as_override())
+```
+
+The void-free strength is fitted with the coefficient by default, because the least porous coupons of a ladder still hold some voids. `fit.cov` is the `coef_cov` of the uncertainty propagation, and the fit holds up to the largest void content of the data.
+
 Custom `alpha` / `n` / `beta` values are exposed as keyword-only constructor arguments on `EmpiricalSolver`. Overrides are partial (modes you don't pass keep the calibrated defaults) and are layup-scaled exactly like the built-in coefficients:
 
 ```python

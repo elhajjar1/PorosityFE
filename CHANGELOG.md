@@ -12,6 +12,42 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **`fit_knockdown`: a knockdown-law coefficient from coupon data, with a
+  confidence interval.** `fit_knockdown(Vp, strength, model, mode=...)`
+  regresses the Judd-Wright, power or linear law on strengths measured
+  against void content and returns a `KnockdownFit`. Additive: no
+  existing result changes.
+  - Each law is a least-squares line in a transformed variable
+    (`ln(strength)` on `Vp`, `ln(strength)` on `ln(1 - Vp)`, `strength` on
+    `Vp`), the regression forms the calibration notes already prescribe.
+    The result carries the coefficient, its standard error and Student-t
+    interval, the pristine strength, the RMSE and R² of the strengths and
+    the largest void content of the data.
+  - The void-free strength is fitted with the coefficient by default;
+    `pristine_strength=` fits the law through a known one. On data
+    normalized by a baseline panel with 0.5 % voids, forcing the law
+    through 1 biases an exact alpha of 9 below 8; the free intercept
+    recovers it.
+  - `fit.as_override()` gives the `{mode: coefficient}` dict of
+    `EmpiricalSolver(judd_wright_alpha=...)` (divided by a layup scale
+    when the coupons' layup is amplified), and `fit.cov` the `coef_cov` of
+    `propagate_uncertainty`, for which `porosity-analyze --uq` otherwise
+    assumes 10 %. The exponential toughness law has the Judd-Wright form, so the
+    `b` of `ToughnessKnockdown` is fitted the same way.
+  - Checked against `scipy.stats.linregress` and closed forms to 1e-9. On
+    the calibration dataset (Elhajjar 2025, 27 points to 10 % voids) it
+    gives alpha = 7.21 [6.99, 7.44] for compression and 4.29 [4.17, 4.41]
+    for tension, against the shipped 6.9 and 3.9.
+  - **Found, not changed: the shipped power-law exponents are about half
+    of what the data support.** For small `Vp` the power law is
+    `exp(-n Vp)`, so `n` should be near `alpha`: the fit of the same
+    dataset gives n = 6.85 [6.64, 7.06] for compression and 4.07 for
+    tension, where `Calibration.POWER_LAW_N_QI` has 2.8 and 1.8. Over the
+    27 strength entries of the validation database the three laws score
+    6.04 % (Judd-Wright), 7.81 % (linear) and 12.48 % (power law). The
+    validation headline uses Judd-Wright alone and is not affected.
+    Changing the table would change every `power_law` result, and is open
+    for a decision.
 - **Validation of the FE path against the experimental datasets**
   (`validate_porosity --fe`, `validation.validate_all.run_all_datasets_fe`).
   Opt-in and reported apart: the headline MAE, the PNG and every existing

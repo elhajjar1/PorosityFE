@@ -108,6 +108,8 @@ from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
+from .fitting import KnockdownFit as KnockdownFit  # noqa: F401, E402
+from .fitting import fit_knockdown as fit_knockdown  # noqa: F401, E402
 from .fracture_specimens import ComplianceCalibration as ComplianceCalibration  # noqa: F401, E402
 from .fracture_specimens import FractureSpecimenGeometry as FractureSpecimenGeometry  # noqa: F401, E402
 from .fracture_specimens import compliance_calibration as compliance_calibration  # noqa: F401, E402
@@ -207,6 +209,8 @@ __all__ = [
     "Calibration",
     "EmpiricalSolver",
     "FatigueModel",
+    "KnockdownFit",
+    "fit_knockdown",
     "propagate_uncertainty",
     "save_uq_results_to_json",
     # Coordinate transforms

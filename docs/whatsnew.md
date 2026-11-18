@@ -103,6 +103,9 @@ cohesive zone or buckling.
   error); the FE first-ply-failure strengths, which rest on an
   uncalibrated heuristic, do not (21.7 %, against 6.0 % for the empirical
   laws).
+- **`fit_knockdown`** fits the coefficient of a knockdown law to coupon
+  strengths against void content, with a confidence interval, ready to
+  pass to `EmpiricalSolver` as an override.
 - **Allowable porosity**: `EmpiricalSolver.allowable_porosity` gives the
   largest void content that still retains a required strength, the
   inverse of the knockdown laws. The NCR form takes an optional required

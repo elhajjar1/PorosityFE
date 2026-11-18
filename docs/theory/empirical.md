@@ -327,8 +327,41 @@ values (`tests/test_empirical_toughness.py`).
 5. Regress $\ln KD$ against $V_p$ (slope $-\alpha$) for Judd-Wright, or
    $\ln KD$ against $\ln(1 - V_p)$ (slope $n$) for the power law.
 
+{func}`~porosity_fe.fit_knockdown` does steps 4 and 5 and adds what a
+hand regression leaves out, the confidence interval:
+
+```python
+import numpy as np
+from porosity_fe import EmpiricalSolver, fit_knockdown
+
+Vp = np.array([0.004, 0.011, 0.019, 0.032, 0.047])     # fractions
+ilss = np.array([78.1, 72.4, 67.9, 59.6, 51.2])        # MPa
+fit = fit_knockdown(Vp, ilss, 'judd_wright', mode='ilss')
+fit.coefficient, fit.interval       # alpha and its 95 % interval
+fit.pristine_strength               # the fitted void-free strength, MPa
+solver = EmpiricalSolver(mesh, material, judd_wright_alpha=fit.as_override())
+```
+
+The three laws are lines in a transformed variable, so each fit is an
+ordinary least-squares line: $\ln\sigma$ on $V_p$ (Judd-Wright),
+$\ln\sigma$ on $\ln(1 - V_p)$ (power law), $\sigma$ on $V_p$ (linear,
+$\beta = -\text{slope}/\text{intercept}$). By default the void-free
+strength is fitted with the coefficient, since the least porous coupons of
+a ladder still hold some voids and normalizing by them biases a law forced
+through 1; pass `pristine_strength` when it is known. The interval is the
+Student-$t$ interval of the line. It measures the scatter of these coupons
+about the law, not whether the law has the right form, and the fit holds
+up to the largest void content of the data (`fit.max_Vp`).
+`fit.cov` is the `coef_cov` of {func}`~porosity_fe.propagate_uncertainty`
+({doc}`uncertainty`), for which `porosity-analyze --uq` otherwise assumes
+10 %.
+
 For `shear`, `ilss` and `transverse_tension`, and for `tension` /
 `compression` coupons that are UD, cross-ply or quasi-isotropic, the fitted
 coefficient is the override as is. For a coupon whose layup scale $s$ is
 above 1, divide the fitted coefficient by $s$ before passing it as an
-override.
+override (`fit.as_override(layup_scale=s)`).
+
+The exponential porosity-toughness law has the Judd-Wright form, so the
+$b$ of {class}`~porosity_fe.ToughnessKnockdown` is the $\alpha$ fitted to
+toughness values.

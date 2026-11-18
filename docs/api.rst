@@ -63,6 +63,8 @@ Empirical solver
    FatigueModel
    FailureResult
    PorosityAllowable
+   fit_knockdown
+   KnockdownFit
 
 Finite-element solver
 ---------------------
