@@ -149,8 +149,15 @@ On top of the solve:
   `POROSITY_FE_FRACTURE_BENCH=1`).
 
 The empirical path has no delamination. The linear VCCT load factor is
-growth *onset* only: no propagation or cohesive zone, and no buckling in
-it. `fe/buckling.py` (`FESolver.buckling`, `linear_buckling`) is a separate
+growth *onset*, with no buckling in it. `fe/growth.py`
+(`delamination_growth`, `fatigue_delamination_growth`, `GrowthResult`,
+`ParisLaw`; `FESolver` methods of the same names) grows the crack by node
+release: it releases the governing front pairs into
+`CompositeMesh.released_pairs` (delaminated on top of the delaminations,
+changing only the ties; the pristine reference and
+`decomposition._without_delamination` clear them), re-solves, and puts the
+mesh back at the end. No cohesive zone, no R-curve, and no Paris
+coefficients ship. `fe/buckling.py` (`FESolver.buckling`, `linear_buckling`) is a separate
 linear eigen-buckling analysis of the compression or shear coupon: the
 geometric stiffness of the prebuckling Gauss-point stress, on the load
 case's supports and the bonded ties (no contact; `interpenetration` flags a

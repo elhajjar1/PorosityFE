@@ -55,6 +55,7 @@ from . import (
     failure,
 )
 from . import buckling as _buckling
+from . import growth as _growth
 from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
 from ._knockdown import _stiffness_measure
 from ._load_cases import _FRACTURE_TESTS, apply_boundary_conditions, check_solve_arguments, interior_mask
@@ -79,6 +80,7 @@ if TYPE_CHECKING:
     from ..uq import FractureLoadFactorBand
     from .buckling import BucklingResult
     from .decomposition import KnockdownDecomposition
+    from .growth import GrowthResult, ParisLaw
     from .interlaminar import DelaminationOnset
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -800,6 +802,37 @@ class FESolver:
         return _buckling.linear_buckling(self, loading, n_modes,
                                          applied_strain=applied_strain, **solve_kwargs)
 
+    def delamination_growth(self, loading: FELoadingMode, *, max_steps: int = 50,
+                            max_area: float | None = None,
+                            release_tolerance: float = 1e-3,
+                            **solve_kwargs) -> GrowthResult:
+        """Quasi-static growth of the delamination by node release.
+
+        Releases the front nodes with the smallest critical load factor,
+        solves the grown crack and repeats: the critical load against the
+        crack area is the propagation envelope. See
+        :func:`~porosity_fe.delamination_growth`, which takes the same
+        arguments; the mesh is left as it was.
+        """
+        return _growth.delamination_growth(
+            self, loading, max_steps=max_steps, max_area=max_area,
+            release_tolerance=release_tolerance, **solve_kwargs)
+
+    def fatigue_delamination_growth(self, loading: FELoadingMode, paris: ParisLaw, *,
+                                    max_steps: int = 50, max_area: float | None = None,
+                                    max_cycles: float | None = None,
+                                    release_tolerance: float = 1e-3,
+                                    **solve_kwargs) -> GrowthResult:
+        """Fatigue growth of the delamination by a Paris law, under the
+        applied load as the cyclic peak. See
+        :func:`~porosity_fe.fatigue_delamination_growth`, which takes the
+        same arguments; the mesh is left as it was.
+        """
+        return _growth.fatigue_delamination_growth(
+            self, loading, paris, max_steps=max_steps, max_area=max_area,
+            max_cycles=max_cycles, release_tolerance=release_tolerance,
+            **solve_kwargs)
+
     # Steps of solve(). The work is done in the private step modules; tests
     # and callers use several of these methods, so they stay.
 
@@ -1117,6 +1150,7 @@ class FESolver:
                        fracture_uncertainty: FractureLoadFactorBand | None = None,
                        buckling: BucklingResult | None = None,
                        buckling_reference: BucklingResult | None = None,
+                       growth: GrowthResult | None = None,
                        ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1191,6 +1225,13 @@ class FESolver:
             Keyword-only. The same buckling analysis of the void-free
             laminate: the ``buckling`` block then adds its ``reference``
             summary and the ``knockdown`` of the critical stress.
+        growth : GrowthResult, optional
+            Keyword-only. A delamination growth analysis
+            (:meth:`delamination_growth`, :meth:`fatigue_delamination_growth`)
+            of the model these results solve, written with ``fmt='json'`` as
+            a ``delamination_growth`` block (its
+            :meth:`~porosity_fe.GrowthResult.summary`: one entry per
+            configuration). ``None`` (default) writes none.
 
         Notes
         -----
@@ -1231,6 +1272,12 @@ class FESolver:
           infinite (no energy released), ``seed`` when unseeded, and
           ``required_load_factor`` and ``probability_below_required``
           without a required load factor.
+        * In the ``delamination_growth`` block (with ``growth``): a
+          configuration's load factor and critical levels where no front
+          node is driven, its governing values without a governing node, and
+          the columns a load case does not have (``crack_length_mm`` off a
+          fracture specimen, the critical load, displacement, strain or
+          stress of another kind of load case).
 
         Any other non-finite value raises :class:`ValueError` naming its
         location, before a file is written.
@@ -1242,4 +1289,5 @@ class FESolver:
                         include_raw=include_raw, onset=onset,
                         knockdown_decomposition=knockdown_decomposition,
                         fracture_uncertainty=fracture_uncertainty,
-                        buckling=buckling, buckling_reference=buckling_reference)
+                        buckling=buckling, buckling_reference=buckling_reference,
+                        growth=growth)

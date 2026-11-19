@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..uq import FractureLoadFactorBand
     from .buckling import BucklingResult
     from .decomposition import KnockdownDecomposition
+    from .growth import GrowthResult
     from .interlaminar import DelaminationOnset
     from .results import FieldResults
 
@@ -522,6 +523,7 @@ def export_results(field_results: FieldResults,
                    fracture_uncertainty: FractureLoadFactorBand | None = None,
                    buckling: BucklingResult | None = None,
                    buckling_reference: BucklingResult | None = None,
+                   growth: GrowthResult | None = None,
                    ) -> None:
     """Export FE results as JSON, VTK or VTU; see :meth:`FESolver.export_results`."""
     fmt = str(fmt).lower()
@@ -650,6 +652,8 @@ def export_results(field_results: FieldResults,
         results_data['fracture_uncertainty'] = fracture_uncertainty.summary()
     if buckling is not None:
         results_data['buckling'] = buckling.summary(buckling_reference)
+    if growth is not None:
+        results_data['delamination_growth'] = growth.summary()
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),

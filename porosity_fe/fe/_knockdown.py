@@ -67,7 +67,7 @@ def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
     delamination.
 
     A delaminated mesh keeps its duplicated interface nodes, and with no
-    delaminations left every duplicated pair is bonded
+    delaminations and no released pair left every duplicated pair is bonded
     (:meth:`CompositeMesh.bonded_pairs`): the same structure as the mesh
     without delaminations, solved on the same nodes.
     """
@@ -77,6 +77,8 @@ def _pristine_mesh(mesh: CompositeMesh) -> CompositeMesh:
     pristine.void_element_set = set()
     if getattr(mesh, 'delaminations', ()):
         pristine.delaminations = ()
+    if np.size(getattr(mesh, 'released_pairs', ())):
+        pristine.released_pairs = ()
     return pristine
 
 

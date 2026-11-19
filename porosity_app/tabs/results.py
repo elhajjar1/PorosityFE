@@ -23,10 +23,19 @@ from ..plots import (
     plot_buckling_mode,
     plot_fracture_uq,
     plot_front,
+    plot_growth,
     plot_results,
     plot_uq,
 )
-from ..runners import buckling_unavailable_reason, run_buckling_cached, run_uq_cached
+from ..runners import (
+    GROWTH_DEFAULT_STEPS,
+    GROWTH_MAX_STEPS,
+    buckling_unavailable_reason,
+    growth_unavailable_reason,
+    run_buckling_cached,
+    run_growth_cached,
+    run_uq_cached,
+)
 from ..scenario import REFERENCE_KEY, comparison_rows, scenario_summary
 from ..sidebar import _offer_nz_fix, _seed
 from ..summaries import (
@@ -41,6 +50,8 @@ from ..summaries import (
     fe_onset_summary,
     fe_short_beam_summary,
     fe_thermal_summary,
+    growth_summary,
+    growth_table,
 )
 from ..tabs.common import _metric_row, _placeholder_tab, _show_figure
 
@@ -62,6 +73,7 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_scenario_comparison(result)
     _build_durability_expander(result)
     _build_buckling_expander(result)
+    _build_growth_expander(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
 
@@ -119,6 +131,71 @@ def _build_buckling_expander(result: dict) -> None:
         _show_figure(plot_buckling_mode(result["mesh"], buckled.modes[0],
                                         buckled.load_factor), "buckling_mode",
                      "dl_png_buckling")
+
+
+def _build_growth_expander(result: dict) -> None:
+    """Opt-in delamination growth of the analysis' crack, by node release."""
+    with st.expander("Delamination growth (FE)"):
+        st.caption(
+            "Grows the analysis' delamination node by node under its load case: "
+            "each step releases the front nodes with the smallest critical load "
+            "factor and solves the grown crack (one FE solve per step). "
+            "Quasi-static growth gives the critical load against the crack; "
+            "fatigue growth integrates a Paris law da/dN = C (G_max / G_c)^m with "
+            "your coefficients under a cyclic peak. Linear elastic between "
+            "releases, no cohesive zone; the porosity enters through the "
+            "stiffness and the toughness at each front node.")
+        reason = growth_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        c = st.columns(2)
+        steps = int(c[0].number_input(
+            "Release steps (at most)", min_value=1, max_value=GROWTH_MAX_STEPS,
+            value=GROWTH_DEFAULT_STEPS, step=1, key="growth_steps",
+            help="Each step is one FE solve of the grown crack."))
+        kind = c[1].radio("Growth", ("quasi-static", "fatigue"), horizontal=True,
+                          key="growth_kind")
+        C = m = threshold = peak = None
+        if kind == "fatigue":
+            f = st.columns(4)
+            C = f[0].number_input("C (mm/cycle)", min_value=1e-12, value=None,
+                                  format="%.4g", key="growth_C",
+                                  placeholder="your coefficient",
+                                  help="The rate at G_max = G_c. No default ships.")
+            m = f[1].number_input("m", min_value=0.1, max_value=100.0, value=None,
+                                  format="%.3g", key="growth_m",
+                                  placeholder="your exponent",
+                                  help="Delamination exponents are high, 5 to over 10.")
+            threshold = f[2].number_input(
+                "Threshold G_max / G_c", min_value=0.0, max_value=0.99, value=0.0,
+                step=0.05, key="growth_threshold",
+                help="Below it nothing grows; 0 for none.")
+            peak = f[3].number_input(
+                "Cyclic peak / static critical load", min_value=0.01, max_value=0.99,
+                value=0.5, step=0.05, key="growth_peak",
+                help="G_max / G_c starts at about its square.")
+            if C is None or m is None:
+                st.info("Enter the Paris-law coefficients C and m of your material: "
+                        "none ship with PorosityFE.")
+                return
+        key = _config_to_key(result["config"])
+        growth_key = (steps, kind, C, m, threshold, peak)
+        if st.button("Run growth analysis", key="growth_run"):
+            st.session_state["growth_params"] = (key, growth_key)
+        if st.session_state.get("growth_params") != (key, growth_key):
+            return
+        with st.spinner("Growing the delamination..."):
+            try:
+                growth = run_growth_cached(key, growth_key, result)
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"The growth analysis did not run: {exc}")
+                return
+        rows, caption = growth_summary(growth)
+        _metric_row(rows)
+        st.caption(caption)
+        st.dataframe(growth_table(growth), hide_index=True, use_container_width=True)
+        _show_figure(plot_growth(growth), "delamination_growth", "dl_png_growth")
 
 
 def _build_durability_expander(result: dict) -> None:

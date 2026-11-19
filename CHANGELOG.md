@@ -12,6 +12,38 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Delamination growth by node release.** `FESolver.delamination_growth`
+  (and `delamination_growth`) grows an explicit delamination step by step:
+  each crack is solved, the front nodes with the smallest critical load
+  factor are released (`CompositeMesh.released_pairs`, new: pairs untied on
+  top of the delaminations, which change only the ties), and the grown
+  crack is solved again on the assembled stiffness. The `GrowthResult` has
+  one row per crack: the load factor, the area grown, the governing node's
+  `G_T`, `G_c`, mixity and porosity, the critical load, displacement,
+  strain or stress, `unstable(control)` and `envelope(control)` under load
+  or displacement control, and the crack length of a fracture specimen.
+  `FESolver.fatigue_delamination_growth` integrates a Paris law normalized
+  by the toughness at each front node (`ParisLaw(C, m, threshold)`, the
+  user's coefficients: none ship) under the applied load as the cyclic
+  peak, releasing the node that needs the fewest cycles and carrying the
+  others' grown share. The load factor was growth onset only. Additive: no
+  existing result changes, and the mesh is put back after the analysis.
+  - Verified: every row of a plane-strain DCB growth equals a fresh solve
+    of that crack length; its critical load keeps `P_c (a + chi h)`
+    constant within 0.14 % over 10 mm, 0.8 % above corrected beam theory,
+    and grows stably under displacement control only; the ENF is unstable
+    under displacement control from a/L = 0.5 and stable from 0.8, either
+    side of beam theory's 0.69; fatigue cycles follow `Delta a / (C (P /
+    P_c)^(2m))` to round-off.
+  - Porosity enters through the stiffness and the toughness at each front
+    node: a band of 4 % voids ahead of a DCB crack lowers its critical load
+    by 12 % once the front enters it, and speeds the fatigue growth there.
+  - `export_results(..., growth=)` writes a `delamination_growth` block
+    (schema 1.3, additive). `porosity-analyze --delamination ...
+    --delam-growth STEPS` grows the screening's delamination, by a Paris law
+    with `--paris C M [THRESHOLD]` and `--fatigue-peak FRACTION`; the app's
+    Results tab has an on-demand "Delamination growth (FE)" panel with a
+    table and a plot.
 - **Linear buckling of the FE model.** `FESolver.buckling(loading,
   n_modes)` (and `linear_buckling`) returns a `BucklingResult`: the lowest
   positive load factors of `(K + lambda K_G) phi = 0` for the `compression`

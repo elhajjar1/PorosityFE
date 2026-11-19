@@ -29,7 +29,7 @@ point at commit 2686d62. Progress by pull request:
 | 4.3 | Done: empirical modes `mode_I_toughness` / `mode_II_toughness` (`LoadingMode`, `EmpiricalSolver.PRISTINE_TOUGHNESS_KEY`, `EmpiricalSolver(toughness_knockdown=...)`): the `ToughnessKnockdown` law at the specimen-average Vp, layup scale 1, `details['toughness_uncalibrated']`, a `nan` absolute value when `G_Ic` / `G_IIc` is `None`; with `local_sensitivities`, `sensitivity_fd` and `propagate_uncertainty`. In no default sweep, the app, the CLI or the NCR; the FE solver refuses them. O'Brien's free-edge G is phase 1.5 | — |
 | 4.5 | Done: `fracture_load_factor_uncertainty` (band on λ_c from scatter in `G_c`, η and `b`, one solve, no default CoV), opt-in JSON block and app band; not a disposition | #230 |
 | 5 | Done: app Defects panel (delamination, toughness and its law, onset, DCB / ENF / MMB for test planning), knockdown decomposition (D6, promised in 2.7), NCR indication types with a fracture assessment of a delamination and no recommended path for it (your decision), `porosity-analyze --delamination`, docs | #210 |
-| 6 | Deferred (cohesive zones) | — |
+| 6 | Partly: linear growth by node release on the VCCT front, quasi-static and Paris-law fatigue with the user's coefficients (`delamination_growth`, `fatigue_delamination_growth`; `--delam-growth`, the app's growth panel). Cohesive zones, R-curves and geometrically nonlinear growth stay deferred | — |
 
 Decisions taken with the recommended option because they change no
 existing result: D1 (node duplication and ties), D2, D3, D4 (the
@@ -97,8 +97,8 @@ Growing the crack only changes ties, so K stays the same, and the LU cache alrea
 7. **Verification and validation**: benchmark suite, toughness-vs-Vp datasets, mesh-convergence support.
 
 **Non-goals for this workstream (deferred, see Phase 6)**
-- Cohesive-zone nonlinear propagation: R-curves, unstable growth, snap-back.
-- Fatigue delamination growth: the porosity data are thin and conflicting.
+- Cohesive-zone nonlinear propagation: R-curves and snap-back. (Linear growth by node release now exists, quasi-static with its stable and unstable steps: `delamination_growth`.)
+- Calibrated fatigue delamination growth: the porosity data are thin and conflicting. A Paris law normalized by the toughness at each front node now runs with the user's coefficients (`fatigue_delamination_growth`); none ship.
 - Delamination buckling under compression (sublaminate buckling, compression after impact): a linear eigen-buckling capability now exists (`FESolver.buckling`, with the sublaminate's buckling load and an opening check of each mode); the growth it drives, which needs a geometrically nonlinear analysis, is still deferred.
 - Impact damage.
 

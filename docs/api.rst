@@ -124,6 +124,23 @@ toughness in N/mm (1 N/mm = 1 kJ/m²). See :doc:`theory/delamination`.
    fracture_load_factors
    critical_energy_release_rate
 
+The crack grows from there by node release
+(:meth:`FESolver.delamination_growth`,
+:meth:`FESolver.fatigue_delamination_growth`): the governing front nodes are
+released (:attr:`CompositeMesh.released_pairs`) and the grown crack solved,
+step by step, quasi-statically (the critical load against the crack) or by a
+Paris law with the user's coefficients (the crack against the cycles). See
+:doc:`theory/delamination` (Growth by node release).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   delamination_growth
+   fatigue_delamination_growth
+   GrowthResult
+   ParisLaw
+
 The FE knockdown of a porous, delaminated laminate is measured against the
 laminate with neither defect; :func:`knockdown_decomposition` adds the
 knockdowns of the porosity alone and of the delamination alone against the

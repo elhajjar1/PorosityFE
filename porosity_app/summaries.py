@@ -550,9 +550,11 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
         parts.append(f"Crack-face contact: {fe.contact_pairs} pairs in contact "
                      f"after {solves} solve{'' if solves == 1 else 's'}.")
     parts.append(
-        "Linear elastic fracture mechanics: growth onset only, no propagation "
-        "or fatigue growth, and the load factor ignores buckling (the Linear "
-        "buckling panel below gives the sublaminate's). A planform front is a "
+        "Linear elastic fracture mechanics: λ_c is growth onset (the "
+        "Delamination growth panel below grows the crack node by node, "
+        "quasi-statically or by a Paris law), and the load factor ignores "
+        "buckling (the Linear buckling panel below gives the sublaminate's). "
+        "A planform front is a "
         "staircase on the grid, so G scatters from node to node, and between "
         "plies of different angles the G_I / G_II split depends on Δa: compare "
         "G_T, and refine nx and ny (Expert mode) to check it.")
@@ -824,3 +826,106 @@ def durability_table(result: dict, *, cycles: float | None = None,
             })
     notes = sorted({str(w.message) for w in caught})
     return rows, notes, record
+
+
+# ----------------------------------------------------------------------
+# Delamination growth
+# ----------------------------------------------------------------------
+
+#: What each stop reason of a growth analysis means, for the panel.
+GROWTH_STOP_TEXT = {
+    "max_steps": "the number of steps was reached",
+    "max_area": "the area limit was reached",
+    "max_cycles": "the cycle limit was reached",
+    "not_driven": "no front node is driven by the load",
+    "separated": "the next release would leave the laminate in unconnected parts",
+    "static": "the cyclic peak reaches the static toughness (λ_c ≤ 1): the "
+              "crack grows on the first cycle",
+    "arrested": "every front node is below the Paris-law threshold",
+}
+
+
+def _growth_level(growth) -> tuple[str, np.ndarray]:
+    """The critical level a growth table and plot show, and its label."""
+    if growth.critical_load is not None:
+        return "Critical load (N)", np.abs(growth.critical_load)
+    return "Critical strain", np.abs(growth.critical_strain)
+
+
+def growth_summary(growth) -> tuple[list, str]:
+    """Metrics and caption of a delamination growth analysis."""
+    area = float(growth.released_area[-1])
+    rows = [
+        ("Release steps", f"{growth.n_steps}",
+         f"Stopped because {GROWTH_STOP_TEXT[growth.stop_reason]}."),
+        ("Crack area grown", f"{area:.4g} mm²",
+         "The tributary areas of the released front nodes."),
+    ]
+    if growth.crack_lengths is not None:
+        rows.append(("Crack length", f"{growth.crack_lengths[0]:.4g} → "
+                     f"{growth.crack_lengths[-1]:.4g} mm",
+                     "The insert plus the grown area over the specimen width."))
+    if growth.paris is None:
+        rows.append(("λ_c first → last", f"{growth.load_factors[0]:.4g} → "
+                     f"{growth.load_factors[-1]:.4g}",
+                     "Critical load factor of the first and last crack: the "
+                     "multiple of the analysis load that grows it."))
+        control = "displacement" if growth.critical_displacement is not None \
+            or growth.critical_strain is not None else "load"
+        if growth.n_steps:
+            unstable = growth.unstable(control)
+            rows.append((f"Unstable steps ({control} control)",
+                         f"{int(unstable.sum())} of {unstable.size}",
+                         "A step is unstable when the next crack needs no more "
+                         "load (or displacement) than this one: it runs on."))
+    else:
+        rows.append(("Cycles", f"{growth.cycles[-1]:.4g}",
+                     "Cycles to grow the last crack, under the cyclic peak."))
+        rows.append(("Largest da/dN", f"{float(np.max(growth.growth_rate)):.3g} mm/cycle",
+                     "The fastest growth rate over the front, over all steps."))
+    parts = [f"Stopped after {growth.n_steps} step"
+             f"{'' if growth.n_steps == 1 else 's'}: "
+             f"{GROWTH_STOP_TEXT[growth.stop_reason]}."]
+    if growth.paris is not None:
+        law = growth.paris
+        parts.append(
+            f"Paris law da/dN = C (G_max / G_c)^m with your C = {law.C:g} mm/cycle, "
+            f"m = {law.m:g}" + (f", threshold {law.threshold:g}" if law.threshold
+                                 else "") +
+            ": no coefficients ship, and G_c is the toughness at each front "
+            "node, knocked down by its porosity, so the porosity speeds the "
+            "growth through G_c alone.")
+    parts.append(
+        "Each step releases the governing front nodes and solves the grown "
+        "crack: linear elastic between releases, no cohesive zone, resolved to "
+        "the element length at the front (VCCT assumes equal elements on both "
+        "sides of it). A three-dimensional front advances node by node, so "
+        "between straight positions its critical load dips: those steps are "
+        "unstable, and the envelope is the load that started the line.")
+    if growth.toughness_uncalibrated:
+        parts.append("The toughness knockdown is the uncalibrated placeholder law.")
+    return rows, " ".join(parts)
+
+
+def growth_table(growth) -> list[dict]:
+    """One row per crack configuration of a growth analysis."""
+    label, level = _growth_level(growth)
+    rows = []
+    for k in range(len(growth)):
+        row: dict = {"Step": k}
+        if growth.crack_lengths is not None:
+            row["Crack length (mm)"] = f"{growth.crack_lengths[k]:.4g}"
+        row["Area grown (mm²)"] = f"{growth.released_area[k]:.4g}"
+        lam = growth.load_factors[k]
+        row["λ_c"] = f"{lam:.4g}" if math.isfinite(lam) else "∞"
+        row[label] = f"{level[k]:.4g}" if math.isfinite(level[k]) else "∞"
+        if growth.critical_displacement is not None:
+            row["Critical displacement (mm)"] = f"{growth.critical_displacement[k]:.4g}"
+        if growth.cycles is not None:
+            row["Cycles"] = f"{growth.cycles[k]:.4g}"
+            row["da/dN (mm/cycle)"] = f"{growth.growth_rate[k]:.3g}"
+        vp = growth.Vp[k]
+        row["Vp at front (%)"] = f"{100.0 * vp:.3g}" if math.isfinite(vp) else "n/a"
+        row["Released"] = int(growth.released[k].size)
+        rows.append(row)
+    return rows

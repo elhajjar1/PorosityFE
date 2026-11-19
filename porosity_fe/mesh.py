@@ -365,7 +365,9 @@ class CompositeMesh:
         The delaminations. Replacing them with others at the same
         interfaces changes only the bonded ties, not the mesh, so a crack
         can grow without reassembly; an interface without a duplicated
-        node plane needs :meth:`generate_mesh` again.
+        node plane needs :meth:`generate_mesh` again. The pairs of
+        :attr:`released_pairs` (delamination growth) are open on top of
+        them.
     elem_ply_ids : np.ndarray
         Shape ``(n_elem,)`` id of the ply containing each element
         centroid. A centroid exactly on a ply interface takes the ply
@@ -511,6 +513,8 @@ class CompositeMesh:
         self._n_structured_nodes = 0
         self._pair_original = np.zeros(0, dtype=np.intp)
         self._pair_interface = np.zeros(0, dtype=np.intp)
+        # Pairs opened by delamination growth (see released_pairs).
+        self._released_pairs = np.zeros(0, dtype=np.intp)
 
         # Resolve the ply_angles sentinel (#44 item 2). ``None`` is the
         # deprecated path and emits a DeprecationWarning inside
@@ -1523,6 +1527,7 @@ class CompositeMesh:
         self._n_structured_nodes = len(self.nodes)
         self._pair_original = np.zeros(0, dtype=np.intp)
         self._pair_interface = np.zeros(0, dtype=np.intp)
+        self._released_pairs = np.zeros(0, dtype=np.intp)
         delams = self._checked_delaminations()
         if not delams:
             return
@@ -1565,6 +1570,48 @@ class CompositeMesh:
         return self._n_structured_nodes
 
     @property
+    def released_pairs(self) -> np.ndarray:
+        """Duplicated node pairs opened by delamination growth (a copy).
+
+        Indices into :meth:`interface_node_pairs`, sorted and unique, of the
+        pairs that are delaminated on top of those inside
+        :attr:`delaminations` (:meth:`bonded_pairs`). Empty by default.
+        :func:`~porosity_fe.delamination_growth` and
+        :func:`~porosity_fe.fatigue_delamination_growth` release front pairs
+        here one step at a time, put the mesh back as they found it, and
+        return the grown set (:attr:`GrowthResult.released_pairs
+        <porosity_fe.GrowthResult.released_pairs>`); assign that here to
+        solve the grown crack. Like :attr:`delaminations`, it changes only
+        the bonded ties, not the mesh. :meth:`generate_mesh` clears it, since
+        the pair numbering is the mesh's.
+
+        Raises
+        ------
+        ValueError
+            On assignment, if a value is not an integer index of a
+            duplicated pair.
+        """
+        return self._released_pairs.copy()
+
+    @released_pairs.setter
+    def released_pairs(self, value: Sequence[int] | np.ndarray | None) -> None:
+        pairs = np.asarray(() if value is None else value)
+        if pairs.size == 0:
+            self._released_pairs = np.zeros(0, dtype=np.intp)
+            return
+        if pairs.ndim != 1 or pairs.dtype.kind not in 'iu':
+            raise ValueError(
+                f"CompositeMesh.released_pairs must be a sequence of integer "
+                f"indices into interface_node_pairs(), got {value!r}.")
+        n = int(self._pair_original.size)
+        if int(pairs.min()) < 0 or int(pairs.max()) >= n:
+            raise ValueError(
+                f"CompositeMesh.released_pairs must index the {n} duplicated "
+                f"interface node pairs (0 to {n - 1}), got indices from "
+                f"{int(pairs.min())} to {int(pairs.max())}.")
+        self._released_pairs = np.unique(pairs.astype(np.intp))
+
+    @property
     def delaminated_interfaces(self) -> tuple[int, ...]:
         """Interfaces whose node plane is duplicated, in increasing order."""
         return tuple(int(k) for k in np.unique(self._pair_interface))
@@ -1597,7 +1644,8 @@ class CompositeMesh:
         """Which duplicated node pairs are bonded (tied), from :attr:`delaminations`.
 
         A pair is delaminated when its node lies strictly inside one of the
-        delaminations of its interface, and bonded otherwise; a node on the
+        delaminations of its interface or is one of the
+        :attr:`released_pairs`, and bonded otherwise; a node on the
         boundary of a delamination stays bonded (the crack front). An edge
         of a ``'strip'`` or ``'rectangle'`` on or beyond the plate edge is
         open (see :class:`Delamination`).
@@ -1636,6 +1684,7 @@ class CompositeMesh:
                         f"a delamination at a new interface.")
                 bonded[sel] &= ~d.contains(xy[sel, 0], xy[sel, 1],
                                            plate=plate, tol=tol)
+            bonded[self._released_pairs] = False
             for k in self.delaminated_interfaces:
                 if not bonded[iface == k].any():
                     raise ValueError(

@@ -112,6 +112,24 @@ voids give the same results under both. Without ``--delamination`` the run
 is unchanged, and its options are refused (``--porosity-degradation`` is
 also taken by ``--fe``; see :doc:`theory/delamination`).
 
+``--delam-growth STEPS`` grows the screening's delamination by node release,
+at most ``STEPS`` steps, each one FE solve of the grown crack
+(:meth:`~porosity_fe.FESolver.delamination_growth`), and adds a
+``delamination_growth`` block to the JSON: the critical load factor, strain
+and stress of each crack against the area grown. With ``--paris C M
+[THRESHOLD]`` the growth is fatigue instead, by the Paris law ``da/dN = C
+(G_max / G_c)^m`` with your coefficients (``C`` in mm per cycle; none ship),
+under a cyclic peak that is ``--fatigue-peak`` (a fraction between 0 and 1)
+of the delamination's static critical load; the block then has the cycles to
+each crack. Both need toughness data (see :doc:`theory/delamination`,
+"Growth by node release").
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.02 --delamination ellipse:11:25:10:12:8 \
+       --toughness 0.212 0.774 2.1 --delam-growth 10 \
+       --paris 0.05 6 --fatigue-peak 0.5
+
 .. code-block:: bash
 
    porosity-analyze --vp 0.02 --delamination ellipse:11:25:10:12:8 \

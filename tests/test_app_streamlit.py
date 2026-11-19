@@ -926,6 +926,52 @@ class TestFatigueAndEnvironment:
 
 
 @pytest.mark.filterwarnings("ignore:Mesh has .* highly distorted")
+class TestGrowthPanel:
+    def _dcb_run(self):
+        at = _select(_fresh_app(), "Loading mode", "dcb")
+        next(n for n in at.number_input if n.label == "Ply thickness (mm)") \
+            .set_value(0.5).run()
+        at = _small_mesh(at, layup="0/0/0/0")
+        _enter_toughness(at)
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        return at
+
+    def test_quasi_static_then_fatigue(self):
+        at = self._dcb_run()
+        assert not any(m.label == "Release steps" for m in at.metric)
+
+        def pngs():
+            return sum(d.proto.label == "Download PNG" for d in at.get("download_button"))
+
+        before = pngs()
+        at.number_input(key="growth_steps").set_value(3).run()
+        _button(at, "Run growth analysis").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert labels["Release steps"] == "3"
+        assert "λ_c first → last" in labels
+        table = next(d.value for d in at.dataframe if "Step" in d.value.columns)
+        assert list(table["Step"]) == [0, 1, 2, 3] and "λ_c" in table.columns
+        assert pngs() == before + 1                   # the growth plot
+        # Fatigue needs the user's coefficients: nothing runs without them.
+        at.radio(key="growth_kind").set_value("fatigue").run()
+        assert any(i.value.startswith("Enter the Paris-law coefficients") for i in at.info)
+        assert not any(m.label == "Release steps" for m in at.metric)
+        at.number_input(key="growth_C").set_value(0.05).run()
+        at.number_input(key="growth_m").set_value(6.0).run()
+        _button(at, "Run growth analysis").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert float(labels["Cycles"]) > 0.0
+
+    def test_a_coupon_without_a_delamination_says_why(self):
+        at = _run_small_analysis(_fresh_app())
+        assert any(i.value.startswith("Delamination growth needs a delamination")
+                   for i in at.info)
+        assert not any(b.label == "Run growth analysis" for b in at.button)
+
+
 class TestBucklingPanel:
     def test_run_on_demand(self):
         at = _run_small_analysis(_fresh_app())
