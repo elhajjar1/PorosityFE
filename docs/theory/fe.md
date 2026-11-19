@@ -773,7 +773,9 @@ materials). The empirical solver takes a stack of one material, weighting
 its plies by thickness in the layup scaling, and refuses a hybrid: its laws
 knock down one material's strength, calibrated on single-material laminates,
 and a hybrid laminate has no such strength. The mode ratio of an MMB lever
-is beam theory of one material: a stack gives `lever_length`. The JSON export
+is beam theory of one material: a stack gives `lever_length`.
+{func}`~porosity_fe.material_cards` writes one material's plies and refuses a
+stack: write the cards of each of its materials. The JSON export
 of a solve on a stack has a `ply_stack` block, and the VTU a `material_id`
 cell field.
 

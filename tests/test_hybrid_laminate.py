@@ -528,8 +528,8 @@ def _dcb(material):
 
 
 class TestMixedInterface:
-    @staticmethod
     @pytest.fixture(scope='class')
+    @staticmethod
     def plain():
         mat = dataclasses.replace(TOUGH, n_plies=8)
         return {'weak': _dcb(mat)[0],
@@ -682,6 +682,19 @@ class TestOtherPaths:
             compute_degraded_clt_moduli(stack, [0, 90, 90, 0], 0.0)['Ex'], rel=1e-3)
         assert notch.stress_concentration == pytest.approx(
             notch.reference_stress_concentration, rel=0.15)
+
+    def test_material_cards_take_one_material(self):
+        from porosity_fe import material_cards
+        stack = PlyStack([GLASS, CARBON])
+        with pytest.raises(TypeError, match="write the cards of each of stack.materials"):
+            material_cards(stack, 0.02)
+        with pytest.raises(TypeError, match="plies of one material"):
+            material_cards(CARBON, PorosityField(stack, 0.02))
+
+    def test_partition_thicknesses_match_the_plies(self):
+        from porosity_fe._layup import _membrane_energy_partition
+        with pytest.raises(ValueError, match="thicknesses has 1 values for 2 plies"):
+            _membrane_energy_partition(CARBON, [0, 90], thicknesses=[0.1])
 
     def test_refinement_study_checks_the_field(self):
         from porosity_fe.fe.refinement import _resolve_porosity
