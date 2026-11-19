@@ -12,6 +12,29 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Linear buckling of the FE model.** `FESolver.buckling(loading,
+  n_modes)` (and `linear_buckling`) returns a `BucklingResult`: the lowest
+  positive load factors of `(K + lambda K_G) phi = 0` for the `compression`
+  or `shear` coupon, with the geometric stiffness of the prebuckling
+  Gauss-point stress, on the load case's supports and reusing its cached
+  factorization; the mode shapes; the critical strain, stress and load; and,
+  with a delamination, how far each mode's faces would close
+  (`interpenetration`; the eigenproblem has no contact). There was no
+  buckling analysis, which usually governs a thin laminate in compression.
+  Additive: no existing result changes.
+  - Verified against the fixed-guided Euler column (a 1 mm UD strip, within
+    0.4 % with the shear correction; the mode shape correlates to 0.9996)
+    and the clamped sublaminate over a delamination (4 % below the
+    rigid-base estimate, as it should be).
+  - Porosity lowers the buckling load through each element's degraded
+    stiffness, so the distribution matters: on a cross-ply strip with 4 %
+    voids it keeps 99.5 % (surface cluster), 99.6 % (uniform) and 99.8 %
+    (mid-plane cluster).
+  - `export_results(..., buckling=, buckling_reference=)` writes a
+    `buckling` block (schema 1.3, additive). `porosity-analyze --buckling
+    {compression,shear}` analyses each configuration and level on the
+    production coupon against one void-free reference; the app's Results
+    tab has an on-demand "Linear buckling (FE)" panel with the first mode.
 - **Fatigue and environment in the CLI and the app, with two opt-in fatigue
   options.** Both factors existed in the `EmpiricalSolver` API only; the
   stress ratio `R` had no effect, and the S-N slope ignored porosity.

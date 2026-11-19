@@ -550,8 +550,9 @@ def fe_delamination_summary(result: dict) -> tuple[list[tuple[str, str, str]], s
         parts.append(f"Crack-face contact: {fe.contact_pairs} pairs in contact "
                      f"after {solves} solve{'' if solves == 1 else 's'}.")
     parts.append(
-        "Linear elastic fracture mechanics: growth onset only, no propagation, "
-        "fatigue growth or delamination buckling. A planform front is a "
+        "Linear elastic fracture mechanics: growth onset only, no propagation "
+        "or fatigue growth, and the load factor ignores buckling (the Linear "
+        "buckling panel below gives the sublaminate's). A planform front is a "
         "staircase on the grid, so G scatters from node to node, and between "
         "plies of different angles the G_I / G_II split depends on Δa: compare "
         "G_T, and refine nx and ny (Expert mode) to check it.")
@@ -632,8 +633,9 @@ def fe_decomposition_summary(result: dict) -> tuple[list[tuple[str, str, str]], 
         "Each knockdown is the structural stiffness over that of the laminate "
         "with neither defect, under the same load. In a linear analysis an "
         "embedded delamination under in-plane load costs little stiffness "
-        "(there is no delamination buckling): its effect shows in the fracture "
-        "load factor, not here."
+        "(a linear static solve does not buckle): its effect shows in the "
+        "fracture load factor and in the buckling load (Linear buckling "
+        "panel), not here."
         + ("" if took is None else f" The two extra FE solves took {took:.0f} s."))
     return rows, caption
 

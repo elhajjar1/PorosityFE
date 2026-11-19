@@ -149,7 +149,13 @@ On top of the solve:
   `POROSITY_FE_FRACTURE_BENCH=1`).
 
 The empirical path has no delamination. The linear VCCT load factor is
-growth *onset* only: no propagation, cohesive zone or buckling.
+growth *onset* only: no propagation or cohesive zone, and no buckling in
+it. `fe/buckling.py` (`FESolver.buckling`, `linear_buckling`) is a separate
+linear eigen-buckling analysis of the compression or shear coupon: the
+geometric stiffness of the prebuckling Gauss-point stress, on the load
+case's supports and the bonded ties (no contact; `interpenetration` flags a
+mode whose delamination faces would close), reusing the cached
+factorization.
 `DELAMINATION_PLAN.md` holds the plan, its status and the open decisions.
 
 ### Porosity field sampling

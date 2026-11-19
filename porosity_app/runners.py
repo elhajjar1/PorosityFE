@@ -623,3 +623,59 @@ def fe_vtu_bytes(result: dict) -> bytes:
         else:
             fe_field.to_vtu(result["mesh"], path, onset=onset)
         return path.read_bytes()
+
+
+# ----------------------------------------------------------------------
+# Linear buckling (on demand, from the Results tab)
+# ----------------------------------------------------------------------
+
+#: Load cases the buckling panel analyses (the coupon's in-plane ones).
+_BUCKLING_MODES = ("compression", "shear")
+
+#: Modes the panel computes.
+_BUCKLING_N_MODES = 3
+
+
+def buckling_unavailable_reason(result: dict) -> str | None:
+    """Why the buckling panel cannot analyse ``result``; ``None`` when it can."""
+    if result.get("fe_field") is None:
+        return "The FE solve of this analysis was skipped, so there is no model to buckle."
+    if result.get("fe_loading") not in _BUCKLING_MODES:
+        return ("Linear buckling analyses the coupon under compression or shear: "
+                "select one of them as the loading mode.")
+    if (result.get("fe_thermal") or {}).get("mode") == "combined":
+        return ("Linear buckling does not take the thermal residual stress (it would "
+                "be a prestress the load factor does not scale): switch it off.")
+    return None
+
+
+def run_buckling(result: dict, n_modes: int = _BUCKLING_N_MODES) -> dict:
+    """The buckling analysis of an analysis' FE model and of the same model
+    without voids: ``{"result", "reference"}`` (:class:`BucklingResult`)."""
+    from porosity_fe import PorosityField
+
+    cfg = result["config"]
+    mesh, material = result["mesh"], result["material"]
+    degradation = cfg.get("porosity_degradation", _CFG_DEFAULTS["porosity_degradation"])
+    criterion = cfg.get("failure_criterion", "tsai_wu")
+    loading = result["fe_loading"]
+
+    def analyse(field, model_mesh):
+        solver = FESolver(model_mesh, material, field, ply_angles=cfg["angles"],
+                          porosity_degradation=degradation)
+        return solver.buckling(loading, n_modes=n_modes, failure_criterion=criterion)
+
+    porous = analyse(result["porosity_field"], mesh)
+    void_free = PorosityField(material, 0.0)
+    reference_mesh = CompositeMesh(
+        void_free, material, nx=mesh.nx, ny=mesh.ny, nz=mesh.nz, ply_angles=cfg["angles"],
+        length=float(mesh.L_x), width=float(mesh.L_y),
+        **({"delaminations": list(mesh.delaminations)} if mesh.delaminations else {}))
+    return {"result": porous, "reference": analyse(void_free, reference_mesh)}
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_buckling_cached(cfg_key: tuple, _result: dict) -> dict:
+    """Cached :func:`run_buckling`; ``_result`` must be the analysis of
+    ``cfg_key`` (Streamlit does not hash an argument starting with ``_``)."""
+    return run_buckling(_result)

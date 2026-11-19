@@ -194,6 +194,21 @@
         "dominant": {"type": ["string", "null"], "enum": ["porosity", "delamination", null]}
       }
     },
+    "buckling": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., buckling=...)), added in schema_version 1.3: BucklingResult.summary() of a linear buckling analysis whose prebuckling solve the file is. loading ('compression' or 'shear'); applied_strain (the nominal strain of the prebuckling solve); load_factors (ascending positive multiples of the applied load); critical_strain (magnitude of the nominal strain at buckling); critical_stress_MPa (average stress at buckling, null without an effective modulus); interpenetration (per mode with an explicit delamination, the largest closing of a delaminated pair over the mode's largest displacement, null without one). With buckling_reference it adds reference (the same summary of the void-free laminate) and knockdown (the critical stress, and so the load on the same mesh, over that of the void-free laminate; null without an effective modulus). Written only when passed.",
+      "properties": {
+        "loading": {"type": "string", "enum": ["compression", "shear"]},
+        "applied_strain": {"type": "number"},
+        "load_factors": {"type": "array", "items": {"type": "number"}},
+        "critical_strain": {"type": "number"},
+        "critical_stress_MPa": {"type": ["number", "null"]},
+        "interpenetration": {"type": ["array", "null"], "items": {"type": "number"}},
+        "reference": {"type": "object"},
+        "knockdown": {"type": ["number", "null"]}
+      },
+      "required": ["loading", "applied_strain", "load_factors", "critical_strain"]
+    },
     "fracture_uncertainty": {
       "type": "object",
       "description": "Optional FE-field export block (FESolver.export_results(..., fracture_uncertainty=...)), added in schema_version 1.3: FractureLoadFactorBand.summary(), the uncertainty band on the fracture load factor from scatter in the toughness inputs (G_Ic, G_IIc, G_IIIc, bk_eta of the material and b_I, b_II, b_III of the porosity-toughness law), re-evaluated per draw on the energy release rates of the one FE solve. load_factor_basis; nominal (the deterministic fracture_load_factor; null when infinite); n_samples, method (monte_carlo or lhs), seed (null when unseeded); spec, the scattered fields with [distribution, params] (an empty object when nothing scatters: nothing scatters unless named); inputs, the nominal values the draws are centred on (G_Ic, G_IIc, G_IIIc in N/mm, bk_eta, and b_I, b_II, b_III per unit Vp, null for a law without coefficients); toughness_knockdown (a description) and toughness_uncalibrated; mean, std, min, max and percentiles (keys p5, p50, p95 by default) of the draws' load factor (dimensionless multiples of the load named by load_factor_basis; null when infinite or undefined); n_front_nodes, node (original node ids), nominal_per_node (null entries where infinite) and governing_fraction (the share of draws each front node governs); required_load_factor and probability_below_required, the share of draws below it (both null without one). The probability is an estimate under the entered scatter, not a disposition; the band leaves out porosity, stiffness, geometry, load, mesh and model-form uncertainty and input correlations. Written only when passed.",

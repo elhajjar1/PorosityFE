@@ -47,6 +47,14 @@ The laminate and the scope of a run are options:
   governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
   It is printed and written to ``porosity_allowable.json``. It does not
   depend on ``--vp`` or the configurations.
+- ``--buckling LOADING`` (``compression`` or ``shear``) adds a linear
+  buckling analysis (:meth:`~porosity_fe.FESolver.buckling`) of every
+  analysed configuration at each porosity level on the production coupon,
+  and one of the void-free laminate: each writes
+  ``porosity_buckling_<loading>_<config>_<Vp>.json``, the FE export of the
+  prebuckling solve with a ``buckling`` block (load factors, critical
+  strain and stress, the void-free reference and the knockdown of the
+  critical stress). ``--porosity-degradation`` applies.
 - ``--cycles N`` adds the S-N fatigue factor and ``--service-temperature
   T`` / ``--moisture M`` the hygrothermal one (they need a dry
   glass-transition temperature: ``--tg-dry``, or a ``--material-file``

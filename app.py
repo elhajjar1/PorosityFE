@@ -147,6 +147,11 @@ from porosity_app.scenario import (  # noqa: E402, F401
     serialise_scenario,
 )
 from porosity_app.runners import (  # noqa: E402, F401
+    _BUCKLING_MODES,
+    _BUCKLING_N_MODES,
+    buckling_unavailable_reason,
+    run_buckling,
+    run_buckling_cached,
     _clt_flexure_reference,
     _fe_load_kwargs,
     fe_vtu_bytes,
@@ -197,6 +202,7 @@ from porosity_app.convergence import (  # noqa: E402, F401
     run_convergence_check,
 )
 from porosity_app.plots import (  # noqa: E402, F401
+    plot_buckling_mode,
     _colorbar_extend,
     _colour_limits,
     _CONSTANT_FIELD_RTOL,
@@ -275,6 +281,7 @@ from porosity_app.tabs.results import (  # noqa: E402, F401
     _build_fe_failure_results,
     _build_flexure_results,
     _build_fracture_uq_block,
+    _build_buckling_expander,
     _build_durability_expander,
     _build_results_tab,
     _build_scenario_comparison,

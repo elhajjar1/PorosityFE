@@ -642,6 +642,63 @@ edges and load line, far below the shear the specimen carries now; the
 peak $\lvert\tau_{13}\rvert$ goes from about $5.9$ to $1.5$ times
 $0.75 P / (b h)$.
 
+## Linear buckling
+
+{meth}`FESolver.buckling <porosity_fe.FESolver.buckling>` (also
+{func}`~porosity_fe.linear_buckling`) is an eigenvalue buckling analysis of
+the `compression` or `shear` coupon. The prebuckling state is the linear
+solve of the load case; its Gauss-point stress $\boldsymbol\sigma$ gives the
+geometric (initial-stress) stiffness
+
+$$
+K_{G,\,(3a+i)(3b+j)} = \delta_{ij} \sum_g
+\frac{\partial N_a}{\partial x_k}\,\sigma_{kl}\,\frac{\partial N_b}{\partial x_l}\,
+\det J\, w_g ,
+$$
+
+assembled from the trilinear shape functions for both element formulations.
+The load factors $\lambda$ are the eigenvalues of
+$(\mathbf K + \lambda \mathbf K_G)\,\boldsymbol\phi = 0$ on the free degrees of
+freedom of the same supports (and the bonded ties of a delaminated mesh),
+solved as $-\mathbf K_G \boldsymbol\phi = \mu \mathbf K \boldsymbol\phi$ with
+$\lambda = 1/\mu$ for the largest $\mu$, on the cached factorization of the
+prebuckling solve. The applied strain times the first factor is the
+critical strain; times the effective modulus, the critical stress.
+
+The compression supports hold each end face straight ($u_x$ uniform over
+it) and pin one corner in $z$, so the coupon is a column clamped against
+rotation at both ends with the far end free to sway:
+$P_\text{cr} = \pi^2 EI / L^2$. A 1 mm UD AS4/3501-6 strip on the 50 mm
+coupon (40 x 4 x 8 elements) buckles within 0.4 % of that load with
+Timoshenko's shear correction, and the mode shape correlates with
+$1 - \cos(\pi x / L)$ to better than 0.999; the critical strain converges
+from above with `nx`.
+
+Porosity lowers the buckling load through the degraded stiffness of each
+element, so the FE path sees where the voids are. On an 8-ply cross-ply
+strip with 4 % voids the critical load keeps 99.5 % of the void-free value
+with the voids clustered at the surfaces, 99.6 % with uniform voids and
+99.8 % with them at the mid-plane: the fibre-dominated bending stiffness
+loses little, and most where the voids are near the surfaces. A matrix-
+dominated layup loses more.
+
+With an explicit {class}`~porosity_fe.Delamination` a thin sublaminate can
+buckle first. Two 0.125 mm plies over a 20 mm through-width delamination of
+a 16-ply UD strip buckle at a critical strain of $4.9 \times 10^{-4}$, 4 %
+below the clamped-plate estimate $\pi^2 t^2 / (3 a^2)$ (the base laminate
+is not rigid), against $1.28 \times 10^{-3}$ for the intact strip. The
+eigenproblem has no crack-face contact, so a mode whose faces would close
+is not physical: {attr}`BucklingResult.interpenetration
+<porosity_fe.BucklingResult.interpenetration>` gives, per mode, how far the
+delaminated faces still close when the mode is oriented to open them most
+(0 for the sublaminate mode above, 0.81 for the next one, which would push
+the sublaminate into the base laminate).
+
+The analysis is linear: no imperfection, no post-buckling path, no
+thermal residual stress (`delta_T` is refused), and no growth of the
+delamination it buckles. `porosity-analyze --buckling` and the app's
+Results tab (Linear buckling) run it against the void-free laminate.
+
 ## Stress recovery and export
 
 {class}`~porosity_fe.FieldResults` stores stress and strain at the eight

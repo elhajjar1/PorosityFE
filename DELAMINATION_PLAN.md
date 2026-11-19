@@ -99,7 +99,7 @@ Growing the crack only changes ties, so K stays the same, and the LU cache alrea
 **Non-goals for this workstream (deferred, see Phase 6)**
 - Cohesive-zone nonlinear propagation: R-curves, unstable growth, snap-back.
 - Fatigue delamination growth: the porosity data are thin and conflicting.
-- Delamination buckling under compression (sublaminate buckling, compression after impact): needs at least a linear eigen-buckling capability.
+- Delamination buckling under compression (sublaminate buckling, compression after impact): a linear eigen-buckling capability now exists (`FESolver.buckling`, with the sublaminate's buckling load and an opening check of each mode); the growth it drives, which needs a geometrically nonlinear analysis, is still deferred.
 - Impact damage.
 
 ---

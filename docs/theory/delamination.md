@@ -187,8 +187,10 @@ defects need not combine multiplicatively, though on the 1 mm thick
 short-beam specimen of the tests (8-ply AS4/3501-6, uniform 3 % porosity, a
 2 mm strip at the mid-plane) they nearly do: $KD_\text{total} = 0.728$
 against $0.966 \times 0.753 = 0.727$. Under in-plane load, in a linear
-analysis (no buckling), an embedded delamination costs almost no
-stiffness; its effect is in the fracture load factor instead.
+static analysis (which does not buckle), an embedded delamination costs
+almost no stiffness; its effect is in the fracture load factor and in the
+buckling load of {meth}`FESolver.buckling <porosity_fe.FESolver.buckling>`
+instead.
 
 ```python
 parts = knockdown_decomposition(mesh, mat, pf, 'compression', total=result)
@@ -944,7 +946,11 @@ which no monotone law follows.
 
 - Linear elastic fracture mechanics: $\lambda_c$ is the load at which growth
   *starts*. There is no propagation, R-curve, cohesive zone or unstable
-  growth, and no delamination buckling.
+  growth, and $\lambda_c$ takes no buckling into account. The linear
+  buckling analysis ({meth}`FESolver.buckling
+  <porosity_fe.FESolver.buckling>`, the FE theory page) gives the load at
+  which a sublaminate buckles, separately; the growth that buckling drives
+  (compression after impact) is not modelled.
 - The crack size is quantized to node lines, and a planform front is a
   staircase whose nodes lie up to one diagonal element outside the
   planform. On a staircase $G$ scatters from node to node (0.79 to 1.43 of

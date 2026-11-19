@@ -33,8 +33,9 @@ smeared porosity ({doc}`theory/delamination`):
 - **Delamination in the app** (a Defects panel), the CLI and the NCR
   record, all opt-in.
 
-The load factor predicts growth onset only: there is no propagation,
-cohesive zone or buckling.
+The load factor predicts growth onset only: there is no propagation or
+cohesive zone, and it takes no buckling into account (see linear buckling
+below).
 
 ## Porosity
 
@@ -112,6 +113,11 @@ cohesive zone or buckling.
   (`--material-cards`), a material from a JSON file (`--material-file`)
   and the fatigue and hygrothermal knockdowns (`--cycles`,
   `--service-temperature`, `--moisture`).
+- **Linear buckling (FE)**: `FESolver.buckling` gives the buckling load
+  factors and modes of the compression or shear coupon, with porosity in
+  each element's stiffness and the sublaminate buckling over a
+  delamination; `porosity-analyze --buckling` and a Results-tab panel run
+  it against the void-free laminate.
 - **Fatigue options** (opt-in): a Goodman mean-stress correction to the
   stress ratio, which may differ per mode, and a porosity-dependent S-N
   slope with no shipped coefficient (`FatigueModel(mean_stress=...,

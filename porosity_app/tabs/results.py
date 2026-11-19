@@ -19,8 +19,14 @@ from ..convergence import (
     convergence_unavailable_reason,
     run_convergence_cached,
 )
-from ..plots import plot_fracture_uq, plot_front, plot_results, plot_uq
-from ..runners import run_uq_cached
+from ..plots import (
+    plot_buckling_mode,
+    plot_fracture_uq,
+    plot_front,
+    plot_results,
+    plot_uq,
+)
+from ..runners import buckling_unavailable_reason, run_buckling_cached, run_uq_cached
 from ..scenario import REFERENCE_KEY, comparison_rows, scenario_summary
 from ..sidebar import _offer_nz_fix, _seed
 from ..summaries import (
@@ -55,8 +61,64 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_defect_results(result)
     _build_scenario_comparison(result)
     _build_durability_expander(result)
+    _build_buckling_expander(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
+
+
+def _build_buckling_expander(result: dict) -> None:
+    """Opt-in linear buckling of the analysis' FE model, against the void-free one."""
+    with st.expander("Linear buckling (FE)"):
+        st.caption(
+            "Eigenvalue buckling of the coupon under the analysis' compression or "
+            "shear, on its supports: the ends are held straight and the far one "
+            "may sway. Linear: no imperfection and no post-buckling path. The "
+            "porosity lowers the buckling load through the degraded stiffness of "
+            "each element, so voids near the surfaces cost more than voids at "
+            "the mid-plane. Two more FE solves and eigen-solves (the model and "
+            "the same model without voids).")
+        reason = buckling_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        key = _config_to_key(result["config"])
+        if st.button("Run buckling analysis", key="buckling_run"):
+            st.session_state["buckling_params"] = key
+        if st.session_state.get("buckling_params") != key:
+            return
+        with st.spinner("Solving the buckling eigenproblem..."):
+            try:
+                out = run_buckling_cached(key, result)
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"The buckling analysis did not run: {exc}")
+                return
+        buckled, reference = out["result"], out["reference"]
+        knockdown = buckled.knockdown(reference)
+        stress = buckled.critical_stress
+        c = st.columns(4)
+        c[0].metric("Buckling load factor", f"{buckled.load_factor:.4g}",
+                    help="Multiple of the analysis' applied strain at buckling.")
+        c[1].metric("Critical strain", f"{buckled.critical_strain:.3e}")
+        c[2].metric("Critical stress", "n/a" if stress is None else f"{stress:.4g} MPa",
+                    help="Average axial (or shear) stress at buckling.")
+        c[3].metric("Of the void-free laminate", "n/a" if knockdown is None
+                    else f"{knockdown:.4f}",
+                    help="Critical stress (and load) over that of the same model "
+                         "without voids.")
+        rows = [{"Mode": i + 1, "Load factor": f"{v:.4g}"}
+                for i, v in enumerate(buckled.load_factors)]
+        if buckled.interpenetration is not None:
+            for row, closing in zip(rows, buckled.interpenetration, strict=True):
+                row["Delamination faces close by"] = f"{closing:.3f}"
+            st.caption(
+                "With a delamination the eigenproblem has no crack-face contact: "
+                "a mode whose faces close (above a few per cent of its largest "
+                "displacement) is not physical, and the first mode that opens "
+                "is the one to read.")
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+        _show_figure(plot_buckling_mode(result["mesh"], buckled.modes[0],
+                                        buckled.load_factor), "buckling_mode",
+                     "dl_png_buckling")
 
 
 def _build_durability_expander(result: dict) -> None:

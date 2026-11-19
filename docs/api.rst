@@ -89,6 +89,23 @@ Finite-element solver
    RefinementLevel
    QuantityConvergence
 
+Linear buckling
+---------------
+
+The buckling load factors and mode shapes of the FE model under in-plane
+compression or shear (:meth:`FESolver.buckling`): the geometric stiffness of
+the prebuckling stress, on the supports of the load case. Porosity lowers
+the buckling load through the degraded stiffness of each element, and with
+an explicit :class:`Delamination` the thin sublaminate can buckle first. See
+:doc:`theory/fe` (Linear buckling).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   linear_buckling
+   BucklingResult
+
 Delamination fracture mechanics
 -------------------------------
 

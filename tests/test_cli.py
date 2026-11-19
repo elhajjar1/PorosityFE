@@ -1004,7 +1004,7 @@ class TestDelaminationScreening:
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
         (['--porosity-degradation', 'directional'],
-         '--porosity-degradation needs --delamination, --fe or --material-cards'),
+         '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling'),
         (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
          "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
@@ -1371,7 +1371,7 @@ class TestFESolveOption:
         for argv, message in (
                 (['--fe', 'dcb'], "invalid choice: 'dcb'"),
                 (['--porosity-degradation', 'directional'],
-                 '--porosity-degradation needs --delamination, --fe or --material-cards')):
+                 '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling')):
             with pytest.raises(SystemExit) as exc:
                 porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
                                            '--output-dir', str(tmp_path), *argv])
@@ -1628,3 +1628,67 @@ class TestMaterialFileOption:
     def test_the_default_preset_is_unchanged(self, tmp_path, monkeypatch, capsys):
         assert self._main(tmp_path, monkeypatch) == 0
         assert 'Material: T800_epoxy' in capsys.readouterr().out
+
+
+@pytest.mark.filterwarnings("ignore:Mesh has .* highly distorted")
+class TestBucklingOption:
+    def test_one_file_per_configuration_and_level(self, small_material, tmp_path,
+                                                  monkeypatch, capsys):
+        import jsonschema
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', {
+            'uniform_spherical': {'distribution': 'uniform', 'void_shape': 'spherical'},
+            'clustered_surface': {'distribution': 'clustered',
+                                  'cluster_location': 'surface'}})
+        calls = []
+        from porosity_fe.fe import FESolver
+        real = FESolver.buckling
+
+        def spy(self, *args, **kwargs):
+            calls.append(float(self.porosity_field.Vp))
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(FESolver, 'buckling', spy)
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.02', '0.04',
+            '--output-dir', str(tmp_path), '--buckling', 'compression'])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'Linear buckling (compression): Vp = 2.00%' in out
+        assert 'compression, uniform_spherical: buckling load factor' in out
+        assert 'of the void-free laminate' in out
+        # One void-free reference for the whole run.
+        assert calls.count(0.0) == 1 and len(calls) == 5
+        doc = _strict_json(tmp_path / 'porosity_buckling_compression_clustered_surface_4pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        block = doc['buckling']
+        assert block['loading'] == 'compression' and 0.9 < block['knockdown'] < 1.0
+        assert block['reference']['critical_strain'] > 0.0
+        assert doc['stress_global']['n_elements'] == 30 * 10 * 4
+
+    def test_shear_and_degradation(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--buckling', 'shear', '--porosity-degradation', 'directional'])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_buckling_shear_uniform_spherical_3pct.json')
+        assert doc['buckling']['loading'] == 'shear'
+        assert doc['solver']['porosity_degradation'] == 'directional'
+
+    def test_usage_error(self, small_material, tmp_path, capsys):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                       '--output-dir', str(tmp_path), '--buckling', 'tension'])
+        assert exc.value.code == 2
+        assert "invalid choice: 'tension'" in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (ValueError('no'), 2, 'buckling for Vp=0.03, uniform_spherical: no'),
+        (RuntimeError('boom'), 3, 'buckling for Vp=0.03, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, small_material, tmp_path,
+                                                  monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_buckling', boom)
+        assert porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--quiet', '--buckling', 'compression']) == rc
+        assert message in capsys.readouterr().err

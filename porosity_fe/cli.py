@@ -47,6 +47,9 @@ _DELAM_DEFAULT_CONFIG = 'uniform_spherical'
 _DELAM_DEFAULT_LAW = 'exponential'
 _DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
 
+#: ``--buckling`` load cases (the in-plane ones of the coupon).
+_BUCKLING_LOADINGS = ('compression', 'shear')
+
 #: ``--mean-stress`` corrections, and the modes ``--stress-ratio`` applies to
 #: (``--compression-stress-ratio`` sets the compression one).
 _MEAN_STRESS_CHOICES = ('goodman',)
@@ -329,6 +332,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    buck = parser.add_argument_group(
+        "linear buckling (FE)",
+        "Opt-in: the buckling load of every analysed configuration at each "
+        "porosity level, on the production coupon, against the void-free "
+        "laminate, written to porosity_buckling_<loading>_<config>_<Vp>.json.")
+    buck.add_argument(
+        "--buckling", choices=_BUCKLING_LOADINGS, default=None, metavar="LOADING",
+        help=(f"In-plane load of the buckling analysis: "
+              f"{', '.join(_BUCKLING_LOADINGS)}. Linear (eigenvalue) buckling, "
+              "no imperfection; the coupon's ends are held straight, the far "
+              "one free to sway. Two FE solves per configuration and level, "
+              "one void-free reference."))
     dur = parser.add_argument_group(
         "fatigue and environment (empirical)",
         "Opt-in: the knockdown of every strength mode and law after load "
@@ -487,9 +502,9 @@ def _delamination_options(args) -> dict:
             flags = ", ".join("--" + n.replace('_', '-') for n in given)
             raise ValueError(f"{flags} need --delamination.")
         if (args.porosity_degradation is not None and args.fe is None
-                and args.material_cards is None):
+                and args.material_cards is None and args.buckling is None):
             raise ValueError("--porosity-degradation needs --delamination, "
-                             "--fe or --material-cards.")
+                             "--fe, --material-cards or --buckling.")
         return {}
     toughness = args.toughness
     if toughness is not None:
@@ -589,6 +604,47 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
               f"{result.first_ply_failure_load_factor:.4g}"
             + ("" if porosity_degradation == _DELAM_DEFAULT_DEGRADATION
                else f"; porosity degradation {porosity_degradation} (uncalibrated)")
+            + f"\n  Saved: {out_path}")
+
+
+def _run_buckling(loading: str, material, ply_angles, name: str, config: dict,
+                  Vp: float, out_path: Path, *, porosity_degradation: str,
+                  references: dict, quiet_solver: bool = True) -> str:
+    """The buckling analysis of a configuration (``--buckling``) on the
+    production coupon, with the void-free reference (computed once, kept in
+    ``references``), written to ``out_path``. Returns a one-line summary."""
+    from .fe import FESolver
+    from .mesh import CompositeMesh
+    from .pipeline import _default_mesh_resolution
+    from .porosity_field import PorosityField
+
+    level = logger.level
+    if quiet_solver:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        resolution = _default_mesh_resolution(material.n_plies, ply_angles)
+
+        def analyse(field):
+            mesh = CompositeMesh(field, material, *resolution, ply_angles=ply_angles)
+            solver = FESolver(mesh, material, field, ply_angles=ply_angles,
+                              porosity_degradation=porosity_degradation)
+            return solver.buckling(loading)
+
+        key = (loading, porosity_degradation)
+        if key not in references:
+            references[key] = analyse(PorosityField(material, 0.0))
+        reference = references[key]
+        result = analyse(PorosityField(material, Vp, **config))
+        FESolver.export_results(result.prebuckling, out_path, buckling=result,
+                                buckling_reference=reference)
+    finally:
+        logger.setLevel(level)
+    knockdown = result.knockdown(reference)
+    stress = result.critical_stress
+    return (f"  {loading}, {name}: buckling load factor {result.load_factor:.4g} "
+            f"(critical strain {result.critical_strain:.3e}"
+            + ("" if stress is None else f", critical stress {stress:.4g} MPa") + ")"
+            + ("" if knockdown is None else f", {knockdown:.4f} of the void-free laminate")
             + f"\n  Saved: {out_path}")
 
 
@@ -1219,6 +1275,28 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 except Exception as exc:  # noqa: BLE001 - surface as a failure
                     print(f"ERROR: FE solve for Vp={Vp}, {name} failed: {exc}",
+                          file=sys.stderr)
+                    return 3
+
+    if args.buckling is not None:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        references: dict = {}
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nLinear buckling (%s): Vp = %.2f%%", args.buckling, Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = (output_dir
+                            / f"porosity_buckling_{args.buckling}_{name}_{Vp_label}.json")
+                try:
+                    logger.info("%s", _run_buckling(
+                        args.buckling, material, ply_angles, name, config, Vp,
+                        out_path, porosity_degradation=degradation,
+                        references=references, quiet_solver=not args.verbose))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: buckling for Vp={Vp}, {name}: {exc}", file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: buckling for Vp={Vp}, {name} failed: {exc}",
                           file=sys.stderr)
                     return 3
 

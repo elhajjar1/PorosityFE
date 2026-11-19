@@ -923,3 +923,29 @@ class TestFatigueAndEnvironment:
         assert at.number_input(key="dur_cycles").value == 1e5
         assert at.number_input(key="dur_R").value == 0.3
         assert len(self._table(at)) == 15
+
+
+@pytest.mark.filterwarnings("ignore:Mesh has .* highly distorted")
+class TestBucklingPanel:
+    def test_run_on_demand(self):
+        at = _run_small_analysis(_fresh_app())
+        assert not any(m.label == "Buckling load factor" for m in at.metric)
+        _button(at, "Run buckling analysis").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert float(labels["Buckling load factor"]) > 0.0
+        assert 0.9 < float(labels["Of the void-free laminate"]) < 1.0
+        table = next(d.value for d in at.dataframe if "Load factor" in d.value.columns)
+        assert list(table["Mode"]) == [1, 2, 3]
+        assert "Delamination faces close by" not in table.columns
+        assert any(d.proto.label == "Download PNG" for d in at.get("download_button"))
+        at.run()
+        assert any(m.label == "Buckling load factor" for m in at.metric)
+
+    def test_other_loadings_say_why(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("tension").run()
+        at = _run_small_analysis(at)
+        assert any(i.value.startswith("Linear buckling analyses the coupon")
+                   for i in at.info)
+        assert not any(b.label == "Run buckling analysis" for b in at.button)
