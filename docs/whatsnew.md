@@ -33,9 +33,14 @@ smeared porosity ({doc}`theory/delamination`):
 - **Delamination in the app** (a Defects panel), the CLI and the NCR
   record, all opt-in.
 
-The load factor predicts growth onset only: there is no propagation or
-cohesive zone, and it takes no buckling into account (see linear buckling
-below).
+The load factor predicts growth onset, and it takes no buckling into
+account (see linear buckling below). **Delamination growth** carries on
+from there by node release (`FESolver.delamination_growth`): the critical
+load against the crack, stable or unstable, and fatigue growth by a Paris
+law with your coefficients (`FESolver.fatigue_delamination_growth`; none
+ship), through porous regions that lower the toughness. Linear, with no
+cohesive zone or R-curve; in the app's Results tab and
+`porosity-analyze --delam-growth`.
 
 ## Porosity
 

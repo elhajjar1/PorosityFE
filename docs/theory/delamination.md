@@ -398,6 +398,121 @@ $G_c$ and $\infty$ where the load releases no energy. The contact set of the
 applied state is held for every $\lambda$ (see
 [Crack-face contact](#crack-face-contact)).
 
+## Growth by node release
+
+$\lambda_c$ is where growth starts. {func}`~porosity_fe.delamination_growth`
+and {func}`~porosity_fe.fatigue_delamination_growth` (also
+{meth}`FESolver.delamination_growth <porosity_fe.FESolver.delamination_growth>`
+and {meth}`FESolver.fatigue_delamination_growth
+<porosity_fe.FESolver.fatigue_delamination_growth>`) carry on from there:
+they release front pairs, solve the grown crack, and repeat. A released pair
+is a duplicated node pair untied on top of the delaminations,
+{attr}`CompositeMesh.released_pairs <porosity_fe.CompositeMesh.released_pairs>`.
+It changes only the ties, so every step reuses the assembled stiffness and
+factorizes the new constrained system once (and once per contact iteration).
+The pristine reference of the knockdown and the decomposition keep every
+pair bonded. The analyses put the mesh back as they found it and return the
+released set, which assigned to the mesh gives the grown crack:
+
+```python
+from porosity_fe import ParisLaw, delamination_growth, fatigue_delamination_growth
+
+growth = delamination_growth(solver, 'dcb', max_steps=20, applied_load=10.0)
+growth.crack_lengths, growth.critical_load       # the propagation envelope
+growth.unstable('displacement')                  # steps that run on
+
+# Fatigue: the applied load is the cyclic peak; C and m are yours.
+law = ParisLaw(C=0.05, m=6.0, threshold=0.1)     # mm/cycle; illustration only
+fatigue = fatigue_delamination_growth(solver, 'dcb', law, applied_load=40.0)
+fatigue.cycles, fatigue.crack_lengths
+
+mesh.released_pairs = growth.released_pairs      # the grown crack, to solve
+```
+
+**Quasi-static.** Each configuration is solved under the applied load and
+its front evaluated (energy release rates, toughness at each node's
+porosity, $\lambda_c$). The front nodes within `release_tolerance` (0.1 %)
+of the smallest $\lambda_c$ release together, the governing node and its
+mirror image on a symmetric front. Row $k$ of the
+{class}`~porosity_fe.GrowthResult` is the crack after $k$ releases, with its
+critical load factor $\lambda_k$, the crack area grown (the sum of the
+released nodes' tributary areas $\Delta a\,b$), the governing node's
+$G_T$, $G_c$, $\psi$ and $V_p$, and the load-point compliance (fracture
+specimens) or effective modulus (strain-controlled load cases). The critical
+load $\lambda_k P$, displacement $\lambda_k C_k P$ or strain
+$\lambda_k \varepsilon$ against the crack is the propagation envelope of
+linear elastic fracture mechanics. Under a monotonic load the crack grows
+along it while the critical level rises; where the next crack's level is
+lower the step is unstable (`unstable(control)`), the crack runs on at the
+level reached, and `envelope(control)`, the running maximum, is what a test
+would record. A straight front across a plane-strain specimen releases a
+node line per step. A three-dimensional front releases its most loaded
+nodes first, so between two straight positions it is a staircase whose
+critical load dips (the nodes beside a released one carry more): those
+steps are unstable, and the line grows at the load that started it. This is
+the sawtooth of Krueger's three-dimensional VCCT propagation benchmarks
+(NASA/TM-2008-215123).
+
+**Fatigue.** The applied load is the peak of a constant-amplitude cycle.
+At front node $i$ the rate is the Paris law normalized by the node's
+toughness ({class}`~porosity_fe.ParisLaw`),
+
+$$
+\frac{da}{dN}\bigg|_i = C \left(\frac{G_{T,i}}{G_{c,i}}\right)^{m}
+\quad\text{for } \frac{G_{T,i}}{G_{c,i}} \ge \text{threshold},
+\qquad 0 \text{ below it,}
+$$
+
+with $G_{c,i}$ the mixed-mode toughness at the node's mixity and porosity.
+Node $i$ grows its element length in $\Delta N_i = \Delta a_i\,(1 - d_i) /
+(da/dN)_i$ cycles, $d_i$ the share of it grown already. The node with the
+smallest $\Delta N_i$ releases (with those within the tolerance), the
+cycles advance by it, every other front node adds $\Delta N\,(da/dN)_i /
+\Delta a_i$ to its share (a linear accumulation over the element length),
+and the grown crack is solved. The analysis stops with `'static'` when the
+peak reaches the static toughness of a front node ($\lambda_c \le 1$: the
+crack grows on the first cycle) and with `'arrested'` when every node is
+below the threshold. Normalizing by $G_c$ makes the porosity speed the
+growth through the toughness at the front alone, at the same $C$ and $m$.
+**No Paris coefficients ship**: they depend on the material, the stress
+ratio $R$ and the mode mixity of the tests that fitted them, the rate here
+depends on $G_\text{max}$ only, and no data say whether porosity changes $C$
+or $m$.
+
+**Verification** (`tests/test_delamination_growth.py`):
+
+- Releasing the front line of a strip gives the solve of the strip one
+  element longer to round-off, and every row of a plane-strain DCB growth
+  equals a fresh solve of that crack length (no difference at the rows
+  checked, $\lambda$ and compliance).
+- The DCB of Krueger's benchmark material (2h = 3 mm, B = 25 mm, 8 element
+  layers, 1 mm elements) grown from 30 to 40 mm keeps $P_c\,(a + \chi h)$
+  constant within 0.14 %, the corrected beam theory, and at 0.8 % above
+  its level $B\sqrt{G_{Ic} E_{11} h^3/12}$ ($\chi h$ = 2.9 mm). It grows
+  stably under displacement control and unstably under load control.
+- The ENF grows unstably under displacement control from $a/L = 0.5$ and
+  stably from $a/L = 0.8$, either side of beam theory's $a/L =
+  3^{-1/3} = 0.69$, with crack-face contact at every step.
+- A band of 4 % voids ahead of a DCB crack lowers the critical load by 12 %
+  once the front enters it (by less with the toughness knockdown switched
+  off: the rest is the stiffness), and shortens the fatigue steps in it.
+- Fatigue on a straight front gives $\Delta N = \Delta a / (C\,(P/P_c)^{2m})$
+  with $P_c$ from the quasi-static analysis, to round-off. On a
+  three-dimensional front the carried shares grow the same area in about
+  two-thirds of the cycles needed with the shares dropped at every release.
+
+**Limits.** Linear elastic between releases: no cohesive zone, no R-curve
+(the toughness of a node is its initiation value, knocked down by its
+porosity), no geometric nonlinearity, so neither the large rotation of a
+long DCB arm nor buckling-driven growth. The crack advances by whole
+elements: the result is resolved to the element length at the front, and
+the virtual crack closure assumes equal elements on both sides of it, so
+mesh the region the crack grows into with equal elements (a fracture
+specimen's `nx`; the default graded specimen has six equal elements ahead
+of the insert). Every step is a full solve. A step that would cut the
+interface through, or leave part of the model unsupported, stops the
+analysis with `'separated'`.
+
 ## Outputs and exports
 
 - {class}`~porosity_fe.FieldResults`: `crack_front`, `fracture_load_factor`,
@@ -428,7 +543,9 @@ applied state is held for every $\lambda$ (see
   onset"), and `fracture_uncertainty=band` (a
   {class}`~porosity_fe.FractureLoadFactorBand`) a `fracture_uncertainty`
   block: the band on $\lambda_c$ from toughness scatter
-  ({doc}`uncertainty`, "Delamination load factor").
+  ({doc}`uncertainty`, "Delamination load factor"), and `growth=growth` (a
+  {class}`~porosity_fe.GrowthResult`) a `delamination_growth` block: one
+  entry per crack of a [growth analysis](#growth-by-node-release).
 
 ### In the app, the CLI and the NCR
 
@@ -447,10 +564,17 @@ applied state is held for every $\lambda$ (see
   modes solve the [fracture specimens](#fracture-specimens) for test
   planning (the crack length and the MMB mode ratio, which sets the lever
   by {func}`~porosity_fe.mmb_lever_length`, are inputs) and report the
-  compliance and the critical load $P_c = \lambda_c P$ at mid-width.
+  compliance and the critical load $P_c = \lambda_c P$ at mid-width. The
+  Results tab's **Delamination growth (FE)** panel grows the analysis'
+  crack on demand, quasi-statically or by a Paris law with your
+  coefficients under a peak given as a fraction of the static critical
+  load, with a table and a plot of the critical load (or the crack against
+  the cycles).
 - `porosity-analyze --delamination SPEC` adds an FE screening of the
   coupon at each porosity level, written to `porosity_delamination_<Vp>.json`
-  with the `fracture` and `knockdown_decomposition` blocks ({doc}`../cli`).
+  with the `fracture` and `knockdown_decomposition` blocks ({doc}`../cli`);
+  `--delam-growth STEPS` grows it and adds the `delamination_growth` block,
+  by a Paris law with `--paris C M [THRESHOLD]` and `--fatigue-peak`.
 - The NCR summary (`porosity_fe.reporting`) takes the indication types
   porosity, delamination and combined. A delamination gets a fracture
   assessment (`assess_delamination`): $\lambda_c$ against the required load
@@ -945,8 +1069,10 @@ which no monotone law follows.
 ## Limitations
 
 - Linear elastic fracture mechanics: $\lambda_c$ is the load at which growth
-  *starts*. There is no propagation, R-curve, cohesive zone or unstable
-  growth, and $\lambda_c$ takes no buckling into account. The linear
+  *starts*. The [growth analyses](#growth-by-node-release) release nodes on
+  the same linear model: no R-curve or cohesive zone, and growth is
+  resolved to the element length. $\lambda_c$ takes no buckling into
+  account. The linear
   buckling analysis ({meth}`FESolver.buckling
   <porosity_fe.FESolver.buckling>`, the FE theory page) gives the load at
   which a sublaminate buckles, separately; the growth that buckling drives

@@ -1027,6 +1027,72 @@ class TestDelaminationScreening:
         assert message in capsys.readouterr().err
         assert not list(tmp_path.glob('porosity_delamination_*'))
 
+    @pytest.mark.parametrize("argv, message", [
+        (['--delam-growth', '3'], '--delam-growth need --delamination'),
+        (['--delamination', 'strip:1:0:10', '--paris', '0.05', '5'],
+         '--paris need --delam-growth'),
+        (['--delamination', 'strip:1:0:10', '--fatigue-peak', '0.5'],
+         '--fatigue-peak need --delam-growth'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '0'], 'number of steps'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '2', '--fatigue-peak', '0.5'],
+         '--fatigue-peak needs --paris'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '2', '--paris', '0.05',
+          '--fatigue-peak', '0.5'], 'C M [THRESHOLD]'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '2', '--paris', '0.05', '5'],
+         '--paris needs --fatigue-peak'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '2', '--paris', '0.05', '5',
+          '--fatigue-peak', '1.2'], 'between 0 and 1'),
+        (['--delamination', 'strip:1:0:10', '--delam-growth', '2', '--paris', '-1', '5',
+          '--fatigue-peak', '0.5'], 'ParisLaw.C'),
+    ])
+    def test_growth_usage_errors(self, small_material, tmp_path, capsys, argv, message):
+        self.test_usage_errors(small_material, tmp_path, capsys, argv, message)
+
+    def test_growth_block(self, small_material, tmp_path, capsys):
+        import jsonschema
+        schema = json.loads((Path(__file__).resolve().parent.parent / 'validation' /
+                             'schemas' / 'porosity_results_schema.json').read_text(
+                                 encoding='utf-8'))
+        base = ['--material', small_material, '--vp', '0.03', *_SPEC, *_TOUGH,
+                '--delam-growth', '3']
+        assert porosity_fe_analysis.main([*base, '--output-dir', str(tmp_path / 'qs')]) == 0
+        out = capsys.readouterr().out
+        doc = _strict_json(tmp_path / 'qs' / 'porosity_delamination_3pct.json')
+        jsonschema.validate(instance=doc, schema=schema)
+        block = doc['delamination_growth']
+        assert block['kind'] == 'quasi-static' and block['n_steps'] == 3
+        assert block['load_factors'][0] == pytest.approx(
+            doc['fracture']['fracture_load_factor'])
+        assert block['toughness_uncalibrated'] is True
+        assert f"growth: 3 steps, {block['released_area_mm2'][-1]:.4g} mm^2" in out
+
+        assert porosity_fe_analysis.main([*base, '--output-dir', str(tmp_path / 'fat'),
+                                          '--paris', '0.05', '5', '--fatigue-peak',
+                                          '0.6']) == 0
+        out = capsys.readouterr().out
+        fat = _strict_json(tmp_path / 'fat' / 'porosity_delamination_3pct.json')
+        jsonschema.validate(instance=fat, schema=schema)
+        block = fat['delamination_growth']
+        assert block['kind'] == 'fatigue' and block['paris']['m'] == 5.0
+        # The peak is 0.6 of the static critical load: lambda_c = 1 / 0.6.
+        assert block['load_factors'][0] == pytest.approx(1.0 / 0.6, rel=1e-9)
+        assert block['applied_strain'] == pytest.approx(
+            0.6 * fat['fracture']['fracture_load_factor'] * 0.01, rel=1e-9)
+        assert block['cycles'][0] == 0.0 and block['cycles'][-1] > 0.0
+        assert 'fatigue growth (da/dN = C (G_max / G_c)^m' in out
+        # The screening itself is the same with or without growth.
+        for key in ('fracture', 'knockdown_decomposition', 'failure'):
+            assert fat[key] == doc[key]
+
+    def test_growth_needs_toughness(self, small_material, tmp_path, capsys):
+        base = ['--material', small_material, '--vp', '0.03', '--quiet',
+                '--output-dir', str(tmp_path), *_SPEC, '--delam-growth', '2']
+        assert porosity_fe_analysis.main(base) == 2
+        assert 'needs the interlaminar toughness' in capsys.readouterr().err
+        assert porosity_fe_analysis.main([*base, '--paris', '0.05', '5',
+                                          '--fatigue-peak', '0.5']) == 2
+        assert 'has none (no toughness data' in capsys.readouterr().err
+
     def test_bad_input_exits_2(self, small_material, tmp_path, capsys):
         """A delamination at an interface the laminate does not have."""
         rc = porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',

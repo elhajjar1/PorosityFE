@@ -21,7 +21,7 @@ from porosity_fe import (
 )
 
 from .config import _FLEXURE_MODES, _FRACTURE_MODES, calibration_note
-from .summaries import _crack_front, _distribution_text, front_order
+from .summaries import _crack_front, _distribution_text, _growth_level, front_order
 
 
 def plot_fracture_uq(result: dict, compare: float | None = None):
@@ -732,5 +732,38 @@ def plot_buckling_mode(mesh, mode, load_factor: float, number: int = 1):
                 f"z = {layer:.3g} mm, scaled to the mode's largest displacement")
     cb = fig.colorbar(tcf, ax=ax, orientation="vertical", fraction=0.04, pad=0.02)
     cb.set_label("u_z (scaled)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_growth(growth):
+    """A growth analysis against the crack: the critical load (or strain) of
+    each crack with its envelope, or, for fatigue, the crack against the
+    cycles."""
+    x = growth.crack_lengths if growth.crack_lengths is not None else growth.released_area
+    x_label = "Crack length (mm)" if growth.crack_lengths is not None \
+        else "Crack area grown (mm²)"
+    fig, ax = plt.subplots(figsize=(9, 4.2))
+    if growth.paris is not None:
+        ax.plot(growth.cycles, x, marker="o", markersize=3, color="tab:blue")
+        ax.set_xlabel("Cycles")
+        ax.set_ylabel(x_label)
+        _set_titles(ax, "Fatigue delamination growth",
+                    f"Paris law C = {growth.paris.C:g} mm/cycle, m = {growth.paris.m:g}; "
+                    f"stopped: {growth.stop_reason}")
+    else:
+        label, level = _growth_level(growth)
+        finite = np.isfinite(level)
+        ax.plot(x[finite], level[finite], marker="o", markersize=3, color="tab:blue",
+                label="critical level of each crack")
+        if finite.all() and len(level) > 1:
+            ax.step(x, np.maximum.accumulate(level), where="post", color="k",
+                    linestyle="--", linewidth=1, label="envelope (monotonic load)")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(label)
+        ax.legend(loc="best", frameon=False)
+        _set_titles(ax, "Quasi-static delamination growth",
+                    f"node release on the VCCT front; stopped: {growth.stop_reason}")
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig

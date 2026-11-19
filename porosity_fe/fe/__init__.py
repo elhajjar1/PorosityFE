@@ -6,6 +6,7 @@ from .decomposition import KnockdownDecomposition, knockdown_decomposition
 from .element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401
 from .element import Hex8Element
 from .export import write_pvd
+from .growth import GrowthResult, ParisLaw, delamination_growth, fatigue_delamination_growth
 from .interlaminar import (
     DelaminationOnset,
     InterfaceTractions,
@@ -31,16 +32,20 @@ __all__ = [
     "FESolver",
     "FieldResults",
     "GlobalAssembler",
+    "GrowthResult",
     "Hex8Element",
     "InterfaceTractions",
     "KnockdownDecomposition",
+    "ParisLaw",
     "QuantityConvergence",
     "RefinementLevel",
     "RefinementStudy",
     "ShortBeamShear",
     "critical_energy_release_rate",
+    "delamination_growth",
     "delamination_onset",
     "extrapolate_to_nodes",
+    "fatigue_delamination_growth",
     "fracture_load_factors",
     "interface_tractions",
     "knockdown_decomposition",

@@ -20,6 +20,8 @@ from porosity_fe import (
     Delamination,
     EmpiricalSolver,
     FESolver,
+    GrowthResult,
+    ParisLaw,
     ToughnessKnockdown,
     build_empirical_pipeline,
     compute_degraded_clt_flexural_modulus,
@@ -679,3 +681,72 @@ def run_buckling_cached(cfg_key: tuple, _result: dict) -> dict:
     """Cached :func:`run_buckling`; ``_result`` must be the analysis of
     ``cfg_key`` (Streamlit does not hash an argument starting with ``_``)."""
     return run_buckling(_result)
+
+
+# ----------------------------------------------------------------------
+# Delamination growth (on demand, from the Results tab)
+# ----------------------------------------------------------------------
+
+#: Default and largest number of release steps of the growth panel.
+GROWTH_DEFAULT_STEPS = 20
+GROWTH_MAX_STEPS = 200
+
+
+def growth_unavailable_reason(result: dict) -> str | None:
+    """Why the growth panel cannot analyse ``result``; ``None`` when it can."""
+    fe = result.get("fe_field")
+    if fe is None:
+        return "The FE solve of this analysis was skipped, so there is no crack to grow."
+    if (result.get("fe_thermal") or {}).get("mode") == "thermal_only":
+        return ("Delamination growth needs a mechanical load; the thermal-only "
+                "solve has none.")
+    if fe.crack_front is None:
+        return ("Delamination growth needs a delamination: add one in the Defects "
+                "panel of the sidebar, or run a DCB, ENF or MMB specimen.")
+    if fe.fracture_load_factor is None:
+        return ("Delamination growth needs the interlaminar toughness (G_Ic, "
+                "G_IIc, η): enter it in the Defects panel of the sidebar.")
+    return None
+
+
+def run_growth(result: dict, max_steps: int = GROWTH_DEFAULT_STEPS,
+               paris: ParisLaw | None = None, peak: float | None = None) -> GrowthResult:
+    """The delamination growth of an analysis' FE model, under its load case.
+
+    Quasi-static without ``paris``; with it, fatigue under the cyclic peak
+    that is ``peak`` (0 to 1) of the analysis' static critical load. The
+    model, toughness law and thermal residual stress are the analysis'.
+    """
+    cfg = result["config"]
+    loading = result["fe_loading"]
+    solver = FESolver(result["mesh"], result["material"], result["porosity_field"],
+                      ply_angles=cfg["angles"],
+                      failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+                      porosity_degradation=cfg.get(
+                          "porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
+    kwargs: dict = {**_fe_load_kwargs(loading),
+                    "toughness_knockdown": _toughness_knockdown_spec(cfg)}
+    thermal = result.get("fe_thermal") or {}
+    if thermal.get("mode") == "combined":
+        kwargs["delta_T"] = thermal["delta_T"]
+    if paris is None:
+        return solver.delamination_growth(loading, max_steps=max_steps, **kwargs)
+    lam = result["fe_field"].fracture_load_factor
+    if peak is None or lam is None or not math.isfinite(lam):
+        raise ValueError("Fatigue growth needs the cyclic peak as a fraction of a "
+                         "finite static critical load.")
+    name = "applied_load" if "applied_load" in kwargs else "applied_strain"
+    kwargs[name] = kwargs[name] * peak * lam
+    return solver.fatigue_delamination_growth(loading, paris, max_steps=max_steps,
+                                              **kwargs)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_growth_cached(cfg_key: tuple, growth_key: tuple, _result: dict) -> GrowthResult:
+    """Cached :func:`run_growth`. ``growth_key`` is ``(steps, kind, C, m,
+    threshold, peak)`` with ``kind`` ``'quasi-static'`` or ``'fatigue'``;
+    ``_result`` must be the analysis of ``cfg_key``."""
+    steps, kind, C, m, threshold, peak = growth_key
+    if kind == "fatigue":
+        return run_growth(_result, steps, ParisLaw(C, m, threshold), peak)
+    return run_growth(_result, steps)

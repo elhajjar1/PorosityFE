@@ -480,6 +480,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar=("B_I", "B_II"),
         help="Your coefficients of the exponential law (per unit Vp).")
     delam.add_argument(
+        "--delam-growth", type=int, default=None, metavar="STEPS",
+        help=("Grow the delamination by node release, at most STEPS steps "
+              "(FESolver.delamination_growth): each step releases the front "
+              "nodes with the smallest critical load factor and solves the "
+              "grown crack. Needs toughness (--toughness or a preset with "
+              "it). Adds a delamination_growth block to the JSON: the "
+              "critical load factor and strain against the released area."))
+    delam.add_argument(
+        "--paris", type=float, nargs="+", default=None,
+        metavar="C_M",
+        help=("With --delam-growth: fatigue growth instead, by the Paris law "
+              "da/dN = C (G_max / G_c)^m with your C (mm/cycle), m and "
+              "optionally a threshold G_max / G_c below which nothing grows: "
+              "C M [THRESHOLD]. No coefficients ship. Needs --fatigue-peak."))
+    delam.add_argument(
+        "--fatigue-peak", type=float, default=None, metavar="FRACTION",
+        help=("With --paris: the cyclic peak load as a fraction (0 to 1) of the "
+              "delamination's static critical load (lambda_c of the screening "
+              "solve), so G_max / G_c starts at about FRACTION^2."))
+    delam.add_argument(
         "--porosity-degradation", choices=POROSITY_DEGRADATIONS, default=None,
         help=("With --delamination or --fe: how the porosity degrades the ply "
               "stiffness and strengths in "
@@ -495,7 +515,8 @@ def _delamination_options(args) -> dict:
     """The resolved delamination screening options; ``ValueError`` when one
     is given without ``--delamination`` or is invalid."""
     given = [name for name in ('delam_loading', 'delam_config', 'toughness',
-                               'toughness_knockdown', 'toughness_b')
+                               'toughness_knockdown', 'toughness_b', 'delam_growth',
+                               'paris', 'fatigue_peak')
              if getattr(args, name) is not None]
     if args.delamination is None:
         if given:
@@ -527,7 +548,9 @@ def _delamination_options(args) -> dict:
                              "be combined with --toughness-knockdown none.")
         knockdown = ToughnessKnockdown(b_I=args.toughness_b[0],
                                        b_II=args.toughness_b[1])
+    growth = _growth_options(args)
     return {
+        **growth,
         'delamination': args.delamination,
         'loading': args.delam_loading or _DELAM_DEFAULT_LOADING,
         'config': args.delam_config or _DELAM_DEFAULT_CONFIG,
@@ -535,6 +558,37 @@ def _delamination_options(args) -> dict:
         'toughness_knockdown': knockdown,
         'porosity_degradation': args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION,
     }
+
+
+def _growth_options(args) -> dict:
+    """The ``--delam-growth`` options (empty without it); ``ValueError``
+    when one is invalid or given without what it needs."""
+    from .fe.growth import ParisLaw
+
+    steps, paris, peak = args.delam_growth, args.paris, args.fatigue_peak
+    if steps is None:
+        if paris is not None or peak is not None:
+            flags = " and ".join(f for f, v in (('--paris', paris), ('--fatigue-peak', peak))
+                                 if v is not None)
+            raise ValueError(f"{flags} need --delam-growth.")
+        return {}
+    if steps < 1:
+        raise ValueError(f"--delam-growth takes the number of steps (>= 1), got {steps}.")
+    options: dict = {'growth_steps': steps}
+    if paris is None:
+        if peak is not None:
+            raise ValueError("--fatigue-peak needs --paris.")
+        return options
+    if len(paris) not in (2, 3):
+        raise ValueError(f"--paris takes C M [THRESHOLD], got {len(paris)} values.")
+    if peak is None:
+        raise ValueError("--paris needs --fatigue-peak (the cyclic peak as a "
+                         "fraction of the static critical load).")
+    if not (math.isfinite(peak) and 0.0 < peak < 1.0):
+        raise ValueError(f"--fatigue-peak must lie between 0 and 1, got {peak!r}.")
+    options['paris'] = ParisLaw(*paris)
+    options['fatigue_peak'] = peak
+    return options
 
 
 def _run_delamination(options: dict, material, porosity_configs: dict,
@@ -848,12 +902,15 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
         delaminations=[options['delamination']], **layup)
     loading = options['loading']
     degradation = options.get('porosity_degradation', _DELAM_DEFAULT_DEGRADATION)
-    result = FESolver(mesh, material, pf, porosity_degradation=degradation,
-                      **layup).solve(
-        loading, toughness_knockdown=options['toughness_knockdown'])
+    solver = FESolver(mesh, material, pf, porosity_degradation=degradation, **layup)
+    result = solver.solve(loading, toughness_knockdown=options['toughness_knockdown'])
     parts = knockdown_decomposition(mesh, material, pf, loading, total=result,
                                     porosity_degradation=degradation)
-    FESolver.export_results(result, out_path, knockdown_decomposition=parts)
+    growth = None
+    if options.get('growth_steps'):
+        growth = _grow_delamination(options, solver, result)
+    FESolver.export_results(result, out_path, knockdown_decomposition=parts,
+                            **({} if growth is None else {'growth': growth}))
     front = result.crack_front
     lam = result.fracture_load_factor
     where = ""
@@ -870,7 +927,44 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
                if front is not None and front.toughness_uncalibrated else "")
             + ("" if degradation == _DELAM_DEFAULT_DEGRADATION
                else f"; porosity degradation {degradation} (uncalibrated)")
+            + ("" if growth is None else "\n" + _growth_line(growth))
             + f"\n  Saved: {out_path}")
+
+
+def _grow_delamination(options: dict, solver, result):
+    """The ``--delam-growth`` analysis of the screening model: quasi-static,
+    or fatigue under the peak that is ``--fatigue-peak`` of the static
+    critical load of ``result``."""
+    from .fe._load_cases import _DEFAULT_APPLIED_STRAIN
+
+    loading = options['loading']
+    common = {'max_steps': options['growth_steps'],
+              'toughness_knockdown': options['toughness_knockdown']}
+    paris = options.get('paris')
+    if paris is None:
+        return solver.delamination_growth(loading, **common)
+    lam = result.fracture_load_factor
+    if lam is None or not math.isfinite(lam):
+        raise ValueError(
+            "--fatigue-peak is a fraction of the static critical load, and this "
+            "delamination has none (no toughness data, or the load does not "
+            "drive its front).")
+    strain = options['fatigue_peak'] * lam * _DEFAULT_APPLIED_STRAIN[loading]
+    return solver.fatigue_delamination_growth(loading, paris, applied_strain=strain,
+                                              **common)
+
+
+def _growth_line(growth) -> str:
+    """One summary line of a ``--delam-growth`` analysis."""
+    area = float(growth.released_area[-1])
+    first, last = growth.load_factors[0], growth.load_factors[-1]
+    if growth.paris is not None:
+        return (f"  fatigue growth ({growth.paris.to_dict()['form']}, C = "
+                f"{growth.paris.C:g} mm/cycle, m = {growth.paris.m:g}): "
+                f"{area:.4g} mm^2 in {growth.cycles[-1]:.4g} cycles over "
+                f"{growth.n_steps} steps; stopped: {growth.stop_reason}")
+    return (f"  growth: {growth.n_steps} steps, {area:.4g} mm^2 released, "
+            f"lambda_c {first:.4g} -> {last:.4g}; stopped: {growth.stop_reason}")
 
 
 def _load_material_file(path: str):

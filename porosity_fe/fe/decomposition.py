@@ -122,9 +122,12 @@ def _has_porosity(mesh: CompositeMesh) -> bool:
 
 def _without_delamination(mesh: CompositeMesh) -> CompositeMesh:
     """Shallow copy of ``mesh`` with no delamination: the duplicated
-    interface nodes stay, every pair bonded (:meth:`CompositeMesh.bonded_pairs`)."""
+    interface nodes stay, every pair bonded (:meth:`CompositeMesh.bonded_pairs`),
+    the released pairs of a grown crack too."""
     variant = copy.copy(mesh)
     variant.delaminations = ()
+    if np.size(getattr(variant, 'released_pairs', ())):
+        variant.released_pairs = ()
     return variant
 
 
