@@ -6,8 +6,8 @@ Installing the package puts two commands on ``PATH``
 generated from the argument parsers themselves, so they match the installed
 version.
 
-Porosity is given in **percent** on the command line (``--vp-pct 2`` means
-2 %); the Python API always takes a fraction (``Vp=0.02``).
+``--vp`` takes a void **fraction** (``--vp 0.02`` means 2 %), like the
+Python API (``Vp=0.02``); ``--vp-pct`` takes percent (``--vp-pct 2``).
 
 porosity-analyze
 ----------------
@@ -15,11 +15,41 @@ porosity-analyze
 Runs the empirical analysis over one or more porosity levels and the five
 standard porosity configurations (:data:`porosity_fe.POROSITY_CONFIGS`),
 and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
-uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or a
-failed analysis.
+uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or an
+output that cannot be written, ``3`` on a failed analysis.
+
+The laminate and the scope of a run are options:
+
+- ``--layup SPEC`` and ``--t-ply MM`` set the laminate: ``'QI'`` (the
+  default), ``'UD'``, or laminate notation such as ``'[0/45/-45/90]_2s'``
+  (the ply angles in degrees; an explicit layup sets the ply count). They
+  apply to the sweep and to every option below, and each configuration
+  entry of the JSON records its ``laminate`` (``ply_angles``, ``n_plies``,
+  ``t_ply_mm``).
+- ``--configs NAME [NAME ...]`` analyses only the named configurations.
+- ``--fe LOADING`` adds an FE solve of every analysed configuration at
+  each porosity level (``compression``, ``tension``, ``shear`` on the
+  production coupon mesh; ``ilss`` on the ASTM D2344 short beam;
+  ``flexure_3pt`` / ``flexure_4pt`` on the ASTM D7264 specimen), written
+  to ``porosity_fe_<loading>_<config>_<Vp>.json`` with one summary line.
+  The FE strength rests on an uncalibrated heuristic
+  (:doc:`theory/failure`): take the size of a strength knockdown from the
+  sweep.
+- ``--required-knockdown R`` adds the allowable porosity of the laminate:
+  the largest void content at which each strength mode still retains the
+  fraction ``R`` of its pristine strength, for the three laws, with the
+  governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
+  It is printed and written to ``porosity_allowable.json``. It does not
+  depend on ``--vp`` or the configurations.
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --t-ply 0.2 \
+       --configs uniform_spherical interface_penny \
+       --fe compression --required-knockdown 0.9
 
 ``--delamination SPEC`` adds an opt-in FE delamination screening at each
-porosity level: the production coupon (``'QI'`` layup) with the
+porosity level: the production coupon (the laminate of ``--layup``) with the
 delamination, solved under ``--delam-loading`` with the porosity of
 ``--delam-config``, and its knockdown split into porosity-only and
 delamination-only parts (:func:`~porosity_fe.knockdown_decomposition`;
@@ -31,9 +61,9 @@ the ``knockdown_decomposition`` block, and prints one summary line.
 ``SPEC`` is ``strip:K:X_START:X_END``, ``rectangle:K:XC:YC:LX:WY`` or
 ``ellipse:K:XC:YC:LX:WY``: the interface ``K`` (between ply ``K`` and
 ``K + 1`` from the bottom, 0-based) and lengths in mm on the 50 x 20 mm
-coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. No preset
-has interlaminar toughness, so the fracture load factor needs
-``--toughness`` (N/mm). ``--porosity-degradation directional`` solves the
+coupon, the full sizes ``LX`` and ``WY`` of an NDI indication. Of the
+presets only ``IM7_8552_epoxy`` carries interlaminar toughness; for the
+others the fracture load factor needs ``--toughness`` (N/mm). ``--porosity-degradation directional`` solves the
 screening with the opt-in, uncalibrated direction-aware porosity
 degradation (``FESolver(porosity_degradation='directional')``: flat voids
 weaken the out-of-plane stiffness and the interlaminar strengths more than
@@ -42,7 +72,8 @@ the in-plane ones; see :doc:`theory/micromechanics`) instead of the default
 ``solver`` block of the JSON, and with penny voids
 (``--delam-config interface_penny``) it changes the results; spherical
 voids give the same results under both. Without ``--delamination`` the run
-is unchanged, and its options are refused (see :doc:`theory/delamination`).
+is unchanged, and its options are refused (``--porosity-degradation`` is
+also taken by ``--fe``; see :doc:`theory/delamination`).
 
 .. code-block:: bash
 
@@ -70,6 +101,16 @@ starter crack of each entry. They never enter the headline MAE or the PNG
 (see :doc:`theory/delamination`, "Porosity and toughness"). A standalone
 executable of this command is built from ``ValidatePorosity.spec`` with
 PyInstaller and attached to each GitHub release.
+
+``--fe`` also runs the FE solver against the strength and modulus
+datasets, one solve per data point of the test each property comes from
+(about a minute for the bundled datasets). It prints the FE mean absolute
+error, overall and for the moduli and the strengths beside the empirical
+pipeline's, and adds an "FE path" section to
+``validation_detail_report.md``. The headline MAE and the PNG do not
+change. The FE moduli match the data as laminate theory does; the FE
+strengths rest on an uncalibrated heuristic and do not (see
+:doc:`theory/failure`, "Degraded strengths").
 
 Exit codes: ``0`` when the report was written (datasets that failed to
 load are listed as ``[ERROR]`` in the summary), ``2`` when the datasets

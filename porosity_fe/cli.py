@@ -14,7 +14,12 @@ from .delamination import Delamination
 from .homogenization import _DEFAULT_POROSITY_DEGRADATION, POROSITY_DEGRADATIONS
 from .io import save_results_to_json
 from .materials import MATERIALS
-from .pipeline import _resolve_n_jobs, compare_configurations, sweep_configurations
+from .pipeline import (
+    _laminate_material,
+    _resolve_n_jobs,
+    compare_configurations,
+    sweep_configurations,
+)
 from .porosity_field import POROSITY_CONFIGS
 from .viz import FEVisualizer
 
@@ -77,6 +82,26 @@ def _parse_delamination(spec: str) -> Delamination:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+#: FE loadings of ``--fe``: the coupon modes and the ASTM D2344 / D7264
+#: specimens. The fracture specimens and the thermal case are not offered
+#: (the delamination screening covers a delamination; they need inputs the
+#: CLI does not take).
+_FE_LOADINGS = ('compression', 'tension', 'shear', 'ilss',
+                'flexure_3pt', 'flexure_4pt')
+
+
+def _parse_layup_option(text: str | None):
+    """``--layup`` as the layup the solvers take: ``'QI'`` (also for no
+    option), ``'UD'``, or the ply angles of laminate notation."""
+    if text is None:
+        return 'QI'
+    name = text.strip().upper()
+    if name in ('QI', 'UD'):
+        return name
+    from .reporting import parse_layup
+    return [float(a) for a in parse_layup(text)]
+
+
 #: Seed of the ``--uq`` sampling when ``--seed`` is not given: the app's
 #: value, so a repeat run gives the same bands.
 _UQ_DEFAULT_SEED = 0
@@ -95,6 +120,17 @@ def _vp_label(Vp: float) -> str:
     return f"{pct:.4f}".rstrip('0').rstrip('.').replace('.', 'p') + "pct"
 
 
+class _DefaultsHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Append ``(default: ...)`` only for a real default: an option whose
+    default is ``None`` states its effective default in its own help, which
+    "(default: None)" contradicted."""
+
+    def _get_help_string(self, action: argparse.Action) -> str | None:
+        if action.default is None:
+            return action.help
+        return super()._get_help_string(action)
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Construct the argparse driver for the analysis pipeline."""
     parser = argparse.ArgumentParser(
@@ -103,7 +139,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Run the porosity-degraded composite laminate analysis over one "
             "or more void volume fractions and write JSON results."
         ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_DefaultsHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -114,6 +150,39 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--material",
         default="T800_epoxy",
         help="Material preset name (validated against the built-in presets).",
+    )
+    parser.add_argument(
+        "--layup", default=None, metavar="SPEC",
+        help=(
+            "Layup of the laminate: 'QI' (default: [0/90/45/-45]_s repeated "
+            "to the preset's ply count), 'UD', or laminate notation with the "
+            "ply angles in degrees, such as '[0/45/-45/90]_2s' or "
+            "'[0_2/±45]s'. An explicit layup sets the ply count. It applies "
+            "to the sweep, --uq, --fe, --delamination and "
+            "--required-knockdown, and is recorded in the JSON."
+        ),
+    )
+    parser.add_argument(
+        "--t-ply", type=float, default=None, metavar="MM",
+        help="Ply thickness in mm (default: the preset's).",
+    )
+    parser.add_argument(
+        "--configs", nargs="+", default=None, metavar="NAME",
+        help=(
+            "Porosity configurations to analyse, keys of POROSITY_CONFIGS "
+            f"({', '.join(POROSITY_CONFIGS)}). Default: all of them."
+        ),
+    )
+    parser.add_argument(
+        "--required-knockdown", type=float, default=None, metavar="R",
+        help=(
+            "Also report the allowable porosity: the largest void content at "
+            "which each strength mode still retains the fraction R of its "
+            "pristine strength (0.9 keeps 90%%), for the three knockdown laws, "
+            "with the governing (smallest) one. Written to "
+            "porosity_allowable.json. It depends on the material and the "
+            "layup, not on --vp or the configurations."
+        ),
     )
     # #127: the Streamlit app collects Vp as a percentage (0-100) while the
     # CLI historically required a fraction in [0, 1]. Users who used the GUI
@@ -217,6 +286,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "re-assembled regardless of N."
         ),
     )
+    fe = parser.add_argument_group(
+        "finite-element solve",
+        "Opt-in: an FE solve of every analysed configuration at each "
+        "porosity level, written to porosity_fe_<loading>_<config>_<Vp>.json "
+        "(stiffness knockdown, effective modulus, failure indices, "
+        "first-ply-failure load factor).")
+    fe.add_argument(
+        "--fe", choices=_FE_LOADINGS, default=None, metavar="LOADING",
+        help=(
+            f"FE loading: {', '.join(_FE_LOADINGS)}. The coupon modes solve "
+            "the production mesh (30 x 10, one element layer per ply); "
+            "'ilss' the ASTM D2344 short beam and the flexure modes the ASTM "
+            "D7264 specimen. The FE strength rests on an uncalibrated "
+            "heuristic: take the size of a strength knockdown from the sweep."
+        ),
+    )
     uq = parser.add_argument_group(
         "uncertainty quantification",
         "Propagate input scatter through the empirical Judd-Wright knockdown "
@@ -241,8 +326,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="CoV of each mode's pristine strength, as a fraction (0.05 = 5%%).")
     delam = parser.add_argument_group(
         "delamination screening (FE)",
-        "Opt-in: an FE solve of the coupon (production mesh, 'QI' layup) "
-        "with an explicit delamination at each porosity level, written to "
+        "Opt-in: an FE solve of the coupon (production mesh, the laminate of "
+        "--layup) with an explicit delamination at each porosity level, written to "
         "porosity_delamination_<Vp>.json: the FE results with the fracture "
         "block (energy release rates along the front, fracture load factor) "
         "and the knockdown split into porosity-only and delamination-only "
@@ -269,9 +354,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="G",
         help=("Interlaminar toughness G_IC G_IIC BK_ETA [G_IIIC]: mode I and "
               "II toughness (N/mm), the Benzeggagh-Kenane exponent and "
-              "optionally the mode III toughness (default G_IIC). No preset "
-              "has them; without them the screening reports energy release "
-              "rates only, no fracture load factor."))
+              "optionally the mode III toughness (default G_IIC). Of the "
+              "presets only IM7_8552_epoxy carries them (these override it); "
+              "for the others, without them the screening reports energy "
+              "release rates only, no fracture load factor."))
     delam.add_argument(
         "--toughness-knockdown", choices=('exponential', 'none'), default=None,
         help=("Porosity knockdown of the toughness at the front: "
@@ -284,7 +370,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Your coefficients of the exponential law (per unit Vp).")
     delam.add_argument(
         "--porosity-degradation", choices=POROSITY_DEGRADATIONS, default=None,
-        help=("How the porosity degrades the ply stiffness and strengths in "
+        help=("With --delamination or --fe: how the porosity degrades the ply "
+              "stiffness and strengths in "
               "the FE solves (FESolver(porosity_degradation=...)): "
               f"'{_DELAM_DEFAULT_DEGRADATION}' (default) or 'directional' "
               "(opt-in, uncalibrated: flat voids weaken E33, G13, G23, Z_t "
@@ -297,13 +384,14 @@ def _delamination_options(args) -> dict:
     """The resolved delamination screening options; ``ValueError`` when one
     is given without ``--delamination`` or is invalid."""
     given = [name for name in ('delam_loading', 'delam_config', 'toughness',
-                               'toughness_knockdown', 'toughness_b',
-                               'porosity_degradation')
+                               'toughness_knockdown', 'toughness_b')
              if getattr(args, name) is not None]
     if args.delamination is None:
         if given:
             flags = ", ".join("--" + n.replace('_', '-') for n in given)
             raise ValueError(f"{flags} need --delamination.")
+        if args.porosity_degradation is not None and args.fe is None:
+            raise ValueError("--porosity-degradation needs --delamination or --fe.")
         return {}
     toughness = args.toughness
     if toughness is not None:
@@ -337,7 +425,8 @@ def _delamination_options(args) -> dict:
 
 
 def _run_delamination(options: dict, material, porosity_configs: dict,
-                      Vp: float, out_path: Path, *, quiet_solver: bool = True) -> str:
+                      Vp: float, out_path: Path, *, quiet_solver: bool = True,
+                      ply_angles='QI') -> str:
     """FE delamination screening at one porosity level, written to ``out_path``.
 
     One FE solve of the production coupon with the delamination, its
@@ -349,15 +438,104 @@ def _run_delamination(options: dict, material, porosity_configs: dict,
     level = logger.level
     if quiet_solver:
         logger.setLevel(max(level, logging.WARNING))
+    # Passed only when it is not the default, so the default call is the
+    # one it always was.
+    layup = {} if isinstance(ply_angles, str) and ply_angles == 'QI' \
+        else {'ply_angles': ply_angles}
     try:
         return _delamination_screening(options, material, porosity_configs,
-                                       Vp, out_path)
+                                       Vp, out_path, **layup)
     finally:
         logger.setLevel(level)
 
 
+def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
+            Vp: float, out_path: Path, *, porosity_degradation: str,
+            quiet_solver: bool = True) -> str:
+    """One FE solve of a configuration (``--fe``), written to ``out_path``.
+
+    The coupon modes solve the production mesh; ``'ilss'`` and the flexure
+    modes their ASTM specimen with its default mesh. The solver's own
+    progress messages are held back unless ``quiet_solver`` is false.
+    Returns a one-line summary.
+    """
+    from .fe import FESolver
+    from .mesh import CompositeMesh
+    from .pipeline import _default_mesh_resolution
+    from .porosity_field import PorosityField
+
+    level = logger.level
+    if quiet_solver:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        pf = PorosityField(material, Vp, **config)
+        if loading == 'ilss':
+            mesh = CompositeMesh.for_ilss(pf, material, ply_angles=ply_angles)
+        elif loading in ('flexure_3pt', 'flexure_4pt'):
+            mesh = CompositeMesh.for_flexure(pf, material, ply_angles=ply_angles)
+        else:
+            mesh = CompositeMesh(
+                pf, material,
+                *_default_mesh_resolution(material.n_plies, ply_angles),
+                ply_angles=ply_angles)
+        result = FESolver(mesh, material, pf, ply_angles=ply_angles,
+                          porosity_degradation=porosity_degradation).solve(loading)
+        FESolver.export_results(result, out_path)
+    finally:
+        logger.setLevel(level)
+    modulus = result.effective_modulus
+    return (f"  {loading}, {name}: stiffness knockdown {result.knockdown:.4f}"
+            + ("" if modulus is None else f", effective modulus {modulus:.0f} MPa")
+            + f", max failure index {result.max_failure_index:.3g}, "
+              f"first-ply-failure load factor "
+              f"{result.first_ply_failure_load_factor:.4g}"
+            + ("" if porosity_degradation == _DELAM_DEFAULT_DEGRADATION
+               else f"; porosity degradation {porosity_degradation} (uncalibrated)")
+            + f"\n  Saved: {out_path}")
+
+
+def _run_allowable(required: float, material, material_name: str, ply_angles,
+                   out_path: Path) -> list[str]:
+    """The allowable-porosity table of the laminate (``--required-knockdown``),
+    written to ``out_path``. Returns the lines of its summary."""
+    import warnings
+
+    from .pipeline import build_empirical_pipeline
+    from .reporting import allowable_porosity_record, write_allowable_json
+
+    level = logger.level
+    logger.setLevel(max(level, logging.WARNING))    # no mesh report for a table
+    try:
+        _, mesh, solver = build_empirical_pipeline(material, 0.0,
+                                                   ply_angles=ply_angles)
+    finally:
+        logger.setLevel(level)
+    with warnings.catch_warnings():
+        # The record flags an extrapolated entry itself.
+        warnings.simplefilter("ignore", UserWarning)
+        table = solver.get_all_allowable_porosities(required)
+    record = allowable_porosity_record(table)
+    write_allowable_json(out_path, record, {
+        'material': material_name,
+        'ply_angles': [float(a) for a in mesh._ply_layup],
+        'n_plies': int(material.n_plies),
+        't_ply_mm': float(material.t_ply),
+    })
+    lines = [f"  {record['statement']}"]
+    # With no fatigue or environment factor every requirement in (0, 1] is
+    # met at zero porosity, so each entry has an allowable.
+    for mode, models in record['per_mode'].items():
+        cells = [f"{model} {entry['allowable_Vp_percent']:.2f}%"
+                 + (" (extrapolated)" if entry['extrapolated'] else "")
+                 for model, entry in models.items()]
+        lines.append(f"  {mode:<20} " + ", ".join(cells))
+    lines.append(f"  {record['basis']}")
+    lines.append(f"  Saved: {out_path}")
+    return lines
+
+
 def _delamination_screening(options: dict, material, porosity_configs: dict,
-                            Vp: float, out_path: Path) -> str:
+                            Vp: float, out_path: Path, ply_angles='QI') -> str:
     """The solves and export of :func:`_run_delamination`."""
     from .fe import FESolver, knockdown_decomposition
     from .mesh import CompositeMesh
@@ -375,11 +553,17 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
         material = dataclasses.replace(material, G_Ic=G_Ic, G_IIc=G_IIc,
                                        G_IIIc=G_IIIc, bk_eta=eta)
     pf = PorosityField(material, Vp, **porosity_configs[config])
-    mesh = CompositeMesh(pf, material, *_default_mesh_resolution(material.n_plies),
-                         delaminations=[options['delamination']])
+    # The 'QI' default is spelled as before, so the default path is unchanged.
+    layup = {} if isinstance(ply_angles, str) and ply_angles == 'QI' \
+        else {'ply_angles': ply_angles}
+    mesh = CompositeMesh(
+        pf, material,
+        *_default_mesh_resolution(material.n_plies, ply_angles if layup else None),
+        delaminations=[options['delamination']], **layup)
     loading = options['loading']
     degradation = options.get('porosity_degradation', _DELAM_DEFAULT_DEGRADATION)
-    result = FESolver(mesh, material, pf, porosity_degradation=degradation).solve(
+    result = FESolver(mesh, material, pf, porosity_degradation=degradation,
+                      **layup).solve(
         loading, toughness_knockdown=options['toughness_knockdown'])
     parts = knockdown_decomposition(mesh, material, pf, loading, total=result,
                                     porosity_degradation=degradation)
@@ -403,11 +587,16 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
             + f"\n  Saved: {out_path}")
 
 
-def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
-    """Propagate uncertainty for every loading mode at one porosity level."""
+def _run_uq(args, material, Vp: float, out_path: Path, ply_angles=None) -> dict:
+    """Propagate uncertainty for every loading mode at one porosity level.
+
+    ``material`` is a preset name or a :class:`MaterialProperties`;
+    ``ply_angles`` the layup when it is not the default.
+    """
     from .empirical import EmpiricalSolver
     from .uq import propagate_uncertainty, save_uq_results_to_json
 
+    layup = {} if ply_angles is None else {'ply_angles': ply_angles}
     results = {}
     for mode, strength_field in EmpiricalSolver.PRISTINE_STRENGTH_KEY.items():
         results[mode] = propagate_uncertainty(
@@ -418,6 +607,7 @@ def _run_uq(args, material, Vp: float, out_path: Path) -> dict:
             n_samples=args.uq_samples,
             method='lhs',
             seed=_UQ_DEFAULT_SEED if args.seed is None else args.seed,
+            **layup,
         )
         kd = results[mode]['knockdown']['percentiles']
         logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f",
@@ -573,8 +763,25 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         delamination = _delamination_options(args)
+        ply_angles = _parse_layup_option(args.layup)
+        material = _laminate_material(materials[args.material], ply_angles,
+                                      args.t_ply)
     except ValueError as exc:
         parser.error(str(exc))
+    # Only what was asked for is passed on, so a default run calls the sweep
+    # exactly as before.
+    laminate: dict = {}
+    if args.layup is not None:
+        laminate['ply_angles'] = ply_angles
+    if args.t_ply is not None:
+        laminate['t_ply'] = args.t_ply
+    if args.required_knockdown is not None and not (
+            0.0 < args.required_knockdown <= 1.0):  # also rejects NaN
+        hint = (f" (a percent? pass {args.required_knockdown / 100.0:g})"
+                if 1.0 < args.required_knockdown <= 100.0 else "")
+        parser.error(
+            f"--required-knockdown {args.required_knockdown!r} must be the "
+            f"fraction of the pristine strength to retain, in (0, 1]{hint}.")
 
     for Vp in args.vp:
         if not (0.0 <= Vp <= 1.0) or Vp != Vp:  # NaN-safe range check
@@ -616,6 +823,14 @@ def main(argv: list[str] | None = None) -> int:
     save_fn = _resolve_via_shim('save_results_to_json', save_results_to_json)
     viz = _resolve_via_shim('FEVisualizer', FEVisualizer)
     porosity_configs = _resolve_via_shim('POROSITY_CONFIGS', POROSITY_CONFIGS)
+    if args.configs is not None:
+        unknown = [name for name in args.configs if name not in porosity_configs]
+        if unknown:
+            parser.error(
+                f"Unknown --configs {', '.join(map(repr, unknown))}; use any of "
+                f"{', '.join(porosity_configs)}.")
+        porosity_configs = {name: porosity_configs[name]
+                            for name in dict.fromkeys(args.configs)}
 
     # With several workers and several porosity levels, send every
     # (Vp, config) pair to one process pool (IMPROVEMENT_PLAN 4.6) instead
@@ -632,6 +847,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 n_jobs=args.jobs,
                 return_artifacts=True,
+                **laminate,
             )
         except ValueError as exc:
             print(f"ERROR: bad input: {exc}", file=sys.stderr)
@@ -658,6 +874,7 @@ def main(argv: list[str] | None = None) -> int:
                     seed=args.seed,
                     n_jobs=args.jobs,
                     return_artifacts=True,
+                    **laminate,
                 )
             except ValueError as exc:
                 print(f"ERROR: bad input for Vp={Vp}: {exc}", file=sys.stderr)
@@ -689,8 +906,13 @@ def main(argv: list[str] | None = None) -> int:
             Vp_label = _vp_label(Vp)
             logger.info("\nUncertainty propagation: Vp = %.2f%%", Vp * 100)
             try:
-                _run_uq(args, args.material, Vp,
-                        output_dir / f"porosity_uq_{Vp_label}.json")
+                if laminate:
+                    _run_uq(args, material, Vp,
+                            output_dir / f"porosity_uq_{Vp_label}.json",
+                            ply_angles=ply_angles)
+                else:
+                    _run_uq(args, args.material, Vp,
+                            output_dir / f"porosity_uq_{Vp_label}.json")
             except (ValueError, OSError) as exc:
                 print(f"ERROR: uncertainty propagation for Vp={Vp}: {exc}",
                       file=sys.stderr)
@@ -706,9 +928,9 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("\nDelamination screening (FE): Vp = %.2f%%", Vp * 100)
             try:
                 line = _run_delamination(
-                    delamination, materials[args.material], porosity_configs,
+                    delamination, material, porosity_configs,
                     Vp, output_dir / f"porosity_delamination_{Vp_label}.json",
-                    quiet_solver=not args.verbose)
+                    quiet_solver=not args.verbose, ply_angles=ply_angles)
                 logger.info("%s", line)
             except (ValueError, OSError) as exc:
                 print(f"ERROR: delamination screening for Vp={Vp}: {exc}",
@@ -718,6 +940,42 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"ERROR: delamination screening for Vp={Vp} failed: {exc}",
                       file=sys.stderr)
                 return 3
+
+    if args.fe is not None:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nFE solve (%s): Vp = %.2f%%", args.fe, Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = output_dir / f"porosity_fe_{args.fe}_{name}_{Vp_label}.json"
+                try:
+                    logger.info("%s", _run_fe(
+                        args.fe, material, ply_angles, name, config, Vp, out_path,
+                        porosity_degradation=degradation,
+                        quiet_solver=not args.verbose))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: FE solve for Vp={Vp}, {name}: {exc}",
+                          file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: FE solve for Vp={Vp}, {name} failed: {exc}",
+                          file=sys.stderr)
+                    return 3
+
+    if args.required_knockdown is not None:
+        logger.info("\nAllowable porosity: %g%% of pristine strength retained",
+                    args.required_knockdown * 100)
+        try:
+            for line in _run_allowable(
+                    args.required_knockdown, material, args.material, ply_angles,
+                    output_dir / "porosity_allowable.json"):
+                logger.info("%s", line)
+        except (ValueError, OSError) as exc:
+            print(f"ERROR: allowable porosity: {exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # noqa: BLE001 - surface as a failure
+            print(f"ERROR: allowable porosity failed: {exc}", file=sys.stderr)
+            return 3
 
     if args.plots and all_results:
         try:
@@ -736,6 +994,9 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("COMPLETE ANALYSIS FINISHED")
     logger.info("%s", _bar)
     logger.info("Material: %s", args.material)
+    if laminate:
+        logger.info("Laminate: %d plies of %g mm, layup %s", material.n_plies,
+                    material.t_ply, args.layup or 'QI')
     logger.info("Porosity levels analyzed: %s",
                 [f"{v*100:.2f}%" for v in args.vp])
     logger.info("Configurations: %s", list(porosity_configs.keys()))

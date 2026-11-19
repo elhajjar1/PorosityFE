@@ -324,7 +324,7 @@ class VoidGeometry:
                                  round(float(nu_m), 12)))
 
     def volume(self) -> float:
-        return (4.0 / 3.0) * np.pi * self.radii[0] * self.radii[1] * self.radii[2]
+        return float((4.0 / 3.0) * np.pi * self.radii[0] * self.radii[1] * self.radii[2])
 
     @property
     def aspect_ratio(self) -> float:

@@ -1004,7 +1004,7 @@ class TestDelaminationScreening:
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
         (['--porosity-degradation', 'directional'],
-         '--porosity-degradation need --delamination'),
+         '--porosity-degradation needs --delamination or --fe'),
         (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
          "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
@@ -1148,3 +1148,311 @@ class TestCLIExitPaths:
         sentinel = object()
         monkeypatch.delitem(sys.modules, 'porosity_fe_analysis')
         assert _resolve_via_shim('compare_configurations', sentinel) is sentinel
+
+
+# ----------------------------------------------------------------------
+# Laminate, configuration, FE and allowable-porosity options
+# ----------------------------------------------------------------------
+
+_LAYUP = ['--layup', '[0/90]s']
+
+
+def _results_schema():
+    path = Path(__file__).resolve().parent.parent / 'validation' / 'schemas' / \
+        'porosity_results_schema.json'
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+class TestLaminateOptions:
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path), '--quiet', *argv])
+
+    def test_layup_and_ply_thickness_reach_the_sweep(self, tmp_path, monkeypatch):
+        seen = {}
+        original = porosity_fe_analysis.compare_configurations
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(porosity_fe_analysis, 'compare_configurations', spy)
+        assert self._main(tmp_path, monkeypatch, '--layup', '[45/-45]s',
+                          '--t-ply', '0.2') == 0
+        assert seen['ply_angles'] == [45.0, -45.0, -45.0, 45.0]
+        assert seen['t_ply'] == 0.2
+        doc = _strict_json(tmp_path / 'porosity_analysis_results_2pct.json')
+        assert doc['uniform_spherical']['laminate'] == {
+            'ply_angles': [45.0, -45.0, -45.0, 45.0], 'n_plies': 4, 't_ply_mm': 0.2}
+        assert doc['units']['ply_angles'] == 'degrees'
+        assert doc['units']['t_ply_mm'] == 'mm'
+        # [+-45] in tension is amplified over the QI knockdown.
+        assert self._main(tmp_path / 'qi', monkeypatch) == 0
+        qi = _strict_json(tmp_path / 'qi' / 'porosity_analysis_results_2pct.json')
+        tension = lambda d: d['uniform_spherical']['empirical']['tension'][  # noqa: E731
+            'judd_wright']['knockdown']
+        assert tension(doc) < tension(qi)
+
+    def test_a_default_run_passes_no_laminate_and_records_the_preset(
+            self, tmp_path, monkeypatch):
+        """The sweep is called exactly as before; the JSON now says which
+        laminate it analysed."""
+        seen = {}
+        original = porosity_fe_analysis.compare_configurations
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(porosity_fe_analysis, 'compare_configurations', spy)
+        assert self._main(tmp_path, monkeypatch) == 0
+        assert 'ply_angles' not in seen and 't_ply' not in seen
+        from porosity_fe import MATERIALS
+        preset = MATERIALS['T800_epoxy']
+        lam = _strict_json(tmp_path / 'porosity_analysis_results_2pct.json')[
+            'uniform_spherical']['laminate']
+        assert lam['n_plies'] == preset.n_plies and lam['t_ply_mm'] == preset.t_ply
+        assert lam['ply_angles'][:8] == [0.0, 90.0, 45.0, -45.0, -45.0, 45.0, 90.0, 0.0]
+        assert len(lam['ply_angles']) == preset.n_plies
+
+    def test_sentinel_layups(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path, monkeypatch, '--layup', 'ud') == 0
+        lam = _strict_json(tmp_path / 'porosity_analysis_results_2pct.json')[
+            'uniform_spherical']['laminate']
+        assert set(lam['ply_angles']) == {0.0}
+
+    def test_the_parallel_sweep_takes_the_laminate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '0.03', '--jobs', '2', '--output-dir', str(tmp_path),
+            '--quiet', *_LAYUP])
+        assert rc == 0
+        for label in ('2pct', '3pct'):
+            lam = _strict_json(tmp_path / f'porosity_analysis_results_{label}.json')[
+                'uniform_spherical']['laminate']
+            assert lam['ply_angles'] == [0.0, 90.0, 90.0, 0.0]
+
+    def test_summary_names_the_laminate(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        assert porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path), *_LAYUP]) == 0
+        assert 'Laminate: 4 plies of 0.183 mm, layup [0/90]s' in capsys.readouterr().out
+        assert porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path)]) == 0
+        assert 'Laminate:' not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("argv, message", [
+        (['--layup', '[0/x]'], 'x'),
+        (['--layup', ''], 'empty'),
+        (['--t-ply', '0'], 't_ply must be a positive ply thickness'),
+        (['--t-ply', '-0.1'], 't_ply must be a positive ply thickness'),
+        (['--t-ply', 'nan'], 't_ply must be a positive ply thickness'),
+    ])
+    def test_bad_laminate_is_a_usage_error(self, tmp_path, monkeypatch, capsys,
+                                           argv, message):
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, *argv)
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+        assert not list(tmp_path.glob('*.json'))
+
+    def test_parse_layup_option(self):
+        from porosity_fe.cli import _parse_layup_option
+        assert _parse_layup_option(None) == 'QI'
+        assert _parse_layup_option(' qi ') == 'QI'
+        assert _parse_layup_option('UD') == 'UD'
+        assert _parse_layup_option('[0_2/±45]s') == [
+            0.0, 0.0, 45.0, -45.0, -45.0, 45.0, 0.0, 0.0]
+
+    def test_uq_uses_the_laminate(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path / 'qi', monkeypatch, '--uq', '--uq-samples', '20') == 0
+        assert self._main(tmp_path / 'pm45', monkeypatch, '--uq', '--uq-samples', '20',
+                          '--layup', '[45/-45]s') == 0
+        p50 = lambda name: load_results_from_json(  # noqa: E731
+            tmp_path / name / 'porosity_uq_2pct.json')['uq']['tension'][
+                'knockdown']['percentiles']['p50']
+        assert p50('pm45') < p50('qi')
+
+    def test_delamination_screening_uses_the_laminate(self, small_material, tmp_path):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--quiet', *_SPEC, '--layup', '[0/90/90/0/0/90/90/0]'])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_delamination_3pct.json')
+        assert doc['stress_global']['n_elements'] == 30 * 10 * 8      # the layup's 8 plies
+
+
+class TestConfigsOption:
+    def test_a_subset_in_the_order_given(self, tmp_path):
+        rc = porosity_fe_analysis.main([
+            '--vp', '0.02', '--output-dir', str(tmp_path), '--quiet',
+            '--configs', 'interface_penny', 'uniform_spherical', 'interface_penny'])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_analysis_results_2pct.json')
+        names = [k for k in doc if k not in ('schema_version', 'format',
+                                             'provenance', 'units')]
+        assert names == ['interface_penny', 'uniform_spherical']
+
+    def test_an_unknown_name_is_a_usage_error(self, tmp_path, capsys):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--vp', '0.02', '--output-dir', str(tmp_path),
+                                       '--configs', 'uniform_spherical', 'bubbles'])
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "Unknown --configs 'bubbles'" in err and 'interface_penny' in err
+
+
+class TestFESolveOption:
+    def test_one_fe_json_per_configuration(self, small_material, tmp_path, capsys):
+        import jsonschema
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--fe', 'tension'])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'FE solve (tension): Vp = 3.00%' in out
+        assert 'tension, uniform_spherical: stiffness knockdown 0.98' in out
+        assert 'effective modulus' in out and 'first-ply-failure load factor' in out
+        assert 'Free-DOF stiffness' not in out       # the solver's own lines
+        doc = _strict_json(tmp_path / 'porosity_fe_tension_uniform_spherical_3pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        assert doc['format'] == 'porosity-fe.fe-fields'
+        assert doc['stress_global']['n_elements'] == 30 * 10 * 4
+        assert 0.9 < doc['failure']['knockdown_factor'] < 1.0
+        assert doc['solver']['porosity_degradation'] == 'isotropic'
+
+    @pytest.mark.parametrize("loading", ['ilss', 'flexure_3pt', 'flexure_4pt'])
+    def test_the_specimen_modes_solve_their_specimen(self, small_material, tmp_path,
+                                                     capsys, loading):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--fe', loading])
+        assert rc == 0
+        assert f'{loading}, uniform_spherical: stiffness knockdown' in capsys.readouterr().out
+        doc = _strict_json(tmp_path / f'porosity_fe_{loading}_uniform_spherical_3pct.json')
+        assert doc['stress_global']['n_elements'] != 30 * 10 * 4      # not the coupon
+
+    def test_layup_and_degradation_reach_the_solve(self, small_material, tmp_path,
+                                                   monkeypatch, capsys):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', {
+            'uniform_penny': {'distribution': 'uniform', 'void_shape': 'penny'}})
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--fe', 'tension',
+            '--layup', '[0/90/90/0/0/90/90/0]', '--porosity-degradation', 'directional'])
+        assert rc == 0
+        assert 'porosity degradation directional (uncalibrated)' in capsys.readouterr().out
+        doc = _strict_json(tmp_path / 'porosity_fe_tension_uniform_penny_3pct.json')
+        assert doc['stress_global']['n_elements'] == 30 * 10 * 8
+        assert doc['solver']['porosity_degradation'] == 'directional'
+
+    def test_verbose_keeps_the_solver_messages(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--fe', 'tension', '--verbose'])
+        assert rc == 0
+        assert 'Free-DOF stiffness' in capsys.readouterr().out
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (ValueError('bad mesh'), 2, 'FE solve for Vp=0.03, uniform_spherical: bad mesh'),
+        (RuntimeError('boom'), 3, 'FE solve for Vp=0.03, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, small_material, tmp_path,
+                                                  monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_fe', boom)
+        assert porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--quiet', '--fe', 'shear']) == rc
+        assert message in capsys.readouterr().err
+
+    def test_usage_errors(self, small_material, tmp_path, capsys):
+        for argv, message in (
+                (['--fe', 'dcb'], "invalid choice: 'dcb'"),
+                (['--porosity-degradation', 'directional'],
+                 '--porosity-degradation needs --delamination or --fe')):
+            with pytest.raises(SystemExit) as exc:
+                porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                           '--output-dir', str(tmp_path), *argv])
+            assert exc.value.code == 2
+            assert message in capsys.readouterr().err
+
+    def test_without_the_flag_no_fe_file_is_written(self, small_material, tmp_path):
+        assert porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03',
+            '--output-dir', str(tmp_path), '--quiet']) == 0
+        assert not list(tmp_path.glob('porosity_fe_*'))
+
+
+class TestAllowableOption:
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path), *argv])
+
+    def test_writes_the_table_of_the_laminate(self, tmp_path, monkeypatch, capsys):
+        import jsonschema
+        from porosity_fe import MATERIALS, build_empirical_pipeline
+        assert self._main(tmp_path, monkeypatch, '--required-knockdown', '0.9',
+                          '--material', 'T700_epoxy') == 0
+        out = capsys.readouterr().out
+        assert 'Allowable porosity: 90% of pristine strength retained' in out
+        assert ('Governing allowable void content: 1.05% (ilss / judd_wright at 90% '
+                'of pristine strength retained).') in out
+        assert 'tension              judd_wright 2.70%, power_law 5.69% (extrapolated)' in out
+        assert 'Mesh generated' not in out.split('Allowable porosity:')[1]
+        doc = load_results_from_json(tmp_path / 'porosity_allowable.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        assert doc['format'] == 'porosity-fe.allowable-porosity'
+        assert doc['units']['allowable_Vp_percent'] == '%'
+        preset = MATERIALS['T700_epoxy']
+        assert doc['laminate']['material'] == 'T700_epoxy'
+        assert doc['laminate']['n_plies'] == preset.n_plies
+        assert doc['laminate']['t_ply_mm'] == preset.t_ply
+        record = doc['allowable_porosity']
+        assert record['measured_Vp_percent'] is None
+        assert record['within_allowable'] is None
+        solver = build_empirical_pipeline(preset, 0.0)[2]
+        assert record['per_mode']['ilss']['linear']['allowable_Vp_percent'] == \
+            pytest.approx(solver.allowable_porosity(0.9, 'ilss', 'linear').Vp * 100)
+
+    def test_it_follows_the_layup(self, tmp_path, monkeypatch):
+        tension = {}
+        for name, argv in (('qi', []), ('pm45', ['--layup', '[45/-45]s'])):
+            assert self._main(tmp_path / name, monkeypatch, '--quiet',
+                              '--required-knockdown', '0.95', *argv) == 0
+            doc = _strict_json(tmp_path / name / 'porosity_allowable.json')
+            tension[name] = doc['allowable_porosity']['per_mode']['tension'][
+                'judd_wright']['allowable_Vp_percent']
+        assert tension['pm45'] < tension['qi']
+        assert doc['laminate']['ply_angles'] == [45.0, -45.0, -45.0, 45.0]
+
+    @pytest.mark.parametrize("value, hint", [
+        ('0', ''), ('-0.5', ''), ('1.5', 'a percent? pass 0.015'),
+        ('90', 'a percent? pass 0.9'), ('nan', '')])
+    def test_a_bad_requirement_is_a_usage_error(self, tmp_path, monkeypatch, capsys,
+                                                value, hint):
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, '--required-knockdown', value)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert 'must be the fraction of the pristine strength to retain' in err
+        assert hint in err
+        assert not list(tmp_path.glob('*.json'))
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (OSError('disk'), 2, 'allowable porosity: disk'),
+        (RuntimeError('boom'), 3, 'allowable porosity failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, tmp_path, monkeypatch, capsys,
+                                                  exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_allowable', boom)
+        assert self._main(tmp_path, monkeypatch, '--quiet',
+                          '--required-knockdown', '0.9') == rc
+        assert message in capsys.readouterr().err
+
+    def test_without_the_flag_no_file_is_written(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path, monkeypatch, '--quiet') == 0
+        assert not (tmp_path / 'porosity_allowable.json').exists()

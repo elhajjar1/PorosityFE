@@ -29,7 +29,9 @@ pip install -e ".[web]"
 streamlit run app.py                          # http://localhost:8501
 
 # Batch analysis CLI (entry points from pyproject.toml [project.scripts])
-porosity-analyze                              # sweep 5 Vp × 5 configs, PNG + JSON
+porosity-analyze                              # sweep 5 Vp × 5 configs, JSON (--plots adds PNGs)
+porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --fe compression \
+    --required-knockdown 0.9                  # laminate, FE solve, allowable porosity
 validate_porosity --help                      # run vs. bundled validation datasets
 
 # Standalone CLI executable (PyInstaller)
@@ -56,7 +58,7 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
 ### Package layout (post #119 split)
 
 The implementation lives in the `porosity_fe/` package. The top-level
-`porosity_fe_analysis.py` is a 62-line **compatibility shim** that re-exports
+`porosity_fe_analysis.py` is a short **compatibility shim** that re-exports
 everything from `porosity_fe` so legacy `from porosity_fe_analysis import X`
 callers keep working. **New code should import from `porosity_fe` directly**;
 do not add new symbols to `porosity_fe_analysis.py`.
@@ -76,8 +78,10 @@ different numerical answers for the same inputs**, not the same answer:
   knockdown applied **once at the laminate level** using the
   specimen-average `Vp`. The distribution shape (`uniform` vs `clustered`
   vs `interface`) has **no effect** here because all are renormalized to
-  the same mean. Layup enters through `EmpiricalSolver._layup_scales()`
-  (`porosity_fe/_layup.py`, IMPROVEMENT_PLAN 2.7): `shear` / `ilss` /
+  the same mean. Layup enters through `_layup_scales(material, ply_angles)`
+  in `porosity_fe/empirical.py` (read per mode by
+  `EmpiricalSolver._layup_scale(mode)`; the CLT energy partition is in
+  `porosity_fe/_layup.py`, IMPROVEMENT_PLAN 2.7): `shear` / `ilss` /
   `transverse_tension` are layup-independent, and `tension` /
   `compression` scale by `max(1, CLT-energy blend / alpha_QI)`, so QI
   layups are unchanged and a scale above 1 is flagged as unvalidated. The
@@ -148,6 +152,16 @@ The empirical path has no delamination. The linear VCCT load factor is
 growth *onset* only: no propagation, cohesive zone or buckling.
 `DELAMINATION_PLAN.md` holds the plan, its status and the open decisions.
 
+### Porosity field sampling
+
+`PorosityField` is a through-thickness profile (`_distributed_porosity(z)`)
+plus discrete voids, with an optional in-plane `PorosityMap`
+(`in_plane_map=`, `PorosityField.from_map`; `porosity_fe/porosity_map.py`).
+Sample the distributed part with `_distributed(x, y, z)`, which applies the
+map over its mean and equals the profile without one: `CompositeMesh.
+_sample_porosity` and `EmpiricalSolver._local_vp_peak` do. `Vp` is the
+specimen average, the map's area mean with `from_map`.
+
 ### `Vp` is always a fraction, never a percent
 
 `PorosityField.__init__` enforces `Vp ∈ [0, 1]` and emits a percent-vs-fraction
@@ -169,7 +183,9 @@ re-implement sentinel handling at a call site.
 ### Sweep orchestration
 
 `porosity_fe/pipeline.py` owns the multi-config sweep. `_analyze_one` is
-the parallel worker invoked by `compare_configurations`; `_DEFAULT_MESH_RES
+the parallel worker invoked by `compare_configurations` (which takes the
+laminate as `ply_angles=` / `t_ply=`; the default laminate adds nothing to
+the worker's task tuple); `_DEFAULT_MESH_RES
 = (30, 10, None)` is the single source of truth for production mesh size:
 `nz = None` means one element layer per ply, capped at `_DEFAULT_NZ_MAX`
 (48, the `nz_max` of `build_empirical_pipeline`), resolved by
@@ -196,6 +212,12 @@ the validation tests against them. The PyInstaller spec bundles them into
 the CLI executable so end users get an offline-runnable validator. `validate_porosity_cli.py` calls
 `validation/validate_all.py` to run every dataset through the empirical
 pipeline and emit `validation_master_report.png` + `validation_detail_report.md`.
+`validate_porosity --fe` (`run_all_datasets_fe`) also runs the FE solver
+against the strength and modulus datasets, one solve per data point, and
+reports its MAE apart from the headline: the FE moduli match the data, the
+FE first-ply-failure strengths (the uncalibrated `sqrt` heuristic) do not.
+Its full-database numbers are pinned by a test behind
+`POROSITY_FE_VALIDATION=1` (about a minute).
 
 ### Streamlit app bootstrap
 
@@ -251,7 +273,8 @@ Python 3.12 with `numpy<2`), `test` (pytest on `{ubuntu, macos, windows}` ×
 `{3.11, 3.12, 3.13, 3.14}` against an editable install; the ubuntu/3.12
 cell also measures statement and branch coverage with a 95 % floor
 (`--cov-fail-under`), uploads `coverage.xml` as an artifact, and
-runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`),
+runs the production-mesh FE timing guard via `POROSITY_FE_BENCHMARK=1`
+and the FE validation headline via `POROSITY_FE_VALIDATION=1`),
 `fe_fingerprint` (the FE regression gate of `scripts/fingerprint.py` on
 ubuntu/3.12, single threaded, on the numpy / scipy recorded in the
 baseline, run on the runner's BLAS kernel and again on Sandybridge's; see

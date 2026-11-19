@@ -36,6 +36,14 @@ smeared porosity ({doc}`theory/delamination`):
 The load factor predicts growth onset only: there is no propagation,
 cohesive zone or buckling.
 
+## Porosity
+
+- **In-plane porosity maps**: `PorosityMap` holds the void content on an
+  in-plane grid (from a CSV of a C-scan or CT, or a background with
+  `PorosityPatch` zones), and `PorosityField.from_map` makes it the
+  in-plane variation of the field. The FE path resolves it; the empirical
+  failure load sees its mean.
+
 ## Specimens and load cases
 
 - **`'ilss'` is the ASTM D2344 short-beam test** on its own specimen mesh
@@ -62,7 +70,8 @@ cohesive zone or buckling.
   the production mesh a first solve became about 5 times faster and a
   repeat solve about 60 times.
 - **A memory budget** (`FESolver(max_memory_gb=...)`, default 80 % of
-  physical memory). Each factorization is estimated before it is built,
+  physical memory, or of a Linux container's memory limit when that is
+  smaller). Each factorization is estimated before it is built,
   and refused with the estimate and the alternatives when it does not
   fit. With `solver='cg'` nothing is factorized, the knockdown's pristine
   reference included.
@@ -93,10 +102,25 @@ cohesive zone or buckling.
   The app is now the `porosity_app` package; `streamlit run app.py` is
   unchanged.
 - **`porosity-analyze`** gained `--jobs N` (parallel sweeps), `--uq`
-  (uncertainty propagation) and delamination screening.
+  (uncertainty propagation) and delamination screening. It also takes the
+  laminate (`--layup`, `--t-ply`), a choice of configurations
+  (`--configs`), an FE solve per configuration (`--fe LOADING`) and the
+  allowable porosity (`--required-knockdown`).
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.
+- **`validate_porosity --fe`** runs the FE solver against the strength
+  and modulus datasets. The FE moduli match the data (7.2 % mean absolute
+  error); the FE first-ply-failure strengths, which rest on an
+  uncalibrated heuristic, do not (21.7 %, against 6.0 % for the empirical
+  laws).
+- **`fit_knockdown`** fits the coefficient of a knockdown law to coupon
+  strengths against void content, with a confidence interval, ready to
+  pass to `EmpiricalSolver` as an override.
+- **Allowable porosity**: `EmpiricalSolver.allowable_porosity` gives the
+  largest void content that still retains a required strength, the
+  inverse of the knockdown laws. The NCR form takes an optional required
+  retained strength and reports the governing allowable void content.
 - **JSON exports** carry a `units` block. The results schema is at 1.3,
   with additive blocks only.
 - **An `IM7_8552_epoxy` material preset** carries interlaminar toughness

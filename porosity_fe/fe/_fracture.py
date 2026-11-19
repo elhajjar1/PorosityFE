@@ -99,6 +99,7 @@ def fracture_outputs(
     law = ToughnessKnockdown() if toughness_knockdown is None else toughness_knockdown
     if prestress is None:
         front = vcct.fracture_load_factors(front, material, toughness_knockdown=law)
+        front = _without_roundoff_release(front, u)
     else:
         moving = vcct._evaluate(geometry, mesh, load[0],
                                 vcct._pair_forces(mesh, load[1], ties))
@@ -121,6 +122,35 @@ def fracture_outputs(
         governing_node=None if row is None else int(front.node[row]),
         interface_forces=forces, interior_load_factor=interior_factor,
         interior_governing_node=interior_node)
+
+
+#: A front node whose G_T is below this fraction of its own tie force times
+#: the solve's largest displacement (over its area) releases no energy: its
+#: crack-face opening is round-off of the solve, as under a load that does
+#: not open the crack by symmetry. Measured: about 1e-16 for a direct solve
+#: and 1e-8 for CG at its default tolerance, against 5e-5 (median) to 3e-3
+#: (largest) at the front nodes of a delamination that does open.
+_ROUNDOFF_RELEASE = 1e-6
+
+
+def _without_roundoff_release(front: vcct.CrackFront, u: np.ndarray) -> vcct.CrackFront:
+    """``front`` with ``lambda_c = inf`` where ``G_T`` is round-off.
+
+    A load that releases no energy gave a finite factor of 1e7 to 1e14 at
+    some node (``G_T > 0`` on round-off), and with it a governing node and
+    mode mix that mean nothing; ``FieldResults.fracture_load_factor`` is
+    documented as ``inf`` then.
+    """
+    if front.lambda_c is None or len(front) == 0:
+        return front
+    u_max = float(np.max(np.abs(u))) if np.size(u) else 0.0
+    scale = (np.linalg.norm(front.force_local, axis=1) * u_max
+             / np.where(front.area > 0.0, front.area, np.inf))
+    negligible = np.asarray(front.G_T) <= _ROUNDOFF_RELEASE * scale
+    if not negligible.any():
+        return front
+    lam = np.where(negligible, np.inf, front.lambda_c)
+    return dataclasses.replace(front, lambda_c=lam)
 
 
 def _interior_factor(mesh: CompositeMesh, front: vcct.CrackFront,

@@ -106,6 +106,14 @@ def needs_pristine_reference(mesh: CompositeMesh, loading: str,
             else applied_strain) != 0.0
 
 
+def zero_load(loading: str, applied_load: float, applied_strain: float) -> bool:
+    """Whether a mechanical solve applies no load: its stiffness measure is
+    0 / 0, so the knockdown is undefined (NaN), like the modulus."""
+    if loading == 'thermal':
+        return False
+    return (applied_load if loading in _FORCE_CONTROLLED else applied_strain) == 0.0
+
+
 def knockdown(loading: str, porous: float, pristine: float) -> float:
     """Stiffness knockdown ``porous / pristine`` (:func:`_stiffness_measure`).
 

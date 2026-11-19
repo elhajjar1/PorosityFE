@@ -222,9 +222,16 @@ def obrien_edge_delamination(material: MaterialProperties,
     plies, the centre 90 not repeated), delaminated at both ``-30/90``
     interfaces:
 
+    >>> import dataclasses
+    >>> from porosity_fe import MATERIALS
+    >>> mat = dataclasses.replace(           # O'Brien's T300/5208 ply
+    ...     MATERIALS['T800_epoxy'], E11=138e3, E22=15e3, E33=15e3,
+    ...     G12=5.9e3, G13=5.9e3, G23=5.9e3, nu12=0.21, nu13=0.21, nu23=0.21,
+    ...     t_ply=1.51 / 11, n_plies=11)
     >>> layup = [30, -30, 30, -30, 90, 90, 90, -30, 30, -30, 30]
     >>> edt = obrien_edge_delamination(mat, layup, [3, 6], 3470e-6)
-    >>> edt.stiffness_ratio, edt.G        # about 0.74, N/mm
+    >>> round(edt.stiffness_ratio, 3), round(edt.G, 3)    # G in N/mm
+    (0.745, 0.135)
     """
     angles = _resolve_ply_angles(ply_angles, caller='obrien_edge_delamination.ply_angles')
     assert angles is not None

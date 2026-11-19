@@ -30,9 +30,11 @@ laminate it models $[90/{-45}/45/0]_3$, which keeps the angle fractions but
 not the stacking sequence or symmetry (pristine $E_x$ 1.6 % below CLT;
 $n_z = 24$ is within 0.5 %). Bending, interlaminar stresses and failure
 indices are more sensitive to the sequence than the membrane stiffness is
-(see "Production resolution" below). Above 48 plies the default $n_z$
-stops at 48 and no longer resolves the plies; pass `mesh_res` (or build the
-mesh) with $n_z = n_\text{plies}$ for such a laminate.
+(see "Production resolution" below). Above 48 plies the default $n_z$ is
+the largest value up to 48 whose element layers each hold plies of one
+angle (40 for 60 plies in blocks of 6), and stays at 48 with a warning only
+when there is none; pass `mesh_res` (or build the mesh) with
+$n_z = n_\text{plies}$ to resolve every ply.
 {meth}`~porosity_fe.CompositeMesh.layup_discrepancies` lists the
 differences, and {class}`~porosity_fe.FESolver` logs them as a warning.
 ```
@@ -59,7 +61,7 @@ Void elements get a near-zero isotropic stiffness.
 | `formulation` | Element | Use |
 |---|---|---|
 | `'hex8i'` (default) | trilinear brick plus nine incompatible modes, condensed per element | every mode; required for bending (`ilss`), coarse in-plane meshes and transverse shear stresses |
-| `'hex8'` | the plain trilinear brick, full $2 \times 2 \times 2$ Gauss | reproduces results from before `'hex8i'` became the default, bit for bit |
+| `'hex8'` | the plain trilinear brick, full $2 \times 2 \times 2$ Gauss | the element of the results from before `'hex8i'` became the default (later changes, such as the `interface` renormalization and the diagonal-pivot LU, move them as they move `'hex8i'`) |
 
 **Shear locking.** A fully integrated trilinear brick cannot bend without
 also shearing: in a bent element, the transverse shear strain at the Gauss
@@ -160,8 +162,10 @@ pristine reference), so it takes a few percent longer (0 to 7 % measured
 on the production meshes); repeat solves and memory are unchanged. The stiffness and pristine-reference caches are
 keyed on the formulation (each LU factorization belongs to one assembled
 $\mathbf K$), and `FieldResults.formulation` and the JSON export
-(`solver.formulation`) record it. Pass `formulation='hex8'` to reproduce
-results from before the change bit for bit.
+(`solver.formulation`) record it. Pass `formulation='hex8'` for the element
+of the results from before the change; changes made since (the `interface`
+renormalization, the diagonal-pivot LU) move those results too, so they
+are not reproduced bit for bit.
 
 ## Boundary conditions
 
@@ -624,6 +628,12 @@ pinned bend of the $30 \times 10 \times 24$ coupon to the D2344 specimen:
 | uniform $V_p = 0.06$ | 0.9625 → 0.9314 | 169 (376) → 243 (370) | 32.1 → 72.0 |
 | midplane clustered 0.03 | 0.9829 → 0.9666 | 178 (386) → 252 (371) | 32.9 → 72.2 |
 | interface penny 0.03 | 0.9573 → 0.9202 | 173 (374) → 249 (378) | 31.9 → 73.5 |
+
+The interface row predates the renormalization of the `interface` profile
+to its requested volume average (delamination plan 0.4), which lowered the
+porosity the FE sees in that case: on the D2344 specimen today it gives a
+knockdown of 0.9307, a first-ply-failure load factor of 249 (378), and an
+apparent $F_\text{sbs}$ of 73.4 MPa.
 
 The short beam is shear dominated, and porosity degrades the transverse
 shear stiffness faster than the fibre-dominated bending stiffness, so the

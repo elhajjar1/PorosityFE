@@ -655,10 +655,15 @@ def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
     t_ply = material.t_ply
     h_total = n_plies * t_ply
 
-    _, D_mat = _build_clt_abd(material, ply_angles, C_deg)
-
-    d_inv = np.linalg.inv(D_mat)
-    # Flexural modulus: Ef_x = 12 / (h^3 * d_11_inv)
-    Ef_x = 12.0 / (h_total**3 * d_inv[0, 0])
+    # Flexural modulus Ef_x = 12 / (h^3 d*_11), with d* the bending block of
+    # the inverse of the full ABD matrix: an unsymmetric layup couples
+    # bending to stretching (B != 0), and inv(D) alone made its beam about
+    # twice too stiff ([0_4/90_4]: 76.5 GPa against 33.5 from the full
+    # inverse, which the FE beam reproduces). For a symmetric layup B = 0
+    # and the two agree.
+    A_mat, B_mat, D_mat = _clt_abd_full(C_deg, list(ply_angles), t_ply)
+    abd = np.block([[A_mat, B_mat], [B_mat, D_mat]])
+    d_star = np.linalg.inv(abd)[3:, 3:]
+    Ef_x = 12.0 / (h_total**3 * d_star[0, 0])
 
     return {'Ef_x': float(Ef_x)}

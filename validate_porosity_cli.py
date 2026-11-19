@@ -143,6 +143,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
              'all available CPU cores. Results are identical regardless of N.',
     )
     parser.add_argument(
+        '--fe', action='store_true',
+        help='Also run the FE solver against the strength and modulus '
+             'datasets (one FE solve per data point; about a minute) and '
+             'add an "FE path" section to the detail report. Its MAE is '
+             'reported apart from the overall MAE.',
+    )
+    parser.add_argument(
         '--version', action='version',
         version=f'validate_porosity {_resolve_version()}',
     )
@@ -167,6 +174,8 @@ def main(argv=None) -> int:
         from validation.validate_all import (
             generate_master_report,
             run_all_datasets,
+            run_all_datasets_fe,
+            summarize_fe_mae,
             summarize_mae,
             summarize_toughness_mae,
         )
@@ -189,6 +198,12 @@ def main(argv=None) -> int:
 
     # Run predictions
     results = run_all_datasets(datasets_dir=datasets_dir, n_jobs=args.jobs)
+    fe_results = None
+    if args.fe:
+        if not args.quiet:
+            print("Running the FE solver against the datasets...")
+        fe_results = run_all_datasets_fe(datasets_dir=datasets_dir,
+                                         n_jobs=args.jobs)
 
     if not args.quiet:
         print(f"Loaded {len(results)} datasets. Generating report...")
@@ -198,7 +213,8 @@ def main(argv=None) -> int:
 
     # Generate report
     plot_path, md_path = generate_master_report(results,
-                                                  output_dir=args.output_dir)
+                                                  output_dir=args.output_dir,
+                                                  fe_results=fe_results)
 
     # Print summary
     n_datasets_ok = 0
@@ -261,6 +277,37 @@ def main(argv=None) -> int:
             f"{toughness['point_weighted_mae']:.2f}%  "
             f"(n={toughness['n_points']} individual data points)"
         )
+
+    if fe_results is not None:
+        for ds_name, ds_results in fe_results.items():
+            for prop, entry in ds_results.items():
+                if isinstance(entry, dict) and 'error' in entry and not args.quiet:
+                    print(f"  [FE ERROR] {ds_name} / {prop}: {entry['error']}")
+        fe = summarize_fe_mae(fe_results, results)
+        if fe['overall']['n_entries']:
+            print()
+            print("FE path (stiffness and first-ply failure; not in the "
+                  "overall MAE):")
+            print(
+                f"  FE MAE (property-weighted): "
+                f"{fe['overall']['property_weighted_mae']:.2f}%  "
+                f"(n={fe['overall']['n_entries']} paper-property entries)"
+            )
+            print(
+                f"  FE MAE (point-weighted):    "
+                f"{fe['overall']['point_weighted_mae']:.2f}%  "
+                f"(n={fe['overall']['n_points']} individual data points)"
+            )
+            for key, label, reference in (
+                    ('modulus', 'Moduli', 'CLT'),
+                    ('strength', 'Strengths', 'empirical Judd-Wright')):
+                cat = fe[key]
+                if cat['n_entries']:
+                    print(
+                        f"  {label + ':':<10} FE {cat['fe_mae']:.2f}% against "
+                        f"{reference} {cat['reference_mae']:.2f}%  "
+                        f"(n={cat['n_entries']} entries, property-weighted)"
+                    )
 
     return 0
 

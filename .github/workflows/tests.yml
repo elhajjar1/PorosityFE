@@ -75,6 +75,9 @@ jobs:
         # Also run the production-mesh FE timing guard on this one cell
         # (tests/test_fe_performance.py; generous budgets, see the module).
         POROSITY_FE_BENCHMARK: "1"
+        # And the FE solver over every validation dataset, pinning the
+        # numbers of the README (tests/test_validation_fe.py; about a minute).
+        POROSITY_FE_VALIDATION: "1"
       # Statements and branches together (97.1 % when the floor was set);
       # the floor (95 %) leaves room for small changes, not for a slide (#219).
       run: >-

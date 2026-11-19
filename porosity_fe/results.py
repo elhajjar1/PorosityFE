@@ -106,6 +106,64 @@ class FailureResult:
         return out
 
 
+@dataclass(frozen=True, slots=True)
+class PorosityAllowable:
+    """Largest void content that still meets a retained-strength requirement.
+
+    Returned by :meth:`EmpiricalSolver.allowable_porosity`, the inverse of
+    :meth:`EmpiricalSolver.get_failure_load`: that method gives the knockdown
+    at a void content, this the void content at a knockdown.
+
+    Attributes
+    ----------
+    Vp : float
+        Allowable specimen-average void content, a **fraction** in
+        ``[0, 1]``: the knockdown of ``mode`` is at least
+        ``required_knockdown`` at every void content up to it. ``nan`` when
+        ``achievable`` is ``False``, so that a comparison with it is false.
+    required_knockdown : float
+        The requirement: the fraction of the pristine strength (or
+        toughness) that must be retained.
+    achievable : bool
+        ``False`` when the void-free laminate does not meet the requirement:
+        the hygrothermal and fatigue factors alone bring it below, or a
+        required stress exceeds the pristine strength.
+    extrapolated : bool
+        ``True`` when ``Vp`` is beyond the range the built-in law was
+        calibrated on (``Vp <= 0.05``). A user callable owns its range and
+        is never flagged.
+    mode : str
+        The loading mode (:data:`~porosity_fe.LoadingMode`).
+    model : str
+        Knockdown model label, as :attr:`FailureResult.model`.
+    details : dict
+        JSON-friendly extras: ``'pristine_strength'`` (MPa) or
+        ``'pristine_toughness'`` (N/mm, ``None`` when the material has
+        none), ``'required_stress'`` (the requirement in the same unit),
+        ``'knockdown_at_zero_porosity'``, and, when they apply,
+        ``'environment_knockdown'``, ``'fatigue_knockdown'``,
+        ``'layup_scale'`` with ``'layup_extrapolated'``, and the toughness
+        entries of :meth:`EmpiricalSolver.get_failure_load`.
+    """
+    Vp: float
+    required_knockdown: float
+    achievable: bool
+    extrapolated: bool
+    mode: str
+    model: str
+    details: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """A plain dict of the fields, ``details`` merged in."""
+        out = {
+            'Vp': self.Vp, 'required_knockdown': self.required_knockdown,
+            'achievable': self.achievable, 'extrapolated': self.extrapolated,
+            'mode': self.mode, 'model': self.model,
+        }
+        out.update(self.details)
+        return out
+
+
 @dataclass
 class ConfigArtifacts:
     """Live solver objects retained for one configuration in a sweep.

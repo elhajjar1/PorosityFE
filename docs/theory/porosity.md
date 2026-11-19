@@ -57,6 +57,51 @@ knockdowns are 0.9924 for uniform spherical voids, 0.9921 for interface
 spherical voids, 0.9846 for uniform penny voids and 0.9842 for interface
 penny voids.
 
+## In-plane maps
+
+The three profiles vary through the thickness only. A
+{class}`~porosity_fe.PorosityMap` adds the variation in the plane: the
+through-thickness average void content on a rectilinear grid, as a C-scan
+correlation or a CT slice stack gives it, interpolated bilinearly and held
+at its edge values outside the grid. With a map $M(x, y)$ of area mean
+$\bar M$ the distributed porosity is
+
+$$
+V_p(x, y, z) = p(z) \, \frac{M(x, y)}{\bar M},
+$$
+
+with $p(z)$ the profile above for the specimen average $\bar V_p$, clipped
+at 1. The map gives the pattern and $\bar V_p$ the level:
+{meth}`PorosityField.from_map <porosity_fe.PorosityField.from_map>` sets
+$\bar V_p = \bar M$, which keeps the map's absolute values, and
+`PorosityField(material, Vp, in_plane_map=...)` scales the same pattern to
+another average.
+
+```python
+from porosity_fe import PorosityField, PorosityMap, PorosityPatch
+
+# A measured grid: x, y in mm, Vp as fractions, one row per grid point.
+porosity_map = PorosityMap.from_csv("cscan.csv")
+# Or a background with zones: 6 % voids in a 16 x 10 mm ellipse, 1 % elsewhere.
+porosity_map = PorosityMap.from_patches(
+    50.0, 20.0, 0.01, [PorosityPatch((25.0, 10.0), (8.0, 5.0), 0.06)])
+field = PorosityField.from_map(material, porosity_map)      # Vp = porosity_map.mean
+```
+
+The FE mesh samples the map at its nodes, in its own coordinates (`x`
+along the load, from 0): build the map on the planform of the mesh. A mesh
+that extends beyond the map logs a warning and sees the edge values there.
+
+The two solvers use a map differently. The FE path resolves it: the
+stiffness and the ply strengths of each element follow the local porosity,
+so a hot spot raises the failure index where it sits. The empirical
+failure load uses the specimen average alone, so a map changes it only
+through its mean, and its per-node knockdown field shows the pattern. For
+the zone above on the 50 x 20 mm T700 coupon (mean 1.62 %), the FE
+first-ply-failure load of the interior is 1.1 % below that of a uniform
+1.62 %, the stiffness knockdown is the same to four digits, and the
+empirical knockdowns are identical.
+
 ## Void shapes
 
 The `void_shape` sets the ellipsoid used for the Eshelby tensor in the

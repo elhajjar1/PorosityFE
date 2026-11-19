@@ -42,9 +42,21 @@ allowable of $\sigma_3$ in compression.
 
 ```{note}
 The square-root rule is a heuristic: it is loosely motivated by Puck-style
-strength–stiffness coupling but is not derived from a published model or
-validated against degraded-strength data within PorosityFE. This is the
-main reason the FE and empirical strength predictions differ.
+strength–stiffness coupling and is not derived from a published model or
+fitted to degraded-strength data. This is the main reason the FE and
+empirical strength predictions differ.
+
+Checked against the validation datasets (`validate_porosity --fe`), it
+loses too little strength: the FE first-ply-failure load is off by 21.7 %
+on average over the 27 strength entries, where the calibrated Judd-Wright
+law is off by 6.0 %. For the unidirectional laminate of Olivier et al.
+1995 at 10 % voids, $r_f$ is 0.9987 where the coupons have lost a third of
+their tensile strength, and $r_m$ is 0.87, which leaves the short beam
+0.91 of its failure load where the coupons have lost half. The FE moduli
+do follow the data (7.2 % over 13 entries, as laminate theory with the
+same Mori-Tanaka ply does). Use the FE strength
+indices to see where and in which mode a laminate fails first, and the
+empirical solver for how much strength the porosity costs.
 ```
 
 ### Directional strengths (opt-in)

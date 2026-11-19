@@ -139,7 +139,7 @@ def _fe_table(material):
             rows.append({
                 "distribution": label,
                 "mode": mode,
-                "model": "fe_tsai_wu",
+                "model": "fe_stiffness",
                 "knockdown": float(res.knockdown),
             })
     return rows, fields
@@ -238,7 +238,7 @@ def main() -> None:
     _print_table(empirical_rows, group_by_mode=True)
 
     fe_rows, fields = _fe_table(material)
-    print("\nFE knockdowns (Tsai-Wu, two porosity-sensitive modes)")
+    print("\nFE knockdowns (stiffness, two porosity-sensitive modes)")
     _print_table(fe_rows, group_by_mode=True)
 
     profiles_png = os.path.join(OUT_DIR, "distribution_profiles.png")

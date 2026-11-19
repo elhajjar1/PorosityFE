@@ -24,6 +24,8 @@ Materials and porosity
    VoidGeometry
    Delamination
    PorosityField
+   PorosityMap
+   PorosityPatch
    CompositeMesh
    FlexureGeometry
    check_mesh_quality
@@ -62,6 +64,9 @@ Empirical solver
    Calibration
    FatigueModel
    FailureResult
+   PorosityAllowable
+   fit_knockdown
+   KnockdownFit
 
 Finite-element solver
 ---------------------
@@ -256,6 +261,12 @@ Results I/O
 
    ``format`` tag of an uncertainty-propagation export.
 
+.. py:data:: FORMAT_ALLOWABLE
+   :type: str
+
+   ``format`` tag of an allowable-porosity export
+   (``porosity-analyze --required-knockdown``).
+
 Plotting
 --------
 
@@ -306,15 +317,17 @@ type checkers use them; at run time each function validates its own input.
 .. py:data:: FELoadingMode
 
    ``'compression' | 'tension' | 'shear' | 'ilss' | 'flexure_3pt' |
-   'flexure_4pt' | 'thermal'``, the loading modes :meth:`FESolver.solve`
-   has boundary conditions for. ``'ilss'`` is the ASTM D2344 short-beam
+   'flexure_4pt' | 'thermal' | 'dcb' | 'enf' | 'mmb'``, the loading modes
+   :meth:`FESolver.solve` has boundary conditions for. ``'ilss'`` is the ASTM D2344 short-beam
    test and needs a specimen mesh from :meth:`CompositeMesh.for_ilss`.
    ``'flexure_3pt'`` and ``'flexure_4pt'``
    are three- and four-point bending on roller supports (ASTM D790 /
    D7264), best on a mesh from :meth:`CompositeMesh.for_flexure`.
    ``'thermal'`` is the free-standing cure residual-stress solve; it needs
    ``delta_T=`` and lamina CTEs (see the theory page on thermal and cure
-   residual stress).
+   residual stress). ``'dcb'``, ``'enf'`` and ``'mmb'`` are the ASTM
+   D5528 / D7905 / D6671 delamination fracture tests on the specimens of
+   :meth:`CompositeMesh.for_dcb`, ``for_enf`` and ``for_mmb``.
 
 .. py:data:: FEFormulation
 

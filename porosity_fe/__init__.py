@@ -108,6 +108,8 @@ from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
+from .fitting import KnockdownFit as KnockdownFit  # noqa: F401, E402
+from .fitting import fit_knockdown as fit_knockdown  # noqa: F401, E402
 from .fracture_specimens import ComplianceCalibration as ComplianceCalibration  # noqa: F401, E402
 from .fracture_specimens import FractureSpecimenGeometry as FractureSpecimenGeometry  # noqa: F401, E402
 from .fracture_specimens import compliance_calibration as compliance_calibration  # noqa: F401, E402
@@ -126,6 +128,7 @@ from .homogenization import (  # noqa: F401, E402
 )
 from .homogenization import compute_degraded_clt_moduli as compute_degraded_clt_moduli  # noqa: F401, E402
 from .io import _KNOWN_FORMATS as _KNOWN_FORMATS  # noqa: F401, E402
+from .io import FORMAT_ALLOWABLE as FORMAT_ALLOWABLE  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
@@ -149,9 +152,12 @@ from .pipeline import compare_configurations as compare_configurations  # noqa: 
 from .pipeline import sweep_configurations as sweep_configurations  # noqa: F401, E402
 from .porosity_field import POROSITY_CONFIGS as POROSITY_CONFIGS  # noqa: F401, E402
 from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
+from .porosity_map import PorosityMap as PorosityMap  # noqa: F401, E402
+from .porosity_map import PorosityPatch as PorosityPatch  # noqa: F401, E402
 from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
 from .results import ConfigResult as ConfigResult  # noqa: F401, E402
 from .results import FailureResult as FailureResult  # noqa: F401, E402
+from .results import PorosityAllowable as PorosityAllowable  # noqa: F401, E402
 from .toughness import ToughnessKnockdown as ToughnessKnockdown  # noqa: F401, E402
 from .toughness import toughness_knockdown_factor as toughness_knockdown_factor  # noqa: F401, E402
 from .transforms import rotate_stiffness_3d as rotate_stiffness_3d  # noqa: F401, E402
@@ -193,6 +199,8 @@ __all__ = [
     # Porosity field
     "POROSITY_CONFIGS",
     "PorosityField",
+    "PorosityMap",
+    "PorosityPatch",
     # Mesh
     "CompositeMesh",
     "FlexureGeometry",
@@ -201,10 +209,13 @@ __all__ = [
     "ConfigArtifacts",
     "ConfigResult",
     "FailureResult",
+    "PorosityAllowable",
     # Empirical / fatigue / UQ
     "Calibration",
     "EmpiricalSolver",
     "FatigueModel",
+    "KnockdownFit",
+    "fit_knockdown",
     "propagate_uncertainty",
     "save_uq_results_to_json",
     # Coordinate transforms
@@ -265,6 +276,7 @@ __all__ = [
     "FORMAT_FE_FIELDS",
     "FORMAT_NCR",
     "FORMAT_UQ",
+    "FORMAT_ALLOWABLE",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",

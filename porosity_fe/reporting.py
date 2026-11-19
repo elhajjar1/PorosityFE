@@ -31,6 +31,7 @@ import math
 import numbers
 import re
 import textwrap
+import warnings
 
 #: One bracketed group and what follows it: ``[0/45/-45/90]_3s``.
 _LAYUP_GROUP = re.compile(r'^\[(?P<body>[^\[\]]*)\](?P<suffix>.*)$')
@@ -425,6 +426,162 @@ def governing_failure(result: dict) -> dict:
     if worst is None:
         raise ValueError("Analysis result has no empirical knockdown data.")
     return worst
+
+
+_ALLOWABLE_BASIS = (
+    "Predicted from the empirical knockdown laws at the specimen-average "
+    "void content, for the laminate and layup of this analysis; the laws "
+    "are calibrated to 5 % voids. It supports the structural "
+    "substantiation and does not replace the porosity allowable of the "
+    "released engineering drawing / process specification."
+)
+
+
+def governing_allowable(table: dict):
+    """The governing (smallest) entry of an allowable-porosity table.
+
+    ``table`` is the ``{mode: {model: PorosityAllowable}}`` of
+    :meth:`EmpiricalSolver.get_all_allowable_porosities`. An entry that no
+    void content meets (``achievable`` false) governs over every other; of
+    equal entries the first in the table's order is returned.
+    """
+    entries = [a for row in table.values() for a in row.values()]
+    if not entries:
+        raise ValueError("The allowable-porosity table is empty.")
+    return min(entries, key=lambda a: (a.achievable, a.Vp if a.achievable else 0.0))
+
+
+def allowable_porosity_record(table: dict,
+                              measured_Vp_percent: float | None = None) -> dict:
+    """JSON-ready record of an allowable-porosity table, for an NCR.
+
+    Void contents are in **percent**, the convention of an NCR (the table
+    itself holds fractions).
+
+    Parameters
+    ----------
+    table : dict
+        ``{mode: {model: PorosityAllowable}}`` of
+        :meth:`EmpiricalSolver.get_all_allowable_porosities`.
+    measured_Vp_percent : float, optional
+        The measured void content in percent, compared with the governing
+        allowable.
+
+    Returns
+    -------
+    dict
+        ``required_knockdown`` (per mode), ``per_mode`` (per mode and model:
+        ``allowable_Vp_percent``, ``None`` when not achievable,
+        ``achievable`` and ``extrapolated``), ``governing`` (the smallest
+        entry, with its ``mode``, ``model`` and ``required_knockdown``),
+        ``measured_Vp_percent``, ``within_allowable`` (``None`` without a
+        measured value), ``statement`` and ``basis``.
+    """
+    def entry(a) -> dict:
+        return {
+            "allowable_Vp_percent": a.Vp * 100.0 if a.achievable else None,
+            "achievable": bool(a.achievable),
+            "extrapolated": bool(a.extrapolated),
+        }
+
+    worst = governing_allowable(table)
+    governing = {"mode": worst.mode, "model": worst.model,
+                 "required_knockdown": worst.required_knockdown, **entry(worst)}
+    case = (f"{worst.mode} / {worst.model} at {worst.required_knockdown * 100:g}% "
+            f"of pristine strength retained")
+    within = None
+    if not worst.achievable:
+        statement = (f"No void content meets the requirement in the governing "
+                     f"case ({case}): the void-free laminate is already below it.")
+    else:
+        limit = governing["allowable_Vp_percent"]
+        statement = (f"Governing allowable void content: {limit:.2f}% "
+                     f"({case}).")
+        if worst.extrapolated:
+            statement += (" It lies beyond the 5 % the laws are calibrated "
+                          "to and is extrapolated.")
+    if measured_Vp_percent is not None:
+        measured = float(measured_Vp_percent)
+        within = bool(worst.achievable and measured <= worst.Vp * 100.0)
+        if worst.achievable:
+            statement += (f" The measured {measured:.2f}% is "
+                          f"{'within' if within else 'above'} it.")
+    return {
+        "required_knockdown": {mode: next(iter(row.values())).required_knockdown
+                               for mode, row in table.items()},
+        "per_mode": {mode: {model: entry(a) for model, a in row.items()}
+                     for mode, row in table.items()},
+        "governing": governing,
+        "measured_Vp_percent": (None if measured_Vp_percent is None
+                                else float(measured_Vp_percent)),
+        "within_allowable": within,
+        "statement": statement,
+        "basis": _ALLOWABLE_BASIS,
+    }
+
+
+def serialise_allowable_json(record: dict, laminate: dict | None = None) -> str:
+    """Standard JSON of an allowable-porosity record.
+
+    Parameters
+    ----------
+    record : dict
+        The record of :func:`allowable_porosity_record`.
+    laminate : dict, optional
+        What the allowables hold for, written beside them: e.g.
+        ``material``, ``ply_angles`` (degrees), ``n_plies``, ``t_ply_mm``.
+
+    Returns
+    -------
+    str
+        The envelope (``format`` :data:`~porosity_fe.FORMAT_ALLOWABLE`)
+        with ``laminate`` (when given) and ``allowable_porosity``.
+    """
+    from porosity_fe import FORMAT_ALLOWABLE
+    from porosity_fe.io import (
+        _UNITS_LAMINATE,
+        _UNITS_NCR_ALLOWABLE,
+        _dumps_json,
+        _wrap_envelope,
+    )
+    units = {**_UNITS_NCR_ALLOWABLE, "measured_Vp_percent": "%"}
+    payload: dict = {}
+    if laminate is not None:
+        units.update(_UNITS_LAMINATE)
+        payload["laminate"] = dict(laminate)
+    payload["allowable_porosity"] = record
+    return _dumps_json(_wrap_envelope(FORMAT_ALLOWABLE, units, payload))
+
+
+def write_allowable_json(filepath, record: dict, laminate: dict | None = None) -> None:
+    """Write :func:`serialise_allowable_json` to ``filepath``."""
+    text = serialise_allowable_json(record, laminate)   # raises before the file is opened
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _allowable_porosity_of(result: dict, required_knockdown) -> dict:
+    """The allowable-porosity record of an analysis result at a requirement.
+
+    Rebuilds the empirical solver of ``run_analysis`` (default
+    coefficients, the result's material and layup); the allowable does not
+    depend on the mesh. The solver's warnings are not raised: the record
+    flags an extrapolated entry itself.
+    """
+    from porosity_fe.empirical import EmpiricalSolver
+    missing = [key for key in ("mesh", "material") if key not in result]
+    if "angles" not in result["config"]:
+        missing.append("config['angles']")
+    if missing:
+        raise ValueError(
+            f"required_knockdown needs the mesh, material and layup of the "
+            f"analysis result; it has no {', '.join(missing)}.")
+    solver = EmpiricalSolver(result["mesh"], result["material"],
+                             ply_angles=result["config"]["angles"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        table = solver.get_all_allowable_porosities(required_knockdown)
+    return allowable_porosity_record(table, result["config"]["Vp"])
 
 
 def recommend_disposition(
@@ -949,6 +1106,15 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
     record; default :data:`DEFAULT_DISPOSITION_POLICY`, whose bands are
     illustrative) sets the bands of the recommended path; the record keeps
     them under ``recommended_disposition["policy"]``.
+
+    ``meta["required_knockdown"]`` (optional: a fraction of the pristine
+    strength in ``(0, 1]``, or a dict of strength mode to fraction) adds
+    ``engineering_analysis["allowable_porosity"]``: the largest void
+    content that still retains it, per mode and model, the governing
+    (smallest) one and whether the measured void content is within it
+    (:func:`allowable_porosity_record`). It needs ``result["mesh"]``,
+    ``result["material"]`` and ``result["config"]["angles"]``, which
+    ``run_analysis`` returns, and does not change the recommended path.
     """
     payload = build_export_payload(result)
     cfg = payload["config"]
@@ -1036,6 +1202,9 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
         },
         "recommended_disposition": disposition,
     }
+    if meta.get("required_knockdown") is not None:
+        record["engineering_analysis"]["allowable_porosity"] = \
+            _allowable_porosity_of(result, meta["required_knockdown"])
     if delamination is not None:
         record["summary"]["indication"] = indication
         record["delamination"] = delamination
@@ -1045,9 +1214,18 @@ def build_ncr_record(result: dict, meta: dict) -> dict:
 def serialise_ncr_json(ncr: dict) -> str:
     """Standard JSON (no NaN / Infinity) of an NCR validation summary."""
     from porosity_fe import FORMAT_NCR
-    from porosity_fe.io import _UNITS_NCR, _UNITS_NCR_DELAMINATION, _dumps_json, _wrap_envelope
-    units = _UNITS_NCR if "delamination" not in ncr \
-        else {**_UNITS_NCR, **_UNITS_NCR_DELAMINATION}
+    from porosity_fe.io import (
+        _UNITS_NCR,
+        _UNITS_NCR_ALLOWABLE,
+        _UNITS_NCR_DELAMINATION,
+        _dumps_json,
+        _wrap_envelope,
+    )
+    units = dict(_UNITS_NCR)
+    if "delamination" in ncr:
+        units.update(_UNITS_NCR_DELAMINATION)
+    if "allowable_porosity" in ncr["engineering_analysis"]:
+        units.update(_UNITS_NCR_ALLOWABLE)
     envelope = _wrap_envelope(FORMAT_NCR, units, ncr)
     return _dumps_json(envelope)
 
@@ -1144,6 +1322,23 @@ def _footer(ncr: dict) -> str:
             "constitute MRB approval.")
 
 
+def _allowable_rows(allowable: dict) -> list:
+    """Flatten an allowable-porosity record to (mode, model, required,
+    allowable) text rows, for Markdown and PDF."""
+    rows = []
+    for mode, models in allowable["per_mode"].items():
+        required = f"{allowable['required_knockdown'][mode] * 100:g}"
+        for model, a in models.items():
+            if not a["achievable"]:
+                text = "not achievable"
+            else:
+                text = f"{a['allowable_Vp_percent']:.2f}"
+                if a["extrapolated"]:
+                    text += " (extrapolated)"
+            rows.append((mode, model, required, text))
+    return rows
+
+
 def _per_mode_rows(ea: dict) -> list:
     """Flatten the per-mode/model knockdown table to (mode, model, MPa, kd)."""
     rows = []
@@ -1210,6 +1405,17 @@ def serialise_ncr_markdown(ncr: dict) -> str:
     for mode, model, mpa, kd in _per_mode_rows(ea):
         lines.append(f"| {mode} | {model} | {mpa} | {kd} |")
     lines.append("")
+    allowable = ea.get("allowable_porosity")
+    if allowable is not None:
+        lines.append(f"**Allowable void content:** {allowable['statement']}")
+        lines.append("")
+        lines.append("| Mode | Model | Required retained (%) | Allowable Vp (%) |")
+        lines.append("|---|---|---|---|")
+        for row in _allowable_rows(allowable):
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("")
+        lines.append(f"> {allowable['basis']}")
+        lines.append("")
 
     if "delamination" in ncr:
         lines.append("## 2b. Delamination Analysis (fracture margin)")
@@ -1333,6 +1539,19 @@ def _ncr_text_lines(ncr: dict) -> list:
     for mode, model, mpa, kd in _per_mode_rows(ea):
         out.append(f"  {mode:<14}{model:<14}{mpa:>14}{kd:>12}")
     out.append("")
+    allowable = ea.get("allowable_porosity")
+    if allowable is not None:
+        para(f"Allowable void content: {allowable['statement']}")
+        out.append("")
+        out.append(
+            f"  {'Mode':<20}{'Model':<14}{'Required (%)':>13}{'Allowable Vp (%)':>26}"
+        )
+        out.append("  " + "-" * 73)
+        for mode, model, required, text in _allowable_rows(allowable):
+            out.append(f"  {mode:<20}{model:<14}{required:>13}{text:>26}")
+        out.append("")
+        para(allowable["basis"], indent="  ")
+        out.append("")
 
     if "delamination" in ncr:
         out.append("2b. DELAMINATION ANALYSIS (fracture margin)")

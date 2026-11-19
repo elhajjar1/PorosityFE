@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import logging
+import math
 import os
 from typing import Any
 
@@ -180,12 +182,51 @@ def build_empirical_pipeline(
 # SECTION 8: ANALYSIS PIPELINE
 # ============================================================
 
+def _laminate_material(material: MaterialProperties, ply_angles: LayupSpec = 'QI',
+                       t_ply: float | None = None) -> MaterialProperties:
+    """``material`` with the laminate of a sweep: an explicit layup sets the
+    ply count, ``t_ply`` the ply thickness (mm). The material itself for the
+    defaults."""
+    changes: dict[str, Any] = {}
+    if not isinstance(ply_angles, str):
+        angles = list(ply_angles)
+        if not angles:
+            raise ValueError("ply_angles is empty.")
+        changes['n_plies'] = len(angles)
+    if t_ply is not None:
+        if isinstance(t_ply, bool) or not isinstance(t_ply, (int, float)) \
+                or not (math.isfinite(t_ply) and t_ply > 0.0):
+            raise ValueError(
+                f"t_ply must be a positive ply thickness in mm; got {t_ply!r}.")
+        changes['t_ply'] = float(t_ply)
+    return dataclasses.replace(material, **changes) if changes else material
+
+
+def _sweep_material(material_name: str, ply_angles: LayupSpec = 'QI',
+                    t_ply: float | None = None) -> MaterialProperties:
+    """:func:`_laminate_material` of a preset."""
+    return _laminate_material(MATERIALS[material_name], ply_angles, t_ply)
+
+
+def _laminate_task_args(material_name: str, ply_angles: LayupSpec,
+                        t_ply: float | None) -> tuple:
+    """The laminate arguments a sweep appends to each ``_analyze_one`` task:
+    none for the default laminate, so its tasks are the six-tuples they
+    always were. Raises here, in the parent, for a bad laminate."""
+    _sweep_material(material_name, ply_angles, t_ply)
+    if isinstance(ply_angles, str) and ply_angles == 'QI' and t_ply is None:
+        return ()
+    return (ply_angles, t_ply)
+
+
 def _analyze_one(Vp: float,
                  name: str,
                  config: dict,
                  material_name: str,
                  applied_stress: float,
-                 seed: int | None = None) -> tuple[float, str, dict]:
+                 seed: int | None = None,
+                 ply_angles: LayupSpec = 'QI',
+                 t_ply: float | None = None) -> tuple[float, str, dict]:
     """Build PorosityField/CompositeMesh/EmpiricalSolver for one (Vp, config).
 
     Top-level (picklable) helper so this can be dispatched to a
@@ -220,6 +261,9 @@ def _analyze_one(Vp: float,
         changing this value will not affect the worker's output (#132).
     seed : int, optional
         Recorded into the porosity field for reproducibility provenance.
+    ply_angles, t_ply : optional
+        The laminate of the sweep, as :func:`compare_configurations` takes
+        them.
 
     Returns
     -------
@@ -227,9 +271,9 @@ def _analyze_one(Vp: float,
         Tuple keyed on ``(Vp, name)`` so the caller can deterministically
         re-assemble results even when the worker pool reorders completion.
     """
-    material = MATERIALS[material_name]
+    material = _sweep_material(material_name, ply_angles, t_ply)
     porosity_field, mesh, empirical = build_empirical_pipeline(
-        material, Vp, porosity_config=config, seed=seed,
+        material, Vp, ply_angles=ply_angles, porosity_config=config, seed=seed,
     )
     emp_results = empirical.get_all_failure_loads()
 
@@ -356,10 +400,9 @@ def _run_config_tasks(tasks: list[tuple], workers: int
         # avoids the ProcessPoolExecutor fork cost for trivially small
         # sweeps. The per-config "Configuration: ..." log lines fire here
         # too, mirroring the original CLI UX.
-        for Vp, name, config, mat, stress, sd in tasks:
-            logger.info("\n  Configuration: %s", name)
-            Vp_out, name_out, result = _analyze_one(
-                Vp, name, config, mat, stress, sd)
+        for task in tasks:
+            logger.info("\n  Configuration: %s", task[1])
+            Vp_out, name_out, result = _analyze_one(*task)
             raw_results[(Vp_out, name_out)] = result
             _log_result_summary(name_out, result, is_parallel=False)
     else:
@@ -411,7 +454,10 @@ def compare_configurations(void_volume_fraction: float,
                            configs: dict | None = None,
                            seed: int | None = None,
                            n_jobs: int = 1,
-                           return_artifacts: bool = False):
+                           return_artifacts: bool = False,
+                           *,
+                           ply_angles: LayupSpec = 'QI',
+                           t_ply: float | None = None):
     """Main analysis function — loops through porosity configurations.
 
     Parameters
@@ -452,6 +498,12 @@ def compare_configurations(void_volume_fraction: float,
         accessed ``results[name]['mesh']`` need to switch to the
         artifacts dict; the legacy keys now raise :class:`KeyError` with
         a hint pointing to ``return_artifacts=True``.
+    ply_angles : str or list of float, optional
+        Keyword-only. The layup: ``'QI'`` (default) or ``'UD'``, tiled to
+        the preset's ply count, or an explicit list of ply angles in
+        degrees, which also sets the ply count.
+    t_ply : float, optional
+        Keyword-only. Ply thickness in mm, replacing the preset's.
 
     Returns
     -------
@@ -479,8 +531,10 @@ def compare_configurations(void_volume_fraction: float,
     # the original ``configs`` dict so the assembled output preserves the
     # caller's configuration ordering (Python dicts are insertion-ordered)
     # regardless of which worker finishes first.
+    laminate = _laminate_task_args(material_name, ply_angles, t_ply)
     tasks = [
-        (void_volume_fraction, name, config, material_name, applied_stress, seed)
+        (void_volume_fraction, name, config, material_name, applied_stress, seed,
+         *laminate)
         for name, config in configs.items()
     ]
     raw_results = _run_config_tasks(tasks, workers)
@@ -497,7 +551,10 @@ def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy
                          configs: dict | None = None,
                          seed: int | None = None,
                          n_jobs: int = 1,
-                         return_artifacts: bool = False) -> dict:
+                         return_artifacts: bool = False,
+                         *,
+                         ply_angles: LayupSpec = 'QI',
+                         t_ply: float | None = None) -> dict:
     """:func:`compare_configurations` for several porosity levels at once.
 
     Every ``(Vp, config)`` pair goes into one task list, so with
@@ -521,8 +578,9 @@ def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy
     # ``None`` means the bundled set; an explicit empty dict runs nothing.
     configs = POROSITY_CONFIGS if configs is None else configs
     vps = list(dict.fromkeys(float(v) for v in void_volume_fractions))
+    laminate = _laminate_task_args(material_name, ply_angles, t_ply)
     tasks = [
-        (Vp, name, config, material_name, applied_stress, seed)
+        (Vp, name, config, material_name, applied_stress, seed, *laminate)
         for Vp in vps for name, config in configs.items()
     ]
     raw_results = _run_config_tasks(tasks, _resolve_n_jobs(n_jobs))

@@ -17,7 +17,8 @@
         "porosity-fe.empirical-sweep",
         "porosity-fe.fe-fields",
         "porosity-fe.ncr",
-        "porosity-fe.uq"
+        "porosity-fe.uq",
+        "porosity-fe.allowable-porosity"
       ]
     },
     "provenance": {
@@ -301,6 +302,51 @@
             "default": {"type": "boolean"}
           },
           "required": ["vp_percent_bounds", "knockdown_bounds", "paths", "source", "default"]
+        }
+      }
+    },
+    "laminate": {
+      "type": "object",
+      "description": "Allowable-porosity export (porosity-analyze --required-knockdown; format porosity-fe.allowable-porosity, added in schema_version 1.3): what the allowables hold for. material, the preset name; ply_angles, degrees, bottom ply first; n_plies; t_ply_mm. A block of the same name (without material) is also written in each configuration entry of an empirical sweep saved with its artifacts (additive, schema_version 1.3).",
+      "properties": {
+        "material": {"type": "string"},
+        "ply_angles": {"type": "array", "items": {"type": "number"}},
+        "n_plies": {"type": "integer"},
+        "t_ply_mm": {"type": "number"}
+      }
+    },
+    "allowable_porosity": {
+      "type": "object",
+      "description": "Allowable-porosity export (format porosity-fe.allowable-porosity, schema_version 1.3): the record described under engineering_analysis.allowable_porosity, with measured_Vp_percent and within_allowable null (no measured void content)."
+    },
+    "engineering_analysis": {
+      "type": "object",
+      "description": "NCR export: the governing (worst-case) knockdown, the per-mode table and, optionally, allowable_porosity.",
+      "properties": {
+        "allowable_porosity": {
+          "type": "object",
+          "description": "Optional NCR block (build_ncr_record with meta['required_knockdown']; additive, schema_version 1.3): the largest void content that still retains a required fraction of the pristine strength, the inverse of the knockdown laws (EmpiricalSolver.allowable_porosity). required_knockdown, the requirement per strength mode (fraction in (0, 1]); per_mode, per mode and model: allowable_Vp_percent (percent; null when no void content meets the requirement), achievable and extrapolated (true beyond the 5 % the laws are calibrated to); governing, the smallest entry with its mode, model and required_knockdown; measured_Vp_percent; within_allowable (null without a measured value); statement; basis.",
+          "properties": {
+            "required_knockdown": {"type": "object", "additionalProperties": {"type": "number"}},
+            "per_mode": {"type": "object"},
+            "governing": {
+              "type": "object",
+              "properties": {
+                "mode": {"type": "string"},
+                "model": {"type": "string"},
+                "required_knockdown": {"type": "number"},
+                "allowable_Vp_percent": {"type": ["number", "null"]},
+                "achievable": {"type": "boolean"},
+                "extrapolated": {"type": "boolean"}
+              },
+              "required": ["mode", "model", "required_knockdown", "allowable_Vp_percent", "achievable", "extrapolated"]
+            },
+            "measured_Vp_percent": {"type": ["number", "null"]},
+            "within_allowable": {"type": ["boolean", "null"]},
+            "statement": {"type": "string"},
+            "basis": {"type": "string"}
+          },
+          "required": ["required_knockdown", "per_mode", "governing", "measured_Vp_percent", "within_allowable", "statement", "basis"]
         }
       }
     },

@@ -23,9 +23,11 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
 - **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
+- **In-plane porosity maps**: a C-scan or CT grid of void content, or a background with local zones, resolved by the FE path (`PorosityMap`, `PorosityField.from_map`)
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
-- **Four loading modes**: Compression, tension, shear, ILSS
+- **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
+- **Allowable porosity**: the largest void content that still retains a required strength, per mode and law, with the governing one in the NCR summary
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Nine material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK, AS4/3501-6, HTA/EHkF420 and IM7/8552 (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
@@ -78,8 +80,9 @@ porosity, loading mode, FE thermal load, delamination and toughness, mesh) and t
 knockdown bar chart, FE stress maps, and result downloads (including the FE
 field as a `.vtu` file for ParaView).
 
-The empirical knockdowns of compression, tension, shear and ILSS are always
-all computed; the loading mode selects the FE solve. ILSS runs on the ASTM
+The empirical knockdowns of compression, tension, shear, ILSS and
+transverse tension are always all computed; the loading mode selects the
+FE solve. ILSS runs on the ASTM
 D2344 short-beam specimen. `flexure_3pt` and `flexure_4pt` are FE only
 (ASTM D7264 procedures A and B on the `CompositeMesh.for_flexure`
 specimen, span 32 thicknesses, 13 mm wide). They report the FE flexural
@@ -91,7 +94,10 @@ The Mesh and Stress tabs draw the mid-width section of the laminate with
 the thickness exaggerated (the z axis label gives the factor). The stress
 map uses a diverging scale centred on zero only when the stress changes
 sign, and the Stress tab opens on the component that governs the load
-case (τ13 for ILSS, σ22 for thermal only, τ12 for shear, σ11 otherwise).
+case: the interlaminar shear √(τ13² + τ23²) for ILSS, ENF and MMB, σ33
+for the DCB, σ22 for thermal only, τ12 for shear, and σ11 otherwise (σ22
+when no ply lies within 45° of the load). A component that is zero by
+symmetry is drawn as 0, not as its round-off.
 The sidebar picks the FE failure criterion (Tsai-Wu, Hashin or maximum
 stress), and the Results tab's **FE failure** block gives the domain and
 interior failure index, the first-ply-failure load factor and the
@@ -171,7 +177,20 @@ Community Cloud.
 ```bash
 porosity-analyze
 ```
-Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations, generating PNG plots and JSON results.
+Runs the full analysis across 5 porosity levels (1%-8%) and 5 configurations and writes the JSON results; `--plots` adds the PNG figures (off by default, they are slow).
+
+The laminate, the configurations and two further analyses are options:
+
+```bash
+porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --t-ply 0.2 \
+    --configs uniform_spherical interface_penny \
+    --fe compression --required-knockdown 0.9
+```
+
+- `--layup` takes `QI` (default), `UD` or laminate notation, and `--t-ply` the ply thickness in mm; the JSON records the laminate of each entry.
+- `--configs` selects among the five named configurations.
+- `--fe LOADING` adds an FE solve per configuration and level (`compression`, `tension`, `shear`, `ilss`, `flexure_3pt`, `flexure_4pt`), written to `porosity_fe_<loading>_<config>_<Vp>.json`.
+- `--required-knockdown R` adds the allowable porosity of the laminate (`porosity_allowable.json`): the largest void content at which each strength mode still retains the fraction `R` of its pristine strength.
 
 An opt-in FE delamination screening of the coupon adds, at each porosity
 level, the fracture results and the knockdown split by defect
@@ -308,9 +327,9 @@ python -m sphinx -b html docs docs/_build/html   # open docs/_build/html/index.h
 ## Examples
 
 Runnable scripts under [`examples/`](examples/) cover the most common
-configurations end-to-end. Each script is standalone (~30–50 lines), prints
-a short result table, and saves a single PNG to `examples/output/` (which
-is gitignored). Run any of them from the repo root:
+configurations end-to-end. Each script is standalone (60 to 260 lines),
+prints a short result table, and saves its figures (one PNG, two for
+`distribution_comparison.py`) to `examples/output/` (which is gitignored). Run any of them from the repo root:
 
 ```bash
 python examples/uniform_spherical.py
@@ -347,7 +366,8 @@ python -m PyInstaller ValidatePorosity.spec --noconfirm --clean
 ```
 
 Pre-built executables for all three platforms are produced automatically
-by GitHub Actions on every push; download them from the Actions tab
+by GitHub Actions on pushes to `master` and `feature/**` branches, on
+`v*` tags and on manual dispatch; download them from the Actions tab
 (artifact names: `validate_porosity-linux`, `-macos`, `-windows`) or
 from the Releases page for tagged versions.
 
@@ -361,7 +381,7 @@ validate_porosity --quiet            # suppress progress output
 
 ## Porosity Distribution Choice
 
-`PorosityField` supports four through-thickness shapes, all renormalized
+`PorosityField` supports five through-thickness shapes, all renormalized
 so the *specimen-average* void volume fraction equals the input `Vp`:
 
 | `distribution` (+ `cluster_location`) | Through-thickness shape |
@@ -369,6 +389,7 @@ so the *specimen-average* void volume fraction equals the input `Vp`:
 | `uniform` | Constant `Vp` at every `z`. |
 | `clustered` + `cluster_location='midplane'` | Gaussian peak at the midplane (`sigma = Lz / 6`). |
 | `clustered` + `cluster_location='surface'` | Gaussian peak at the laminate surface. |
+| `clustered` + `cluster_location='quarter'` | Gaussian peak at a quarter of the thickness. |
 | `interface` | Sum of Gaussians centred on every ply-to-ply interface (`sigma = 0.35 * t_ply`). |
 
 **Note on terminology.** There is no preset literally named `stack`; the
@@ -398,7 +419,7 @@ peak-vs-mean difference. Running the same four cases through `FESolver`
 gives distinct compression knockdowns even at matched mean:
 
 ```
-mode = compression, FE Tsai-Wu, Vp_mean = 3 %
+mode = compression, FE (stiffness), Vp_mean = 3 %
   uniform               0.9924
   clustered (midplane)  0.9925
   clustered (surface)   0.9928
@@ -465,8 +486,10 @@ an element layer spanning plies of different angles keeps only one of
 them: with `nz = 12`, a 24-ply `'QI'` layup becomes `[90, -45, 45, 0]`
 three times over, which is not symmetric. The production mesh
 (`build_empirical_pipeline`, `compare_configurations`, the app) is
-30 x 10 x `n_plies`, which resolves every preset; above 48 plies `nz`
-stops at 48, so pass `mesh_res` to resolve a thicker laminate. `FESolver`
+30 x 10 x `n_plies`, which resolves every preset. Above 48 plies it takes
+the largest `nz` up to 48 whose element layers each hold plies of one
+angle (e.g. 40 for 60 plies in blocks of 6), and stays at 48 with a
+warning only when there is none; pass `mesh_res` to choose another. `FESolver`
 logs a warning with the element layup, and
 `CompositeMesh.layup_discrepancies()` returns the same findings.
 
@@ -484,7 +507,7 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 
 | File Pattern | Description |
 |---|---|
-| `porosity_profile_*.png` | Through-thickness porosity profiles |
+| `porosity_profile_*.png` | Through-thickness porosity profiles (`--plots`, as every PNG here) |
 | `porosity_mesh_3d_*.png` | 3D mesh with hexahedral elements |
 | `porosity_mesh_detail_*.png` | Cross-section element detail |
 | `porosity_damage_*.png` | Midplane map of the compression (Judd-Wright) strength knockdown |
@@ -493,6 +516,8 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
 | `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
 | `porosity_delamination_*.json` | FE delamination screening: fracture results and knockdown decomposition (`--delamination`) |
+| `porosity_fe_<loading>_<config>_*.json` | FE solve of one configuration: stiffness knockdown, failure indices, first-ply-failure load factor (`--fe`) |
+| `porosity_allowable.json` | Allowable void content per strength mode and law at a required retained strength (`--required-knockdown`) |
 
 The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView.
 
@@ -552,6 +577,21 @@ mesh that resolves every ply (`nz` a multiple of `n_plies`); see
 
 `Vp` stays a fraction everywhere here; the app's front table shows the
 porosity at the crack plane in percent for display only.
+
+### In-plane porosity maps
+
+The distributions above vary through the thickness only. A `PorosityMap` adds the in-plane variation: the through-thickness average void content on a grid (`x`, `y` in mm, `Vp` as fractions), interpolated bilinearly.
+
+```python
+from porosity_fe import PorosityField, PorosityMap, PorosityPatch
+
+porosity_map = PorosityMap.from_csv("cscan.csv")            # header x, y, Vp; one row per grid point
+porosity_map = PorosityMap.from_patches(                    # or: 6 % voids in an ellipse, 1 % elsewhere
+    50.0, 20.0, 0.01, [PorosityPatch((25.0, 10.0), (8.0, 5.0), 0.06)])
+field = PorosityField.from_map(material, porosity_map)      # Vp is the map's area mean
+```
+
+The FE path samples the map at the mesh nodes and resolves the hot spots; build the map on the planform of the mesh (50 x 20 mm for the default coupon). The empirical failure load uses the specimen average, so a map changes it only through its mean. The app and the CLI do not take a map yet.
 
 ### Per-ply vs. specimen-average porosity
 
@@ -661,8 +701,9 @@ values as `EmpiricalSolver.layup_scale`.
 | `[±45]_2s` | 1.94 | 1.14 | 7.56 / 7.88 |
 | `[90]_8`   | 2.56 | 1.16 | 10.0 / 8.0 |
 
-> **Scales above 1 are not validated.** None of the 13 bundled datasets
-> uses an angle-ply, off-axis or 90°-rich layup, so the amplification rests
+> **Scales above 1 are not validated.** None of the 17 strength and modulus
+> datasets is modelled with a layup whose scale exceeds 1 (the two ±45
+> shear datasets are given in lamina axes), so the amplification rests
 > only on CLT and the calibrated mode alphas. When a scale above 1 is used,
 > `get_failure_load` records it in `details['layup_scale']` (with
 > `details['layup_extrapolated'] = True`) and emits a `UserWarning`. The
@@ -682,6 +723,19 @@ remains available as a legacy descriptor.
 
 The calibration data covers `Vp ≲ 0.05`. Beyond that, both forms should be treated as extrapolations. `Vp` alone does not capture void *morphology* (size, aspect ratio, clustering), which is a known source of scatter — use the FE solver path when spatial stress-concentration detail is needed.
 
+#### Allowable porosity
+
+`EmpiricalSolver.allowable_porosity` inverts the laws: it returns the largest specimen-average `Vp` (a fraction) at which a mode still retains a required share of its pristine strength.
+
+```python
+_, _, solver = build_empirical_pipeline(MATERIALS['T700_epoxy'], 0.02)
+solver.allowable_porosity(0.9, 'ilss').Vp           # 0.0105: 1.05 % voids keep 90 % of the ILSS
+solver.allowable_porosity(required_stress=1000.0)   # the requirement as a stress in MPa (compression)
+solver.get_all_allowable_porosities(0.9)            # {mode: {model: PorosityAllowable}}
+```
+
+The result says when no void content meets the requirement (`achievable` is false and `Vp` is `nan`) and when the allowable lies beyond the 5 % of the calibration data (`extrapolated`). The fatigue and environment factors of `get_failure_load` are accepted and lower it. In the web app, the NCR form takes an optional required retained strength and adds the governing allowable void content to the summary. It is a predicted value: the porosity allowable of the released drawing or process specification remains the acceptance limit.
+
 #### Calibrating `alpha` / `n` for a custom material
 
 If your material system differs significantly from the calibration set:
@@ -691,6 +745,19 @@ If your material system differs significantly from the calibration set:
 3. Run the relevant strength test: ASTM D2344 (ILSS / short-beam shear), D7264 (flexure), D3039 (tension), or D6641 (compression).
 4. Normalize each datum by the void-free baseline: `KD = σ(Vp) / σ(0)`.
 5. Regress `ln(KD)` vs `Vp` (slope `= −alpha`) for Judd-Wright, or `ln(KD)` vs `ln(1 − Vp)` (slope `= n`) for the power law.
+
+`fit_knockdown` does steps 4 and 5 and returns the coefficient with its confidence interval:
+
+```python
+from porosity_fe import fit_knockdown
+
+fit = fit_knockdown(Vp, strength, 'judd_wright', mode='ilss')   # Vp as fractions, strength in any one unit
+fit.coefficient, fit.interval      # alpha and its 95 % interval
+fit.pristine_strength              # the void-free strength, fitted unless pristine_strength= is given
+solver = EmpiricalSolver(mesh, material, judd_wright_alpha=fit.as_override())
+```
+
+The void-free strength is fitted with the coefficient by default, because the least porous coupons of a ladder still hold some voids. `fit.cov` is the `coef_cov` of the uncertainty propagation, and the fit holds up to the largest void content of the data.
 
 Custom `alpha` / `n` / `beta` values are exposed as keyword-only constructor arguments on `EmpiricalSolver`. Overrides are partial (modes you don't pass keep the calibrated defaults) and are layup-scaled exactly like the built-in coefficients:
 
@@ -779,6 +846,16 @@ Overall MAE:
 Each dataset's baseline point, normalized to 1 and so predicted exactly by construction, is left out of both and of the point counts (before `olivier_2007_shear`, with the baseline points, they were 5.08 % and 4.53 % over 264 points; without them 6.21 % and 5.27 % over 227).
 
 The two aggregations differ because datasets carry very different numbers of points; `validate_porosity` prints both in the run summary.
+
+**FE path (opt-in, not in the headline).** `validate_porosity --fe` also runs the FE solver against the same strength and modulus datasets: one FE solve per data point of the test each property comes from (compression, tension, shear, the D2344 short beam, three-point flexure; a transverse test is a tension test of the layup turned by 90°), on a uniform porosity field, normalized at each dataset's baseline. It takes about a minute and adds an "FE path" section to the detail report.
+
+| FE quantity | Entries | FE MAE | Empirical pipeline |
+|---|---|---|---|
+| Moduli (structural stiffness) | 13 | 7.2% | 7.3% (CLT) |
+| Strengths (first-ply-failure load, Tsai-Wu) | 27 | 21.7% | 6.0% (Judd-Wright) |
+| All | 40 | 17.0% (19.1% point-weighted over 232 points) | 6.4% (5.5%) |
+
+The FE stiffness follows the data as well as laminate theory does, since both use the same Mori-Tanaka ply. The FE strength does not: its ply strengths are scaled by the heuristic `sqrt(stiffness retention)`, which is not fitted to coupon data and loses too little. At 10 % voids it leaves a unidirectional laminate 99.9 % of its tensile strength and a short beam 91 % of its interlaminar strength, where Olivier et al. 1995 measured 67 % and 46 %. Read the FE failure indices for where and in which mode a laminate fails first; take the size of the strength knockdown from the empirical solver.
 
 **Interlaminar toughness (exploratory, not in the headline).** Eight more datasets measure the interlaminar toughness against void content: Hakim et al. 2017 (T700/EPON 828 DCB, static G_Ic 0.52 / 0.44 / 0.45 N/mm at 1.49 / 1.77 / 3.43 % voids, Table 1), Agius & Fox 2015 (G_IIc 21 % higher below 0.3 % voids than at 1.5 %, from the abstract), Olivier et al. 2007 (T700GC/M21 DCB, propagation G_Ic 0.348 / 0.266 N/mm at 0.1 / 5.09 % voids, the means of the Fig. 8 R-curves read from the PDF's vector graphics), Asp & Brandt 1997 (HTA/6376C DCB and ENF, void-free / 0.9 %: mode I initiation unchanged, propagation +74 %, mode II −8 %), Russell & Street 1982 (AS1/3501-6, 2.1 %: mode I initiation +5 %, mode II +12 %) Vorobyev et al. 2020 (infused UD carbon/epoxy DCB, G_Ic 0.25 / 0.13 / 0.11 N/mm at 0.41 / 1.12 / 5.23 %) and Carraro et al. 2015 (STS40 NCF/EC157 DCB, two files for the 0° and −45° interfaces, void-free against 1.9 % and 1.23 %: initiation 0.88 and 1.35 times the void-free value, propagation 1.32 and 1.61 times, read from the R-curves of Figs. 15 and 18). They run through the porosity-toughness law of the FE fracture outputs (`ToughnessKnockdown`, default `G_c = G_c0 exp(-b Vp)` with the uncalibrated placeholders `b_I = 6.2`, `b_II = 14`) and are reported in a section and summary line of their own: 22.50 % property-weighted, 25.40 % point-weighted over 10 entries and 16 points (baseline points left out). The studies contradict each other (toughness falls, holds or rises with voids; a least-squares b per mode and stage runs from −2.9 to 15.9, per study from −62 to 18.6), so the placeholders stay uncalibrated; see the delamination theory page. The headline above is unchanged by them. Each toughness block is tagged with its test stage (initiation / propagation) and starter crack (insert / precracked), `unspecified` where the source does not say. Abdelal 2013 (a dissertation, glass/epoxy) was examined and held back: its panels read 0.4–1.0 % voids by burn-off and 1.5–5.8 % by X-ray CT.
 

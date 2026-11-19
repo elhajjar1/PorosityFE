@@ -12,6 +12,168 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **In-plane porosity maps.** `PorosityMap` holds the through-thickness
+  average void content on a rectilinear in-plane grid, and
+  `PorosityField.from_map(material, porosity_map)` (or
+  `PorosityField(..., in_plane_map=...)`) makes it the in-plane variation
+  of the field. The profiles varied through the thickness only. Additive:
+  a field without a map is sampled as before, and the FE fingerprint does
+  not move.
+  - The local porosity is `profile(z) * map(x, y) / map.mean`, clipped at
+    1: the map gives the pattern and `Vp` the average over the map's
+    extent. `from_map` takes `Vp` from the map's area mean, which keeps
+    its absolute values.
+  - `PorosityMap(x, y, Vp)` takes the grid (mm, fractions) and
+    interpolates bilinearly, with its edge values outside the grid.
+    `PorosityMap.from_csv` reads a table with the columns `x`, `y`, `Vp`,
+    one row per grid point, and refuses an incomplete grid.
+    `PorosityMap.from_patches(length, width, background, patches)` draws
+    `PorosityPatch` zones (ellipses or rectangles with their own void
+    content) on a background.
+  - The FE path resolves the map: `CompositeMesh` samples it at the
+    nodes, the `'interface'` renormalization still applies, and a mesh
+    that extends beyond the map logs a warning. The empirical failure
+    load uses the specimen average, so a map changes it only through its
+    mean; its per-node knockdown field and extrapolation warning follow
+    the local peak.
+  - Example: a 16 x 10 mm elliptical zone of 6 % voids in a 1 %
+    background on the 50 x 20 mm T700 coupon (mean 1.62 %). The FE
+    first-ply-failure load of the interior is 1.1 % below that of a
+    uniform 1.62 % (0.864 against 0.874), the stiffness knockdown agrees
+    to four digits, and the empirical knockdowns are identical.
+  - Not done: the app and the CLI do not take a map yet.
+- **`porosity-analyze` takes the laminate, a choice of configurations, an
+  FE solve and the allowable porosity.** A run without the new options
+  computes what it did.
+  - `--layup SPEC` (`QI`, `UD` or laminate notation such as
+    `[0/45/-45/90]_2s`; an explicit layup sets the ply count) and
+    `--t-ply MM`. They apply to the sweep, `--uq`, `--fe`,
+    `--delamination` and `--required-knockdown`. The CLI could only run
+    the quasi-isotropic layup of the preset.
+  - `--configs NAME [NAME ...]` analyses only the named configurations.
+  - `--fe LOADING` (`compression`, `tension`, `shear`, `ilss`,
+    `flexure_3pt`, `flexure_4pt`) adds an FE solve of every analysed
+    configuration at each porosity level: the production coupon mesh, or
+    the ASTM D2344 / D7264 specimen. Each writes
+    `porosity_fe_<loading>_<config>_<Vp>.json` (the FE field export) and
+    prints the stiffness knockdown, the effective modulus, the maximum
+    failure index and the first-ply-failure load factor.
+    `--porosity-degradation` now applies to `--fe` as well as
+    `--delamination`.
+  - `--required-knockdown R` prints the allowable porosity of the laminate
+    per strength mode and law, with the governing one, and writes
+    `porosity_allowable.json` (new format tag
+    `porosity-fe.allowable-porosity`, `FORMAT_ALLOWABLE`; the results
+    schema describes it, additive, 1.3).
+  - `compare_configurations` and `sweep_configurations` take the
+    keyword-only `ply_angles=` and `t_ply=`.
+  - **JSON, additive:** each configuration entry of a sweep saved with its
+    artifacts (as the CLI does) now records its `laminate`: `ply_angles`
+    (degrees, bottom ply first), `n_plies` and `t_ply_mm`. The file did
+    not say which laminate it was for.
+- **`fit_knockdown`: a knockdown-law coefficient from coupon data, with a
+  confidence interval.** `fit_knockdown(Vp, strength, model, mode=...)`
+  regresses the Judd-Wright, power or linear law on strengths measured
+  against void content and returns a `KnockdownFit`. Additive: no
+  existing result changes.
+  - Each law is a least-squares line in a transformed variable
+    (`ln(strength)` on `Vp`, `ln(strength)` on `ln(1 - Vp)`, `strength` on
+    `Vp`), the regression forms the calibration notes already prescribe.
+    The result carries the coefficient, its standard error and Student-t
+    interval, the pristine strength, the RMSE and R² of the strengths and
+    the largest void content of the data.
+  - The void-free strength is fitted with the coefficient by default;
+    `pristine_strength=` fits the law through a known one. On data
+    normalized by a baseline panel with 0.5 % voids, forcing the law
+    through 1 biases an exact alpha of 9 below 8; the free intercept
+    recovers it.
+  - `fit.as_override()` gives the `{mode: coefficient}` dict of
+    `EmpiricalSolver(judd_wright_alpha=...)` (divided by a layup scale
+    when the coupons' layup is amplified), and `fit.cov` the `coef_cov` of
+    `propagate_uncertainty`, for which `porosity-analyze --uq` otherwise
+    assumes 10 %. The exponential toughness law has the Judd-Wright form, so the
+    `b` of `ToughnessKnockdown` is fitted the same way.
+  - Checked against `scipy.stats.linregress` and closed forms to 1e-9. On
+    the calibration dataset (Elhajjar 2025, 27 points to 10 % voids) it
+    gives alpha = 7.21 [6.99, 7.44] for compression and 4.29 [4.17, 4.41]
+    for tension, against the shipped 6.9 and 3.9.
+  - **Found, not changed: the shipped power-law exponents are about half
+    of what the data support.** For small `Vp` the power law is
+    `exp(-n Vp)`, so `n` should be near `alpha`: the fit of the same
+    dataset gives n = 6.85 [6.64, 7.06] for compression and 4.07 for
+    tension, where `Calibration.POWER_LAW_N_QI` has 2.8 and 1.8. Over the
+    27 strength entries of the validation database the three laws score
+    6.04 % (Judd-Wright), 7.81 % (linear) and 12.48 % (power law). The
+    validation headline uses Judd-Wright alone and is not affected.
+    Changing the table would change every `power_law` result, and is open
+    for a decision.
+- **Validation of the FE path against the experimental datasets**
+  (`validate_porosity --fe`, `validation.validate_all.run_all_datasets_fe`).
+  Opt-in and reported apart: the headline MAE, the PNG and every existing
+  result are unchanged.
+  - One FE solve per data point of the test each property comes from:
+    compression, tension, shear, the D2344 short beam and three-point
+    flexure, with a transverse test as a tension test of the layup turned
+    by 90°. Uniform spherical porosity, one element layer per ply,
+    normalized at each dataset's baseline. About a minute for the 232
+    points.
+  - A modulus is the FE structural stiffness. A strength is the
+    first-ply-failure load of the interior elements (Tsai-Wu): the load
+    factor of the force-controlled short beam, the factor times the
+    effective modulus for the strain-controlled coupons. The interior
+    factor does not move with the mesh; the whole-model one drifts by
+    0.5 % from 6 x 4 to 24 x 8 in-plane elements, with the grip corners.
+  - **Result.** Moduli: 7.20 % property-weighted over 13 entries, against
+    7.27 % for laminate theory with the same Mori-Tanaka ply. Strengths:
+    21.71 % over 27 entries, against 6.04 % for the Judd-Wright law.
+    Overall 16.99 % property-weighted and 19.05 % point-weighted over 40
+    entries and 232 points.
+  - The FE strength under-predicts the knockdown because its ply
+    strengths follow the heuristic `sqrt(stiffness retention)`, which is
+    not fitted to coupon data. At 10 % voids it leaves a UD laminate
+    99.9 % of its tensile strength and a short beam 91 % of its
+    interlaminar strength, where Olivier et al. 1995 measured 67 % and
+    46 %. The README, the failure theory page and the report say so.
+    **Not changed:** the heuristic itself. Replacing it with a law fitted
+    to the coupon data would change every FE failure index and the
+    fingerprint baseline, and is open for a decision.
+  - The detail report gains an "FE path" section (the MAE overall and by
+    category, a row per entry beside the empirical MAE), and
+    `summarize_fe_mae` gives the numbers. The full-database numbers are
+    pinned by a test that runs with `POROSITY_FE_VALIDATION=1`, set on the
+    coverage cell in CI.
+- **Allowable porosity: the inverse of the empirical knockdown.**
+  `EmpiricalSolver.allowable_porosity(required_knockdown, mode, model)`
+  returns the largest specimen-average void content at which a mode still
+  retains a required share of its pristine strength. Additive: no existing
+  result changes.
+  - The requirement is a knockdown in `(0, 1]` or
+    `required_stress=` in MPa. `cycles`, `environment` and `R` are
+    accepted as in `get_failure_load`, and lower the allowable.
+  - The result is a `PorosityAllowable`: `Vp` (a fraction), `achievable`
+    (false, with `Vp = nan`, when the void-free laminate is already below
+    the requirement), `extrapolated` (true beyond the `Vp <= 0.05` of the
+    calibration data, with one `UserWarning`) and `details`.
+  - The crossing is found by bisection on the law itself, to the last
+    bit and rounded to the safe side. It agrees with the closed-form
+    inverses of the three laws to 1e-12 relative, and a new law or a user
+    callable needs no inverse of its own. A callable is first sampled at
+    201 void contents, so a dip narrower than 0.005 is not seen.
+  - `get_all_allowable_porosities` gives the table for the five strength
+    modes and the three laws (one requirement, or one per mode), with one
+    warning for the table. The toughness modes are inverted with the law
+    of `toughness_knockdown`.
+  - NCR: `build_ncr_record(result, {"required_knockdown": ...})` adds
+    `engineering_analysis["allowable_porosity"]`: the allowable per mode
+    and law in percent, the governing (smallest) one, and whether the
+    measured void content is within it. The Markdown, PDF and JSON carry
+    it, the results schema describes it (additive, 1.3), and the app's NCR
+    form has an optional "Required retained strength" field. The
+    recommended disposition path does not use it.
+  - It is the void content at which the predicted strength meets the
+    requirement. The summary says that the porosity allowable of the
+    released drawing or process specification remains the acceptance
+    limit.
 - **Validation: three more datasets** (#221, #222), each read in the
   primary source.
   - `olivier_2007_shear`: in-plane shear strength (EN ISO 14129, ±45) of
@@ -442,8 +604,8 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   - App sidebar: a delamination of the FE mesh (an NDI indication:
     interface, ellipse / rectangle / through-width strip, position and full
     size in mm) with the knockdown split by defect; the interlaminar
-    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; no preset carries
-    them) and its porosity knockdown (the placeholder exponential law,
+    toughness (`G_Ic`, `G_IIc`, optional `G_IIIc`, B-K η; of the presets
+    only `IM7_8552_epoxy`, added in this release, carries them) and its porosity knockdown (the placeholder exponential law,
     none, or your `b_I`, `b_II`); an interface onset check (Brewer-Lagace,
     with `x_avg`); and the FE-only loading modes `dcb`, `enf` and `mmb`
     (test planning, with the crack length and the MMB mode ratio that sets
@@ -632,8 +794,9 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
     the phase 4 entry below.
   - New optional `MaterialProperties` fields `G_Ic`, `G_IIc`, `G_IIIc`
     (default `G_IIc`) and `bk_eta`, in N/mm, validated and perturbable,
-    `None` by default; no preset sets them. Without them the solve reports
-    the energy release rates only. The theory page lists sourced values.
+    `None` by default; of the presets only `IM7_8552_epoxy` (added in this
+    release) sets them. Without them the solve reports the energy release
+    rates only. The theory page lists sourced values.
   - New optional `FieldResults` fields `crack_front`,
     `fracture_load_factor`, `fracture_governing_node`, `interface_forces`,
     `crack_contact`, `contact_iterations`, `contact_pairs` and
@@ -1214,6 +1377,46 @@ results change on upgrade; the docs page "What's new in 1.3" lists them.
   executable build is `ValidatePorosity.spec`.
 
 ### Fixed
+- **FE orchestration review, November 2026.** Each defect was reproduced
+  first; the tests are in `tests/test_review_fe_fixes.py` (and the
+  zero-load ones in `test_fe_solver.py` and `test_fe_flexure.py`).
+  - **A load that releases no energy gave a finite fracture load factor.**
+    Examples: a UD laminate under a uniform temperature, or the mid-plane
+    of a symmetric laminate in shear. G_T is round-off there (about 1e-29),
+    so `lambda_c` came out between 1e7 and 1e14, with a governing node and
+    a mode mix that meant nothing. A front node whose G_T is below 1e-6 of
+    its tie force times the solve's largest displacement over its area
+    releases no energy, and its factor is now `inf`, as
+    `FieldResults.fracture_load_factor` documents. Measured: about 1e-16
+    for a direct solve and 1e-8 for CG at its default tolerance, against
+    5e-5 to 3e-3 on a front that opens. The FE fingerprint does not move.
+  - **The FE knockdown at a zero mechanical load read 1.0** ("no stiffness
+    loss") on a porous mesh. No stiffness is measured at zero load, so the
+    knockdown is now NaN there, as for a thermal-only solve, and the
+    modulus stays `None`.
+  - **A thermal load on a `plane_strain=True` fracture specimen** solved
+    the residual state free-standing in 3-D, without the specimen's
+    `u_y = 0`. The onset factor of a cross-ply DCB then moved from 1.01 to
+    0.77 with `ny`. It now raises; the app and CLI do not use plane strain.
+  - **`compute_degraded_clt_flexural_modulus` ignored bending-stretching
+    coupling.** It inverted D alone, so an unsymmetric layup's beam was
+    about twice too stiff: [0_4/90_4] read 76.5 GPa against 33.5 from the
+    full ABD inverse, which the FE beam reproduces. It now takes the
+    bending block of the full inverse. Symmetric layups (B = 0), and with
+    them the validation datasets, are unchanged.
+  - **Crack-face contact with a thermal prestress could cycle to the cap.**
+    The thermal part is solved on the 3-2-1 support and the mechanical
+    part on the load case's, so a pair can penetrate when free and pull
+    when tied, and no active set satisfies both. The loop alternated
+    between two sets for all 30 solves, and the result depended on
+    whether the cap was odd or even. A set
+    that comes back now stops the loop (`contact_converged=False`, with a
+    warning) and the result is the solve of the cycle's set with the
+    fewest pairs in contact, which does not depend on the cap; in the
+    reproduction it penetrates by 9e-6 mm. Loops that settle are
+    unchanged, and so is the FE fingerprint. The full fix, solving the
+    thermal contact first and the mechanical increment from it, is a
+    change of formulation, open for a decision.
 - **App and plot review, November 2026.** Each defect was reproduced
   first; the tests are in `tests/test_app.py` (`TestAppReviewFixes`),
   `tests/test_app_streamlit.py` (`TestSidebarReviewFixes`) and
