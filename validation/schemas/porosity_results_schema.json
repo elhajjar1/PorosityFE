@@ -210,6 +210,25 @@
       },
       "required": ["loading", "applied_strain", "load_factors", "critical_strain"]
     },
+    "open_hole": {
+      "type": "object",
+      "description": "Optional FE-field export block (FESolver.export_results(..., open_hole=...)), added in schema_version 1.3: OpenHoleAnalysis.summary() of a 'compression' or 'tension' solve of an open-hole coupon (CompositeMesh.for_open_hole). hole_diameter_mm, width_mm, length_mm; loading; far_field_stress_MPa (end load over the gross section, negative in compression); stress_concentration (laminate-average axial stress at the hole edge over the far-field stress); net_stress_concentration (the same over the net-section stress); reference_stress_concentration (Lekhnitskii's orthotropic value of the pristine laminate with Tan's finite-width correction); laminate_constants (E_x, E_y, G_xy in MPa and nu_xy, lamination theory); distance_mm and stress_ratio, the laminate-average axial stress over the far-field stress along the net section from the hole edge; with open_hole_criteria, notch_criteria (point_stress_distance_mm and point_stress_factor, average_stress_distance_mm and average_stress_factor: the notched-to-unnotched strength ratios of Whitney and Nuismer at those distances). Written only when passed.",
+      "properties": {
+        "hole_diameter_mm": {"type": "number", "exclusiveMinimum": 0},
+        "width_mm": {"type": "number", "exclusiveMinimum": 0},
+        "length_mm": {"type": "number", "exclusiveMinimum": 0},
+        "loading": {"type": "string", "enum": ["compression", "tension"]},
+        "far_field_stress_MPa": {"type": "number"},
+        "stress_concentration": {"type": "number"},
+        "net_stress_concentration": {"type": "number"},
+        "reference_stress_concentration": {"type": "number"},
+        "laminate_constants": {"type": "object", "additionalProperties": {"type": "number"}},
+        "distance_mm": {"type": "array", "items": {"type": "number"}},
+        "stress_ratio": {"type": "array", "items": {"type": "number"}},
+        "notch_criteria": {"type": "object", "additionalProperties": {"type": "number"}}
+      },
+      "required": ["hole_diameter_mm", "width_mm", "loading", "far_field_stress_MPa", "stress_concentration", "reference_stress_concentration", "distance_mm", "stress_ratio"]
+    },
     "delamination_growth": {
       "type": "object",
       "description": "Optional FE-field export block (FESolver.export_results(..., growth=...)), added in schema_version 1.3: GrowthResult.summary() of a delamination growth analysis by node release on the VCCT front (delamination_growth, fatigue_delamination_growth), one entry per configuration of the crack (the first as given, the last as grown). kind ('quasi-static' or 'fatigue'); loading; applied_strain or applied_load_N (the load of every solve, null for the other kind of load case); stop_reason; n_steps (release steps); toughness_uncalibrated; load_factors (critical load factor of each configuration, null where no front node is driven); released_area_mm2 (crack area grown before each); released_pairs (every released pair at the end, indices into CompositeMesh.interface_node_pairs()); n_released (pairs released after each configuration); governing_node (-1 for none); G_T_N_per_mm, G_c_N_per_mm, psi and Vp at the governing node under the applied load; crack_length_mm (fracture specimens: the insert plus the released area over the width; null otherwise); critical_load_N, critical_displacement_mm, critical_strain and critical_stress_MPa (null for a load case without one). A fatigue analysis adds paris (form, C_mm_per_cycle, m, threshold: the user's coefficients; none ship), cycles (to reach each configuration) and growth_rate_mm_per_cycle (the largest over the front). Linear elastic between releases, resolved to the element length at the front. Written only when passed.",
@@ -401,6 +420,7 @@
         "statistics": {"type": "object"},
         "sensitivity": {"type": "object"},
         "inputs": {"type": "object"},
+        "open_hole": {"type": ["object", "null"]},
         "samples": {"type": "object"},
         "input_samples": {"type": "object"}
       },

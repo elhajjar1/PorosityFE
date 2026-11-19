@@ -188,6 +188,18 @@ ranks inputs by Spearman and SRRC on ranks; `propagate_uncertainty` carries it
 under `sensitivity` with the draws' inputs in `samples['inputs']`. The random
 field's CoV and correlation length have no defaults anywhere.
 
+### Open-hole coupons
+
+`porosity_fe/open_hole.py`: `CompositeMesh.for_open_hole` returns an
+`OpenHoleMesh` (a `CompositeMesh` subclass) whose in-plane mesh is mapped
+around the hole (`in_plane_nodes`, `in_plane_quads`, extruded layer-major), so
+node / element ids are not the grid's: never index it as `(nx+1)(ny+1)` layers
+(`nx`, `ny` are the edge element counts, for the lateral margins). Code that
+needs the grid refuses it (`interlaminar._grid`, `viz._require_grid`,
+`mid_y_section_indices`, delaminations). `open_hole_analysis` reads the
+laminate-average net-section stress; the Lekhnitskii-Tan reference uses the
+pristine laminate's CLT constants (`homogenization._clt_abd_full`).
+
 ### Material cards
 
 `porosity_fe/material_cards.py` writes the degraded ply for another solver

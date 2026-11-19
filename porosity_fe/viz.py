@@ -64,6 +64,14 @@ def _finish(fig, save_path):
     return fig
 
 
+def _require_grid(mesh: CompositeMesh, what: str) -> None:
+    """Refuse an open-hole mesh in a plot of the rectangular grid."""
+    if getattr(mesh, 'open_hole_geometry', None) is not None:
+        raise ValueError(
+            f"{what} plots the rectangular grid of a coupon mesh; an open-hole "
+            f"mesh is mapped around its hole (export it to VTU instead).")
+
+
 class FEVisualizer:
     """Publication-quality plotting for porosity analysis.
 
@@ -90,6 +98,7 @@ class FEVisualizer:
     @staticmethod
     def plot_mesh_3d(mesh: CompositeMesh, save_path: str | os.PathLike | None = None):
         """3D hex mesh wireframe with void elements highlighted."""
+        _require_grid(mesh, 'plot_mesh_3d')
         fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(111, projection='3d')
 
@@ -189,6 +198,7 @@ class FEVisualizer:
         ``1 - Vp`` (``mesh.stiffness_reduction``), labelled as such: it is
         not a stiffness ratio.
         """
+        _require_grid(mesh, 'plot_damage_contour')
         fig, ax = plt.subplots(figsize=(10, 4))
 
         # Get midplane slice

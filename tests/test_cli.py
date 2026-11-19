@@ -1848,3 +1848,52 @@ class TestFEUncertaintyOption:
         doc = _strict_json(tmp_path / 'porosity_uq_3pct.json')
         ranking = doc['uq']['compression']['sensitivity']['failure_stress']['ranking']
         assert {row['input'] for row in ranking} == {'sigma_1c', 'judd_wright_alpha', 'Vp'}
+
+
+class TestOpenHoleOption:
+    def test_fe_on_the_open_hole(self, small_material, tmp_path, capsys):
+        import jsonschema
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--fe', 'tension', '--open-hole', '6', '--point-stress-distance', '1'])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'open hole D = 6 mm, W = 36 mm: K_T' in out
+        assert 'point-stress factor' in out and 'at 1 mm' in out
+        doc = _strict_json(tmp_path / 'porosity_fe_tension_uniform_spherical_3pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        block = doc['open_hole']
+        assert block['width_mm'] == 36.0 and block['length_mm'] == 108.0
+        assert block['notch_criteria']['point_stress_distance_mm'] == 1.0
+        assert 0.0 < block['notch_criteria']['point_stress_factor'] < 1.0
+
+    def test_fe_uq_on_the_open_hole(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--fe-uq', 'compression', '--fe-uq-samples', '2', '--porosity-cov', '0.5',
+            '--correlation-length', '4', '--open-hole', '6', '--open-hole-width', '30',
+            '--quiet'])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_fe_uq_compression_uniform_spherical_3pct.json')
+        block = doc['fe_uq']
+        assert block['open_hole'] == {'hole_diameter_mm': 6.0, 'width_mm': 30.0,
+                                      'length_mm': 90.0}
+        assert 'stress_concentration' in block['statistics']
+
+    @pytest.mark.parametrize("argv, message", [
+        (['--open-hole', '6'], '--open-hole runs --fe or --fe-uq'),
+        (['--fe', 'shear', '--open-hole', '6'], '--open-hole takes --fe compression'),
+        (['--fe', 'tension', '--fe-uq', 'shear', '--porosity-cov', '0.5',
+          '--correlation-length', '5', '--open-hole', '6'],
+         '--open-hole takes --fe-uq compression'),
+        (['--open-hole-width', '30'], '--open-hole-width need --open-hole'),
+        (['--fe', 'tension', '--open-hole', '-6'], '--open-hole must be a positive'),
+        (['--fe', 'tension', '--open-hole', '6', '--point-stress-distance', '0'],
+         '--point-stress-distance must be a positive'),
+    ])
+    def test_usage_errors(self, small_material, tmp_path, capsys, argv, message):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                       '--output-dir', str(tmp_path), *argv])
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err

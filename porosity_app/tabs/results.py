@@ -25,6 +25,7 @@ from ..plots import (
     plot_fracture_uq,
     plot_front,
     plot_growth,
+    plot_open_hole,
     plot_results,
     plot_uq,
 )
@@ -33,12 +34,16 @@ from ..runners import (
     FE_UQ_MAX_SAMPLES,
     GROWTH_DEFAULT_STEPS,
     GROWTH_MAX_STEPS,
+    OPEN_HOLE_DEFAULT_DIAMETER,
+    OPEN_HOLE_DEFAULT_WIDTH,
     buckling_unavailable_reason,
     fe_uq_unavailable_reason,
     growth_unavailable_reason,
+    open_hole_unavailable_reason,
     run_buckling_cached,
     run_fe_uq_cached,
     run_growth_cached,
+    run_open_hole_cached,
     run_uq_cached,
 )
 from ..scenario import REFERENCE_KEY, comparison_rows, scenario_summary
@@ -58,6 +63,7 @@ from ..summaries import (
     fe_uq_summary,
     growth_summary,
     growth_table,
+    open_hole_summary,
     sensitivity_caption,
     sensitivity_rows,
 )
@@ -81,6 +87,7 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_scenario_comparison(result)
     _build_durability_expander(result)
     _build_buckling_expander(result)
+    _build_open_hole_expander(result)
     _build_growth_expander(result)
     _build_uq_expander(result)
     _build_fe_uq_expander(result)
@@ -140,6 +147,61 @@ def _build_buckling_expander(result: dict) -> None:
         _show_figure(plot_buckling_mode(result["mesh"], buckled.modes[0],
                                         buckled.load_factor), "buckling_mode",
                      "dl_png_buckling")
+
+
+def _build_open_hole_expander(result: dict) -> None:
+    """Opt-in open-hole coupon of the analysed laminate (FE)."""
+    with st.expander("Open-hole notch (FE)"):
+        st.caption(
+            "Meshes the open-hole coupon of ASTM D5766 (tension) and D6484 "
+            "(compression) around its hole, with the analysis' material, layup, "
+            "porosity and load, and reads the stress concentration and the "
+            "stress along the net section, which the notched-strength criteria "
+            "of Whitney and Nuismer take. One FE solve, a few seconds for a "
+            "thin laminate and about a minute for 24 plies.")
+        reason = open_hole_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        c = st.columns(4)
+        diameter = float(c[0].number_input(
+            "Hole diameter (mm)", min_value=0.5, max_value=50.0,
+            value=OPEN_HOLE_DEFAULT_DIAMETER, step=0.5, key="oh_diameter"))
+        width = float(c[1].number_input(
+            "Coupon width (mm)", min_value=2.0, max_value=200.0,
+            value=OPEN_HOLE_DEFAULT_WIDTH, step=1.0, key="oh_width"))
+        d0 = c[2].number_input(
+            "Point-stress distance d0 (mm)", min_value=0.01, max_value=20.0, value=None,
+            step=0.1, key="oh_d0", placeholder="from notched tests",
+            help="The material's characteristic distance (about 1 mm in Whitney and "
+                 "Nuismer's data); no default.")
+        strength = c[3].number_input(
+            "Unnotched laminate strength (MPa)", min_value=1.0, max_value=1e5, value=None,
+            step=10.0, key="oh_strength", placeholder="optional",
+            help="Of this laminate at this void content, for the notched strength.")
+        if diameter / width > 0.6:
+            st.warning("The hole is too large for the mapped mesh: D / W must be at "
+                       "most 0.6.")
+            return
+        key = _config_to_key(result["config"])
+        params = (diameter, width)
+        if st.button("Run open-hole analysis", key="oh_run"):
+            st.session_state["oh_params"] = (key, params)
+        if st.session_state.get("oh_params") != (key, params):
+            return
+        with st.spinner("Solving the open-hole coupon..."):
+            try:
+                out = run_open_hole_cached(key, params, result)
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"The open-hole analysis did not run: {exc}")
+                return
+        rows, caption = open_hole_summary(
+            out, result.get("fe_field"), d0=None if d0 is None else float(d0),
+            unnotched_strength=None if strength is None else float(strength))
+        _metric_row(rows)
+        st.caption(caption)
+        _show_figure(plot_open_hole(out["analysis"], None if d0 is None else float(d0)),
+                     "open_hole_net_section", "dl_png_open_hole")
 
 
 def _build_growth_expander(result: dict) -> None:

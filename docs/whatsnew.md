@@ -50,6 +50,12 @@ cohesive zone or R-curve; in the app's Results tab and
   in-plane variation of the field. The FE path resolves it; the empirical
   failure load sees its mean.
 
+**Open-hole coupons.** `CompositeMesh.for_open_hole` meshes the ASTM D5766 /
+D6484 coupon around its hole, and `open_hole_analysis` gives the stress
+concentration against Lekhnitskii's orthotropic plate and the Whitney-Nuismer
+notched-strength factors (`porosity-analyze --open-hole`, an app panel; see
+{doc}`theory/fe`).
+
 **Random porosity fields and FE uncertainty.** `PorosityField.random`
 draws a seeded random in-plane map of void content, of a given CoV and
 correlation length. `fe_porosity_uncertainty` (`porosity-analyze --fe-uq`,

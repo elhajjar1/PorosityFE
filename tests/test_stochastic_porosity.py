@@ -332,3 +332,13 @@ class TestFEUncertainty:
         assert len(distorted) == 1
         np.testing.assert_array_equal(study.inputs['Vp_spatial_cov'], 0.0)
         np.testing.assert_allclose(study.samples['knockdown'], 1.0)
+
+
+def test_example_map_is_of_the_study():
+    study = fe_porosity_uncertainty(MAT4, 0.03, 'tension', cov=0.4, correlation_length=6.0,
+                                    n_samples=2, seed=1, ply_angles=CROSS_PLY, mesh_res=SMALL,
+                                    length=40.0, width=10.0)
+    m = study.example_map()
+    assert m.extent == (0.0, 40.0, 0.0, 10.0) and m.mean == pytest.approx(0.03)
+    np.testing.assert_array_equal(m.Vp, study.example_map().Vp)
+    assert not np.array_equal(m.Vp, study.example_map(seed=5).Vp)

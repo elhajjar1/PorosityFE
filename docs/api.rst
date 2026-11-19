@@ -89,6 +89,27 @@ Finite-element solver
    RefinementLevel
    QuantityConvergence
 
+Open-hole coupons
+-----------------
+
+The open-hole tension and compression coupon (ASTM D5766, D6484) meshed
+around its hole (:meth:`CompositeMesh.for_open_hole`) and solved under the
+coupon's ``'compression'`` or ``'tension'`` load; :func:`open_hole_analysis`
+reads the stress concentration against Lekhnitskii's orthotropic plate with
+Tan's finite-width correction, the stress along the net section, and the
+notched strength by the point- and average-stress criteria. See
+:doc:`theory/fe` (Open-hole coupons).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   OpenHoleMesh
+   OpenHoleGeometry
+   open_hole_analysis
+   OpenHoleAnalysis
+   orthotropic_stress_concentration
+
 Linear buckling
 ---------------
 

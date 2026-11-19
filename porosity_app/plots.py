@@ -798,3 +798,25 @@ def plot_fe_uq(study, output: str = "first_ply_failure_load_factor"):
     fig.colorbar(mesh, ax=ax_map, fraction=0.04, pad=0.02).set_label(LABEL_POROSITY_PCT)
     fig.tight_layout()
     return fig
+
+
+def plot_open_hole(analysis, d0: float | None = None):
+    """Axial stress along the net section of an open-hole coupon, over the
+    far-field stress, against the distance from the hole edge."""
+    fig, ax = plt.subplots(figsize=(9, 4.0))
+    ax.plot(analysis.distance, analysis.stress_ratio, marker="o", markersize=3,
+            color="tab:blue", label="FE, laminate average")
+    ax.axhline(1.0, color="0.5", linewidth=1)
+    ax.axhline(analysis.reference_stress_concentration, color="k", linestyle="--",
+               linewidth=1, label=f"Lekhnitskii-Tan K_T {analysis.reference_stress_concentration:.3f}")
+    if d0 is not None:
+        ax.axvline(d0, color="tab:red", linewidth=1, label=f"d0 = {d0:g} mm")
+    ax.set_xlabel("Distance from the hole edge along the net section (mm)")
+    ax.set_ylabel("σ_xx / σ_far field")
+    ax.legend(loc="upper right", frameon=False)
+    ax.grid(True, alpha=0.3)
+    g = analysis.geometry
+    _set_titles(ax, "Open-hole coupon: net-section stress",
+                f"D = {g.hole_diameter:g} mm, W = {g.width:g} mm; K_T {analysis.stress_concentration:.3f}")
+    fig.tight_layout()
+    return fig

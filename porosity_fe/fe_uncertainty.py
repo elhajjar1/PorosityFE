@@ -19,7 +19,7 @@ import logging
 import math
 import os
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ from .fe import FESolver
 from .io import _UNITS_FE_UQ, FORMAT_FE_UQ, _wrap_envelope, _write_json
 from .materials import MATERIALS, MaterialProperties
 from .mesh import CompositeMesh
+from .open_hole import OPEN_HOLE_LOADINGS, OpenHoleMesh, open_hole_analysis
 from .pipeline import _default_mesh_resolution
 from .porosity_field import PorosityField
 from .porosity_map import RANDOM_FIELD_KERNELS, PorosityMap
@@ -46,11 +47,12 @@ logger = logging.getLogger("porosity_fe_analysis")
 FE_UQ_LOADINGS: tuple[str, ...] = ('compression', 'tension', 'shear')
 
 #: The outputs a draw records, when the nominal solve has them
-#: (``fracture_load_factor`` needs a delamination and toughness data).
+#: (``fracture_load_factor`` needs a delamination and toughness data,
+#: ``stress_concentration`` an open hole).
 FE_UQ_OUTPUTS: tuple[str, ...] = (
     'knockdown', 'effective_modulus', 'first_ply_failure_load_factor',
     'interior_first_ply_failure_load_factor', 'max_failure_index',
-    'fracture_load_factor')
+    'fracture_load_factor', 'stress_concentration')
 
 #: The default output of :meth:`FEUncertainty.ranking`.
 _DEFAULT_RANKED = 'first_ply_failure_load_factor'
@@ -100,7 +102,11 @@ class FEUncertainty:
         (the largest value of its map), ``Vp_spatial_cov`` (the CoV of its
         map's grid values) and each scattered material field.
     mesh : tuple of int
-        ``(nx, ny, nz)`` of every solve.
+        ``(nx, ny, nz)`` of every solve (with an open hole, the element
+        counts along the coupon's long and short edges, and ``nz``).
+    open_hole : dict or None
+        The open-hole coupon of every solve (``hole_diameter_mm``,
+        ``width_mm``, ``length_mm``), ``None`` for the plain coupon.
     """
 
     loading: str
@@ -117,6 +123,7 @@ class FEUncertainty:
     samples: dict[str, np.ndarray]
     inputs: dict[str, np.ndarray]
     mesh: tuple[int, int, int] = (0, 0, 0)
+    open_hole: dict[str, float] | None = None
 
     @property
     def outputs(self) -> tuple[str, ...]:
@@ -197,6 +204,7 @@ class FEUncertainty:
             'vp_cov': self.vp_cov,
             'spec': {k: list(v) for k, v in self.spec.items()},
             'mesh': list(self.mesh),
+            'open_hole': None if self.open_hole is None else dict(self.open_hole),
             'percentiles': list(self.percentiles),
             'nominal': {k: finite_or_none(v) for k, v in self.nominal.items()},
             'statistics': {k: self.statistics(k) for k in self.samples},
@@ -206,12 +214,14 @@ class FEUncertainty:
         }
 
 
-def _outputs(result: Any) -> dict[str, float | None]:
+def _outputs(result: Any, mesh: CompositeMesh) -> dict[str, float | None]:
     """The :data:`FE_UQ_OUTPUTS` of one FE solve (``None`` where it has none)."""
     out: dict[str, float | None] = {}
     for name in FE_UQ_OUTPUTS:
         value = getattr(result, name, None)
         out[name] = None if value is None else float(value)
+    if isinstance(mesh, OpenHoleMesh):
+        out['stress_concentration'] = open_hole_analysis(result, mesh).stress_concentration
     return out
 
 
@@ -224,8 +234,9 @@ def fe_porosity_uncertainty(
     seed: int | None = None, method: str = 'monte_carlo',
     percentiles: tuple[float, ...] = Calibration.UQ_DEFAULT_PERCENTILES,
     ply_angles: list[float] | str = 'QI', config: dict | None = None,
-    mesh_res: tuple[int, int, int] | None = None, length: float = 50.0,
-    width: float = 20.0, delaminations: Sequence[Delamination] | None = None,
+    mesh_res: tuple[int, int, int] | None = None, length: float | None = None,
+    width: float | None = None, delaminations: Sequence[Delamination] | None = None,
+    open_hole: Mapping[str, Any] | None = None,
     porosity_degradation: str = 'isotropic', **solve_kwargs: Any,
 ) -> FEUncertainty:
     """Monte Carlo of FE solves over random in-plane porosity fields.
@@ -277,11 +288,21 @@ def fe_porosity_uncertainty(
         ``void_shape``.
     mesh_res : (int, int, int), optional
         ``(nx, ny, nz)``; default the production mesh of the laminate.
-    length, width : float
-        The coupon, in mm (default 50 x 20).
+    length, width : float, optional
+        The coupon, in mm: default 50 x 20, or with ``open_hole`` the
+        open-hole coupon's (36 wide, three times as long).
     delaminations : sequence of Delamination, optional
         An explicit delamination in every solve; with toughness data the
         ``fracture_load_factor`` is an output.
+    open_hole : mapping, optional
+        Solve the open-hole coupon (:meth:`CompositeMesh.for_open_hole
+        <porosity_fe.CompositeMesh.for_open_hole>`) instead, with these
+        arguments of it (``hole_diameter``, ``n_circumferential``,
+        ``n_radial``, ``radial_growth``, ``nz``; ``{}`` for its defaults),
+        under ``'compression'`` or ``'tension'``: the voids at the hole
+        edge count most. ``stress_concentration`` is then an output
+        (:func:`~porosity_fe.open_hole_analysis`). Not with ``mesh_res`` or
+        ``delaminations``.
     porosity_degradation : str
         Of :class:`~porosity_fe.FESolver` (default ``'isotropic'``).
     **solve_kwargs
@@ -349,8 +370,31 @@ def fe_porosity_uncertainty(
     pcts = tuple(float(p) for p in percentiles)
     resolved = _normalize_uq_spec(mat, covs, spec)
     names = list(resolved)
-    nx, ny, nz = mesh_res if mesh_res is not None else \
-        _default_mesh_resolution(mat.n_plies, ply_angles)
+    hole: dict[str, Any] | None = None
+    if open_hole is not None:
+        if loading not in OPEN_HOLE_LOADINGS:
+            raise ValueError(
+                f"An open-hole study takes {list(OPEN_HOLE_LOADINGS)}; got {loading!r}.")
+        if mesh_res is not None or delaminations:
+            raise ValueError("open_hole sets its own mesh: give no mesh_res or "
+                             "delaminations with it.")
+        hole = dict(open_hole)
+        for key in ('width', 'length', 'ply_angles', 'porosity_field', 'material'):
+            if key in hole:
+                raise ValueError(f"open_hole cannot set {key!r}: use the study's own "
+                                 f"argument.")
+        width = 36.0 if width is None else width
+        length = 3.0 * width if length is None else length
+        probe = CompositeMesh.for_open_hole(PorosityField(mat, 0.0), mat, width=width,
+                                            length=length, ply_angles=ply_angles, **hole)
+        nx, ny, nz = probe.nx, probe.ny, probe.nz
+        hole_record = {'hole_diameter_mm': probe.open_hole_geometry.hole_diameter,
+                       'width_mm': float(width), 'length_mm': float(length)}
+    else:
+        width = 20.0 if width is None else width
+        length = 50.0 if length is None else length
+        nx, ny, nz = mesh_res if mesh_res is not None else \
+            _default_mesh_resolution(mat.n_plies, ply_angles)
     field_settings = {
         'cov': float(cov), 'kernel': kernel, 'preserve_mean': bool(preserve_mean),
         'correlation_length_mm': (list(map(float, correlation_length))
@@ -362,18 +406,22 @@ def fe_porosity_uncertainty(
     defects = {} if not delaminations else {'delaminations': list(delaminations)}
 
     def solve(material_obj: MaterialProperties, pf: PorosityField):
-        mesh = CompositeMesh(pf, material_obj, nx, ny, nz, ply_angles=ply_angles,
-                             length=length, width=width, **defects)
+        if hole is not None:
+            mesh = CompositeMesh.for_open_hole(pf, material_obj, width=width, length=length,
+                                               ply_angles=ply_angles, **hole)
+        else:
+            mesh = CompositeMesh(pf, material_obj, nx, ny, nz, ply_angles=ply_angles,
+                                 length=length, width=width, **defects)
         solver = FESolver(mesh, material_obj, pf, ply_angles=ply_angles,
                           porosity_degradation=porosity_degradation)
-        return solver.solve(loading, **solve_kwargs)
+        return _outputs(solver.solve(loading, **solve_kwargs), mesh)
 
     # Every solve warns alike (a distorted mesh, say): the study collects
     # the warnings and raises each once at the end.
     messages: dict[str, warnings.WarningMessage] = {}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        nominal = _outputs(solve(mat, PorosityField(mat, nominal_vp, **config)))
+        nominal = solve(mat, PorosityField(mat, nominal_vp, **config))
     for w in caught:
         messages.setdefault(str(w.message), w)
     recorded = [k for k in FE_UQ_OUTPUTS if nominal[k] is not None]
@@ -402,7 +450,7 @@ def fe_porosity_uncertainty(
                 drawn, vp, cov=cov, correlation_length=correlation_length,
                 length=length, width=width, kernel=kernel, resolution=resolution,
                 seed=map_seed, preserve_mean=preserve_mean, **config)
-            out = _outputs(solve(drawn, pf))
+            out = solve(drawn, pf)
         for w in caught:
             messages.setdefault(str(w.message), w)
         for k in recorded:
@@ -426,7 +474,7 @@ def fe_porosity_uncertainty(
         seed=seed, method=method, field=field_settings, vp_cov=vp_cov,
         spec={k: list(v) for k, v in resolved.items()}, percentiles=pcts,
         nominal={k: nominal[k] for k in recorded}, samples=samples, inputs=inputs,
-        mesh=(int(nx), int(ny), int(nz)))
+        mesh=(int(nx), int(ny), int(nz)), open_hole=hole_record if hole is not None else None)
 
 
 def save_fe_uncertainty_to_json(study: FEUncertainty, filename: str | os.PathLike, *,

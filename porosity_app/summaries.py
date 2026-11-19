@@ -1007,3 +1007,49 @@ def fe_uq_summary(study) -> tuple[list, str]:
         f"sqrt(stiffness retention) heuristic, so read the spread, not the level. "
         f"Seeded: the same inputs give the same draws.")
     return rows, caption
+
+
+# ----------------------------------------------------------------------
+# Open-hole notch
+# ----------------------------------------------------------------------
+
+def open_hole_summary(out: dict, plain_fe=None, *, d0: float | None = None,
+                      unnotched_strength: float | None = None) -> tuple[list, str]:
+    """Metrics and caption of an open-hole run (:func:`run_open_hole`), with
+    the analysis' plain-coupon FE solve ``plain_fe`` to compare."""
+    a, fe = out["analysis"], out["fe"]
+    g = a.geometry
+    rows = [
+        ("K_T (FE)", f"{a.stress_concentration:.3f}",
+         "Laminate-average axial stress at the hole edge over the gross far-field "
+         "stress."),
+        ("K_T (Lekhnitskii-Tan)", f"{a.reference_stress_concentration:.3f}",
+         "Orthotropic infinite-plate value of the pristine laminate with Tan's "
+         "finite-width correction."),
+    ]
+    fpf = fe.first_ply_failure_load_factor
+    if fpf is not None and math.isfinite(fpf):
+        plain = getattr(plain_fe, "first_ply_failure_load_factor", None)
+        rows.append(("First-ply failure load factor", f"{fpf:.4g}",
+                     "Of the coupon with the hole (the uncalibrated FE strength "
+                     "heuristic)" + ("" if plain is None else
+                                     f"; {plain:.4g} without the hole.")))
+    if d0 is not None:
+        factor = a.point_stress_factor(d0)
+        rows.append((f"Point-stress factor at {d0:g} mm", f"{factor:.4f}",
+                     "Notched over unnotched strength by the Whitney-Nuismer "
+                     "point-stress criterion."))
+        if unnotched_strength is not None:
+            rows.append(("Notched strength", f"{factor * unnotched_strength:.4g} MPa",
+                         "The unnotched laminate strength you entered times the "
+                         "point-stress factor."))
+    caption = (
+        f"Open-hole coupon {g.width:g} mm wide with a {g.hole_diameter:g} mm hole "
+        f"(D/W = {g.diameter_to_width:.3g}), modelled {g.length:g} mm long and gripped "
+        f"at the ends, with the analysis' material, layup, porosity and load. The mesh "
+        f"is mapped around the hole; the stress concentration of a strongly "
+        f"orthotropic laminate converges slowly with it (refine in the library), while "
+        f"the stress a millimetre from the edge, which the notch criteria read, has "
+        f"converged. The characteristic distance d0 is the material's, fitted to "
+        f"notched tests: none ships.")
+    return rows, caption

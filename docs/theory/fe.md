@@ -642,6 +642,80 @@ edges and load line, far below the shear the specimen carries now; the
 peak $\lvert\tau_{13}\rvert$ goes from about $5.9$ to $1.5$ times
 $0.75 P / (b h)$.
 
+## Open-hole coupons
+
+{meth}`CompositeMesh.for_open_hole <porosity_fe.CompositeMesh.for_open_hole>`
+meshes the open-hole tension and compression coupons (ASTM D5766, D6484: 36 mm
+wide with a 6 mm hole) around the hole, and returns an
+{class}`~porosity_fe.OpenHoleMesh`:
+
+- a ring of elements maps the circle to a square of the coupon's width. Each
+  of the $4 n_c$ angular divisions runs on a straight line from the hole to
+  the point at the same fraction of the square's side;
+- the rings widen outward geometrically, the first a quarter as wide as the
+  elements are long around the hole, since the peak at the edge is steep;
+- rectangular end blocks share the square's sides, their columns lengthening
+  by 1.25 away from the hole up to 18 element-layer thicknesses;
+- the in-plane mesh is extruded through the plies like the coupon's.
+
+Every per-node and per-element array is the coupon's, so porosity sampling,
+ply angles, discrete voids, the
+`'compression'` and `'tension'` loads (the end faces are planar) and the
+failure metrics run unchanged; a random porosity map of the coupon's size lines
+up with it. The default model is $3W$ long between the grips. Delaminations,
+the interface traction recovery and the grid plots need the rectangular grid
+and refuse it.
+
+{func}`~porosity_fe.open_hole_analysis` reads a solve. The far-field stress
+$\sigma_\infty$ is the end reaction over the gross section $W h$. The
+laminate-average axial stress along the net section, $\bar\sigma_{xx}(d)$ at
+distance $d$ from the hole edge, comes from the recovered stresses, averaged
+over each element layer and then through the thickness, on the two
+ligaments. It gives:
+
+- the stress concentration $K_T = \bar\sigma_{xx}(0)/\sigma_\infty$ (gross)
+  and its net-section value $K_T (1 - D/W)$;
+- the reference: Lekhnitskii's orthotropic infinite-plate value from the
+  pristine laminate's in-plane constants (lamination theory),
+  $K_T^\infty = 1 + \sqrt{2(\sqrt{E_x/E_y} - \nu_{xy}) + E_x/G_{xy}}$, with
+  Tan's finite-width correction
+  ({func}`~porosity_fe.orthotropic_stress_concentration`). For an in-plane
+  isotropic laminate it is Heywood's $(2 + (1-\lambda)^3)/(1-\lambda)$,
+  $\lambda = D/W$: 3.094 at $W/D = 6$;
+- the notched-to-unnotched strength ratios of Whitney and Nuismer (1974),
+  by the point-stress criterion $1/(\bar\sigma_{xx}(d_0)/\sigma_\infty)$ and
+  the average-stress criterion $a_0 / \int_0^{a_0} \bar\sigma_{xx}/\sigma_\infty\,dd$.
+  The characteristic distances $d_0$ and $a_0$ are the material's, fitted to
+  notched tests (about 1 mm and 4 mm in their data); none ships.
+  `notched_strength(unnotched, d0=...)` multiplies by the unnotched laminate
+  strength you give.
+
+Porosity enters through the degraded stiffness of every element. A void-rich
+ring at the hole is softer and sheds load, so the peak stress drops, but its
+strength is degraded too and it fails first: 6 % voids within 5 mm of the
+hole's centre lower $K_T$ and the first-ply failure load against the same
+average spread evenly (`tests/test_open_hole.py`). With
+{func}`~porosity_fe.fe_porosity_uncertainty` (`open_hole=`) the random voids
+at the edge spread the failure load further than on the plain coupon: nearly
+twice the CoV on an 8-ply QI coupon (0.61 % against 0.35 %), while $K_T$
+barely moves.
+
+**Verification.** The isotropic plate gives 3.045 against Heywood's 3.094
+(−1.6 %) on the default mesh, and the 8-ply QI laminate gives 3.067 (−0.9 %).
+An orthotropic peak is steeper and converges from below. The 4-ply cross-ply
+($K_T^\text{ref}$ = 5.49) gives 5.07, 5.25 and 5.488 on 12 × 16, 16 × 20 and
+32 × 24 ($n_c \times n_r$) meshes, and a UD laminate (7.39) 6.4 on the
+default mesh. The stress a millimetre from the edge, which the notch
+criteria read, has converged on every mesh: the point-stress factor at 1 mm
+varies by under 1 %. Refine $n_c$ and $n_r$ for an orthotropic $K_T$.
+
+**Cost.** One sparse factorization of the extruded mesh: about 6 s for an
+8-ply laminate and a minute (2 GB) for 24 plies on the default mesh, against
+a few seconds for the plain production coupon. The outer ring's corners and
+the end blocks of thin plies are longer than 20 element-layer thicknesses,
+which the mesh-quality check reports; the incompatible-mode bricks are not
+sensitive to it.
+
 ## Linear buckling
 
 {meth}`FESolver.buckling <porosity_fe.FESolver.buckling>` (also
