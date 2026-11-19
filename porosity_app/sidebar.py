@@ -6,8 +6,10 @@ Split out of ``app.py`` (#224); ``app`` re-exports every name.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import warnings
+from pathlib import PurePath
 
 import streamlit as st
 
@@ -21,6 +23,7 @@ from porosity_fe import (
 from porosity_fe.fracture_specimens import (
     _D6671_MODE_RATIO,
 )
+from porosity_fe.io import _dumps_json, _material_document, _material_from_document
 from porosity_fe.mesh import _layers_merge_angles
 from porosity_fe.pipeline import _default_mesh_resolution
 from porosity_fe.reporting import (
@@ -30,18 +33,34 @@ from porosity_fe.reporting import (
 from .config import (
     _CRITERION_LABELS,
     _DELAMINATION_SHAPES,
+    _DISTRIBUTION_OPTIONS,
     _FLEXURE_MODES,
     _FRACTURE_MODES,
     _FRACTURE_UQ_FIELDS,
     _FRACTURE_UQ_SAMPLES,
     _LOADING_LABELS,
     _NZ_SLIDER_MAX,
+    _PLATE_DEFAULT,
     _POROSITY_DEGRADATION_LABELS,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
+    _VOID_SHAPES,
+    _config_to_key,
     _delta_T_suggestion,
     _fracture_specimen_mesh,
     _resolving_nz,
+)
+from .scenario import (
+    CUSTOM_MATERIAL_KEY,
+    SCENARIO_INPUTS,
+    apply_scenario,
+    custom_material_label,
+    custom_material_record,
+    material_options,
+    parse_scenario,
+    resolve_material,
+    scenario_document,
+    serialise_scenario,
 )
 
 # ======================================================================
@@ -52,12 +71,22 @@ from .config import (
 _DEFAULT_LAYUP = "[0/45/-45/90]_3s"
 
 
-_DISTRIBUTION_OPTIONS = {
-    "uniform": ("uniform", "midplane"),
-    "clustered (midplane)": ("clustered", "midplane"),
-    "clustered (surface)": ("clustered", "surface"),
-    "interface": ("interface", "midplane"),
-}
+def _seed(key: str, default) -> None:
+    """Give a keyed widget its default through the session state.
+
+    A widget created with both a ``value=`` and a value set in the session
+    state makes Streamlit warn, and a loaded scenario sets the inputs
+    through the session state: so the inputs it restores take their
+    default here and are created without ``value=``. Must run before the
+    widget is created in the script run.
+    """
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+def _material(material_name: str):
+    """The material of a Material entry: a preset, or the custom material."""
+    return resolve_material(material_name, st.session_state)
 
 
 def _ilss_specimen_caption(n_plies: int, t_ply: float, nz: int) -> str:
@@ -96,7 +125,7 @@ def _fracture_specimen_size(loading_mode: str, material_name: str, angles: list,
     the run builds it (about 10 ms): the specimen ignores the coupon's nx
     and ny, and its graded mesh is usually far larger."""
     try:
-        material = dataclasses.replace(MATERIALS[material_name], n_plies=len(angles),
+        material = dataclasses.replace(_material(material_name), n_plies=len(angles),
                                        t_ply=float(t_ply))
         cfg = {"nz": int(nz), "angles": list(angles), "crack_length": crack_length,
                "mmb_mode_ratio": mode_ratio}
@@ -186,11 +215,12 @@ def _build_thermal_inputs(material_name: str) -> tuple[str, float | None]:
     disabled until it is filled, by hand or with the labelled suggestion.
     """
     st.subheader("Thermal residual stress (FE)")
-    material = MATERIALS[material_name]
+    material = _material(material_name)
     if not material.has_cte:
         with_cte = ", ".join(n for n, m in MATERIALS.items() if m.has_cte) or "none"
+        kind = "preset" if material_name in MATERIALS else "material"
         st.caption(
-            f"Unavailable for {material_name}: the preset has no lamina "
+            f"Unavailable for {material_name}: the {kind} has no lamina "
             f"thermal expansion coefficients (alpha_1, alpha_2), and the "
             f"solver does not guess them. Presets with CTEs: {with_cte}.")
         return "off", None
@@ -241,7 +271,7 @@ def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
     # The thermal choice comes later in the sidebar: read it from the
     # session. Thermal only solves the free-standing coupon, not the
     # specimen, so its inputs would change nothing (but the cache key).
-    if (MATERIALS[material_name].has_cte
+    if (_material(material_name).has_cte
             and _THERMAL_OPTIONS.get(st.session_state.get("thermal_choice"))
             == "thermal_only"):
         st.caption(
@@ -256,18 +286,20 @@ def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
         f"the critical {load} P_c = λ_c · P; enter the toughness below. The "
         f"default dimensions are a reading of the standard, not checked "
         f"against it.")
+    _seed(f"frac_a0_{loading_mode}", float(a0_default))
     crack_length = st.number_input(
         "Crack length a0 (mm)", min_value=1.0, max_value=500.0,
-        value=float(a0_default), step=1.0, format="%.1f",
+        step=1.0, format="%.1f",
         key=f"frac_a0_{loading_mode}",
         help=("Insert length from the load line (DCB), from the support under "
               "the cracked end (ENF) or from the hinge line (MMB)."),
     )
     mode_ratio = None
     if loading_mode == "mmb":
+        _seed("frac_mmb_ratio", float(_D6671_MODE_RATIO))
         mode_ratio = st.number_input(
             "Mode ratio G_II / G_T (MMB lever)", min_value=0.05, max_value=1.0,
-            value=float(_D6671_MODE_RATIO), step=0.05, format="%.2f",
+            step=0.05, format="%.2f",
             key="frac_mmb_ratio",
             help=("Sets the lever length by beam theory "
                   "(mmb_lever_length); the FE mode mix differs by a few per "
@@ -275,8 +307,8 @@ def _build_fracture_specimen_inputs(loading_mode: str, material_name: str,
         )
         try:
             material = dataclasses.replace(
-                MATERIALS[material_name], t_ply=float(t_ply),
-                n_plies=int(n_plies) or MATERIALS[material_name].n_plies)
+                _material(material_name), t_ply=float(t_ply),
+                n_plies=int(n_plies) or _material(material_name).n_plies)
             c = mmb_lever_length(material, float(mode_ratio),
                                  crack_length=float(crack_length))
             st.caption(f"Lever length c = {c:.1f} mm (beam theory, "
@@ -363,9 +395,10 @@ def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
     if not on:
         return None, False, None
     k_max = max(int(n_plies) - 2, 0)
+    _seed("delam_interface", max(int(n_plies) // 2 - 1, 0))
     interface = st.number_input(
         "Interface k", min_value=0, max_value=200,
-        value=max(int(n_plies) // 2 - 1, 0), step=1, key="delam_interface",
+        step=1, key="delam_interface",
         help=("Interface k lies between ply k and ply k + 1 counted from the "
               "bottom, 0-based (plies k + 1 and k + 2 counted from 1). The "
               "mid-plane of an n-ply laminate is n/2 - 1."),
@@ -384,31 +417,39 @@ def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
     shape = st.selectbox("Planform", options=list(_DELAMINATION_SHAPES),
                          format_func=_DELAMINATION_SHAPES.__getitem__,
                          key="delam_shape")
-    st.caption("Position and size in mm on the FE mesh: the 50 × 20 mm coupon "
-               "(x along the load; the ILSS and flexure specimens have their "
-               "own size, in the Overview after a run).")
+    plate = (st.session_state.get("plate_length", _PLATE_DEFAULT[0]),
+             st.session_state.get("plate_width", _PLATE_DEFAULT[1]))
+    st.caption(f"Position and size in mm on the FE mesh: the {plate[0]:g} × "
+               f"{plate[1]:g} mm coupon (x along the load; the ILSS and flexure "
+               f"specimens have their own size, in the Overview after a run).")
     c1, c2 = st.columns(2)
     try:
         if shape == "strip":
             with c1:
-                x0 = st.number_input("x start (mm)", value=20.0, step=1.0,
+                _seed("delam_x_start", 20.0)
+                x0 = st.number_input("x start (mm)", step=1.0,
                                      format="%.2f", key="delam_x_start")
             with c2:
-                x1 = st.number_input("x end (mm)", value=30.0, step=1.0,
+                _seed("delam_x_end", 30.0)
+                x1 = st.number_input("x end (mm)", step=1.0,
                                      format="%.2f", key="delam_x_end")
             delamination = Delamination.strip(int(interface), float(x0), float(x1))
         else:
             with c1:
-                xc = st.number_input("Centre x (mm)", value=25.0, step=1.0,
+                _seed("delam_xc", 25.0)
+                xc = st.number_input("Centre x (mm)", step=1.0,
                                      format="%.2f", key="delam_xc")
+                _seed("delam_lx", 10.0)
                 lx = st.number_input("Length along x (mm)", min_value=0.01,
-                                     value=10.0, step=1.0, format="%.2f",
+                                     step=1.0, format="%.2f",
                                      key="delam_lx")
             with c2:
-                yc = st.number_input("Centre y (mm)", value=10.0, step=1.0,
+                _seed("delam_yc", 10.0)
+                yc = st.number_input("Centre y (mm)", step=1.0,
                                      format="%.2f", key="delam_yc")
+                _seed("delam_wy", 6.0)
                 wy = st.number_input("Width along y (mm)", min_value=0.01,
-                                     value=6.0, step=1.0, format="%.2f",
+                                     step=1.0, format="%.2f",
                                      key="delam_wy")
             build = Delamination.ellipse if shape == "ellipse" else Delamination.rectangle
             delamination = build(int(interface), (float(xc), float(yc)),
@@ -421,8 +462,9 @@ def _build_delamination_inputs(loading_mode: str, thermal_mode: str,
         st.caption("The knockdown split by defect needs a mechanical load; "
                    "thermal only has none, so it is not computed.")
         return delamination, False, problem
+    _seed("delam_split", True)
     split = st.checkbox(
-        "Split the knockdown by defect (2 more FE solves)", value=True,
+        "Split the knockdown by defect (2 more FE solves)",
         key="delam_split",
         help=("Also solves the laminate with the porosity but no delamination, "
               "and with the delamination but no porosity, so the Results show "
@@ -552,8 +594,9 @@ def _build_fracture_uq_inputs(law: str) -> list[float] | None:
     for i, name in enumerate(_FRACTURE_UQ_FIELDS):
         disabled = no_b and name.startswith("b_")
         with columns[i % 2]:
+            _seed(f"frac_uq_{name}", 0.0)
             value = st.number_input(
-                _FRACTURE_UQ_LABELS[name], min_value=0.0, max_value=1.0, value=0.0,
+                _FRACTURE_UQ_LABELS[name], min_value=0.0, max_value=1.0,
                 step=0.01, format="%.3f", key=f"frac_uq_{name}", disabled=disabled,
                 help=("No coefficient to scatter without a porosity knockdown."
                       if disabled else "Coefficient of variation, a fraction."))
@@ -563,6 +606,142 @@ def _build_fracture_uq_inputs(law: str) -> list[float] | None:
                 "you do.")
         return None
     return covs
+
+
+def _load_material_upload() -> None:
+    """On-change callback of the material file: make it the custom material.
+
+    A valid file becomes the custom material and is selected; an invalid
+    one leaves the inputs alone and says why. The status is stored as
+    ``st.session_state["_material_status"] = (level, message)``.
+    """
+    upload = st.session_state.get("material_upload")
+    if upload is None:
+        st.session_state.pop("_material_status", None)
+        return
+    try:
+        try:
+            document = json.loads(upload.getvalue())
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"not valid JSON ({exc})") from None
+        material, name = _material_from_document(document, upload.name)
+    except ValueError as exc:
+        st.session_state["_material_status"] = ("err", f"Not loaded: {exc}")
+        return
+    record = custom_material_record(material, name or PurePath(upload.name).stem)
+    st.session_state[CUSTOM_MATERIAL_KEY] = record
+    st.session_state["material_select"] = custom_material_label(record["name"])
+    st.session_state["_material_status"] = (
+        "ok", f"Loaded {record['name']}: E11 = {material.E11:g}, E22 = "
+              f"{material.E22:g}, G12 = {material.G12:g} MPa. It is selected "
+              f"as the material.")
+
+
+def _remove_custom_material() -> None:
+    """On-click callback: drop the custom material and go back to a preset."""
+    st.session_state.pop(CUSTOM_MATERIAL_KEY, None)
+    st.session_state.pop("_material_status", None)
+    st.session_state["material_select"] = next(iter(MATERIALS))
+
+
+def _build_custom_material_inputs(material_name: str) -> None:
+    """Load a material from a JSON file, and download the selected one."""
+    with st.expander("Custom material"):
+        st.caption(
+            "To analyse a material that is not a preset, download the "
+            "selected material as a template, change its values and load the "
+            "file: it is added to the Material list. Units: MPa, mm, "
+            "fractions; 1/K for the thermal expansion and N/mm for the "
+            "toughness. The ply thickness and the ply count come from the "
+            "inputs below, not from the file.")
+        label = material_name.removeprefix("Custom: ")
+        st.download_button(
+            "Download the selected material (JSON)",
+            data=_dumps_json(_material_document(_material(material_name), label)),
+            file_name=f"{'_'.join(label.split()) or 'material'}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="dl_material_json",
+        )
+        st.file_uploader("Material file (JSON)", type=["json"],
+                         key="material_upload", on_change=_load_material_upload)
+        status = st.session_state.get("_material_status")
+        if status:
+            (st.success if status[0] == "ok" else st.error)(status[1])
+        if st.session_state.get(CUSTOM_MATERIAL_KEY):
+            st.button("Remove the custom material", key="material_remove",
+                      on_click=_remove_custom_material)
+
+
+def _load_scenario_upload() -> None:
+    """On-change callback of the scenario file: restore its inputs.
+
+    The status is stored as ``st.session_state["_scenario_status"] =
+    (level, message, notes)``; ``notes`` name the inputs not restored.
+    """
+    upload = st.session_state.get("scenario_upload")
+    if upload is None:
+        st.session_state.pop("_scenario_status", None)
+        return
+    try:
+        document = parse_scenario(upload.getvalue())
+    except ValueError as exc:
+        st.session_state["_scenario_status"] = ("err", f"Not loaded: {exc}", [])
+        return
+    notes = apply_scenario(document, st.session_state)
+    restored = sum(key in SCENARIO_INPUTS for key in document["inputs"]) \
+        - sum(not note.startswith("The custom material")
+              and "not an input" not in note for note in notes)
+    if document.get("name"):
+        st.session_state["scenario_name"] = str(document["name"])
+    _validate_layup_inline()
+    st.session_state["_scenario_status"] = (
+        "warn" if notes else "ok",
+        f"Restored {restored} inputs from {upload.name}. Press Run analysis "
+        f"to repeat the run.", notes)
+
+
+def _build_scenario_inputs(cfg: dict | None) -> None:
+    """Save the sidebar inputs to a scenario file, and load one.
+
+    ``cfg`` is the config of the inputs, ``None`` when they do not make one
+    (an invalid layup): the scenario then holds the inputs only.
+    """
+    with st.sidebar:
+        st.subheader("Scenario")
+        with st.expander("Save or load the inputs"):
+            st.caption(
+                "A scenario file holds every input of the sidebar, a custom "
+                "material when one is selected, and the headline numbers of "
+                "the run. Loading it restores the inputs; after the next run "
+                "the Results tab compares the two runs.")
+            name = st.text_input("Scenario name (optional)", key="scenario_name")
+            # The numbers of the run, only while the inputs are still its own.
+            result = st.session_state.get("result")
+            current = result is not None and cfg is not None and \
+                _config_to_key(result["config"]) == _config_to_key(cfg)
+            document = scenario_document(st.session_state, name,
+                                         result if current else None)
+            st.download_button(
+                "Download scenario (JSON)",
+                data=serialise_scenario(document),
+                file_name=f"{'_'.join(name.split()) or 'porosity_scenario'}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_scenario_json",
+                help=("With the results of the last run."
+                      if current else
+                      "Inputs only: run the analysis first to include its "
+                      "results."),
+            )
+            st.file_uploader("Scenario file (JSON)", type=["json"],
+                             key="scenario_upload", on_change=_load_scenario_upload)
+            status = st.session_state.get("_scenario_status")
+            if status:
+                level, message, notes = status
+                {"ok": st.success, "warn": st.warning, "err": st.error}[level](message)
+                for note in notes:
+                    st.caption(f"Not restored: {note}")
 
 
 def _build_sidebar_inputs() -> dict | None:
@@ -587,11 +766,16 @@ def _build_sidebar_inputs() -> dict | None:
         )
 
         st.subheader("Material & laminate")
+        materials = material_options(st.session_state)
+        if st.session_state.get("material_select") not in materials:
+            # No selection yet, or its custom material is gone.
+            st.session_state["material_select"] = materials[0]
         material_name = st.selectbox(
             "Material",
-            options=list(MATERIALS.keys()),
-            index=0,
+            options=materials,
+            key="material_select",
         )
+        _build_custom_material_inputs(material_name)
         # Keyed, with no value=: _render seeds the default through
         # st.session_state (passing both made Streamlit warn).
         layup_str = st.text_input(
@@ -610,15 +794,19 @@ def _build_sidebar_inputs() -> dict | None:
         if _layup_status:
             _level, _msg = _layup_status
             (st.success if _level == "ok" else st.error)(_msg)
+        _seed("t_ply_input", 0.183)
         t_ply = st.number_input(
             "Ply thickness (mm)",
-            min_value=0.05, max_value=0.50, value=0.183, step=0.01, format="%.3f",
+            min_value=0.05, max_value=0.50, step=0.01, format="%.3f",
+            key="t_ply_input",
         )
 
         st.subheader("Porosity")
+        _seed("vp_input", 3.0)
         Vp = st.number_input(
             "Void content Vp (%)",
-            min_value=0.1, max_value=15.0, value=3.0, step=0.5, format="%.1f",
+            min_value=0.1, max_value=15.0, step=0.5, format="%.1f",
+            key="vp_input",
             help=(
                 "Enter a percentage: 3.0 means 3 % voids (a volume fraction "
                 "of 0.03). Typical range: 0.5–5 % for autoclave, 2–10 % for OOA. "
@@ -630,6 +818,7 @@ def _build_sidebar_inputs() -> dict | None:
             "Distribution",
             options=list(_DISTRIBUTION_OPTIONS.keys()),
             index=0,
+            key="distribution_select",
             help=(
                 "Through-thickness shape of the porosity field. All "
                 "options renormalize to the same specimen-average Vp, "
@@ -656,8 +845,9 @@ def _build_sidebar_inputs() -> dict | None:
         )
         void_shape = st.selectbox(
             "Void shape",
-            options=["spherical", "cylindrical", "penny"],
+            options=list(_VOID_SHAPES),
             index=0,
+            key="void_shape_select",
             help=(
                 "spherical: equiaxed (AR=1)\n"
                 "cylindrical: prolate (AR=3)\n"
@@ -671,6 +861,7 @@ def _build_sidebar_inputs() -> dict | None:
             options=list(_LOADING_LABELS),
             format_func=_LOADING_LABELS.__getitem__,
             index=0,
+            key="loading_select",
             help=(
                 "The empirical knockdowns of compression, tension, shear "
                 "and ILSS are always all computed; this selects the FE "
@@ -703,6 +894,7 @@ def _build_sidebar_inputs() -> dict | None:
             options=list(_CRITERION_LABELS),
             format_func=_CRITERION_LABELS.__getitem__,
             index=0,
+            key="criterion_select",
             help=(
                 "Criterion of the FE failure index and first-ply-failure "
                 "load factor. Tsai-Wu gives one interactive index; Hashin "
@@ -724,14 +916,14 @@ def _build_sidebar_inputs() -> dict | None:
         specimen = loading_mode in _FRACTURE_MODES and thermal_mode != "thermal_only"
         toughness, tough_problem = ({}, None)
         if delamination is not None or specimen:
-            toughness, tough_problem = _build_toughness_inputs(MATERIALS[material_name])
+            toughness, tough_problem = _build_toughness_inputs(_material(material_name))
 
         try:
             entered_layup = parse_layup(layup_str) if n_plies else None
         except ValueError:
             entered_layup = None
         nx0, ny0, nz0 = _default_mesh_resolution(
-            n_plies or MATERIALS[material_name].n_plies, entered_layup)
+            n_plies or _material(material_name).n_plies, entered_layup)
         if not n_plies or nz0 == n_plies:
             mesh_note = "one element layer per ply"
         elif not _layers_merge_angles(entered_layup, nz0):
@@ -741,9 +933,34 @@ def _build_sidebar_inputs() -> dict | None:
             mesh_note = f"nz capped at {nz0} for the {n_plies}-ply layup"
 
         st.subheader("Mesh")
+        # The coupon's in-plane size; the ASTM specimens set their own.
+        uses_coupon = thermal_mode == "thermal_only" or loading_mode not in (
+            "ilss", *_FLEXURE_MODES, *_FRACTURE_MODES)
+        length, width = _PLATE_DEFAULT
+        if uses_coupon:
+            c1, c2 = st.columns(2)
+            with c1:
+                _seed("plate_length", _PLATE_DEFAULT[0])
+                length = st.number_input(
+                    "Plate length (mm)", min_value=5.0, max_value=2000.0,
+                    step=5.0, format="%.1f", key="plate_length",
+                    help=("In-plane size of the FE coupon along the load (x). "
+                          "The default is the 50 mm coupon. The empirical "
+                          "knockdowns do not depend on it."))
+            with c2:
+                _seed("plate_width", _PLATE_DEFAULT[1])
+                width = st.number_input(
+                    "Plate width (mm)", min_value=2.0, max_value=1000.0,
+                    step=5.0, format="%.1f", key="plate_width",
+                    help="In-plane size of the FE coupon across the load (y).")
+        else:
+            st.caption("The plate size does not apply: this loading mode solves "
+                       "its ASTM specimen, which sets its own size.")
         if expert:
-            nx = st.slider("nx", min_value=2, max_value=200, value=nx0, step=1)
-            ny = st.slider("ny", min_value=2, max_value=100, value=ny0, step=1)
+            _seed("mesh_nx", nx0)
+            _seed("mesh_ny", ny0)
+            nx = st.slider("nx", min_value=2, max_value=200, step=1, key="mesh_nx")
+            ny = st.slider("ny", min_value=2, max_value=100, step=1, key="mesh_ny")
             # Keyed and initialised through st.session_state (not value=) so
             # the "Use nz = ..." button can set it; it follows the layup's
             # default until the user moves it.
@@ -786,6 +1003,14 @@ def _build_sidebar_inputs() -> dict | None:
         elif not fracture_size:
             st.caption(f"Default mesh: {nx} × {ny} × {nz}, {mesh_note} "
                        f"(enable Expert mode to change).")
+        custom_plate = uses_coupon and (float(length), float(width)) != _PLATE_DEFAULT
+        if custom_plate:
+            st.caption(
+                f"Plate {length:g} × {width:g} mm: in-plane elements of "
+                f"{length / nx:.2f} × {width / ny:.2f} mm. The mesh does not "
+                f"follow the plate size: set nx and ny in Expert mode to keep "
+                f"the elements near the default coupon's "
+                f"{_PLATE_DEFAULT[0] / nx0:.2f} × {_PLATE_DEFAULT[1] / ny0:.2f} mm.")
         if fracture_size:
             standard, specimen_name = _FRACTURE_MODES[loading_mode][:2]
             fx, fy, fz = fracture_size
@@ -857,9 +1082,13 @@ def _build_sidebar_inputs() -> dict | None:
         angles = parse_layup(layup_str)
     except ValueError as exc:
         st.error(f"Invalid layup: {exc}")
+        # A scenario can still be loaded (its layup replaces this one).
+        _build_scenario_inputs(None)
         return None
 
     distribution, cluster_location = _DISTRIBUTION_OPTIONS[distribution_label]
+    custom = st.session_state.get(CUSTOM_MATERIAL_KEY)
+    is_custom = bool(custom) and material_name == custom_material_label(custom["name"])
     cfg = {
         "material_name": material_name,
         "angles": angles,
@@ -887,5 +1116,10 @@ def _build_sidebar_inputs() -> dict | None:
         "onset_x_avg": onset_x_avg,
         "crack_length": crack_length,
         "mmb_mode_ratio": mmb_mode_ratio,
+        # A custom material and a plate size other than the default coupon.
+        "material": dict(custom["fields"]) if is_custom else None,
+        "length": float(length) if custom_plate else None,
+        "width": float(width) if custom_plate else None,
     }
+    _build_scenario_inputs(cfg)
     return {"cfg": cfg, "layup_str": layup_str, "run": run}

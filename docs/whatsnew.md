@@ -33,8 +33,9 @@ smeared porosity ({doc}`theory/delamination`):
 - **Delamination in the app** (a Defects panel), the CLI and the NCR
   record, all opt-in.
 
-The load factor predicts growth onset only: there is no propagation,
-cohesive zone or buckling.
+The load factor predicts growth onset only: there is no propagation or
+cohesive zone, and it takes no buckling into account (see linear buckling
+below).
 
 ## Porosity
 
@@ -98,14 +99,29 @@ cohesive zone or buckling.
   - the mesh-convergence check
   - uncertainty analysis
   - a PNG download per figure and a VTU download
+  - a custom material loaded from a JSON file, the plate size as an input,
+    and saved scenarios that restore the inputs and compare two runs
+  - a fatigue and environment panel in the Results tab
 
   The app is now the `porosity_app` package; `streamlit run app.py` is
   unchanged.
 - **`porosity-analyze`** gained `--jobs N` (parallel sweeps), `--uq`
   (uncertainty propagation) and delamination screening. It also takes the
   laminate (`--layup`, `--t-ply`), a choice of configurations
-  (`--configs`), an FE solve per configuration (`--fe LOADING`) and the
-  allowable porosity (`--required-knockdown`).
+  (`--configs`), an FE solve per configuration (`--fe LOADING`), the
+  allowable porosity (`--required-knockdown`), solver material cards
+  (`--material-cards`), a material from a JSON file (`--material-file`)
+  and the fatigue and hygrothermal knockdowns (`--cycles`,
+  `--service-temperature`, `--moisture`).
+- **Linear buckling (FE)**: `FESolver.buckling` gives the buckling load
+  factors and modes of the compression or shear coupon, with porosity in
+  each element's stiffness and the sublaminate buckling over a
+  delamination; `porosity-analyze --buckling` and a Results-tab panel run
+  it against the void-free laminate.
+- **Fatigue options** (opt-in): a Goodman mean-stress correction to the
+  stress ratio, which may differ per mode, and a porosity-dependent S-N
+  slope with no shipped coefficient (`FatigueModel(mean_stress=...,
+  porosity_slope=...)`, `EmpiricalSolver(..., fatigue_model=...)`).
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.
@@ -121,6 +137,10 @@ cohesive zone or buckling.
   largest void content that still retains a required strength, the
   inverse of the knockdown laws. The NCR form takes an optional required
   retained strength and reports the governing allowable void content.
+- **Material cards**: `material_cards` writes the porosity-degraded ply as
+  Abaqus keywords or Nastran `MAT8` / `MAT9` entries, one material per
+  distinct ply void content, with the ply table. `porosity-analyze
+  --material-cards` and the app's Export tab write them too.
 - **JSON exports** carry a `units` block. The results schema is at 1.3,
   with additive blocks only.
 - **An `IM7_8552_epoxy` material preset** carries interlaminar toughness

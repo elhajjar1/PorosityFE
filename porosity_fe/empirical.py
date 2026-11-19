@@ -7,6 +7,7 @@ import functools
 import logging
 import math
 import warnings
+from collections.abc import Mapping
 from typing import Any, Callable
 
 import numpy as np
@@ -29,6 +30,11 @@ from .toughness import (
     _placeholder_applied,
     _resolve_toughness_knockdown,
 )
+
+#: The stress ratio of a fatigue request: one ``R`` for every mode, a
+#: mapping of mode to ``R`` (a mode left out takes the calibration ratio),
+#: or ``None`` for the calibration ratio.
+StressRatio = float | Mapping[str, float] | None
 
 logger = logging.getLogger("porosity_fe_analysis")
 
@@ -411,7 +417,8 @@ class EmpiricalSolver:
                  judd_wright_alpha: dict[str, float] | None = None,
                  power_law_n: dict[str, float] | None = None,
                  linear_beta: dict[str, float] | None = None,
-                 toughness_knockdown: ToughnessKnockdownSpec = 'exponential'):
+                 toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
+                 fatigue_model: FatigueModel | None = None):
         """Empirical knockdown solver.
 
         Parameters
@@ -454,6 +461,13 @@ class EmpiricalSolver:
             coefficients (``b_I = 6.2``, ``b_II = 14``) are uncalibrated.
             Stored resolved as :attr:`toughness_knockdown`. The strength
             modes do not use it.
+        fatigue_model : FatigueModel, optional
+            Keyword-only. The S-N model of a ``cycles=`` request, for its
+            opt-in mean-stress correction or porosity-dependent slope.
+            ``None`` (default) is the calibrated :class:`FatigueModel`, with
+            which ``R`` does not change the result. With a porosity-dependent
+            slope the failure load takes it at the specimen-average ``Vp``,
+            and :meth:`allowable_porosity` at each trial void content.
 
         Attributes
         ----------
@@ -491,6 +505,11 @@ class EmpiricalSolver:
         self.mesh = mesh
         self.material = material
         self.nodal_knockdown = None
+        if fatigue_model is not None and not isinstance(fatigue_model, FatigueModel):
+            raise TypeError(
+                f"fatigue_model must be a FatigueModel or None; got "
+                f"{type(fatigue_model).__name__}.")
+        self.fatigue_model = fatigue_model
         # Per-void cache for the discrete-void SCF post-step (#179). Each
         # entry is a ``(influence_array, scf_dict)`` tuple keyed by the void's
         # index in ``mesh.porosity_field.discrete_voids``. Both the influence
@@ -986,18 +1005,26 @@ class EmpiricalSolver:
 
     def _fatigue_knockdown_factor(self, mode: str,
                                   cycles: float | None,
-                                  R: float | None) -> float:
+                                  R: StressRatio,
+                                  Vp: float | None = None) -> float:
         """Resolve the S-N fatigue knockdown factor (issue #59).
 
         Returns ``1.0`` (back-compat no-op) when ``cycles`` is ``None``.
-        Otherwise instantiates a default :class:`FatigueModel` and
-        evaluates :meth:`FatigueModel.knockdown_factor` at the requested
-        ``cycles`` and ``R`` (``R = 0.1`` if not specified).
+        Otherwise evaluates :meth:`FatigueModel.knockdown_factor` at the
+        requested ``cycles`` and ``R``: of a default :class:`FatigueModel`
+        (``R = 0.1`` if not specified), or of :attr:`fatigue_model`, which
+        takes ``R = None`` as its calibration ratio and ``Vp`` (default the
+        specimen average) for a porosity-dependent slope.
         """
         if cycles is None:
             return 1.0
-        R_eff = 0.1 if R is None else float(R)
-        return float(FatigueModel().knockdown_factor(mode, cycles, R_eff))
+        if isinstance(R, Mapping):
+            R = R.get(mode)
+        if self.fatigue_model is None:
+            R_eff = 0.1 if R is None else float(R)
+            return float(FatigueModel().knockdown_factor(mode, cycles, R_eff))
+        Vp_eff = float(self.mesh.porosity_field.Vp) if Vp is None else float(Vp)
+        return float(self.fatigue_model.knockdown_factor(mode, cycles, R, Vp=Vp_eff))
 
     def _build_void_scf_cache(self) -> list[tuple[np.ndarray, dict[str, float]]]:
         """Precompute each discrete void's influence field and SCF dict (#179).
@@ -1058,7 +1085,7 @@ class EmpiricalSolver:
                       *,
                       cycles: float | None = None,
                       environment: dict[str, float] | None = None,
-                      R: float | None = None):
+                      R: StressRatio = None):
         """Compute per-node knockdown for a given loading mode and model.
 
         Populates ``self.nodal_knockdown`` (shape ``(n_nodes,)``, values in
@@ -1104,9 +1131,11 @@ class EmpiricalSolver:
             knockdown (issue #59). When ``None`` (default) no environment
             effect is applied. The hygrothermal factor comes from
             :meth:`MaterialProperties.environment_knockdown`.
-        R : float, optional
-            Stress ratio for the fatigue knockdown. Currently
-            informational; default (``None``) falls back to ``R = 0.1``
+        R : float or dict, optional
+            Stress ratio ``sigma_min / sigma_max`` of the fatigue knockdown,
+            or a mapping of mode to it. It changes the result only with a
+            :attr:`fatigue_model` that has a mean-stress correction; the
+            default (``None``) is the calibration ratio, ``R = 0.1``
             (tension-tension).
 
         Notes
@@ -1140,7 +1169,7 @@ class EmpiricalSolver:
             self, mode: str,
             model: KnockdownModel | Callable[[float, str], float],
             cycles: float | None, environment: dict[str, float] | None,
-            R: float | None,
+            R: StressRatio,
     ) -> tuple[Callable[[float, str], float], float, float]:
         """Validate a loading request once; return ``(model_func, env_kd, fat_kd)``.
 
@@ -1190,7 +1219,7 @@ class EmpiricalSolver:
                          *,
                          cycles: float | None = None,
                          environment: dict[str, float] | None = None,
-                         R: float | None = None) -> FailureResult:
+                         R: StressRatio = None) -> FailureResult:
         """Compute failure load using specimen-average porosity.
 
         The knockdown is evaluated at the mean Vp (matching how the original
@@ -1228,9 +1257,10 @@ class EmpiricalSolver:
             applied. Composed multiplicatively with porosity and fatigue;
             the result ``details`` dict gains an ``'environment_knockdown'``
             entry when active.
-        R : float, optional
-            Stress ratio for the fatigue knockdown. Currently informational
-            (default ``None`` -> ``R = 0.1``).
+        R : float or dict, optional
+            Stress ratio for the fatigue knockdown, or a mapping of mode to
+            it; see :meth:`apply_loading` (default ``None`` -> the
+            calibration ratio).
 
         Returns
         -------
@@ -1332,6 +1362,8 @@ class EmpiricalSolver:
             details['environment_knockdown'] = float(env_kd)
         if cycles is not None:
             details['fatigue_knockdown'] = float(fat_kd)
+            if self.fatigue_model is not None:
+                details['fatigue_model'] = {**self.fatigue_model.describe(), 'R': R}
         # Record an unvalidated layup amplification (IMPROVEMENT_PLAN 2.7).
         amplified = self._amplified_modes(model, (mode,))
         if amplified:
@@ -1351,7 +1383,7 @@ class EmpiricalSolver:
             *,
             cycles: float | None = None,
             environment: dict[str, float] | None = None,
-            R: float | None = None,
+            R: StressRatio = None,
     ) -> dict:
         """Compute failure loads for all modes against all built-in models.
 
@@ -1371,8 +1403,10 @@ class EmpiricalSolver:
             Hygrothermal conditioning dict (see :meth:`apply_loading`).
             Threaded into every :meth:`get_failure_load` call. ``None`` ->
             no hygrothermal effect.
-        R : float, optional
-            Stress ratio for the fatigue knockdown (informational).
+        R : float or dict, optional
+            Stress ratio for the fatigue knockdown, or a mapping of mode to
+            it (a single ``R`` cannot suit tension, ``0 <= R <= 1``, and
+            compression, ``R >= 1``, under a mean-stress correction).
         """
         results: dict[str, dict[str, FailureResult]] = {}
         all_models: list[tuple[str, str | Callable[[float, str], float]]] = [
@@ -1441,10 +1475,11 @@ class EmpiricalSolver:
             self, required_knockdown: float | None, mode: str,
             model: KnockdownModel | Callable[[float, str], float],
             required_stress: float | None, cycles: float | None,
-            environment: dict[str, float] | None, R: float | None,
+            environment: dict[str, float] | None, R: StressRatio,
     ) -> PorosityAllowable:
         """:meth:`allowable_porosity` without its warnings."""
         details: dict[str, Any]
+        fatigue_of_vp = False     # a fatigue factor that varies with Vp
         if mode in self.PRISTINE_TOUGHNESS_KEY:
             self._check_toughness_request(model, cycles, environment)
             law = self.toughness_knockdown
@@ -1474,9 +1509,20 @@ class EmpiricalSolver:
             required = self._required_knockdown(
                 required_knockdown, required_stress, sigma_0, 'MPa')
 
+            fatigue_of_vp = (cycles is not None and self.fatigue_model is not None
+                             and self.fatigue_model.porosity_slope > 0.0)
+
+            def fatigue(Vp: float) -> float:
+                if not fatigue_of_vp:
+                    return fat_kd
+                with warnings.catch_warnings():
+                    # Warned once for the specimen Vp by _prepare_loading.
+                    warnings.simplefilter('ignore', UserWarning)
+                    return self._fatigue_knockdown_factor(mode, cycles, R, Vp)
+
             def kd(Vp: float) -> float:
                 # The expression of get_failure_load, so the two agree.
-                return float(model_func(Vp, mode)) * env_kd * fat_kd
+                return float(model_func(Vp, mode)) * env_kd * fatigue(Vp)
 
             builtin = monotone = isinstance(model, str)
             label = str(model if builtin else getattr(
@@ -1490,6 +1536,8 @@ class EmpiricalSolver:
                 details['environment_knockdown'] = float(env_kd)
             if cycles is not None:
                 details['fatigue_knockdown'] = float(fat_kd)
+                if self.fatigue_model is not None:
+                    details['fatigue_model'] = {**self.fatigue_model.describe(), 'R': R}
             amplified = self._amplified_modes(model, (mode,))
             if amplified:
                 details['layup_scale'] = float(amplified[mode])
@@ -1497,6 +1545,9 @@ class EmpiricalSolver:
 
         Vp = _largest_vp_meeting(kd, required, monotone=monotone)
         achievable = not math.isnan(Vp)
+        if mode not in self.PRISTINE_TOUGHNESS_KEY and fatigue_of_vp:
+            # The fatigue factor at the allowable (at zero voids without one).
+            details['fatigue_knockdown'] = float(fatigue(Vp if achievable else 0.0))
         if mode in self.PRISTINE_TOUGHNESS_KEY:
             details['toughness_uncalibrated'] = bool(
                 achievable and _placeholder_applied(
@@ -1527,7 +1578,7 @@ class EmpiricalSolver:
                            required_stress: float | None = None,
                            cycles: float | None = None,
                            environment: dict[str, float] | None = None,
-                           R: float | None = None) -> PorosityAllowable:
+                           R: StressRatio = None) -> PorosityAllowable:
         """Largest void content that still meets a retained-strength requirement.
 
         The inverse of :meth:`get_failure_load`: the largest
@@ -1607,7 +1658,7 @@ class EmpiricalSolver:
             *,
             cycles: float | None = None,
             environment: dict[str, float] | None = None,
-            R: float | None = None,
+            R: StressRatio = None,
     ) -> dict[str, dict[str, PorosityAllowable]]:
         """Allowable porosity of the strength modes for every built-in model.
 

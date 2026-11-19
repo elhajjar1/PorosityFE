@@ -73,13 +73,17 @@ class TestAppRender:
         assert result["fe_field"] is not None
         # With a result present the Stress tab renders its component selector.
         assert any(sb.label == "Stress component" for sb in at.selectbox)
-        # Export tab offers the JSON/CSV downloads and the FE field as VTU,
-        # and each of the four figures (profile, mesh, results, stress) a
-        # PNG download.
+        # Export tab offers the JSON/CSV downloads, the FE field as VTU and
+        # the material cards, and each of the four figures (profile, mesh,
+        # results, stress) a PNG download; the sidebar the selected material
+        # and the scenario.
         labels = [b.proto.label for b in at.get("download_button")]
         assert labels.count("Download PNG") == 4
         assert "Download FE results (VTU)" in labels
-        assert len(labels) == 7
+        assert "Download material cards" in labels
+        assert "Download the selected material (JSON)" in labels
+        assert "Download scenario (JSON)" in labels
+        assert len(labels) == 10
 
     def test_ilss_run_shows_the_d2344_specimen(self):
         """ILSS solves the ASTM D2344 short-beam specimen: the sidebar says
@@ -111,10 +115,34 @@ class TestAppRender:
         assert any("disposition" in w.value.lower() for w in at.warning)
         assert any(c.value.startswith("Disposition policy: <= 1 % voids")
                    and "not taken from a cited standard" in c.value for c in at.caption)
-        # ...and all ten download buttons (4 PNG + 3 export + 3 NCR) coexist.
-        assert len(at.get("download_button")) == 10
+        # ...and all thirteen download buttons (2 sidebar + 4 PNG + 4 export
+        # + 3 NCR) coexist.
+        assert len(at.get("download_button")) == 13
         # No required retained strength was entered: no allowable is shown.
         assert not any("Allowable void content" in i.value for i in at.info)
+
+    def test_material_cards_download(self, monkeypatch):
+        """The Export tab offers the degraded ply as solver material cards,
+        in either format and element family; a laminate the cards cannot
+        describe gets a warning instead of the button."""
+        def labels(app):
+            return [b.proto.label for b in app.get("download_button")]
+        at = _run_small_analysis(_fresh_app())
+        assert "Download material cards" in labels(at)
+        at.selectbox(key="cards_format").set_value("Nastran (.bdf)")
+        at.selectbox(key="cards_element").set_value("solid")
+        at.run()
+        assert not at.exception
+        assert "Download material cards" in labels(at)
+
+        def refuse(*args, **kwargs):
+            raise ValueError("no ply to describe")
+        monkeypatch.setattr("porosity_app.tabs.export.material_cards", refuse)
+        at.run()
+        assert not at.exception
+        assert "Download material cards" not in labels(at)
+        assert any(w.value == "No material cards for this laminate: no ply to describe"
+                   for w in at.warning)
 
     def test_ncr_required_retained_strength_adds_the_allowable(self):
         """The optional required retained strength (percent in the form, a
@@ -539,7 +567,7 @@ class TestDefectsPanel:
         assert any("no recommended disposition path" in w.value
                    and "fracture margin of safety" in w.value for w in at.warning)
         assert any("does not recommend a disposition" in i.value for i in at.info)
-        assert len(at.get("download_button")) == 11       # 5 PNG + 3 + 3
+        assert len(at.get("download_button")) == 14       # 2 + 5 PNG + 4 + 3
         # Combined: the porosity's path, labelled as covering the porosity only.
         at.selectbox(key="ncr_indication").set_value("combined")
         _button(at, "Generate summary").click().run()
@@ -671,3 +699,253 @@ class TestSidebarReviewFixes:
         assert not at.exception
         assert not any(n.key == "frac_a0_dcb" for n in at.number_input)
         assert any("the specimen's inputs do not apply" in c.value for c in at.caption)
+
+
+def _material_file(**changes) -> bytes:
+    import dataclasses
+
+    from porosity_fe import MATERIALS
+    from porosity_fe.io import _dumps_json, _material_document
+    material = dataclasses.replace(MATERIALS["T800_epoxy"], **changes)
+    return _dumps_json(_material_document(material, "My T800")).encode()
+
+
+def _success(at, start: str) -> list[str]:
+    return [s.value for s in at.success if s.value.startswith(start)]
+
+
+class TestCustomMaterialAndScenario:
+    def test_a_material_file_becomes_the_selected_material(self):
+        at = _fresh_app()
+        at.file_uploader(key="material_upload").upload(
+            "my.json", _material_file(E22=9000.0), "application/json").run()
+        assert not at.exception
+        assert _success(at, "Loaded My T800: E11 = 161000, E22 = 9000")
+        material = next(sb for sb in at.selectbox if sb.label == "Material")
+        assert material.options[-1] == "Custom: My T800"
+        assert material.value == "Custom: My T800"
+        # Its own CTEs decide the thermal panel: T800 has none.
+        assert any("Unavailable for Custom: My T800: the material has no lamina"
+                   in c.value for c in at.caption)
+        at = _run_small_analysis(at)
+        assert not at.exception
+        result = at.session_state["result"]
+        assert result["material"].E22 == 9000.0
+        assert result["config"]["material"]["E22"] == 9000.0
+        assert any(s.value.startswith("Last run: Custom: My T800") for s in at.success)
+
+    def test_a_bad_material_file_changes_nothing(self):
+        at = _fresh_app()
+        at.file_uploader(key="material_upload").upload(
+            "bad.json", b'{"E11": 1}', "application/json").run()
+        assert not at.exception
+        assert any(e.value.startswith("Not loaded: bad.json: The material is missing E22")
+                   for e in at.error)
+        material = next(sb for sb in at.selectbox if sb.label == "Material")
+        assert "Custom: My T800" not in material.options
+        assert material.value == "T800_epoxy"
+
+    def test_remove_the_custom_material(self):
+        at = _fresh_app()
+        at.file_uploader(key="material_upload").upload(
+            "my.json", _material_file(), "application/json").run()
+        _button(at, "Remove the custom material").click().run()
+        assert not at.exception
+        material = next(sb for sb in at.selectbox if sb.label == "Material")
+        assert material.options == material.options[:9] and material.value == "T800_epoxy"
+        assert not any(b.label == "Remove the custom material" for b in at.button)
+
+    def test_the_selected_material_downloads_as_json(self):
+        """The template download is a JSON file (AppTest exposes its media
+        URL, not its bytes; the document itself is tested in
+        test_material_io.py)."""
+        at = _fresh_app()
+        button = next(b for b in at.get("download_button")
+                      if b.proto.label == "Download the selected material (JSON)")
+        assert button.proto.url.endswith(".json")
+        at.file_uploader(key="material_upload").upload(
+            "my.json", _material_file(), "application/json").run()
+        assert any(b.proto.label == "Download the selected material (JSON)"
+                   for b in at.get("download_button"))
+
+    def test_plate_size_reaches_the_mesh(self):
+        at = _fresh_app()
+        at.toggle[0].set_value(True).run()
+        at.text_input(key="layup_input").set_value("0/90/90/0").run()
+        at.slider(key="mesh_nx").set_value(8)
+        at.slider(key="mesh_ny").set_value(4)
+        at.slider(key="mesh_nz").set_value(4)
+        at.number_input(key="plate_length").set_value(80.0)
+        at.number_input(key="plate_width").set_value(30.0)
+        at.run()
+        assert any(c.value.startswith("Plate 80 × 30 mm: in-plane elements of "
+                                      "10.00 × 7.50 mm") for c in at.caption)
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        mesh = at.session_state["result"]["mesh"]
+        assert (mesh.L_x, mesh.L_y) == (80.0, 30.0)
+        assert any("mesh 8×4×4 on a 80 × 30 mm plate" in s.value for s in at.success)
+
+    def test_the_specimen_modes_have_no_plate_size(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("ilss").run()
+        assert not any(n.label == "Plate length (mm)" for n in at.number_input)
+        assert any(c.value.startswith("The plate size does not apply") for c in at.caption)
+
+    def test_save_and_restore_a_scenario(self):
+        at = _run_small_analysis(_fresh_app())
+        at.number_input(key="plate_length").set_value(60.0).run()
+        _button(at, "Run analysis").click().run()
+        at.text_input(key="scenario_name").set_value("baseline").run()
+        from porosity_app.scenario import scenario_document, serialise_scenario
+        text = serialise_scenario(scenario_document(
+            at.session_state, "baseline", at.session_state["result"]))
+        assert '"summary": {' in text
+
+        bt = _fresh_app()
+        bt.file_uploader(key="scenario_upload").upload(
+            "baseline.json", text.encode(), "application/json").run()
+        assert not bt.exception
+        assert any(s.value.startswith("Restored ") and "from baseline.json" in s.value
+                   for s in bt.success)
+        assert bt.session_state["layup_input"] == "0/90/90/0"
+        assert bt.session_state["expert_mode"] is True
+        assert (bt.session_state["mesh_nx"], bt.session_state["mesh_nz"]) == (8, 4)
+        assert bt.session_state["plate_length"] == 60.0
+        assert bt.session_state["scenario_name"] == "baseline"
+        bt.number_input(key="vp_input").set_value(5.0).run()
+        _button(bt, "Run analysis").click().run()
+        assert not bt.exception
+        assert bt.session_state["result"]["mesh"].L_x == 60.0
+        assert any(h.value == "Compared with the loaded scenario: baseline"
+                   for h in bt.subheader)
+        table = next(df.value for df in bt.dataframe if "Saved run" in df.value.columns)
+        vp = table[table["Quantity"] == "Void content Vp (%)"].iloc[0]
+        assert (vp["Saved run"], vp["This run"], vp["Change (%)"]) == ("3", "5", "+66.67")
+        _button(bt, "Stop comparing").click().run()
+        assert not any(h.value.startswith("Compared with") for h in bt.subheader)
+
+    def test_a_scenario_with_a_custom_material(self):
+        at = _fresh_app()
+        at.file_uploader(key="material_upload").upload(
+            "my.json", _material_file(G12=4000.0), "application/json").run()
+        from porosity_app.scenario import scenario_document, serialise_scenario
+        text = serialise_scenario(scenario_document(at.session_state))
+        bt = _fresh_app()
+        bt.file_uploader(key="scenario_upload").upload(
+            "s.json", text.encode(), "application/json").run()
+        assert not bt.exception
+        assert next(sb for sb in bt.selectbox if sb.label == "Material").value == \
+            "Custom: My T800"
+
+    def test_a_partly_restored_scenario_says_what_was_skipped(self):
+        import json
+        doc = {"format": "porosity-fe.app-scenario", "name": None, "material": None,
+               "summary": None, "inputs": {"vp_input": 2.0, "mesh_nx": 999,
+                                           "removed_input": 1}}
+        at = _fresh_app()
+        at.file_uploader(key="scenario_upload").upload(
+            "old.json", json.dumps(doc).encode(), "application/json").run()
+        assert not at.exception
+        assert any(w.value.startswith("Restored 1 inputs from old.json") for w in at.warning)
+        notes = [c.value for c in at.caption if c.value.startswith("Not restored: ")]
+        assert "Not restored: mesh_nx: 999 is outside 2 to 200; not restored." in notes
+        assert "Not restored: removed_input: not an input of this version; skipped." in notes
+        assert at.session_state["vp_input"] == 2.0
+
+    def test_not_a_scenario_file(self):
+        at = _fresh_app()
+        at.file_uploader(key="scenario_upload").upload(
+            "mat.json", _material_file(), "application/json").run()
+        assert not at.exception
+        assert any(e.value.startswith("Not loaded: The file is not a saved scenario")
+                   for e in at.error)
+
+    def test_a_scenario_restores_a_broken_layup(self):
+        """The scenario panel stays with an invalid layup, so a scenario
+        can replace it."""
+        import json
+        at = _fresh_app()
+        at.text_input(key="layup_input").set_value("garbage ###").run()
+        assert any(e.value.startswith("Invalid layup") for e in at.error)
+        doc = {"format": "porosity-fe.app-scenario", "name": None, "material": None,
+               "summary": None, "inputs": {"layup_input": "[0/90]s"}}
+        at.file_uploader(key="scenario_upload").upload(
+            "fix.json", json.dumps(doc).encode(), "application/json").run()
+        assert not at.exception
+        assert at.session_state["layup_input"] == "[0/90]s"
+        assert at.session_state["_layup_status"][0] == "ok"
+
+
+class TestFatigueAndEnvironment:
+    def _table(self, at):
+        return next(df.value for df in at.dataframe if "Fatigue" in df.value.columns)
+
+    def test_the_panel(self):
+        at = _run_small_analysis(_fresh_app())
+        assert any(i.value.startswith("Enter the load cycles") for i in at.info)
+        at.number_input(key="dur_cycles").set_value(1e6).run()
+        assert not at.exception
+        table = self._table(at)
+        assert len(table) == 15
+        row = table[(table.Mode == "tension") & (table.Law == "judd_wright")].iloc[0]
+        assert row["Fatigue"] == "0.4000" and row["Environment"] == "1.0000"
+        assert any(m.label == "Governing knockdown" for m in at.metric)
+
+        at.checkbox(key="dur_goodman").check().run()
+        at.number_input(key="dur_R").set_value(0.5).run()
+        row = self._table(at)
+        row = row[(row.Mode == "tension") & (row.Law == "judd_wright")].iloc[0]
+        assert row["Fatigue"] == "0.5455"
+
+        at.number_input(key="dur_T").set_value(80.0).run()
+        assert any("needs the dry glass-transition temperature" in w.value for w in at.warning)
+        at.number_input(key="dur_Tg").set_value(180.0).run()
+        table = self._table(at)
+        shear = table[(table.Mode == "shear") & (table.Law == "linear")].iloc[0]
+        assert float(shear["Environment"]) < 1.0
+
+        at.number_input(key="dur_cycles").set_value(1e12).run()
+        assert any(c.value.startswith("⚠ Fatigue knockdown for mode=") for c in at.caption)
+
+    def test_a_scenario_restores_the_panel(self):
+        import json
+        doc = {"format": "porosity-fe.app-scenario", "name": None, "material": None,
+               "summary": None,
+               "inputs": {"dur_cycles": 1e5, "dur_goodman": True, "dur_R": 0.3,
+                          "layup_input": "0/90/90/0", "expert_mode": True,
+                          "mesh_nx": 8, "mesh_ny": 4, "mesh_nz": 4}}
+        at = _fresh_app()
+        at.file_uploader(key="scenario_upload").upload(
+            "s.json", json.dumps(doc).encode(), "application/json").run()
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        assert at.number_input(key="dur_cycles").value == 1e5
+        assert at.number_input(key="dur_R").value == 0.3
+        assert len(self._table(at)) == 15
+
+
+@pytest.mark.filterwarnings("ignore:Mesh has .* highly distorted")
+class TestBucklingPanel:
+    def test_run_on_demand(self):
+        at = _run_small_analysis(_fresh_app())
+        assert not any(m.label == "Buckling load factor" for m in at.metric)
+        _button(at, "Run buckling analysis").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert float(labels["Buckling load factor"]) > 0.0
+        assert 0.9 < float(labels["Of the void-free laminate"]) < 1.0
+        table = next(d.value for d in at.dataframe if "Load factor" in d.value.columns)
+        assert list(table["Mode"]) == [1, 2, 3]
+        assert "Delamination faces close by" not in table.columns
+        assert any(d.proto.label == "Download PNG" for d in at.get("download_button"))
+        at.run()
+        assert any(m.label == "Buckling load factor" for m in at.metric)
+
+    def test_other_loadings_say_why(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("tension").run()
+        at = _run_small_analysis(at)
+        assert any(i.value.startswith("Linear buckling analyses the coupon")
+                   for i in at.info)
+        assert not any(b.label == "Run buckling analysis" for b in at.button)

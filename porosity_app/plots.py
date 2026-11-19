@@ -708,3 +708,29 @@ def plot_stress(result: dict, comp_name: str):
                 "ply (material) axes · mid-y section, middle 80 % of the "
                 "length · element averages")
     return fig
+
+
+def plot_buckling_mode(mesh, mode, load_factor: float, number: int = 1):
+    """Out-of-plane displacement of a buckling mode on the node layer where it
+    is largest (the top face for a global mode, the sublaminate's layer for a
+    local one)."""
+    n = int(mesh.n_structured_nodes)
+    nodes = np.asarray(mesh.nodes)[:n]
+    w_all = np.asarray(mode)[:n, 2]
+    z_levels = np.unique(np.round(nodes[:, 2], 9))
+    layer = max(z_levels, key=lambda z: np.abs(w_all[np.isclose(nodes[:, 2], z)]).max())
+    on = np.isclose(nodes[:, 2], layer)
+    x, y, w = nodes[on, 0], nodes[on, 1], w_all[on]
+    fig, ax = plt.subplots(figsize=(9, 3.6))
+    limit = float(np.abs(w).max()) or 1.0
+    tcf = ax.tricontourf(x, y, w, levels=np.linspace(-limit, limit, 21), cmap="RdBu_r")
+    ax.set_aspect("equal")
+    ax.set_xlabel(LABEL_X_MM)
+    ax.set_ylabel("y (mm)")
+    _set_titles(ax, f"Buckling mode {number}",
+                f"load factor {load_factor:.4g}; out-of-plane displacement at "
+                f"z = {layer:.3g} mm, scaled to the mode's largest displacement")
+    cb = fig.colorbar(tcf, ax=ax, orientation="vertical", fraction=0.04, pad=0.02)
+    cb.set_label("u_z (scaled)")
+    fig.tight_layout()
+    return fig

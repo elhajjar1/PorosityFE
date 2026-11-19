@@ -1,6 +1,7 @@
 """FE subpackage: element, assembler, solver, stress recovery and export."""
 
 from .assembler import BoundaryHandler, GlobalAssembler
+from .buckling import BucklingResult, linear_buckling
 from .decomposition import KnockdownDecomposition, knockdown_decomposition
 from .element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401
 from .element import Hex8Element
@@ -24,6 +25,7 @@ from .vcct import (
 
 __all__ = [
     "BoundaryHandler",
+    "BucklingResult",
     "CrackFront",
     "DelaminationOnset",
     "FESolver",
@@ -42,6 +44,7 @@ __all__ = [
     "fracture_load_factors",
     "interface_tractions",
     "knockdown_decomposition",
+    "linear_buckling",
     "refinement_study",
     "short_beam_shear",
     "vcct_energy_release_rates",

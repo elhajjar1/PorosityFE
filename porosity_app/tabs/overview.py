@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ..config import _README_URL, calibration_note
+from ..config import _PLATE_DEFAULT, _README_URL, _cfg_plate, calibration_note
 from ..sidebar import _offer_nz_fix
 from ..summaries import _crack_front, delamination_text
 
@@ -63,7 +63,12 @@ def _build_overview_tab(result: dict | None, layup_for_title: str):
             + ("thermal only." if thermal["mode"] == "thermal_only"
                else f"residual stress added to {cfg_r['loading_mode']}."))
     spec = result.get("fe_specimen")
-    mesh_note = (f"mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}" if spec is None
+    plate = _cfg_plate(cfg_r)
+    plate_note = ("" if not plate or spec is not None else
+                  f" on a {plate.get('length', _PLATE_DEFAULT[0]):g} × "
+                  f"{plate.get('width', _PLATE_DEFAULT[1]):g} mm plate")
+    mesh_note = (f"mesh {cfg_r['nx']}×{cfg_r['ny']}×{cfg_r['nz']}{plate_note}"
+                 if spec is None
                  else f"FE on the {spec['standard']} {spec['specimen']} "
                       f"({spec['length_mm']:.1f} × {spec['width_mm']:.1f} × "
                       f"{spec['thickness_mm']:.2f} mm, mesh "

@@ -54,6 +54,7 @@ from . import (
     _thermal,
     failure,
 )
+from . import buckling as _buckling
 from ._knockdown import _PRISTINE_MEASURE_CACHE as _PRISTINE_MEASURE_CACHE
 from ._knockdown import _stiffness_measure
 from ._load_cases import _FRACTURE_TESTS, apply_boundary_conditions, check_solve_arguments, interior_mask
@@ -76,6 +77,7 @@ from .results import FieldResults as FieldResults
 
 if TYPE_CHECKING:
     from ..uq import FractureLoadFactorBand
+    from .buckling import BucklingResult
     from .decomposition import KnockdownDecomposition
     from .interlaminar import DelaminationOnset
 
@@ -773,6 +775,31 @@ class FESolver:
             porosity_degradation=self.porosity_degradation,
         )
 
+    def buckling(self, loading: Literal['compression', 'shear'] = 'compression',
+                 n_modes: int = 1, *, applied_strain: float | None = None,
+                 **solve_kwargs) -> BucklingResult:
+        """Linear buckling load factors and mode shapes of this model.
+
+        Solves the load case (:meth:`solve`), builds the geometric stiffness
+        of its stress and returns the lowest ``n_modes`` load factors of
+        ``(K + lambda K_G) phi = 0`` on the same supports; see
+        :func:`~porosity_fe.linear_buckling`, which takes the same
+        arguments. The applied load times the first factor is the buckling
+        load; porosity lowers it through the degraded stiffness of each
+        element, so near-surface voids lower it more than mid-plane ones.
+
+        Examples
+        --------
+        >>> import dataclasses
+        >>> from porosity_fe import MATERIALS, CompositeMesh, FESolver, PorosityField
+        >>> mat = dataclasses.replace(MATERIALS['T800_epoxy'], n_plies=8)
+        >>> pf = PorosityField(mat, 0.02)
+        >>> mesh = CompositeMesh(pf, mat, nx=20, ny=4, nz=8, ply_angles='UD')
+        >>> result = FESolver(mesh, mat, pf, ply_angles='UD').buckling()  # doctest: +SKIP
+        """
+        return _buckling.linear_buckling(self, loading, n_modes,
+                                         applied_strain=applied_strain, **solve_kwargs)
+
     # Steps of solve(). The work is done in the private step modules; tests
     # and callers use several of these methods, so they stay.
 
@@ -1088,6 +1115,8 @@ class FESolver:
                        onset: DelaminationOnset | None = None,
                        knockdown_decomposition: KnockdownDecomposition | None = None,
                        fracture_uncertainty: FractureLoadFactorBand | None = None,
+                       buckling: BucklingResult | None = None,
+                       buckling_reference: BucklingResult | None = None,
                        ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1152,6 +1181,16 @@ class FESolver:
             draws, the inputs and their scatter, the share of draws each
             front node governs, and the share below the required load
             factor when one was given). ``None`` (default) writes none.
+        buckling : BucklingResult, optional
+            Keyword-only. A linear buckling analysis whose prebuckling solve
+            these results are (:meth:`buckling`), written with
+            ``fmt='json'`` as a ``buckling`` block (its
+            :meth:`~porosity_fe.BucklingResult.summary`). ``None`` (default)
+            writes none.
+        buckling_reference : BucklingResult, optional
+            Keyword-only. The same buckling analysis of the void-free
+            laminate: the ``buckling`` block then adds its ``reference``
+            summary and the ``knockdown`` of the critical stress.
 
         Notes
         -----
@@ -1202,4 +1241,5 @@ class FESolver:
         _export_results(field_results, filename, fmt=fmt, mesh=mesh,
                         include_raw=include_raw, onset=onset,
                         knockdown_decomposition=knockdown_decomposition,
-                        fracture_uncertainty=fracture_uncertainty)
+                        fracture_uncertainty=fracture_uncertainty,
+                        buckling=buckling, buckling_reference=buckling_reference)

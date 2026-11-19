@@ -89,6 +89,23 @@ Finite-element solver
    RefinementLevel
    QuantityConvergence
 
+Linear buckling
+---------------
+
+The buckling load factors and mode shapes of the FE model under in-plane
+compression or shear (:meth:`FESolver.buckling`): the geometric stiffness of
+the prebuckling stress, on the supports of the load case. Porosity lowers
+the buckling load through the degraded stiffness of each element, and with
+an explicit :class:`Delamination` the thin sublaminate can buckle first. See
+:doc:`theory/fe` (Linear buckling).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   linear_buckling
+   BucklingResult
+
 Delamination fracture mechanics
 -------------------------------
 
@@ -225,6 +242,26 @@ Sweeps and uncertainty
 ``main`` is the entry point of the ``porosity-analyze`` command; see
 :doc:`cli`.
 
+Material cards
+--------------
+
+The porosity-degraded ply for another solver: :func:`degraded_ply` gives
+the engineering constants and strengths at one void content, and
+:func:`material_cards` writes them for a laminate as Abaqus keywords or
+Nastran bulk data, one material per distinct ply void content
+(:func:`ply_porosities`), with the ply table. See :doc:`cli`
+(``--material-cards``).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   degraded_ply
+   DegradedPly
+   ply_porosities
+   material_cards
+   write_material_cards
+
 Results I/O
 -----------
 
@@ -234,6 +271,8 @@ Results I/O
 
    save_results_to_json
    load_results_from_json
+   save_material_to_json
+   load_material_from_json
 
 .. py:data:: JSON_SCHEMA_VERSION
    :type: str
@@ -260,6 +299,18 @@ Results I/O
    :type: str
 
    ``format`` tag of an uncertainty-propagation export.
+
+.. py:data:: FORMAT_DURABILITY
+   :type: str
+
+   ``format`` tag of a fatigue and hygrothermal knockdown export
+   (``porosity-analyze --cycles`` / ``--service-temperature``,
+   :func:`~porosity_fe.reporting.durability_record`).
+
+.. py:data:: FORMAT_MATERIAL
+   :type: str
+
+   ``format`` tag of a material file (:func:`save_material_to_json`).
 
 .. py:data:: FORMAT_ALLOWABLE
    :type: str

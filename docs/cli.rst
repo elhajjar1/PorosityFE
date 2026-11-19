@@ -18,6 +18,12 @@ and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
 uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or an
 output that cannot be written, ``3`` on a failed analysis.
 
+``--material-file PATH`` analyses the material of a JSON file instead of a
+preset: one written by :func:`~porosity_fe.save_material_to_json`, or a bare
+JSON object of the :class:`~porosity_fe.MaterialProperties` fields (MPa,
+mm, fractions). The name stored in the file, or the file's own, labels the
+run. It replaces ``--material`` and applies to every option below.
+
 The laminate and the scope of a run are options:
 
 - ``--layup SPEC`` and ``--t-ply MM`` set the laminate: ``'QI'`` (the
@@ -41,6 +47,37 @@ The laminate and the scope of a run are options:
   governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
   It is printed and written to ``porosity_allowable.json``. It does not
   depend on ``--vp`` or the configurations.
+- ``--buckling LOADING`` (``compression`` or ``shear``) adds a linear
+  buckling analysis (:meth:`~porosity_fe.FESolver.buckling`) of every
+  analysed configuration at each porosity level on the production coupon,
+  and one of the void-free laminate: each writes
+  ``porosity_buckling_<loading>_<config>_<Vp>.json``, the FE export of the
+  prebuckling solve with a ``buckling`` block (load factors, critical
+  strain and stress, the void-free reference and the knockdown of the
+  critical stress). ``--porosity-degradation`` applies.
+- ``--cycles N`` adds the S-N fatigue factor and ``--service-temperature
+  T`` / ``--moisture M`` the hygrothermal one (they need a dry
+  glass-transition temperature: ``--tg-dry``, or a ``--material-file``
+  that sets ``T_g_dry``). Each level writes ``porosity_durability_<Vp>.json``
+  (format ``porosity-fe.durability``): every strength mode and law with the
+  porosity knockdown, the fatigue and environment factors and their
+  product. ``--required-knockdown`` then holds at the same conditions and
+  records them. ``--mean-stress goodman`` corrects the S-N curve to
+  ``--stress-ratio R`` (tension, shear, ILSS and transverse tension,
+  ``0 <= R <= 1``) and ``--compression-stress-ratio R`` (``R >= 1``), and
+  ``--fatigue-porosity-slope K`` makes the slope ``b (1 + K Vp)``; see
+  :doc:`theory/fatigue_environment`.
+- ``--material-cards FORMAT`` (``abaqus`` or ``nastran``) writes the
+  porosity-degraded ply properties of every analysed configuration at each
+  porosity level as solver material cards
+  (:func:`~porosity_fe.material_cards`): one material per distinct ply
+  void content, with the ply table, in
+  ``porosity_cards_<config>_<Vp>.inp`` (Abaqus keywords) or ``.bdf``
+  (Nastran bulk data). ``--card-element solid`` writes them for solid
+  elements (``*ELASTIC, TYPE=ENGINEERING CONSTANTS`` or ``MAT9``) instead
+  of shells (``TYPE=LAMINA`` with ``*FAIL STRESS``, or ``MAT8``), and
+  ``--porosity-degradation`` selects the stiffness mapping. The strengths
+  carry the same uncalibrated heuristic as the FE failure indices.
 
 .. code-block:: bash
 

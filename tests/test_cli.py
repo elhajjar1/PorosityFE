@@ -1004,7 +1004,7 @@ class TestDelaminationScreening:
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
         (['--porosity-degradation', 'directional'],
-         '--porosity-degradation needs --delamination or --fe'),
+         '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling'),
         (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
          "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
@@ -1371,7 +1371,7 @@ class TestFESolveOption:
         for argv, message in (
                 (['--fe', 'dcb'], "invalid choice: 'dcb'"),
                 (['--porosity-degradation', 'directional'],
-                 '--porosity-degradation needs --delamination or --fe')):
+                 '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling')):
             with pytest.raises(SystemExit) as exc:
                 porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
                                            '--output-dir', str(tmp_path), *argv])
@@ -1456,3 +1456,239 @@ class TestAllowableOption:
     def test_without_the_flag_no_file_is_written(self, tmp_path, monkeypatch):
         assert self._main(tmp_path, monkeypatch, '--quiet') == 0
         assert not (tmp_path / 'porosity_allowable.json').exists()
+
+
+class TestMaterialCardsOption:
+    def _main(self, tmp_path, monkeypatch, *argv, configs=None):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            configs or _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '0.04', '--output-dir', str(tmp_path), *argv])
+
+    def test_one_deck_per_configuration_and_level(self, tmp_path, monkeypatch, capsys):
+        from porosity_fe import MATERIALS, material_cards
+        configs = {
+            'uniform_spherical': {'distribution': 'uniform', 'void_shape': 'spherical'},
+            'clustered_midplane': {'distribution': 'clustered',
+                                   'cluster_location': 'midplane'}}
+        assert self._main(tmp_path, monkeypatch, '--material-cards', 'abaqus',
+                          configs=configs) == 0
+        out = capsys.readouterr().out
+        assert 'Material cards (abaqus, shell elements): Vp = 2.00%' in out
+        assert 'uniform_spherical: 1 material, ply void content 2.00 to 2.00 %' in out
+        assert 'clustered_midplane: 12 materials, ply void content 0.' in out
+        decks = sorted(p.name for p in tmp_path.glob('porosity_cards_*'))
+        assert decks == ['porosity_cards_clustered_midplane_2pct.inp',
+                         'porosity_cards_clustered_midplane_4pct.inp',
+                         'porosity_cards_uniform_spherical_2pct.inp',
+                         'porosity_cards_uniform_spherical_4pct.inp']
+        text = (tmp_path / 'porosity_cards_uniform_spherical_4pct.inp').read_text()
+        # The same materials and ply table as the library call; only the
+        # header's description of the porosity differs.
+        def data(deck):
+            return [line for line in deck.splitlines() if not line.startswith('**')]
+        assert data(text) == data(material_cards(MATERIALS['T800_epoxy'], 0.04))
+        assert 'uniform profile, specimen average Vp = 0.04' in text
+
+    def test_nastran_solid_with_the_layup_and_degradation(self, tmp_path, monkeypatch,
+                                                         capsys):
+        configs = {'uniform_penny': {'distribution': 'uniform', 'void_shape': 'penny'}}
+        assert self._main(
+            tmp_path, monkeypatch, '--material-cards', 'nastran',
+            '--card-element', 'solid', '--layup', '[0/90]s', '--t-ply', '0.2',
+            '--porosity-degradation', 'directional', configs=configs) == 0
+        assert 'Material cards (nastran, solid elements)' in capsys.readouterr().out
+        text = (tmp_path / 'porosity_cards_uniform_penny_2pct.bdf').read_text()
+        assert 'MAT9*' in text and 'directional' in text and 'penny' in text
+        table = [line for line in text.splitlines()
+                 if line.startswith('$   ') and line[4].isdigit()]
+        assert table == ['$   1, 1, 0.2, 0.', '$   2, 1, 0.2, 90.',
+                         '$   3, 1, 0.2, 90.', '$   4, 1, 0.2, 0.']
+
+    def test_usage_errors(self, tmp_path, monkeypatch, capsys):
+        for argv, message in (
+                (['--material-cards', 'ansys'], "invalid choice: 'ansys'"),
+                (['--card-element', 'solid'], '--card-element needs --material-cards'),
+                (['--material-cards', 'abaqus', '--card-element', 'beam'],
+                 "invalid choice: 'beam'")):
+            with pytest.raises(SystemExit) as exc:
+                self._main(tmp_path, monkeypatch, *argv)
+            assert exc.value.code == 2
+            assert message in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (OSError('disk'), 2, 'material cards for Vp=0.02, uniform_spherical: disk'),
+        (RuntimeError('boom'), 3,
+         'material cards for Vp=0.02, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, tmp_path, monkeypatch, capsys,
+                                                  exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_material_cards', boom)
+        assert self._main(tmp_path, monkeypatch, '--quiet',
+                          '--material-cards', 'abaqus') == rc
+        assert message in capsys.readouterr().err
+
+    def test_without_the_flag_no_deck_is_written(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path, monkeypatch, '--quiet') == 0
+        assert not list(tmp_path.glob('porosity_cards_*'))
+
+
+class TestMaterialFileOption:
+    @pytest.fixture
+    def material_file(self, tmp_path):
+        import dataclasses
+
+        from porosity_fe import MATERIALS, save_material_to_json
+        material = dataclasses.replace(MATERIALS['T800_epoxy'], sigma_1c=1200.0, n_plies=8)
+        path = tmp_path / 'my_t800.json'
+        save_material_to_json(material, path, name='T800 low Xc')
+        return path, material
+
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path / 'out'), *argv])
+
+    def test_the_file_replaces_the_preset(self, tmp_path, monkeypatch, capsys,
+                                          material_file):
+        from porosity_fe import build_empirical_pipeline
+        path, material = material_file
+        assert self._main(tmp_path, monkeypatch, '--material-file', str(path)) == 0
+        out = capsys.readouterr().out
+        assert 'Material: T800 low Xc' in out
+        assert 'Laminate: 8 plies of 0.183 mm, layup QI' in out
+        doc = _strict_json(tmp_path / 'out' / 'porosity_analysis_results_2pct.json')
+        entry = doc['uniform_spherical']
+        expected = build_empirical_pipeline(material, 0.02)[2].get_failure_load(
+            'compression', 'judd_wright')
+        assert entry['empirical']['compression']['judd_wright']['failure_stress_MPa'] == \
+            pytest.approx(expected.failure_stress, rel=1e-12)
+        assert entry['laminate']['n_plies'] == 8
+
+    def test_it_reaches_every_option(self, tmp_path, monkeypatch, material_file):
+        """The UQ, the allowable porosity and the material cards use it too,
+        with the laminate options on top."""
+        path, material = material_file
+        assert self._main(tmp_path, monkeypatch, '--quiet', '--material-file', str(path),
+                          '--t-ply', '0.2', '--uq', '--uq-samples', '16',
+                          '--required-knockdown', '0.9',
+                          '--material-cards', 'abaqus') == 0
+        out = tmp_path / 'out'
+        allowable = _strict_json(out / 'porosity_allowable.json')
+        assert allowable['laminate']['material'] == 'T800 low Xc'
+        assert allowable['laminate']['t_ply_mm'] == 0.2
+        cards = (out / 'porosity_cards_uniform_spherical_2pct.inp').read_text()
+        assert 'E11 = 161000' in cards and '0.2, 3, POROUS_PLY, 0., PLY_1' in cards
+        uq = _strict_json(out / 'porosity_uq_2pct.json')
+        assert uq['format'] == 'porosity-fe.uq'
+
+    def test_the_file_name_labels_a_file_without_one(self, tmp_path, monkeypatch, capsys):
+        import json
+
+        from porosity_fe import MATERIALS
+        path = tmp_path / 'bare_t700.json'
+        path.write_text(json.dumps(MATERIALS['T700_epoxy'].to_dict()))
+        assert self._main(tmp_path, monkeypatch, '--material-file', str(path)) == 0
+        assert 'Material: bare_t700' in capsys.readouterr().out
+
+    def test_workers_take_the_material(self, tmp_path, monkeypatch, material_file):
+        path, _ = material_file
+        argv = ['--quiet', '--material-file', str(path), '--vp', '0.02', '0.04']
+        assert self._main(tmp_path / 'a', monkeypatch, *argv) == 0
+        assert self._main(tmp_path / 'b', monkeypatch, *argv, '--jobs', '2') == 0
+        for name in ('porosity_analysis_results_2pct.json',
+                     'porosity_analysis_results_4pct.json'):
+            a = _strict_json(tmp_path / 'a' / 'out' / name)
+            b = _strict_json(tmp_path / 'b' / 'out' / name)
+            assert a['uniform_spherical'] == b['uniform_spherical']
+
+    @pytest.mark.parametrize('argv, message', [
+        (['--material', 'T700_epoxy'], '--material-file replaces --material'),
+        (['--material-file', 'missing.json'], '--material-file: [Errno 2]'),
+    ])
+    def test_usage_errors(self, tmp_path, monkeypatch, capsys, material_file, argv,
+                          message):
+        path, _ = material_file
+        if argv[0] == '--material':
+            argv = ['--material-file', str(path), *argv]
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, *argv)
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_a_bad_file_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / 'bad.json'
+        path.write_text('{"E11": 1}')
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, '--material-file', str(path))
+        assert exc.value.code == 2
+        assert 'bad.json: The material is missing E22' in capsys.readouterr().err
+
+    def test_the_default_preset_is_unchanged(self, tmp_path, monkeypatch, capsys):
+        assert self._main(tmp_path, monkeypatch) == 0
+        assert 'Material: T800_epoxy' in capsys.readouterr().out
+
+
+@pytest.mark.filterwarnings("ignore:Mesh has .* highly distorted")
+class TestBucklingOption:
+    def test_one_file_per_configuration_and_level(self, small_material, tmp_path,
+                                                  monkeypatch, capsys):
+        import jsonschema
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', {
+            'uniform_spherical': {'distribution': 'uniform', 'void_shape': 'spherical'},
+            'clustered_surface': {'distribution': 'clustered',
+                                  'cluster_location': 'surface'}})
+        calls = []
+        from porosity_fe.fe import FESolver
+        real = FESolver.buckling
+
+        def spy(self, *args, **kwargs):
+            calls.append(float(self.porosity_field.Vp))
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(FESolver, 'buckling', spy)
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.02', '0.04',
+            '--output-dir', str(tmp_path), '--buckling', 'compression'])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'Linear buckling (compression): Vp = 2.00%' in out
+        assert 'compression, uniform_spherical: buckling load factor' in out
+        assert 'of the void-free laminate' in out
+        # One void-free reference for the whole run.
+        assert calls.count(0.0) == 1 and len(calls) == 5
+        doc = _strict_json(tmp_path / 'porosity_buckling_compression_clustered_surface_4pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        block = doc['buckling']
+        assert block['loading'] == 'compression' and 0.9 < block['knockdown'] < 1.0
+        assert block['reference']['critical_strain'] > 0.0
+        assert doc['stress_global']['n_elements'] == 30 * 10 * 4
+
+    def test_shear_and_degradation(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--buckling', 'shear', '--porosity-degradation', 'directional'])
+        assert rc == 0
+        doc = _strict_json(tmp_path / 'porosity_buckling_shear_uniform_spherical_3pct.json')
+        assert doc['buckling']['loading'] == 'shear'
+        assert doc['solver']['porosity_degradation'] == 'directional'
+
+    def test_usage_error(self, small_material, tmp_path, capsys):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                       '--output-dir', str(tmp_path), '--buckling', 'tension'])
+        assert exc.value.code == 2
+        assert "invalid choice: 'tension'" in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (ValueError('no'), 2, 'buckling for Vp=0.03, uniform_spherical: no'),
+        (RuntimeError('boom'), 3, 'buckling for Vp=0.03, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, small_material, tmp_path,
+                                                  monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_buckling', boom)
+        assert porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--quiet', '--buckling', 'compression']) == rc
+        assert message in capsys.readouterr().err

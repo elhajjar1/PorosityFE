@@ -16,7 +16,6 @@ from pathlib import Path
 import streamlit as st
 
 from porosity_fe import (
-    MATERIALS,
     CompositeMesh,
     Delamination,
     EmpiricalSolver,
@@ -46,7 +45,10 @@ from .config import (
     _FRACTURE_UQ_SAMPLES,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
+    _cfg_material,
+    _cfg_plate,
     _fracture_specimen_mesh,
+    _key_to_config,
     _resolving_nz,
 )
 
@@ -58,10 +60,7 @@ logger = logging.getLogger(__name__)
 @st.cache_data(show_spinner=False, max_entries=16)
 def run_analysis_cached(cfg_key: tuple) -> dict:
     """Cached wrapper around :func:`run_analysis`. ``cfg_key`` must be hashable."""
-    cfg = {}
-    for k, v in cfg_key:
-        cfg[k] = list(v) if isinstance(v, tuple) else v
-    return run_analysis(cfg)
+    return run_analysis(_key_to_config(cfg_key))
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -72,9 +71,9 @@ def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
     Returns the :func:`propagate_uncertainty` result and any warning
     messages it raised (e.g. draws beyond the calibration bound).
     """
-    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
+    cfg = _key_to_config(cfg_key)
     material = dataclasses.replace(
-        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+        _cfg_material(cfg), t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
     strength_field = EmpiricalSolver.PRISTINE_STRENGTH_KEY[mode]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -190,11 +189,8 @@ def run_analysis(cfg: dict) -> dict:
         ``fracture_uq`` that is not one CoV (finite, ``>= 0``) per
         :data:`_FRACTURE_UQ_FIELDS` entry.
     """
-    if cfg["material_name"] not in MATERIALS:
-        raise ValueError(
-            f"Unknown material {cfg['material_name']!r}. "
-            f"Available presets: {sorted(MATERIALS)}."
-        )
+    material = _cfg_material(cfg)       # refuses an unknown preset
+    plate = _cfg_plate(cfg)
     thermal_mode = cfg.get("thermal_mode", "off")
     delta_T = cfg.get("delta_T")
     if thermal_mode not in _THERMAL_OPTIONS.values():
@@ -212,7 +208,6 @@ def run_analysis(cfg: dict) -> dict:
     fracture_uq_covs = _fracture_uq_covs(cfg)
     porosity_degradation = _check_porosity_degradation(
         cfg.get("porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
-    material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
         material, t_ply=cfg["t_ply"], n_plies=cfg["n_plies"],
         **_toughness_fields(cfg),
@@ -236,6 +231,8 @@ def run_analysis(cfg: dict) -> dict:
         ply_angles=cfg["angles"],
         mesh_res=(cfg["nx"], cfg["ny"], cfg["nz"]),
         porosity_config=pf_kwargs,
+        # Only a plate size that was set: the default coupon is built as before.
+        **({"mesh_kwargs": plate} if plate else {}),
     )
     emp_results = empirical.get_all_failure_loads()
 
@@ -271,7 +268,7 @@ def run_analysis(cfg: dict) -> dict:
             # duplicated (the empirical solver keeps the plain one).
             mesh = CompositeMesh(porosity_field, material, nx=cfg["nx"],
                                  ny=cfg["ny"], nz=cfg["nz"],
-                                 ply_angles=cfg["angles"], **defects)
+                                 ply_angles=cfg["angles"], **defects, **plate)
     except ValueError as exc:
         logger.exception("Specimen mesh failed for loading=%s", fe_loading)
         what = (f"the {fe_loading} specimen mesh"
@@ -626,3 +623,59 @@ def fe_vtu_bytes(result: dict) -> bytes:
         else:
             fe_field.to_vtu(result["mesh"], path, onset=onset)
         return path.read_bytes()
+
+
+# ----------------------------------------------------------------------
+# Linear buckling (on demand, from the Results tab)
+# ----------------------------------------------------------------------
+
+#: Load cases the buckling panel analyses (the coupon's in-plane ones).
+_BUCKLING_MODES = ("compression", "shear")
+
+#: Modes the panel computes.
+_BUCKLING_N_MODES = 3
+
+
+def buckling_unavailable_reason(result: dict) -> str | None:
+    """Why the buckling panel cannot analyse ``result``; ``None`` when it can."""
+    if result.get("fe_field") is None:
+        return "The FE solve of this analysis was skipped, so there is no model to buckle."
+    if result.get("fe_loading") not in _BUCKLING_MODES:
+        return ("Linear buckling analyses the coupon under compression or shear: "
+                "select one of them as the loading mode.")
+    if (result.get("fe_thermal") or {}).get("mode") == "combined":
+        return ("Linear buckling does not take the thermal residual stress (it would "
+                "be a prestress the load factor does not scale): switch it off.")
+    return None
+
+
+def run_buckling(result: dict, n_modes: int = _BUCKLING_N_MODES) -> dict:
+    """The buckling analysis of an analysis' FE model and of the same model
+    without voids: ``{"result", "reference"}`` (:class:`BucklingResult`)."""
+    from porosity_fe import PorosityField
+
+    cfg = result["config"]
+    mesh, material = result["mesh"], result["material"]
+    degradation = cfg.get("porosity_degradation", _CFG_DEFAULTS["porosity_degradation"])
+    criterion = cfg.get("failure_criterion", "tsai_wu")
+    loading = result["fe_loading"]
+
+    def analyse(field, model_mesh):
+        solver = FESolver(model_mesh, material, field, ply_angles=cfg["angles"],
+                          porosity_degradation=degradation)
+        return solver.buckling(loading, n_modes=n_modes, failure_criterion=criterion)
+
+    porous = analyse(result["porosity_field"], mesh)
+    void_free = PorosityField(material, 0.0)
+    reference_mesh = CompositeMesh(
+        void_free, material, nx=mesh.nx, ny=mesh.ny, nz=mesh.nz, ply_angles=cfg["angles"],
+        length=float(mesh.L_x), width=float(mesh.L_y),
+        **({"delaminations": list(mesh.delaminations)} if mesh.delaminations else {}))
+    return {"result": porous, "reference": analyse(void_free, reference_mesh)}
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_buckling_cached(cfg_key: tuple, _result: dict) -> dict:
+    """Cached :func:`run_buckling`; ``_result`` must be the analysis of
+    ``cfg_key`` (Streamlit does not hash an argument starting with ``_``)."""
+    return run_buckling(_result)

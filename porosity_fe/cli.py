@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import math
 import sys
 from pathlib import Path
+
+import numpy as np
 
 from . import __version__
 from .delamination import Delamination
@@ -33,6 +36,9 @@ DEFAULT_POROSITY_LEVELS = [0.01, 0.02, 0.03, 0.05, 0.08]
 #: Placeholder passed through to compare_configurations, which ignores it.
 _DEFAULT_APPLIED_STRESS = -1500.0
 
+#: Preset of a run that names no material.
+_DEFAULT_MATERIAL = "T800_epoxy"
+
 #: Defaults of the delamination screening options (``--delamination``),
 #: applied only when it is given, so the options can tell "not given".
 _DELAM_LOADINGS = ('compression', 'tension', 'shear')
@@ -40,6 +46,20 @@ _DELAM_DEFAULT_LOADING = 'compression'
 _DELAM_DEFAULT_CONFIG = 'uniform_spherical'
 _DELAM_DEFAULT_LAW = 'exponential'
 _DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
+
+#: ``--buckling`` load cases (the in-plane ones of the coupon).
+_BUCKLING_LOADINGS = ('compression', 'shear')
+
+#: ``--mean-stress`` corrections, and the modes ``--stress-ratio`` applies to
+#: (``--compression-stress-ratio`` sets the compression one).
+_MEAN_STRESS_CHOICES = ('goodman',)
+_TENSION_TYPE_MODES = ('tension', 'shear', 'ilss', 'transverse_tension')
+
+#: ``--material-cards`` formats with their file suffix, and the element
+#: families of ``--card-element`` (the first is the default).
+_CARD_SUFFIX = {'abaqus': '.inp', 'nastran': '.bdf'}
+_CARD_FORMATS = tuple(_CARD_SUFFIX)
+_CARD_ELEMENTS = ('shell', 'solid')
 
 
 def _parse_delamination(spec: str) -> Delamination:
@@ -148,8 +168,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--material",
-        default="T800_epoxy",
-        help="Material preset name (validated against the built-in presets).",
+        default=None,
+        help=("Material preset name (validated against the built-in presets; "
+              f"the default is {_DEFAULT_MATERIAL})."),
+    )
+    parser.add_argument(
+        "--material-file", default=None, metavar="PATH",
+        help=(
+            "A material JSON file to analyse instead of a preset, as "
+            "save_material_to_json writes it (or a bare JSON object of the "
+            "material's fields, in MPa and mm). Its name, or the file's, "
+            "labels the run. Not with --material."
+        ),
     )
     parser.add_argument(
         "--layup", default=None, metavar="SPEC",
@@ -302,6 +332,87 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    buck = parser.add_argument_group(
+        "linear buckling (FE)",
+        "Opt-in: the buckling load of every analysed configuration at each "
+        "porosity level, on the production coupon, against the void-free "
+        "laminate, written to porosity_buckling_<loading>_<config>_<Vp>.json.")
+    buck.add_argument(
+        "--buckling", choices=_BUCKLING_LOADINGS, default=None, metavar="LOADING",
+        help=(f"In-plane load of the buckling analysis: "
+              f"{', '.join(_BUCKLING_LOADINGS)}. Linear (eigenvalue) buckling, "
+              "no imperfection; the coupon's ends are held straight, the far "
+              "one free to sway. Two FE solves per configuration and level, "
+              "one void-free reference."))
+    dur = parser.add_argument_group(
+        "fatigue and environment (empirical)",
+        "Opt-in: the knockdown of every strength mode and law after load "
+        "cycles and at a service temperature and moisture, at each porosity "
+        "level, written to porosity_durability_<Vp>.json. With "
+        "--required-knockdown the allowable porosity holds at the same "
+        "conditions. Screening-level models: see the fatigue theory page.")
+    dur.add_argument(
+        "--cycles", type=float, default=None, metavar="N",
+        help="Load cycles of the S-N fatigue factor (log-linear, calibrated "
+             "at R = 0.1).")
+    dur.add_argument(
+        "--mean-stress", choices=_MEAN_STRESS_CHOICES, default=None,
+        help="Mean-stress correction of the S-N curve to the stress ratios "
+             "below: the straight constant-life line through the calibrated "
+             "point and the static strength. Uncalibrated against "
+             "porous-laminate fatigue data. Needs --cycles.")
+    dur.add_argument(
+        "--stress-ratio", type=float, default=None, metavar="R",
+        help="sigma_min / sigma_max of the tension, shear, ILSS and "
+             "transverse-tension modes, 0 <= R <= 1 (the default is the "
+             "calibration ratio, 0.1). Needs --mean-stress.")
+    dur.add_argument(
+        "--compression-stress-ratio", type=float, default=None, metavar="R",
+        help="sigma_min / sigma_max of the compression mode, R >= 1 "
+             "(compression-compression; the default is 10). Needs --mean-stress.")
+    dur.add_argument(
+        "--fatigue-porosity-slope", type=float, default=None, metavar="K",
+        help="Porosity dependence of the S-N slope, b(Vp) = b (1 + K Vp) with "
+             "Vp a fraction, K >= 0. No calibrated value is shipped. Needs "
+             "--cycles.")
+    dur.add_argument(
+        "--service-temperature", type=float, default=None, metavar="T",
+        help="Service temperature in deg C of the hygrothermal factor "
+             "(matrix-dominated modes; the default is the reference, 23). "
+             "Needs a dry glass-transition temperature.")
+    dur.add_argument(
+        "--moisture", type=float, default=None, metavar="M",
+        help="Moisture content in wt %% of the hygrothermal factor (the "
+             "default is the reference, 0). Needs a dry glass-transition "
+             "temperature.")
+    dur.add_argument(
+        "--tg-dry", type=float, default=None, metavar="TG",
+        help="Dry glass-transition temperature in deg C for the hygrothermal "
+             "factor, replacing the material's T_g_dry (no preset sets one).")
+    cards = parser.add_argument_group(
+        "material cards",
+        "Opt-in: the porosity-degraded ply properties of every analysed "
+        "configuration at each porosity level as solver material cards, "
+        "written to porosity_cards_<config>_<Vp>.inp (Abaqus) or .bdf "
+        "(Nastran), one material per distinct ply void content, with the "
+        "ply table.")
+    cards.add_argument(
+        "--material-cards", choices=_CARD_FORMATS, default=None, metavar="FORMAT",
+        help=(
+            f"Card format: {', '.join(_CARD_FORMATS)}. The stiffness is the "
+            "one the FE path gives a ply at its void content; the strengths "
+            "carry the same uncalibrated heuristic as the FE failure indices."
+        ),
+    )
+    cards.add_argument(
+        "--card-element", choices=_CARD_ELEMENTS, default=None, metavar="ELEMENT",
+        help=(
+            f"Element family the cards are for: {', '.join(_CARD_ELEMENTS)} "
+            "(the default is shell). Shell: an Abaqus lamina with its failure "
+            "stresses, or a Nastran MAT8. Solid: Abaqus engineering constants, "
+            "or a Nastran MAT9. Needs --material-cards."
+        ),
+    )
     uq = parser.add_argument_group(
         "uncertainty quantification",
         "Propagate input scatter through the empirical Judd-Wright knockdown "
@@ -390,8 +501,10 @@ def _delamination_options(args) -> dict:
         if given:
             flags = ", ".join("--" + n.replace('_', '-') for n in given)
             raise ValueError(f"{flags} need --delamination.")
-        if args.porosity_degradation is not None and args.fe is None:
-            raise ValueError("--porosity-degradation needs --delamination or --fe.")
+        if (args.porosity_degradation is not None and args.fe is None
+                and args.material_cards is None and args.buckling is None):
+            raise ValueError("--porosity-degradation needs --delamination, "
+                             "--fe, --material-cards or --buckling.")
         return {}
     toughness = args.toughness
     if toughness is not None:
@@ -494,38 +607,211 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
             + f"\n  Saved: {out_path}")
 
 
-def _run_allowable(required: float, material, material_name: str, ply_angles,
-                   out_path: Path) -> list[str]:
-    """The allowable-porosity table of the laminate (``--required-knockdown``),
-    written to ``out_path``. Returns the lines of its summary."""
-    import warnings
+def _run_buckling(loading: str, material, ply_angles, name: str, config: dict,
+                  Vp: float, out_path: Path, *, porosity_degradation: str,
+                  references: dict, quiet_solver: bool = True) -> str:
+    """The buckling analysis of a configuration (``--buckling``) on the
+    production coupon, with the void-free reference (computed once, kept in
+    ``references``), written to ``out_path``. Returns a one-line summary."""
+    from .fe import FESolver
+    from .mesh import CompositeMesh
+    from .pipeline import _default_mesh_resolution
+    from .porosity_field import PorosityField
 
+    level = logger.level
+    if quiet_solver:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        resolution = _default_mesh_resolution(material.n_plies, ply_angles)
+
+        def analyse(field):
+            mesh = CompositeMesh(field, material, *resolution, ply_angles=ply_angles)
+            solver = FESolver(mesh, material, field, ply_angles=ply_angles,
+                              porosity_degradation=porosity_degradation)
+            return solver.buckling(loading)
+
+        key = (loading, porosity_degradation)
+        if key not in references:
+            references[key] = analyse(PorosityField(material, 0.0))
+        reference = references[key]
+        result = analyse(PorosityField(material, Vp, **config))
+        FESolver.export_results(result.prebuckling, out_path, buckling=result,
+                                buckling_reference=reference)
+    finally:
+        logger.setLevel(level)
+    knockdown = result.knockdown(reference)
+    stress = result.critical_stress
+    return (f"  {loading}, {name}: buckling load factor {result.load_factor:.4g} "
+            f"(critical strain {result.critical_strain:.3e}"
+            + ("" if stress is None else f", critical stress {stress:.4g} MPa") + ")"
+            + ("" if knockdown is None else f", {knockdown:.4f} of the void-free laminate")
+            + f"\n  Saved: {out_path}")
+
+
+def _run_material_cards(fmt: str, material, ply_angles, name: str, config: dict,
+                        Vp: float, out_path: Path, *, element: str,
+                        porosity_degradation: str) -> str:
+    """The material cards of one configuration (``--material-cards``),
+    written to ``out_path``. Returns a one-line summary."""
+    from .material_cards import ply_porosities, write_material_cards
+    from .porosity_field import PorosityField
+
+    pf = PorosityField(material, Vp, **config)
+    write_material_cards(out_path, material, pf, fmt, ply_angles=ply_angles,
+                         element=element,
+                         porosity_degradation=porosity_degradation)
+    plies = ply_porosities(pf)
+    n_materials = len(set(np.round(plies, 9).tolist()))
+    return (f"  {name}: {n_materials} material{'s' if n_materials != 1 else ''}, "
+            f"ply void content {100.0 * plies.min():.2f} to "
+            f"{100.0 * plies.max():.2f} %\n  Saved: {out_path}")
+
+
+def _durability_options(args, material) -> dict:
+    """The fatigue and hygrothermal options, resolved; empty when none is
+    given. ``ValueError`` names an option given without what it needs."""
+    from .fatigue import FatigueModel
+
+    def needs(flags: list[str], what: str) -> None:
+        given = [f for f in flags if getattr(args, f.lstrip('-').replace('-', '_')) is not None]
+        if given:
+            raise ValueError(f"{', '.join(given)} need{'s' if len(given) == 1 else ''} {what}.")
+
+    def finite(flag: str, low: float | None = None) -> float | None:
+        value = getattr(args, flag.lstrip('-').replace('-', '_'))
+        if value is not None and not (math.isfinite(value) and (low is None or value >= low)):
+            bound = "" if low is None else f" >= {low:g}"
+            raise ValueError(f"{flag} must be a finite number{bound}; got {value!r}.")
+        return value
+
+    if args.cycles is None:
+        needs(['--mean-stress', '--stress-ratio', '--compression-stress-ratio',
+               '--fatigue-porosity-slope'], '--cycles')
+    if args.mean_stress is None:
+        needs(['--stress-ratio', '--compression-stress-ratio'],
+              '--mean-stress (without a mean-stress correction the S-N curve does '
+              'not depend on R)')
+    if args.service_temperature is None and args.moisture is None:
+        needs(['--tg-dry'], '--service-temperature or --moisture')
+    cycles = finite('--cycles', 1.0)
+    slope = finite('--fatigue-porosity-slope', 0.0)
+    T = finite('--service-temperature')
+    M = finite('--moisture', 0.0)
+    T_g = finite('--tg-dry')
+    finite('--stress-ratio')
+    finite('--compression-stress-ratio')
+    if cycles is None and T is None and M is None:
+        return {}
+
+    R: dict[str, float] = {}
+    if args.stress_ratio is not None:
+        R.update({mode: float(args.stress_ratio) for mode in _TENSION_TYPE_MODES})
+    if args.compression_stress_ratio is not None:
+        R['compression'] = float(args.compression_stress_ratio)
+    fatigue = None
+    if args.mean_stress is not None or slope:
+        fatigue = FatigueModel(mean_stress=args.mean_stress, porosity_slope=slope or 0.0)
+        for mode, ratio in R.items():
+            # A ratio the mode cannot see (e.g. R < 1 for compression).
+            try:
+                fatigue.knockdown_factor(mode, 10.0, ratio, Vp=0.0)
+            except ValueError as exc:
+                flag = '--compression-stress-ratio' if mode == 'compression' \
+                    else '--stress-ratio'
+                raise ValueError(f"{flag}: {exc}") from None
+    environment = None
+    if T is not None or M is not None:
+        if T_g is None and material.T_g_dry is None:
+            raise ValueError(
+                "--service-temperature and --moisture need a dry glass-transition "
+                "temperature: give --tg-dry, or a --material-file that sets "
+                "T_g_dry (no preset does).")
+        environment = {'T': float(material.T_ref) if T is None else float(T),
+                       'M': float(material.M_ref) if M is None else float(M)}
+    return {'cycles': cycles, 'R': R or None, 'fatigue_model': fatigue,
+            'environment': environment, 'T_g_dry': T_g}
+
+
+def _durability_solver(material, ply_angles, Vp: float, options: dict):
+    """The empirical pipeline of the laminate at ``Vp`` with the fatigue
+    model and dry T_g of ``options``: ``(material, mesh, solver)``."""
     from .pipeline import build_empirical_pipeline
-    from .reporting import allowable_porosity_record, write_allowable_json
 
+    if options.get('T_g_dry') is not None:
+        material = dataclasses.replace(material, T_g_dry=float(options['T_g_dry']))
+    fatigue = options.get('fatigue_model')
     level = logger.level
     logger.setLevel(max(level, logging.WARNING))    # no mesh report for a table
     try:
-        _, mesh, solver = build_empirical_pipeline(material, 0.0,
-                                                   ply_angles=ply_angles)
+        _, mesh, solver = build_empirical_pipeline(
+            material, Vp, ply_angles=ply_angles,
+            **({'solver_kwargs': {'fatigue_model': fatigue}} if fatigue else {}))
     finally:
         logger.setLevel(level)
+    return material, mesh, solver
+
+
+def _laminate_block(material, material_name: str, mesh) -> dict:
+    return {'material': material_name,
+            'ply_angles': [float(a) for a in mesh._ply_layup],
+            'n_plies': int(material.n_plies),
+            't_ply_mm': float(material.t_ply)}
+
+
+def _run_durability(options: dict, material, material_name: str, ply_angles,
+                    Vp: float, out_path: Path) -> list[str]:
+    """The fatigue and hygrothermal knockdowns at one porosity level
+    (``--cycles``, ``--service-temperature``), written to ``out_path``.
+    Returns the lines of its summary."""
+    from .reporting import durability_record, write_durability_json
+
+    material, mesh, solver = _durability_solver(material, ply_angles, Vp, options)
+    record = durability_record(solver, cycles=options['cycles'], R=options['R'],
+                               environment=options['environment'])
+    write_durability_json(out_path, record, _laminate_block(material, material_name, mesh),
+                          void_volume_fraction=Vp)
+    lines = []
+    for mode, models in record['per_mode'].items():
+        jw = models['judd_wright']
+        lines.append(f"  {mode:<20} judd_wright {jw['knockdown']:.4f} (porosity "
+                     f"{jw['static_knockdown']:.4f} x fatigue {jw['fatigue_knockdown']:.4f}"
+                     f" x environment {jw['environment_knockdown']:.4f})")
+    gov = record['governing']
+    lines.append(f"  Governing: {gov['mode']} / {gov['model']}, knockdown "
+                 f"{gov['knockdown']:.4f}")
+    lines.append(f"  Saved: {out_path}")
+    return lines
+
+
+def _run_allowable(required: float, material, material_name: str, ply_angles,
+                   out_path: Path, durability: dict | None = None) -> list[str]:
+    """The allowable-porosity table of the laminate (``--required-knockdown``),
+    at the fatigue and hygrothermal conditions of ``durability`` when given,
+    written to ``out_path``. Returns the lines of its summary."""
+    import warnings
+
+    from .reporting import (
+        allowable_porosity_record,
+        fatigue_conditions,
+        write_allowable_json,
+    )
+
+    options = durability or {}
+    material, mesh, solver = _durability_solver(material, ply_angles, 0.0, options)
+    conditions = {'cycles': options.get('cycles'), 'R': options.get('R'),
+                  'environment': options.get('environment')}
     with warnings.catch_warnings():
         # The record flags an extrapolated entry itself.
         warnings.simplefilter("ignore", UserWarning)
-        table = solver.get_all_allowable_porosities(required)
+        table = solver.get_all_allowable_porosities(required, **conditions)
     record = allowable_porosity_record(table)
-    write_allowable_json(out_path, record, {
-        'material': material_name,
-        'ply_angles': [float(a) for a in mesh._ply_layup],
-        'n_plies': int(material.n_plies),
-        't_ply_mm': float(material.t_ply),
-    })
+    write_allowable_json(out_path, record, _laminate_block(material, material_name, mesh),
+                         fatigue_conditions(solver, **conditions) if options else None)
     lines = [f"  {record['statement']}"]
-    # With no fatigue or environment factor every requirement in (0, 1] is
-    # met at zero porosity, so each entry has an allowable.
     for mode, models in record['per_mode'].items():
-        cells = [f"{model} {entry['allowable_Vp_percent']:.2f}%"
+        # A fatigue or environment factor can put a requirement out of reach.
+        cells = [f"{model} " + ("not achievable" if entry['allowable_Vp_percent'] is None
+                                else f"{entry['allowable_Vp_percent']:.2f}%")
                  + (" (extrapolated)" if entry['extrapolated'] else "")
                  for model, entry in models.items()]
         lines.append(f"  {mode:<20} " + ", ".join(cells))
@@ -585,6 +871,20 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
             + ("" if degradation == _DELAM_DEFAULT_DEGRADATION
                else f"; porosity degradation {degradation} (uncalibrated)")
             + f"\n  Saved: {out_path}")
+
+
+def _load_material_file(path: str):
+    """The material of ``--material-file`` and the label of its run: the
+    name stored in the file, or the file's own."""
+    from .io import _material_from_document
+
+    with open(path, encoding='utf-8') as f:
+        try:
+            document = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path}: not valid JSON ({exc}).") from None
+    material, name = _material_from_document(document, path)
+    return material, name or Path(path).stem
 
 
 def _run_uq(args, material, Vp: float, out_path: Path, ply_angles=None) -> dict:
@@ -747,7 +1047,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         args.applied_stress = _DEFAULT_APPLIED_STRESS
 
-    if args.material not in materials:
+    custom_material = None
+    if args.material_file is not None:
+        if args.material is not None:
+            parser.error("--material-file replaces --material: give one of them.")
+        try:
+            custom_material, args.material = _load_material_file(args.material_file)
+        except (ValueError, OSError) as exc:
+            parser.error(f"--material-file: {exc}")
+    elif args.material is None:
+        args.material = _DEFAULT_MATERIAL
+    if custom_material is None and args.material not in materials:
         parser.error(
             f"Unknown material {args.material!r}. "
             f"Available presets: {sorted(materials)}."
@@ -764,17 +1074,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         delamination = _delamination_options(args)
         ply_angles = _parse_layup_option(args.layup)
-        material = _laminate_material(materials[args.material], ply_angles,
-                                      args.t_ply)
+        material = _laminate_material(
+            custom_material or materials[args.material], ply_angles, args.t_ply)
+        durability = _durability_options(args, material)
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
     # exactly as before.
     laminate: dict = {}
+    if custom_material is not None:
+        laminate['material'] = custom_material
     if args.layup is not None:
         laminate['ply_angles'] = ply_angles
     if args.t_ply is not None:
         laminate['t_ply'] = args.t_ply
+    if args.card_element is not None and args.material_cards is None:
+        parser.error("--card-element needs --material-cards.")
     if args.required_knockdown is not None and not (
             0.0 < args.required_knockdown <= 1.0):  # also rejects NaN
         hint = (f" (a percent? pass {args.required_knockdown / 100.0:g})"
@@ -907,6 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("\nUncertainty propagation: Vp = %.2f%%", Vp * 100)
             try:
                 if laminate:
+                    # The laminate's material; the default layup is 'QI'.
                     _run_uq(args, material, Vp,
                             output_dir / f"porosity_uq_{Vp_label}.json",
                             ply_angles=ply_angles)
@@ -962,13 +1278,78 @@ def main(argv: list[str] | None = None) -> int:
                           file=sys.stderr)
                     return 3
 
+    if args.buckling is not None:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        references: dict = {}
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nLinear buckling (%s): Vp = %.2f%%", args.buckling, Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = (output_dir
+                            / f"porosity_buckling_{args.buckling}_{name}_{Vp_label}.json")
+                try:
+                    logger.info("%s", _run_buckling(
+                        args.buckling, material, ply_angles, name, config, Vp,
+                        out_path, porosity_degradation=degradation,
+                        references=references, quiet_solver=not args.verbose))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: buckling for Vp={Vp}, {name}: {exc}", file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: buckling for Vp={Vp}, {name} failed: {exc}",
+                          file=sys.stderr)
+                    return 3
+
+    if args.material_cards is not None:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        element = args.card_element or _CARD_ELEMENTS[0]
+        suffix = _CARD_SUFFIX[args.material_cards]
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nMaterial cards (%s, %s elements): Vp = %.2f%%",
+                        args.material_cards, element, Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = output_dir / f"porosity_cards_{name}_{Vp_label}{suffix}"
+                try:
+                    logger.info("%s", _run_material_cards(
+                        args.material_cards, material, ply_angles, name, config,
+                        Vp, out_path, element=element,
+                        porosity_degradation=degradation))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: material cards for Vp={Vp}, {name}: {exc}",
+                          file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: material cards for Vp={Vp}, {name} failed: "
+                          f"{exc}", file=sys.stderr)
+                    return 3
+
+    if durability:
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nFatigue and environment (empirical): Vp = %.2f%%", Vp * 100)
+            try:
+                for line in _run_durability(
+                        durability, material, args.material, ply_angles, Vp,
+                        output_dir / f"porosity_durability_{Vp_label}.json"):
+                    logger.info("%s", line)
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: fatigue and environment for Vp={Vp}: {exc}",
+                      file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as a failure
+                print(f"ERROR: fatigue and environment for Vp={Vp} failed: {exc}",
+                      file=sys.stderr)
+                return 3
+
     if args.required_knockdown is not None:
         logger.info("\nAllowable porosity: %g%% of pristine strength retained",
                     args.required_knockdown * 100)
         try:
             for line in _run_allowable(
                     args.required_knockdown, material, args.material, ply_angles,
-                    output_dir / "porosity_allowable.json"):
+                    output_dir / "porosity_allowable.json",
+                    **({'durability': durability} if durability else {})):
                 logger.info("%s", line)
         except (ValueError, OSError) as exc:
             print(f"ERROR: allowable porosity: {exc}", file=sys.stderr)

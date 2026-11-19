@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
+import difflib
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -803,6 +807,79 @@ class MaterialProperties:
                 name, float(draws[name]), dist, params)
         from dataclasses import replace as _dc_replace
         return _dc_replace(self, **updates)
+
+    def to_dict(self) -> dict:
+        """Every field as a JSON-ready dict; an unset option is ``None``.
+
+        :meth:`from_dict` rebuilds the material, and
+        :func:`~porosity_fe.save_material_to_json` writes the dict to a
+        file. Units are those of the fields: MPa, mm, fractions, 1/K, N/mm.
+
+        Examples
+        --------
+        >>> from porosity_fe import MATERIALS, MaterialProperties
+        >>> record = MATERIALS['T800_epoxy'].to_dict()
+        >>> record['E11'], record['alpha_1']
+        (161000.0, None)
+        >>> MaterialProperties.from_dict(record) == MATERIALS['T800_epoxy']
+        True
+        """
+        out = {}
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            out[f.name] = value.item() if isinstance(value, np.generic) else value
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> MaterialProperties:
+        """A material from a mapping of its fields, as :meth:`to_dict` gives.
+
+        Every field without a default must be present (the ply constants,
+        the strengths, ``t_ply``, ``n_plies`` and the constituents); the
+        optional ones may be left out or ``None``.
+
+        Raises
+        ------
+        ValueError
+            For a missing field, an unknown one (the closest name is
+            suggested), a value that is not a number, or any value the
+            constructor refuses (a percent for a fraction, ppm/K for a CTE).
+        """
+        if not isinstance(data, Mapping):
+            raise ValueError(
+                f"A material is a mapping of its fields; got "
+                f"{type(data).__name__}.")
+        fields = {f.name: f for f in dataclasses.fields(cls)}
+        unknown = [key for key in data if key not in fields]
+        if unknown:
+            hints = []
+            for key in unknown:
+                close = difflib.get_close_matches(str(key), list(fields), n=1)
+                hints.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)"
+                                           if close else ""))
+            raise ValueError(f"Unknown material field(s): {', '.join(hints)}.")
+        missing = [name for name, f in fields.items()
+                   if f.default is dataclasses.MISSING and data.get(name) is None]
+        if missing:
+            raise ValueError(
+                f"The material is missing {', '.join(missing)}: every ply "
+                f"constant, strength and constituent value is required.")
+        kwargs: dict[str, Any] = {}
+        for name, value in data.items():
+            if value is None:
+                continue        # an unset option keeps its default
+            if not cls._is_real_number(value):
+                raise ValueError(
+                    f"MaterialProperties.{name} must be a number, got {value!r}.")
+            if name == 'n_plies':
+                if float(value) != int(value):
+                    raise ValueError(
+                        f"MaterialProperties.n_plies must be a whole number, "
+                        f"got {value!r}.")
+                kwargs[name] = int(value)
+            else:
+                kwargs[name] = float(value)
+        return cls(**kwargs)
 
     def __repr__(self) -> str:
         return (f"MaterialProperties(E11={self.E11}, E22={self.E22}, "

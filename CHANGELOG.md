@@ -12,6 +12,131 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Linear buckling of the FE model.** `FESolver.buckling(loading,
+  n_modes)` (and `linear_buckling`) returns a `BucklingResult`: the lowest
+  positive load factors of `(K + lambda K_G) phi = 0` for the `compression`
+  or `shear` coupon, with the geometric stiffness of the prebuckling
+  Gauss-point stress, on the load case's supports and reusing its cached
+  factorization; the mode shapes; the critical strain, stress and load; and,
+  with a delamination, how far each mode's faces would close
+  (`interpenetration`; the eigenproblem has no contact). There was no
+  buckling analysis, which usually governs a thin laminate in compression.
+  Additive: no existing result changes.
+  - Verified against the fixed-guided Euler column (a 1 mm UD strip, within
+    0.4 % with the shear correction; the mode shape correlates to 0.9996)
+    and the clamped sublaminate over a delamination (4 % below the
+    rigid-base estimate, as it should be).
+  - Porosity lowers the buckling load through each element's degraded
+    stiffness, so the distribution matters: on a cross-ply strip with 4 %
+    voids it keeps 99.5 % (surface cluster), 99.6 % (uniform) and 99.8 %
+    (mid-plane cluster).
+  - `export_results(..., buckling=, buckling_reference=)` writes a
+    `buckling` block (schema 1.3, additive). `porosity-analyze --buckling
+    {compression,shear}` analyses each configuration and level on the
+    production coupon against one void-free reference; the app's Results
+    tab has an on-demand "Linear buckling (FE)" panel with the first mode.
+- **Fatigue and environment in the CLI and the app, with two opt-in fatigue
+  options.** Both factors existed in the `EmpiricalSolver` API only; the
+  stress ratio `R` had no effect, and the S-N slope ignored porosity.
+  Additive: without the new options every result is unchanged, and the
+  default `FatigueModel` still warns that it ignores `R`.
+  - `FatigueModel(mean_stress='goodman')`: the maximum stress at `R` lies
+    on the straight constant-life line through the calibrated point at
+    `R = 0.1` and the static strength, so `R = 1` gives no knockdown and,
+    after 10^6 cycles, tension at `R = 0.5` keeps 0.545 of its strength
+    against 0.400 at `R = 0.1`. Same-sign cycling only: `0 <= R <= 1` for
+    the tension-type modes, `R >= 1` for compression (its calibration
+    ratio taken as `R = 10`); reversed loading raises. Not calibrated
+    against porous-laminate fatigue data.
+  - `FatigueModel(porosity_slope=K)`: `b(Vp) = b (1 + K Vp)`. No value is
+    shipped (the database has no fatigue data); the default 0 keeps the
+    slope independent of porosity.
+  - `EmpiricalSolver(..., fatigue_model=...)` uses it; `R=` on
+    `get_failure_load`, `get_all_failure_loads` and the allowable-porosity
+    methods also takes a mapping of mode to `R`. A porosity-dependent
+    slope is taken at the specimen-average `Vp` for the failure load and
+    at each trial `Vp` for the allowable. `details['fatigue_model']`
+    records the options.
+  - `reporting.durability_record(solver, cycles=, R=, environment=)`:
+    every strength mode and law with the porosity knockdown, the fatigue
+    and hygrothermal factors and their product (JSON format
+    `porosity-fe.durability`, `FORMAT_DURABILITY`).
+  - `porosity-analyze --cycles N` and `--service-temperature` /
+    `--moisture` / `--tg-dry` write `porosity_durability_<Vp>.json` per
+    level, and `--required-knockdown` then holds at those conditions (the
+    allowable JSON gains a `conditions` block, and an unachievable entry
+    reads "not achievable"). `--mean-stress goodman`,
+    `--stress-ratio`, `--compression-stress-ratio` and
+    `--fatigue-porosity-slope` set the options. The app's Results tab has
+    a "Fatigue and environment (empirical)" panel, whose inputs a saved
+    scenario restores.
+- **A custom material, the plate size and saved scenarios in the app; a
+  material file for the CLI.** The app's material was preset-only and its
+  coupon fixed at 50 x 20 mm, and there was no way to save or restore a
+  run. Additive: a run on a preset and the default coupon gives the same
+  results and the same cache key as before.
+  - `MaterialProperties.to_dict()` / `from_dict()`, and
+    `save_material_to_json` / `load_material_from_json` (format
+    `porosity-fe.material`, with a `units` block; a bare JSON object of
+    the fields is read too). `from_dict` names every missing field and
+    suggests the closest name for a misspelt one; the constructor's checks
+    (a percent for a fraction, ppm/K for a CTE) still apply.
+  - App, *Custom material* panel: download the selected material as a
+    template, load an edited file, which joins the Material list as
+    `Custom: <name>`, or remove it. The thermal and toughness panels follow
+    its own CTEs and toughness.
+  - App, plate length and width (default 50 x 20 mm) for the coupon modes:
+    the FE mesh, a delamination's coupon and the Overview use them; the
+    ASTM specimen modes keep their size, and the mesh-convergence check,
+    which refines the standard coupon, says it does not cover another
+    plate. The export payload records `plate_mm` and a custom material's
+    `material_properties`.
+  - App, *Scenario* panel: save every sidebar input, the custom material
+    in use and the headline numbers of the last run (when the inputs are
+    still its own) to a JSON file (`porosity-fe.app-scenario`), and load
+    one: the inputs come back, each one a widget would refuse is listed and
+    skipped, and the next run's Results tab compares the two runs. The
+    sidebar widgets now take their defaults through the session state so a
+    scenario can set them; their defaults are unchanged.
+  - `porosity-analyze --material-file PATH`, and `material=` on
+    `compare_configurations` / `sweep_configurations` (the material
+    travels with each task to the worker processes), and `mesh_kwargs=` on
+    `build_empirical_pipeline`.
+- **Material cards of the degraded ply for Abaqus and Nastran.**
+  `material_cards(material, porosity, fmt)` writes the porosity-degraded
+  ply properties as solver input, so they can be carried into another
+  model; the exports were VTK and JSON only. Additive: no result changes.
+  - `degraded_ply(material, Vp)` returns a `DegradedPly`: the nine
+    engineering constants read from the stiffness the FE path gives an
+    element at that void content, their retention ratios, and the
+    strengths. At 3 % spherical voids the T800 ply keeps 99.95 % of
+    `E11`, 94.6 % of `E22` and 94.8 % of `G12`.
+  - `porosity` is a void fraction (one material) or a `PorosityField`:
+    each ply then takes the mean of the through-thickness profile over it
+    (`ply_porosities`), and plies with the same void content share a
+    material. A 3 % midplane cluster in an 8-ply laminate gives four
+    materials, from 0.26 % voids in the outer plies to 6.58 % in the
+    middle ones. With an in-plane map, `at=(x, y)` takes the laminate at
+    that point.
+  - `fmt='abaqus'`: `*ELASTIC, TYPE=LAMINA` with `*FAIL STRESS` (shell),
+    or `TYPE=ENGINEERING CONSTANTS` (solid). `fmt='nastran'`: `MAT8`
+    (shell) or `MAT9` (solid, the 6 x 6 stiffness in the ply axes), in
+    large-field format. `section=` adds the layup as a `*SHELL SECTION,
+    COMPOSITE` or a `PCOMP`; without it the ply table is comments.
+    Abaqus gets the compressive limits as negative numbers and the
+    normalized Tsai-Wu coefficient, Nastran positive limits and the
+    dimensional `F12`.
+  - `strengths='degraded'` (default) uses the FE path's
+    `sqrt(stiffness retention)` heuristic and says in the card header that
+    it is not calibrated; `'pristine'` and `'none'` are the alternatives.
+    `density=` is scaled by `1 - Vp`.
+  - `write_material_cards(path, ...)` takes the format from the extension
+    (`.inp`; `.bdf`, `.dat`, `.nas`, `.blk`). `porosity-analyze
+    --material-cards {abaqus,nastran}` writes
+    `porosity_cards_<config>_<Vp>.inp` / `.bdf` per configuration and
+    level (`--card-element solid` for solids; `--porosity-degradation` now
+    also applies here), and the app's Export tab has a "Material cards for
+    another solver" download.
 - **In-plane porosity maps.** `PorosityMap` holds the through-thickness
   average void content on a rectilinear in-plane grid, and
   `PorosityField.from_map(material, porosity_map)` (or

@@ -117,14 +117,41 @@ from porosity_app.config import (  # noqa: E402, F401
     _LOADING_LABELS,
     _MODE_LABELS,
     _NZ_SLIDER_MAX,
+    _PLATE_DEFAULT,
     _POROSITY_DEGRADATION_LABELS,
     _README_URL,
     _resolving_nz,
     _SUGGESTED_DELTA_T_177C_EPOXY,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
+    _VOID_SHAPES,
+    _cfg_material,
+    _cfg_plate,
+    _key_to_config,
+)
+from porosity_app.scenario import (  # noqa: E402, F401
+    CUSTOM_MATERIAL_KEY,
+    CUSTOM_MATERIAL_PREFIX,
+    FORMAT_SCENARIO,
+    REFERENCE_KEY,
+    SCENARIO_INPUTS,
+    apply_scenario,
+    comparison_rows,
+    custom_material_label,
+    custom_material_record,
+    material_options,
+    parse_scenario,
+    resolve_material,
+    scenario_document,
+    scenario_summary,
+    serialise_scenario,
 )
 from porosity_app.runners import (  # noqa: E402, F401
+    _BUCKLING_MODES,
+    _BUCKLING_N_MODES,
+    buckling_unavailable_reason,
+    run_buckling,
+    run_buckling_cached,
     _clt_flexure_reference,
     _fe_load_kwargs,
     fe_vtu_bytes,
@@ -145,6 +172,7 @@ from porosity_app.summaries import (  # noqa: E402, F401
     _applied_load_text,
     _crack_front,
     delamination_text,
+    durability_table,
     _distribution_text,
     fe_decomposition_summary,
     fe_delamination_summary,
@@ -174,6 +202,7 @@ from porosity_app.convergence import (  # noqa: E402, F401
     run_convergence_check,
 )
 from porosity_app.plots import (  # noqa: E402, F401
+    plot_buckling_mode,
     _colorbar_extend,
     _colour_limits,
     _CONSTANT_FIELD_RTOL,
@@ -210,10 +239,12 @@ from porosity_app.plots import (  # noqa: E402, F401
 )
 from porosity_app.sidebar import (  # noqa: E402, F401
     _apply_nz_fix,
+    _build_custom_material_inputs,
     _build_delamination_inputs,
     _build_fracture_specimen_inputs,
     _build_fracture_uq_inputs,
     _build_onset_inputs,
+    _build_scenario_inputs,
     _build_sidebar_inputs,
     _build_thermal_inputs,
     _build_toughness_inputs,
@@ -222,7 +253,12 @@ from porosity_app.sidebar import (  # noqa: E402, F401
     _flexure_specimen_caption,
     _FRACTURE_UQ_LABELS,
     _ilss_specimen_caption,
+    _load_material_upload,
+    _load_scenario_upload,
+    _material,
     _offer_nz_fix,
+    _remove_custom_material,
+    _seed,
     _set_delta_T,
     _sync_default_nz,
     _validate_layup_inline,
@@ -245,10 +281,14 @@ from porosity_app.tabs.results import (  # noqa: E402, F401
     _build_fe_failure_results,
     _build_flexure_results,
     _build_fracture_uq_block,
+    _build_buckling_expander,
+    _build_durability_expander,
     _build_results_tab,
+    _build_scenario_comparison,
     _build_short_beam_results,
     _build_thermal_results,
     _build_uq_expander,
+    _stop_comparing,
 )
 from porosity_app.tabs.stress import (  # noqa: E402, F401
     _build_stress_tab,
@@ -256,6 +296,7 @@ from porosity_app.tabs.stress import (  # noqa: E402, F401
 )
 from porosity_app.tabs.export import (  # noqa: E402, F401
     _build_export_tab,
+    _material_cards_download,
 )
 from porosity_app.render import (  # noqa: E402, F401
     _render,

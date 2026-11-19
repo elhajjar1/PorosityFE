@@ -85,6 +85,7 @@ from .fatigue import _FATIGUE_B_QI as _FATIGUE_B_QI  # noqa: F401, E402
 from .fatigue import _FATIGUE_KD_FLOOR as _FATIGUE_KD_FLOOR  # noqa: F401, E402
 from .fatigue import FatigueModel as FatigueModel  # noqa: F401, E402
 from .fe import BoundaryHandler as BoundaryHandler  # noqa: F401, E402
+from .fe import BucklingResult as BucklingResult  # noqa: F401, E402
 from .fe import CrackFront as CrackFront  # noqa: F401, E402
 from .fe import DelaminationOnset as DelaminationOnset  # noqa: F401, E402
 from .fe import FESolver as FESolver  # noqa: F401, E402
@@ -103,6 +104,7 @@ from .fe import extrapolate_to_nodes as extrapolate_to_nodes  # noqa: F401, E402
 from .fe import fracture_load_factors as fracture_load_factors  # noqa: F401, E402
 from .fe import interface_tractions as interface_tractions  # noqa: F401, E402
 from .fe import knockdown_decomposition as knockdown_decomposition  # noqa: F401, E402
+from .fe import linear_buckling as linear_buckling  # noqa: F401, E402
 from .fe import refinement_study as refinement_study  # noqa: F401, E402
 from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
@@ -129,15 +131,24 @@ from .homogenization import (  # noqa: F401, E402
 from .homogenization import compute_degraded_clt_moduli as compute_degraded_clt_moduli  # noqa: F401, E402
 from .io import _KNOWN_FORMATS as _KNOWN_FORMATS  # noqa: F401, E402
 from .io import FORMAT_ALLOWABLE as FORMAT_ALLOWABLE  # noqa: F401, E402
+from .io import FORMAT_DURABILITY as FORMAT_DURABILITY  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
+from .io import FORMAT_MATERIAL as FORMAT_MATERIAL  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
 from .io import FORMAT_UQ as FORMAT_UQ  # noqa: F401, E402
 from .io import JSON_SCHEMA_VERSION as JSON_SCHEMA_VERSION  # noqa: F401, E402
 from .io import _build_provenance as _build_provenance  # noqa: F401, E402
 from .io import _json_default as _json_default  # noqa: F401, E402
+from .io import load_material_from_json as load_material_from_json  # noqa: F401, E402
 from .io import load_results_from_json as load_results_from_json  # noqa: F401, E402
+from .io import save_material_to_json as save_material_to_json  # noqa: F401, E402
 from .io import save_results_to_json as save_results_to_json  # noqa: F401, E402
+from .material_cards import DegradedPly as DegradedPly  # noqa: F401, E402
+from .material_cards import degraded_ply as degraded_ply  # noqa: F401, E402
+from .material_cards import material_cards as material_cards  # noqa: F401, E402
+from .material_cards import ply_porosities as ply_porosities  # noqa: F401, E402
+from .material_cards import write_material_cards as write_material_cards  # noqa: F401, E402
 from .materials import MATERIALS as MATERIALS  # noqa: F401, E402
 from .materials import MaterialProperties as MaterialProperties  # noqa: F401, E402
 from .mesh import CompositeMesh as CompositeMesh  # noqa: F401, E402
@@ -244,6 +255,9 @@ __all__ = [
     "refinement_study",
     "ShortBeamShear",
     "short_beam_shear",
+    # Linear (eigenvalue) buckling
+    "BucklingResult",
+    "linear_buckling",
     # Delamination fracture mechanics (VCCT)
     "CrackFront",
     "vcct_energy_release_rates",
@@ -277,9 +291,19 @@ __all__ = [
     "FORMAT_NCR",
     "FORMAT_UQ",
     "FORMAT_ALLOWABLE",
+    "FORMAT_DURABILITY",
+    "FORMAT_MATERIAL",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",
+    "load_material_from_json",
+    "save_material_to_json",
+    # Solver material cards of the degraded ply
+    "DegradedPly",
+    "degraded_ply",
+    "ply_porosities",
+    "material_cards",
+    "write_material_cards",
     # Pipeline / CLI
     "build_empirical_pipeline",
     "compare_configurations",
