@@ -12,6 +12,39 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Hybrid laminates.** A `PlyStack` lists every ply's material and
+  thickness, bottom to top, and stands in for the material of
+  `PorosityField`, `CompositeMesh` and `FESolver` (the angles stay
+  `ply_angles=`). One material and one ply thickness applied to the whole
+  laminate before.
+  - The node layers follow the ply thicknesses, and an element layer that
+    would span two materials is refused. Each element takes its ply's
+    stiffness, porosity micromechanics, strengths (every failure criterion
+    and the first-ply failure load factor) and CTEs. The `'interface'`
+    porosity profile sits at the stack's interfaces.
+  - At an interface between two materials the weaker side governs: the
+    VCCT critical load factor and the stress-based onset criteria are
+    evaluated with both plies' toughness or strengths.
+  - `compute_degraded_clt_moduli`, `compute_clt_effective_modulus`,
+    `compute_degraded_clt_flexural_modulus`, `obrien_edge_delamination`,
+    the open-hole reference, `refinement_study` and
+    `fe_porosity_uncertainty` take a stack. The empirical solver takes a
+    stack of one material (plies weighted by thickness in the layup
+    scaling) and refuses a hybrid, whose laminate strength its laws do not
+    define.
+  - Verified: a stack of identical plies reproduces the single material to
+    round-off; a unidirectional carbon/glass hybrid's FE modulus equals
+    lamination theory to 1e-6 and a thick/thin cross-ply's to 2e-4; the
+    fibre stress splits in the ratio of the plies' E11; the cure residual
+    stress of a glass/carbon laminate matches lamination theory to 0.1 %
+    along the fibres; a crack between plies of two toughnesses grows at the
+    weaker one's load.
+  - `parse_ply_stack` reads `"glass_epoxy@0.2, T700_epoxy*4, glass_epoxy@0.2"`;
+    `porosity-analyze --plies SPEC --fe LOADING` (and `--fe-uq`) runs it,
+    FE only. The FE JSON gains a `ply_stack` block (schema 1.3, additive)
+    and the VTU a `material_id` cell field. The app's Results tab has a
+    "Hybrid laminate (FE)" panel. Additive: the FE fingerprint does not
+    move.
 - **Open-hole coupons.** `CompositeMesh.for_open_hole` meshes the
   open-hole tension / compression coupon (ASTM D5766, D6484: 36 mm wide,
   6 mm hole) as an `OpenHoleMesh`: a ring of elements mapped from the hole

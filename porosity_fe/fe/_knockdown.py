@@ -18,7 +18,6 @@ import hashlib
 import logging
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import astuple
 from typing import Literal
 
 import numpy as np
@@ -27,6 +26,7 @@ import scipy.sparse
 from .._types import FEFormulation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack, material_key
 from ..porosity_field import PorosityField
 from ._constrained_solve import free_dof_system, solve_constrained
 from ._load_cases import (
@@ -139,7 +139,7 @@ def knockdown(loading: str, porous: float, pristine: float) -> float:
 
 
 def pristine_stiffness_measure(
-    loading: str, mesh: CompositeMesh, material: MaterialProperties,
+    loading: str, mesh: CompositeMesh, material: MaterialProperties | PlyStack,
     porosity_field: PorosityField, formulation: FEFormulation,
     bc_handler: BoundaryHandler, *, solver: Literal['direct', 'cg', 'minres'] = 'direct',
     rtol: float = 1e-9,
@@ -172,12 +172,15 @@ def pristine_stiffness_measure(
     # Tension and compression share one linear pristine problem.
     key_loading = 'compression' if loading == 'tension' else loading
     h = hashlib.blake2b(digest_size=16)
-    for arr in (mesh.nodes, mesh.elements, mesh.ply_angles):
+    arrays = [mesh.nodes, mesh.elements, mesh.ply_angles]
+    if getattr(mesh, 'ply_stack', None) is not None:
+        arrays.append(mesh.elem_material_ids)
+    for arr in arrays:
         a = np.ascontiguousarray(arr)
         h.update(f"{a.dtype}{a.shape}".encode())
         h.update(a.tobytes())
     # Key on every material field: repr() omits E33, G13, G23, ... .
-    key: tuple = (key_loading, h.hexdigest(), astuple(material), formulation,
+    key: tuple = (key_loading, h.hexdigest(), material_key(material), formulation,
                   solver if solver == 'direct' else (solver, float(rtol)))
     if key_loading in _FLEXURE_PROCEDURE:
         # Supports and load lines are not part of the node arrays.

@@ -863,3 +863,89 @@ def run_open_hole(result: dict, hole_diameter: float, width: float) -> dict:
 def run_open_hole_cached(cfg_key: tuple, params: tuple, _result: dict) -> dict:
     """Cached :func:`run_open_hole`; ``params`` is ``(hole_diameter, width)``."""
     return run_open_hole(_result, *params)
+
+
+# ----------------------------------------------------------------------
+# Hybrid laminate (on demand, Results tab)
+# ----------------------------------------------------------------------
+
+#: Load cases of the panel (the coupon's in-plane ones).
+_HYBRID_MODES = ("compression", "tension", "shear")
+
+
+def hybrid_default_spec(result: dict) -> str:
+    """A starting ply stack for the panel: the analysis' plies with a glass
+    face ply on each side (or the plies alone for a glass laminate)."""
+    cfg = result["config"]
+    name = cfg["material_name"]
+    n = int(result["material"].n_plies)
+    glass = "glass_epoxy"
+    if name == glass or n < 3 or cfg.get("material") is not None:
+        return f"{name}*{n}"
+    return f"{glass}, {name}*{n - 2}, {glass}"
+
+
+def hybrid_unavailable_reason(result: dict) -> str | None:
+    """Why the hybrid laminate panel cannot study ``result``; ``None`` when it can."""
+    if result.get("fe_field") is None:
+        return "The FE solve of this analysis was skipped, so there is no model to compare."
+    if (result.get("fe_thermal") or {}).get("mode") == "thermal_only":
+        return "The hybrid laminate panel needs a mechanical load; the thermal-only solve has none."
+    if result.get("fe_loading") not in _HYBRID_MODES:
+        return ("The hybrid laminate panel takes the coupon under compression, tension "
+                "or shear: select one of them as the loading mode.")
+    if result["mesh"].delaminations:
+        return "The hybrid laminate panel solves the coupon without the delamination."
+    return None
+
+
+def run_hybrid(result: dict, spec: str) -> dict:
+    """The analysis' coupon, porosity and load on the hybrid laminate ``spec``
+    (:func:`porosity_fe.parse_ply_stack`; the presets, and a custom material
+    by its name). Returns ``{"stack", "fe", "mesh", "clt_modulus"}``: the
+    FE solve and, under compression or tension, the lamination-theory
+    modulus of the porous stack."""
+    from porosity_fe import (
+        MATERIALS,
+        PlyStack,
+        PorosityField,
+        compute_degraded_clt_moduli,
+        parse_ply_stack,
+    )
+    from porosity_fe.pipeline import _default_mesh_resolution
+    from porosity_fe.ply_stack import stack_angles
+
+    cfg = result["config"]
+    names = dict(MATERIALS)
+    if cfg.get("material") is not None:
+        names[cfg["material_name"]] = _cfg_material(cfg)
+    stack: PlyStack = parse_ply_stack(spec, names)
+    angles = cfg["angles"]
+    stack_angles(stack, angles)  # refuses a layup longer than the stack
+    pf_kwargs = {"distribution": cfg["distribution"], "void_shape": cfg["void_shape"]}
+    if cfg["distribution"] == "clustered":
+        pf_kwargs["cluster_location"] = cfg["cluster_location"]
+    Vp = cfg["Vp"] / 100.0
+    pf = PorosityField(stack, Vp, **pf_kwargs)
+    plain = result["mesh"]
+    nz = _default_mesh_resolution(stack.n_plies, angles)[2]
+    mesh = CompositeMesh(pf, stack, plain.nx, plain.ny, nz, ply_angles=angles,
+                         **_cfg_plate(cfg))
+    kwargs: dict = dict(_fe_load_kwargs(result["fe_loading"]))
+    thermal = result.get("fe_thermal") or {}
+    if thermal.get("mode") == "combined":
+        kwargs["delta_T"] = thermal["delta_T"]
+    solver = FESolver(mesh, stack, pf, ply_angles=angles,
+                      failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+                      porosity_degradation=cfg.get(
+                          "porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
+    fe = solver.solve(result["fe_loading"], **kwargs)
+    clt = (compute_degraded_clt_moduli(stack, angles, Vp)["Ex"]
+           if result["fe_loading"] in ("compression", "tension") else None)
+    return {"stack": stack, "fe": fe, "mesh": mesh, "clt_modulus": clt}
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_hybrid_cached(cfg_key: tuple, spec: str, _result: dict) -> dict:
+    """Cached :func:`run_hybrid`; ``_result`` is the analysis of ``cfg_key``."""
+    return run_hybrid(_result, spec)

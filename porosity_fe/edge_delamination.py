@@ -31,8 +31,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ._ply_angles import _resolve_ply_angles
-from .homogenization import _clt_abd_full
+from .homogenization import _clt_abd_full, _clt_abd_plies
 from .materials import MaterialProperties
+from .ply_stack import PlyStack
 
 
 @dataclass(frozen=True)
@@ -144,7 +145,19 @@ def _axial_modulus(C_base: np.ndarray, angles: list[float], t_ply: float,
     return float(1.0 / (t * a11))
 
 
-def obrien_edge_delamination(material: MaterialProperties,
+def _stack_axial_modulus(C_plies: Sequence[np.ndarray], angles: Sequence[float],
+                         thicknesses: Sequence[float], coupling: bool) -> float:
+    """:func:`_axial_modulus` of plies of their own stiffness and thickness."""
+    A, B, D = _clt_abd_plies(C_plies, angles, thicknesses)
+    t = float(np.sum(thicknesses))
+    if coupling:
+        a11 = np.linalg.inv(np.block([[A, B], [B, D]]))[0, 0]
+    else:
+        a11 = np.linalg.inv(A)[0, 0]
+    return float(1.0 / (t * a11))
+
+
+def obrien_edge_delamination(material: MaterialProperties | PlyStack,
                              ply_angles: Sequence[float] | str,
                              interfaces: Iterable[int], strain: float, *,
                              bending_coupling: bool = False,
@@ -165,7 +178,10 @@ def obrien_edge_delamination(material: MaterialProperties,
     material : MaterialProperties
         Ply properties: ``E11``, ``E22``, ``nu12`` and ``G12`` set the
         plane-stress ply stiffness (pristine; porosity is not applied), and
-        ``t_ply`` the ply thickness unless ``t_ply`` is given.
+        ``t_ply`` the ply thickness unless ``t_ply`` is given. A
+        :class:`~porosity_fe.PlyStack` (a hybrid laminate) gives each ply
+        its own stiffness and thickness; ``ply_angles`` must then list one
+        angle per ply of the stack, and ``t_ply`` is not taken.
     ply_angles : sequence of float or {'QI', 'UD'}
         The laminate, bottom ply first, in degrees: exactly these plies
         (not tiled to ``material.n_plies``). The sentinels resolve as for
@@ -257,17 +273,35 @@ def obrien_edge_delamination(material: MaterialProperties,
     if isinstance(strain, bool) or not isinstance(strain, (int, float, np.number)) \
             or not math.isfinite(float(strain)):
         raise ValueError(f"strain must be a finite number, got {strain!r}.")
-    h = _positive('t_ply', material.t_ply if t_ply is None else t_ply)
-
-    C_base = material.get_stiffness_matrix()
     coupling = bool(bending_coupling)
-    E_lam = _axial_modulus(C_base, angles, h, coupling)
-    cuts = [0] + [k + 1 for k in chosen] + [n]
-    subs = tuple(tuple(range(a, b)) for a, b in zip(cuts[:-1], cuts[1:], strict=True))
-    moduli = tuple(_axial_modulus(C_base, [angles[p] for p in s], h, coupling)
-                   for s in subs)
-    thick = tuple(len(s) * h for s in subs)
-    t = n * h
+    if isinstance(material, PlyStack):
+        if t_ply is not None:
+            raise ValueError("t_ply is not taken with a PlyStack: its plies "
+                             "have their own thicknesses.")
+        if n != material.n_plies:
+            raise ValueError(
+                f"ply_angles has {n} plies but the PlyStack has "
+                f"{material.n_plies}: give one angle per ply.")
+        C_all = [m.get_stiffness_matrix() for m in material.materials]
+        C_plies = [C_all[i] for i in material.ply_material_ids]
+        t_k = material.thicknesses
+        E_lam = _stack_axial_modulus(C_plies, angles, t_k, coupling)
+        cuts = [0] + [k + 1 for k in chosen] + [n]
+        subs = tuple(tuple(range(a, b)) for a, b in zip(cuts[:-1], cuts[1:], strict=True))
+        moduli = tuple(_stack_axial_modulus([C_plies[p] for p in s], [angles[p] for p in s],
+                                            [t_k[p] for p in s], coupling) for s in subs)
+        thick = tuple(float(sum(t_k[p] for p in s)) for s in subs)
+        t = material.total_thickness
+    else:
+        h = _positive('t_ply', material.t_ply if t_ply is None else t_ply)
+        C_base = material.get_stiffness_matrix()
+        E_lam = _axial_modulus(C_base, angles, h, coupling)
+        cuts = [0] + [k + 1 for k in chosen] + [n]
+        subs = tuple(tuple(range(a, b)) for a, b in zip(cuts[:-1], cuts[1:], strict=True))
+        moduli = tuple(_axial_modulus(C_base, [angles[p] for p in s], h, coupling)
+                       for s in subs)
+        thick = tuple(len(s) * h for s in subs)
+        t = n * h
     E_star = float(sum(E * ti for E, ti in zip(moduli, thick, strict=True)) / t)
     eps = float(strain)
     return EdgeDelamination(

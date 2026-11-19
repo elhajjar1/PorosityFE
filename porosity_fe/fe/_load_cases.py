@@ -19,6 +19,7 @@ import numpy as np
 from ..fracture_specimens import _FRACTURE_TEST_NAMES
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from . import flexure, short_beam
 from .assembler import BoundaryHandler
 
@@ -103,12 +104,13 @@ def _resolve_applied_strain(loading: str, applied_strain: float | None) -> float
 
 
 def _check_delta_T(loading: str, delta_T: float | None,
-                   material: MaterialProperties) -> float | None:
+                   material: MaterialProperties | PlyStack) -> float | None:
     """Validate ``delta_T`` for ``loading``; ``None`` for a mechanical-only solve.
 
     The library never infers the temperature change (not even from
     ``material.T_stress_free``): ``loading='thermal'`` without an explicit
-    ``delta_T`` raises, and any ``delta_T`` needs the lamina CTEs.
+    ``delta_T`` raises, and any ``delta_T`` needs the lamina CTEs (of
+    every material of a :class:`~porosity_fe.PlyStack`).
     """
     if delta_T is None:
         if loading == 'thermal':
@@ -124,12 +126,13 @@ def _check_delta_T(loading: str, delta_T: float | None,
         raise ValueError(
             f"delta_T must be a finite number of kelvin (a temperature "
             f"difference), got {delta_T!r}.")
-    if not material.has_cte:
+    materials = material.materials if isinstance(material, PlyStack) else (material,)
+    if not all(m.has_cte for m in materials):
         from ..materials import MATERIALS
         with_cte = sorted(k for k, m in MATERIALS.items() if m.has_cte)
         raise ValueError(
             "delta_T needs the lamina thermal expansion coefficients, but "
-            "this MaterialProperties has none: set alpha_1 and alpha_2 in "
+            "this MaterialProperties (or a material of the PlyStack) has none: set alpha_1 and alpha_2 in "
             "1/K (e.g. dataclasses.replace(material, alpha_1=-1.0e-6, "
             f"alpha_2=26e-6)). Presets with CTEs: {with_cte}.")
     return float(delta_T)

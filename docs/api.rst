@@ -89,6 +89,26 @@ Finite-element solver
    RefinementLevel
    QuantityConvergence
 
+Hybrid laminates
+----------------
+
+A :class:`PlyStack` gives every ply its own material and thickness, bottom to
+top, and stands in for the material of :class:`PorosityField`,
+:class:`CompositeMesh` and :class:`FESolver` (the angles stay
+``ply_angles=``). Each element takes its ply's stiffness, constituents,
+strengths, CTEs and toughness; an interface between two materials takes the
+weaker side. :func:`compute_degraded_clt_moduli` and
+:func:`obrien_edge_delamination` take a stack too. The empirical solver takes
+a stack of one material and refuses a hybrid. See :doc:`theory/fe` (Hybrid
+laminates).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   PlyStack
+   parse_ply_stack
+
 Open-hole coupons
 -----------------
 

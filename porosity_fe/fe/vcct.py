@@ -28,6 +28,7 @@ import scipy.optimize
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from ..toughness import (
     ToughnessKnockdown,
     ToughnessKnockdownSpec,
@@ -817,7 +818,58 @@ def _thermal_factors_batch(prestress: CrackFront, front: CrackFront,
     return out
 
 
-def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
+def front_has_toughness(front: CrackFront, material: MaterialProperties | PlyStack
+                        ) -> bool:
+    """Whether every material that meets the front has toughness data: the
+    material, or each material on either side of a front node's interface
+    in a :class:`~porosity_fe.PlyStack`."""
+    if not isinstance(material, PlyStack):
+        return material.has_toughness
+    return all(material.materials[i].has_toughness
+               for i in _front_material_ids(front, material))
+
+
+def _front_material_ids(front: CrackFront, stack: PlyStack) -> list[int]:
+    """The stack materials below or above the front nodes' interfaces."""
+    ids = stack.ply_material_ids
+    k = np.asarray(front.interface, dtype=np.intp)
+    return sorted(set(ids[k].tolist()) | set(ids[k + 1].tolist()))
+
+
+def _stack_load_factors(front: CrackFront, stack: PlyStack,
+                        prestress: CrackFront | None,
+                        law: ToughnessKnockdown) -> CrackFront:
+    """:func:`fracture_load_factors` at the interfaces of a ply stack.
+
+    Each front node is evaluated with the toughness of the plies on both
+    sides of its interface, and the side that reaches its toughness first
+    (the smaller ``lambda_c``) governs it: its ``G_c`` and ``lambda_c`` are
+    that side's. A node between plies of one material has that material's.
+    """
+    tables = {i: fracture_load_factors(front, stack.materials[i], prestress=prestress,
+                                       toughness_knockdown=law)
+              for i in _front_material_ids(front, stack)}
+    ids = stack.ply_material_ids
+    k = np.asarray(front.interface, dtype=np.intp)
+    below, above = ids[k], ids[k + 1]
+    rows = np.arange(len(front))
+
+    def pick(name: str, side: np.ndarray) -> np.ndarray:
+        values = np.empty(len(front))
+        for i, table in tables.items():
+            mask = side == i
+            values[mask] = np.asarray(getattr(table, name), dtype=float)[rows[mask]]
+        return values
+
+    lam_b, lam_a = pick('lambda_c', below), pick('lambda_c', above)
+    use_above = lam_a < lam_b
+    base = tables[int(below[0])] if len(front) else next(iter(tables.values()))
+    return dataclasses.replace(
+        base, lambda_c=np.where(use_above, lam_a, lam_b),
+        G_c=np.where(use_above, pick('G_c', above), pick('G_c', below)))
+
+
+def fracture_load_factors(front: CrackFront, material: MaterialProperties | PlyStack, *,
                           prestress: CrackFront | None = None,
                           toughness_knockdown: ToughnessKnockdownSpec = 'exponential',
                           ) -> CrackFront:
@@ -840,14 +892,18 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
     state is held for every ``lam``, an approximation (see the theory page).
 
     The toughness at each node is the material's, knocked down by the
-    porosity at the node (``front.Vp``) with ``toughness_knockdown``.
+    porosity at the node (``front.Vp``) with ``toughness_knockdown``. For a
+    :class:`~porosity_fe.PlyStack`, a node at an interface between plies of
+    two materials is evaluated with each and the one that reaches its
+    toughness first governs it (the weaker side).
 
     Parameters
     ----------
     front : CrackFront
         The part that the factor scales (the mechanical load).
-    material : MaterialProperties
-        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta``.
+    material : MaterialProperties or PlyStack
+        Needs ``G_Ic``, ``G_IIc`` and ``bk_eta`` (every material that meets
+        the front, for a stack).
     prestress : CrackFront, optional
         The fixed part, on the same front nodes.
     toughness_knockdown : ToughnessKnockdown, str, callable or None
@@ -870,6 +926,13 @@ def fracture_load_factors(front: CrackFront, material: MaterialProperties, *,
         If the material has no toughness data, ``prestress`` is on other
         nodes, or the law is invalid.
     """
+    if isinstance(material, PlyStack):
+        for i in _front_material_ids(front, material):
+            _check_toughness(material.materials[i], "The critical load factor")
+        if prestress is not None:
+            _check_same_front(prestress, front)
+        return _stack_load_factors(front, material, prestress,
+                                   _resolve_toughness_knockdown(toughness_knockdown))
     eta = _check_toughness(material, "The critical load factor")
     law = _resolve_toughness_knockdown(toughness_knockdown)
     record = _toughness_record(law, front.Vp)

@@ -43,6 +43,7 @@ from .materials import MaterialProperties
 
 if TYPE_CHECKING:  # pragma: no cover
     from .mesh import CompositeMesh
+    from .ply_stack import PlyStack
     from .porosity_field import PorosityField
 
 #: The fracture tests, also the names of their loading modes.
@@ -529,7 +530,7 @@ class _SpecimenLayout:
 
 
 def _build_specimen(cls: type[CompositeMesh], porosity_field: PorosityField,
-                   material: MaterialProperties, layout: _SpecimenLayout, *,
+                   material: MaterialProperties | PlyStack, layout: _SpecimenLayout, *,
                    interface: int | None, element_length: float | None,
                    max_element_length: float | None, nx: int | None,
                    ny: int | None, nz: int | None, plane_strain: bool,

@@ -25,9 +25,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .homogenization import _clt_abd_full
+from .homogenization import _clt_abd_full, _clt_abd_plies
 from .materials import MaterialProperties
-from .mesh import CompositeMesh, _expand_layup, _ply_at
+from .mesh import CompositeMesh
+from .ply_stack import PlyStack
 from .porosity_field import PorosityField
 
 if TYPE_CHECKING:
@@ -240,7 +241,7 @@ class OpenHoleMesh(CompositeMesh):
         layer ``k``.
     """
 
-    def __init__(self, porosity_field: PorosityField, material: MaterialProperties, *,
+    def __init__(self, porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                  geometry: OpenHoleGeometry, nz: int,
                  ply_angles: list[float] | str | None = 'QI') -> None:
         self.open_hole_geometry = geometry
@@ -257,7 +258,7 @@ class OpenHoleMesh(CompositeMesh):
         xy, quads = _open_hole_quads(self.open_hole_geometry)
         self.in_plane_nodes, self.in_plane_quads = xy, quads
         n2, nq = len(xy), len(quads)
-        z = np.linspace(0.0, self.L_z, self.nz + 1)
+        z = self._layer_z()
         self.nodes = np.column_stack((np.tile(xy[:, 0], self.nz + 1),
                                       np.tile(xy[:, 1], self.nz + 1),
                                       np.repeat(z, n2)))
@@ -272,15 +273,7 @@ class OpenHoleMesh(CompositeMesh):
             void_mask |= void.contains(centers[:, 0], centers[:, 1], centers[:, 2])
         self.void_elements = np.where(void_mask)[0]
         self.void_element_set = set(self.void_elements.tolist())
-        n_plies = self.material.n_plies
-        self.ply_ids = np.repeat(_ply_at(np.arange(self.nz + 1) * n_plies, self.nz, n_plies),
-                                 n2)
-        self.elem_ply_ids = np.repeat(
-            _ply_at((2 * np.arange(self.nz) + 1) * n_plies, 2 * self.nz, n_plies), nq)
-        self._ply_layup = _expand_layup(list(self._input_ply_angles), n_plies) \
-            if self._input_ply_angles is not None else np.zeros(n_plies)
-        self.ply_angles = self._ply_layup[self.elem_ply_ids]
-        self._layup_warning_logged = False
+        self._assign_plies(n2, nq)
         self._duplicate_interfaces()
         self._stale = False
 
@@ -310,12 +303,20 @@ class OpenHoleMesh(CompositeMesh):
         return top, bottom
 
 
-def _laminate_constants(material: MaterialProperties, layup: np.ndarray
+def _laminate_constants(material: MaterialProperties | PlyStack, layup: np.ndarray
                         ) -> tuple[float, float, float, float]:
     """In-plane engineering constants ``(E_x, E_y, G_xy, nu_xy)`` of the
-    pristine laminate from lamination theory (MPa)."""
-    A, _, _ = _clt_abd_full(material.get_stiffness_matrix(), list(layup), material.t_ply)
-    h = len(layup) * material.t_ply
+    pristine laminate from lamination theory (MPa); a
+    :class:`~porosity_fe.PlyStack` with its own ply materials and
+    thicknesses."""
+    if isinstance(material, PlyStack):
+        C = [m.get_stiffness_matrix() for m in material.materials]
+        A, _, _ = _clt_abd_plies([C[i] for i in material.ply_material_ids],
+                                 list(layup), material.thicknesses)
+        h = material.total_thickness
+    else:
+        A, _, _ = _clt_abd_full(material.get_stiffness_matrix(), list(layup), material.t_ply)
+        h = len(layup) * material.t_ply
     a = np.linalg.inv(A)
     return (float(1.0 / (h * a[0, 0])), float(1.0 / (h * a[1, 1])),
             float(1.0 / (h * a[2, 2])), float(-a[0, 1] / a[0, 0]))
@@ -554,7 +555,8 @@ def open_hole_analysis(results: FieldResults, mesh: OpenHoleMesh) -> OpenHoleAna
                    + _laminate_axial_stress(results, mesh, bottom))
     ratio = sigma / far
     distance = mesh.in_plane_nodes[top, 1] - (g.center[1] + g.radius)
-    E_x, E_y, G_xy, nu = _laminate_constants(mesh.material, mesh._ply_layup)
+    E_x, E_y, G_xy, nu = _laminate_constants(
+        mesh.material if mesh.ply_stack is None else mesh.ply_stack, mesh._ply_layup)
     loading = 'tension' if far > 0.0 else 'compression'
     return OpenHoleAnalysis(
         geometry=g, loading=loading, far_field_stress=far,
@@ -564,7 +566,7 @@ def open_hole_analysis(results: FieldResults, mesh: OpenHoleMesh) -> OpenHoleAna
         laminate_constants={'E_x': E_x, 'E_y': E_y, 'G_xy': G_xy, 'nu_xy': nu})
 
 
-def build_open_hole_mesh(porosity_field: PorosityField, material: MaterialProperties, *,
+def build_open_hole_mesh(porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                          hole_diameter: float = _ASTM_HOLE, width: float = _ASTM_WIDTH,
                          length: float | None = None, n_circumferential: int = 12,
                          n_radial: int = 16, radial_growth: float | None = None,

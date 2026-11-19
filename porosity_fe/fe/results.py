@@ -19,6 +19,7 @@ from .._types import PorosityDegradation
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from ..results import FailureResult
 from .element import _DEFAULT_FORMULATION
 from .export import write_vtk, write_vtu
@@ -169,7 +170,9 @@ class FieldResults:
         (the applied load, with the residual stress held fixed).
     cte_local : tuple of float or None
         Lamina CTEs ``(alpha_1, alpha_2, alpha_3)`` (1/K) used with
-        ``delta_T``; ``None`` without it.
+        ``delta_T``; ``None`` without it, and for a
+        :class:`~porosity_fe.PlyStack` whose materials' CTEs differ (each
+        is the material's own).
     failure_mode_maxima : dict or None
         Maximum over the whole model of each separate mode of the
         ``'hashin'`` and ``'max_stress'`` criteria (keys as
@@ -482,7 +485,10 @@ class FieldResults:
             ``bk_eta`` and optional ``G_IIIc`` are the nominal values).
             A material whose toughness differs from the solve's is
             rejected: the band's nominal value must be this result's
-            :attr:`fracture_load_factor`.
+            :attr:`fracture_load_factor`. For a hybrid
+            :class:`~porosity_fe.PlyStack`, the material of the plies at
+            the front's interface; a front between two materials has no
+            single toughness to scatter.
         covs, spec, n_samples, method, seed, percentiles, required_load_factor
             As for :func:`~porosity_fe.fracture_load_factor_uncertainty`:
             the fields that can scatter are ``G_Ic``, ``G_IIc``,
@@ -503,6 +509,11 @@ class FieldResults:
         """
         from ..uq import fracture_load_factor_uncertainty
 
+        if isinstance(material, PlyStack):
+            raise ValueError(
+                "The toughness band scatters one material's toughness: pass "
+                "the material of the plies at the front's interface, not the "
+                "PlyStack.")
         front = self.crack_front
         if front is None:
             raise ValueError(
@@ -556,7 +567,7 @@ class FieldResults:
         return interface_tractions(self, mesh, interfaces=interfaces)
 
     def delamination_onset(self, mesh: CompositeMesh,
-                           material: MaterialProperties, *,
+                           material: MaterialProperties | PlyStack, *,
                            criterion: OnsetCriterion = 'brewer_lagace',
                            x_avg: float | None = None,
                            Zc: float | None = None,

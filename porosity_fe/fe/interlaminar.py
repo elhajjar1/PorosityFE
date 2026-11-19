@@ -33,6 +33,7 @@ delamination onset". Units: MPa and mm.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -43,6 +44,7 @@ from ..empirical import Calibration
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION, _check_porosity_degradation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack, element_materials
 from ..transforms import stress_transformation_3d
 from . import failure
 from .element import VOID_VP_THRESHOLD
@@ -766,6 +768,44 @@ def _to_ply_axes(t: np.ndarray, angle_deg: np.ndarray) -> np.ndarray:
                      t[:, 2]], axis=1)
 
 
+def _stack_onset(stack: PlyStack, interface: np.ndarray, e: np.ndarray,
+                 rows_of: Callable[[MaterialProperties], tuple[np.ndarray, ...]],
+                 evaluate: Callable[[tuple[np.ndarray, ...]], tuple[np.ndarray, np.ndarray]],
+                 ) -> tuple[tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
+    """Onset at the interfaces of a ply stack: every row is evaluated with
+    the strengths of the plies below and above its interface, and the
+    worse side (the higher index) governs; its strengths are reported."""
+    ids = stack.ply_material_ids
+    k = np.asarray(interface, dtype=np.intp)
+    sides = (ids[k], ids[k + 1])
+    per_material = {i: rows_of(stack.materials[i]) for i in sorted(set(ids.tolist()))}
+    evaluated = {i: evaluate(rows) for i, rows in per_material.items()}
+    n = k.size
+    side_rows, side_index, side_lam = [], [], []
+    for side in sides:
+        rows = tuple(np.empty(n) for _ in range(4))
+        idx = np.empty(int(np.count_nonzero(e)))
+        lam = np.empty_like(idx)
+        side_e = side[e]
+        for i, values in per_material.items():
+            mask = side == i
+            for out, v in zip(rows, values, strict=True):
+                out[mask] = v[mask]
+            sel = side_e == i
+            idx[sel] = evaluated[i][0][sel]
+            lam[sel] = evaluated[i][1][sel]
+        side_rows.append(rows)
+        side_index.append(idx)
+        side_lam.append(lam)
+    above = side_index[1] > side_index[0]
+    full_above = np.zeros(n, dtype=bool)
+    full_above[e] = above
+    strengths = tuple(np.where(full_above, a, b)
+                      for b, a in zip(side_rows[0], side_rows[1], strict=True))
+    return (strengths, np.where(above, side_index[1], side_index[0]),
+            np.minimum(side_lam[0], side_lam[1]))
+
+
 def _degraded_rows(material: MaterialProperties, radii: tuple, vp: np.ndarray,
                    Zc: float | None, *, criterion: str,
                    porosity_degradation: PorosityDegradation =
@@ -800,7 +840,7 @@ def _degraded_rows(material: MaterialProperties, radii: tuple, vp: np.ndarray,
 
 
 def delamination_onset(results: FieldResults, mesh: CompositeMesh,
-                       material: MaterialProperties, *,
+                       material: MaterialProperties | PlyStack, *,
                        criterion: OnsetCriterion = 'brewer_lagace',
                        x_avg: float | None = None,
                        Zc: float | None = None,
@@ -834,13 +874,18 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
         A solve on ``mesh``.
     mesh : CompositeMesh
         The mesh of the solve.
-    material : MaterialProperties
-        The ply material of the solve (strengths and constituents).
+    material : MaterialProperties or PlyStack
+        The ply material of the solve (strengths and constituents). For a
+        mesh built from a :class:`~porosity_fe.PlyStack`, the stack: every
+        node is checked with the strengths of the plies below and above its
+        interface, and the worse side governs (its strengths are the ones
+        reported).
     criterion : {'brewer_lagace', 'ye'}
         Onset criterion, keyword-only.
     x_avg : float, optional
         Side of the square in-plane averaging window, in mm (default one
-        ply thickness, ``L_z / n_plies``, after Kim & Soni 1984). It is a
+        ply thickness, ``L_z / n_plies``, the mean one of a stack, after
+        Kim & Soni 1984). It is a
         calibration parameter: the stress at a free edge is singular, and
         the averaged value, so the predicted onset, depends on it. The
         window is centred on each node and shifted inward at the plate
@@ -971,22 +1016,20 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
     if prestress is not None:
         evaluated &= np.isfinite(prestress).all(axis=1)
 
-    Zt, S13, S23, Zc_s = _degraded_rows(material, radii, vp, Zc, criterion=criterion,
-                                        porosity_degradation=porosity_degradation)
-    index = np.full(vp.size, np.nan)
-    lam = np.full(vp.size, np.nan)
     e = evaluated
-    wt = 1.0 / Zt[e] ** 2
-    w13 = 1.0 / S13[e] ** 2
-    w23 = 1.0 / S23[e] ** 2
-    wc: np.ndarray | float = 0.0 if Zc is None else 1.0 / Zc_s[e] ** 2
     t_e = traction[e]
     t_th_e = None if prestress is None else prestress[e]
     t_m_e = t_e if t_th_e is None else t_e - t_th_e
-    if criterion == 'brewer_lagace':
-        index[e] = _quadratic_index(t_e, w13, w23, wt, wc)
-        lam[e] = _quadratic_load_factor(t_m_e, t_th_e, w13, w23, wt, wc)
-    else:
+
+    def evaluate(strengths: tuple[np.ndarray, ...]) -> tuple[np.ndarray, np.ndarray]:
+        Zt, S13, S23, Zc_s = strengths
+        wt = 1.0 / Zt[e] ** 2
+        w13 = 1.0 / S13[e] ** 2
+        w23 = 1.0 / S23[e] ** 2
+        wc: np.ndarray | float = 0.0 if Zc is None else 1.0 / Zc_s[e] ** 2
+        if criterion == 'brewer_lagace':
+            return (_quadratic_index(t_e, w13, w23, wt, wc),
+                    _quadratic_load_factor(t_m_e, t_th_e, w13, w23, wt, wc))
         # The worse of the two plies at the interface, in their own axes.
         idx_sides, lam_sides = [], []
         for side in (0, 1):
@@ -995,8 +1038,24 @@ def delamination_onset(results: FieldResults, mesh: CompositeMesh,
             idx_sides.append(_quadratic_index(_to_ply_axes(t_e, ang), w13, w23, wt, 0.0))
             lam_sides.append(_quadratic_load_factor(
                 _to_ply_axes(t_m_e, ang), rot_th, w13, w23, wt, 0.0))
-        index[e] = np.maximum(*idx_sides)
-        lam[e] = np.minimum(*lam_sides)
+        return np.maximum(*idx_sides), np.minimum(*lam_sides)
+
+    def rows_of(mat: MaterialProperties) -> tuple[np.ndarray, ...]:
+        return _degraded_rows(mat, radii, vp, Zc, criterion=criterion,
+                              porosity_degradation=porosity_degradation)
+
+    index = np.full(vp.size, np.nan)
+    lam = np.full(vp.size, np.nan)
+    element_materials(mesh, material)  # the stack and the mesh agree
+    stack = getattr(mesh, 'ply_stack', None)
+    if stack is not None:
+        strengths, index[e], lam[e] = _stack_onset(
+            stack, rows['interface'], e, rows_of, evaluate)
+    else:
+        assert isinstance(material, MaterialProperties)
+        strengths = rows_of(material)
+        index[e], lam[e] = evaluate(strengths)
+    Zt, S13, S23, _ = strengths
 
     return DelaminationOnset(
         criterion=criterion, x_avg=width, Zc=Zc,

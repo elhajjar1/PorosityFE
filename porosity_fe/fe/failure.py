@@ -20,6 +20,7 @@ from ..homogenization import (
     _mt_effective_stiffness,
 )
 from ..materials import MaterialProperties
+from ..ply_stack import PlyStack
 from .element import VOID_VP_THRESHOLD
 
 #: Failure criteria accepted by :func:`evaluate_failure` and
@@ -59,6 +60,34 @@ def _element_porosity_and_skip(porosity: np.ndarray, elements: np.ndarray,
         if void_idx.size:
             skip[void_idx] = True
     return elem_Vp, skip
+
+
+def _material_groups(material: MaterialProperties | PlyStack, n_elem: int,
+                     element_material_ids: np.ndarray | None, void_elements
+                     ) -> list[tuple[MaterialProperties, object]] | None:
+    """Per-material ``(material, void_elements)`` runs of a hybrid stack.
+
+    ``None`` for a single material (the caller's unchanged path). For a
+    :class:`~porosity_fe.PlyStack` of several materials, one entry per
+    material whose ``void_elements`` adds every element of the other
+    materials, so the single-material code skips them and its per-element
+    results are the material's own (0 failure index and ``inf`` load
+    factor elsewhere).
+    """
+    if not isinstance(material, PlyStack):
+        return None
+    if element_material_ids is None:
+        raise ValueError(
+            "A PlyStack needs element_material_ids, the material index of "
+            "every element (CompositeMesh.elem_material_ids).")
+    ids = np.asarray(element_material_ids, dtype=np.intp).ravel()
+    if ids.shape != (n_elem,):
+        raise ValueError(
+            f"element_material_ids has {ids.size} entries for {n_elem} elements.")
+    voids = (np.zeros(0, dtype=np.intp) if void_elements is None
+             else np.asarray(void_elements, dtype=np.intp).ravel())
+    return [(m, np.union1d(voids, np.flatnonzero(ids != i)))
+            for i, m in enumerate(material.materials)]
 
 
 #: Optional interlaminar strength overrides ``(Z_t, S_13)`` (MPa) of one
@@ -345,12 +374,13 @@ def degraded_strengths(material: MaterialProperties, void_shape_radii: tuple,
             max(S23, strength_floor))
 
 def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
-                     elements: np.ndarray, material: MaterialProperties,
+                     elements: np.ndarray, material: MaterialProperties | PlyStack,
                      void_shape_radii: tuple, criterion: str = 'tsai_wu',
                      void_elements=None,
                      mode_fields: dict[str, np.ndarray] | None = None, *,
                      porosity_degradation: PorosityDegradation =
                      _DEFAULT_POROSITY_DEGRADATION,
+                     element_material_ids: np.ndarray | None = None,
                      ) -> tuple[float, np.ndarray, dict[str, float]]:
     """Evaluate the chosen failure criterion at every Gauss point.
 
@@ -367,10 +397,12 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         Shape (n_nodes,) nodal void volume fraction.
     elements : np.ndarray
         Shape (n_elem, 8) hex connectivity.
-    material : MaterialProperties
+    material : MaterialProperties or PlyStack
         Pristine ply properties (strengths, constituents, ``tsai_wu_F12``).
         When it sets the optional ``sigma_3t`` or ``tau_13``, every
-        criterion uses them (:func:`degraded_interlaminar_strengths`).
+        criterion uses them (:func:`degraded_interlaminar_strengths`). A
+        :class:`~porosity_fe.PlyStack` takes ``element_material_ids``, and
+        every element is checked against its own material.
     void_shape_radii : tuple
         Void shape used by the Mori-Tanaka strength degradation.
     criterion : {'tsai_wu', 'hashin', 'max_stress'}
@@ -391,6 +423,10 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
         (:func:`degraded_interlaminar_strengths`,
         :func:`degraded_strengths`); the default ``'isotropic'`` is the
         unchanged rule. Pass the value the solve used.
+    element_material_ids : np.ndarray, optional
+        Keyword-only ``(n_elem,)`` index of each element's material in
+        ``material.materials`` (``CompositeMesh.elem_material_ids``);
+        required with a :class:`~porosity_fe.PlyStack`, ignored otherwise.
 
     Returns
     -------
@@ -414,6 +450,15 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
     _check_porosity_degradation(porosity_degradation)
 
     n_elem, _, _ = stress_local.shape
+    groups = _material_groups(material, n_elem, element_material_ids, void_elements)
+    if groups is not None:
+        if len(groups) == 1:
+            material, void_elements = groups[0][0], void_elements
+        else:
+            return _evaluate_failure_by_material(
+                stress_local, porosity, elements, groups, void_shape_radii,
+                criterion, mode_fields, porosity_degradation)
+    assert isinstance(material, MaterialProperties)
     per_elem_fi = np.zeros(n_elem, dtype=float)
     # Defense in depth: non-finite porosity silently corrupts elem_Vp.
     if not np.all(np.isfinite(porosity)):  # type: ignore[call-overload]
@@ -515,6 +560,32 @@ def evaluate_failure(stress_local: np.ndarray, porosity: np.ndarray,
                 }
 
     return float(max_fi), per_elem_fi, best_mode_indices
+
+def _evaluate_failure_by_material(
+        stress_local: np.ndarray, porosity: np.ndarray, elements: np.ndarray,
+        groups: list[tuple[MaterialProperties, object]], void_shape_radii: tuple,
+        criterion: str, mode_fields: dict[str, np.ndarray] | None,
+        porosity_degradation: PorosityDegradation,
+) -> tuple[float, np.ndarray, dict[str, float]]:
+    """:func:`evaluate_failure` of a hybrid stack: each material's elements
+    with its own strengths, merged. The mode breakdown is the one of the
+    material that holds the overall maximum."""
+    per_elem_fi = np.zeros(stress_local.shape[0], dtype=float)
+    best: tuple[float, dict[str, float]] | None = None
+    for mat, voids in groups:
+        fields: dict[str, np.ndarray] | None = {} if mode_fields is not None else None
+        max_fi, fi, modes = evaluate_failure(
+            stress_local, porosity, elements, mat, void_shape_radii, criterion,
+            voids, fields, porosity_degradation=porosity_degradation)
+        per_elem_fi += fi
+        if best is None or max_fi > best[0]:
+            best = (max_fi, modes)
+        if mode_fields is not None and fields:
+            for k, v in fields.items():
+                mode_fields[k] = mode_fields[k] + v if k in mode_fields else v
+    assert best is not None
+    return best[0], per_elem_fi, best[1]
+
 
 def _tsai_wu_coefficients(
         strengths: tuple[float, float, float, float, float, float],
@@ -1027,13 +1098,14 @@ def _point_load_factors_prestressed(
 
 
 def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
-                          elements: np.ndarray, material: MaterialProperties,
+                          elements: np.ndarray, material: MaterialProperties | PlyStack,
                           void_shape_radii: tuple,
                           criterion: str = 'tsai_wu',
                           void_elements=None, *,
                           prestress_local: np.ndarray | None = None,
                           porosity_degradation: PorosityDegradation =
                           _DEFAULT_POROSITY_DEGRADATION,
+                          element_material_ids: np.ndarray | None = None,
                           ) -> np.ndarray:
     """Per-element first-failure load factor ``(n_elem,)``, ``inf`` where skipped.
 
@@ -1045,6 +1117,18 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
             f"Use one of {list(SUPPORTED_FAILURE_CRITERIA)}."
         )
     _check_porosity_degradation(porosity_degradation)
+    groups = _material_groups(material, stress_local.shape[0], element_material_ids,
+                              void_elements)
+    if groups is not None:
+        if len(groups) > 1:
+            return np.minimum.reduce([
+                _element_load_factors(
+                    stress_local, porosity, elements, mat, void_shape_radii,
+                    criterion, voids, prestress_local=prestress_local,
+                    porosity_degradation=porosity_degradation)
+                for mat, voids in groups])
+        material = groups[0][0]
+    assert isinstance(material, MaterialProperties)
     elem_Vp_all, skip = _element_porosity_and_skip(porosity, elements, void_elements)
     lam_e = np.full(stress_local.shape[0], np.inf)
     active = np.flatnonzero(~skip)
@@ -1113,13 +1197,15 @@ def _element_load_factors(stress_local: np.ndarray, porosity: np.ndarray,
 
 
 def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray,
-                                  elements: np.ndarray, material: MaterialProperties,
+                                  elements: np.ndarray,
+                                  material: MaterialProperties | PlyStack,
                                   void_shape_radii: tuple,
                                   criterion: str = 'tsai_wu',
                                   void_elements=None, *,
                                   prestress_local: np.ndarray | None = None,
                                   porosity_degradation: PorosityDegradation =
                                   _DEFAULT_POROSITY_DEGRADATION,
+                                  element_material_ids: np.ndarray | None = None,
                                   ) -> float:
     """Load multiplier at which ``criterion`` first reaches 1 anywhere.
 
@@ -1150,9 +1236,13 @@ def first_ply_failure_load_factor(stress_local: np.ndarray, porosity: np.ndarray
     porosity_degradation : {'isotropic', 'directional'}
         Keyword-only, as for :func:`evaluate_failure`; pass the value the
         solve used.
+    element_material_ids : np.ndarray, optional
+        Keyword-only, as for :func:`evaluate_failure` (required with a
+        :class:`~porosity_fe.PlyStack`).
     """
     lam_e = _element_load_factors(
         stress_local, porosity, elements, material, void_shape_radii,
         criterion, void_elements, prestress_local=prestress_local,
-        porosity_degradation=porosity_degradation)
+        porosity_degradation=porosity_degradation,
+        element_material_ids=element_material_ids)
     return float(lam_e.min()) if lam_e.size else float('inf')

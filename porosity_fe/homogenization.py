@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from functools import lru_cache
 
 import numpy as np
@@ -10,6 +11,7 @@ import numpy as np
 from ._types import PorosityDegradation
 from ._vp import check_fraction
 from .materials import MaterialProperties
+from .ply_stack import PlyStack, stack_angles
 from .transforms import rotate_stiffness_3d
 from .void_geometry import VOID_SHAPES
 
@@ -491,7 +493,7 @@ def _degraded_composite_stiffness(Vp: float, void_shape_radii: tuple,
 # CLT effective moduli (uses _degraded_composite_stiffness from above)
 # ============================================================
 
-def compute_clt_effective_modulus(material: MaterialProperties,
+def compute_clt_effective_modulus(material: MaterialProperties | PlyStack,
                                   ply_angles: list[float]) -> float:
     """Compute effective laminate longitudinal modulus using CLT (ABD matrix).
 
@@ -500,8 +502,10 @@ def compute_clt_effective_modulus(material: MaterialProperties,
 
     Parameters
     ----------
-    material : MaterialProperties
-        Material with orthotropic ply-level properties.
+    material : MaterialProperties or PlyStack
+        Material with orthotropic ply-level properties, or a
+        :class:`~porosity_fe.PlyStack` of per-ply materials and thicknesses
+        (``ply_angles`` is then tiled to its plies).
     ply_angles : list of float
         Ply orientation angles in degrees (one per ply).
 
@@ -510,6 +514,9 @@ def compute_clt_effective_modulus(material: MaterialProperties,
     float
         Effective longitudinal modulus E_x (MPa).
     """
+    if isinstance(material, PlyStack):
+        A, _, _ = _stack_abd(material, ply_angles, None)
+        return float(1.0 / (material.total_thickness * np.linalg.inv(A)[0, 0]))
     h_total = len(ply_angles) * material.t_ply
     A, _ = _build_clt_abd(material, ply_angles, material.get_stiffness_matrix())
 
@@ -590,7 +597,45 @@ def _clt_abd_full(C_base: np.ndarray, ply_angles: list[float], t_ply: float
     return A, B, D
 
 
-def compute_degraded_clt_moduli(material: MaterialProperties,
+def _clt_abd_plies(C_plies: Sequence[np.ndarray], ply_angles: Sequence[float],
+                   thicknesses: Sequence[float]
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """CLT ``A``, ``B`` and ``D`` of plies of their own stiffness and thickness.
+
+    As :func:`_clt_abd_full`, but ply ``k`` has the 6 x 6 stiffness
+    ``C_plies[k]`` and the thickness ``thicknesses[k]`` (mm), bottom to top
+    about the stack's mid-plane: a :class:`~porosity_fe.PlyStack`.
+    """
+    idx = [0, 1, 5]  # 11, 22, 12 in Voigt
+    t = np.asarray(thicknesses, dtype=float)
+    bounds = np.concatenate(([0.0], np.cumsum(t))) - 0.5 * float(np.sum(t))
+    A = np.zeros((3, 3))
+    B = np.zeros((3, 3))
+    D = np.zeros((3, 3))
+    for k, (C_base, angle_deg) in enumerate(zip(C_plies, ply_angles, strict=True)):
+        z0, z1 = bounds[k], bounds[k + 1]
+        angle_rad = np.radians(float(angle_deg))
+        C_rot = rotate_stiffness_3d(C_base, angle_rad, axis='z') \
+            if abs(angle_rad) > 1e-15 else C_base
+        Q_bar = C_rot[np.ix_(idx, idx)] - np.outer(C_rot[idx, 2], C_rot[idx, 2]) / C_rot[2, 2]
+        A += Q_bar * (z1 - z0)
+        B += Q_bar * (z1 ** 2 - z0 ** 2) / 2.0
+        D += Q_bar * (z1 ** 3 - z0 ** 3) / 3.0
+    return A, B, D
+
+
+def _stack_abd(stack: PlyStack, ply_angles: Sequence[float] | str, Vp: float | None
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """CLT ``A``, ``B``, ``D`` of ``stack`` with ``ply_angles`` tiled to it:
+    pristine (``Vp=None``) or every ply degraded by spherical voids ``Vp``."""
+    radii = VOID_SHAPES['spherical']
+    C = [m.get_stiffness_matrix() if Vp is None
+         else _degraded_composite_stiffness(Vp, radii, m) for m in stack.materials]
+    C_plies = [C[i] for i in stack.ply_material_ids]
+    return _clt_abd_plies(C_plies, stack_angles(stack, ply_angles), stack.thicknesses)
+
+
+def compute_degraded_clt_moduli(material: MaterialProperties | PlyStack,
                                 ply_angles: list[float],
                                 Vp: float,
                                 method: str = 'mori_tanaka') -> dict[str, float]:
@@ -601,7 +646,10 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
 
     Parameters
     ----------
-    material : MaterialProperties
+    material : MaterialProperties or PlyStack
+        A :class:`~porosity_fe.PlyStack` (a hybrid laminate) degrades each
+        ply's own material and weights it by its thickness; ``ply_angles``
+        is then tiled to its plies.
     ply_angles : list of float  (degrees)
     Vp : float  void volume fraction in [0, 1] (a percent raises ValueError)
     method : str  ignored (kept for API symmetry); always uses Mori-Tanaka.
@@ -611,6 +659,12 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
     dict with keys: 'Ex', 'Ey', 'Gxy' (all in MPa)
     """
     Vp = float(check_fraction(Vp))
+    if isinstance(material, PlyStack):
+        A_mat, _, _ = _stack_abd(material, ply_angles, Vp)
+        h = material.total_thickness
+        a_inv = np.linalg.inv(A_mat)
+        return {'Ex': float(1.0 / (h * a_inv[0, 0])), 'Ey': float(1.0 / (h * a_inv[1, 1])),
+                'Gxy': float(1.0 / (h * a_inv[2, 2]))}
     void_shape_radii = VOID_SHAPES['spherical']  # spherical default
     C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
 
@@ -628,7 +682,7 @@ def compute_degraded_clt_moduli(material: MaterialProperties,
     return {'Ex': float(Ex), 'Ey': float(Ey), 'Gxy': float(Gxy)}
 
 
-def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
+def compute_degraded_clt_flexural_modulus(material: MaterialProperties | PlyStack,
                                           ply_angles: list[float],
                                           Vp: float,
                                           method: str = 'mori_tanaka') -> dict[str, float]:
@@ -638,7 +692,8 @@ def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
 
     Parameters
     ----------
-    material : MaterialProperties
+    material : MaterialProperties or PlyStack
+        As for :func:`compute_degraded_clt_moduli`.
     ply_angles : list of float  (degrees)
     Vp : float  void volume fraction in [0, 1] (a percent raises ValueError)
     method : str  ignored; always uses Mori-Tanaka.
@@ -648,6 +703,10 @@ def compute_degraded_clt_flexural_modulus(material: MaterialProperties,
     dict with key: 'Ef_x' (MPa)
     """
     Vp = float(check_fraction(Vp))
+    if isinstance(material, PlyStack):
+        A_mat, B_mat, D_mat = _stack_abd(material, ply_angles, Vp)
+        d_star = np.linalg.inv(np.block([[A_mat, B_mat], [B_mat, D_mat]]))[3:, 3:]
+        return {'Ef_x': float(12.0 / (material.total_thickness**3 * d_star[0, 0]))}
     void_shape_radii = VOID_SHAPES['spherical']
     C_deg = _degraded_composite_stiffness(Vp, void_shape_radii, material)
 

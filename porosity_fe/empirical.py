@@ -7,7 +7,7 @@ import functools
 import logging
 import math
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 import numpy as np
@@ -19,6 +19,7 @@ from ._vp import check_fraction
 from .fatigue import FatigueModel
 from .materials import MaterialProperties
 from .mesh import CompositeMesh
+from .ply_stack import PlyStack, as_material, stack_angles
 from .results import FailureResult, PorosityAllowable
 from .toughness import (
     _TOUGHNESS_B_PLACEHOLDER,
@@ -309,7 +310,8 @@ def _largest_vp_meeting(kd: Callable[[float], float], required: float, *,
 
 
 def _layup_scales(material: MaterialProperties,
-                  ply_angles: list[float] | tuple[float, ...]) -> dict[str, float]:
+                  ply_angles: list[float] | tuple[float, ...], *,
+                  thicknesses: Sequence[float] | None = None) -> dict[str, float]:
     """Per-mode layup multiplier for the empirical coefficients (design R1).
 
     ``shear``, ``ilss`` and ``transverse_tension`` get 1.0. For each mode in
@@ -333,10 +335,13 @@ def _layup_scales(material: MaterialProperties,
     The keys are the strength modes only. The toughness modes
     (:data:`_TOUGHNESS_FRACTURE_MODE`) are layup-independent: their law
     takes no layup scale (:meth:`EmpiricalSolver._layup_scale` gives 1.0).
+    ``thicknesses`` (one per angle) weight the plies of a single-material
+    :class:`~porosity_fe.PlyStack` of plies of different thickness.
     """
     scales = {mode: 1.0 for mode in EmpiricalSolver.PRISTINE_STRENGTH_KEY}
     alpha = Calibration.JUDD_WRIGHT_ALPHA_QI
-    e1, e2, e6 = _membrane_energy_partition(material, ply_angles, 'x')
+    e1, e2, e6 = _membrane_energy_partition(material, ply_angles, 'x',
+                                            thicknesses=thicknesses)
     q1, q2, q6 = _membrane_energy_partition(
         material, Calibration.PLY_ANGLES_QI, 'x')
     if q1 <= 0.0:  # degenerate stiffness: no fiber energy to anchor on
@@ -411,7 +416,7 @@ class EmpiricalSolver:
     _F_MD_FLOOR = _DeprecatedConstant(0.15, _F_MD_RETIRED)
     _F_MD_FLOOR_ILSS = _DeprecatedConstant(0.80, _F_MD_RETIRED)
 
-    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties | PlyStack,
                  ply_angles: list[float] | str | None = 'QI',
                  *,
                  judd_wright_alpha: dict[str, float] | None = None,
@@ -425,8 +430,14 @@ class EmpiricalSolver:
         ----------
         mesh : CompositeMesh
             Mesh whose nodal porosity drives the knockdown.
-        material : MaterialProperties
-            Composite material; supplies pristine strengths.
+        material : MaterialProperties or PlyStack
+            Composite material; supplies pristine strengths. A
+            :class:`~porosity_fe.PlyStack` of one material (a mesh built
+            from one) is taken with its plies weighted by thickness in the
+            layup scaling, ``ply_angles`` tiled to its plies; a stack of
+            several materials is refused: the knockdown laws act on one
+            material's strength, and a hybrid laminate has none (use
+            :class:`FESolver`).
         ply_angles : list of float or {'QI', 'UD'}, optional
             Per-ply orientation in degrees, OR a string sentinel:
 
@@ -502,6 +513,23 @@ class EmpiricalSolver:
         :class:`FESolver` (#44 item 2). The string sentinels expand to
         canonical baselines; explicit lists pass through unchanged.
         """
+        material, stack = as_material(material)
+        mesh_stack = getattr(mesh, 'ply_stack', None)
+        if stack is not None or mesh_stack is not None:
+            if stack is not None and mesh_stack is not None and stack != mesh_stack:
+                raise ValueError(
+                    "EmpiricalSolver: the PlyStack differs from the mesh's.")
+            stack = stack if stack is not None else mesh_stack
+            assert stack is not None
+            if stack.is_hybrid:
+                raise ValueError(
+                    "EmpiricalSolver: the empirical knockdown laws act on one "
+                    "material's pristine strength and are calibrated on "
+                    f"single-material laminates; this PlyStack has "
+                    f"{len(stack.materials)} materials. Use FESolver for a "
+                    f"hybrid laminate.")
+            material = stack.reference
+        self.ply_stack = stack
         self.mesh = mesh
         self.material = material
         self.nodal_knockdown = None
@@ -551,8 +579,15 @@ class EmpiricalSolver:
         # fiber-direction modes, 1.0 for the matrix modes.
         layup = (list(ply_angles_resolved) if ply_angles_resolved
                  else list(Calibration.PLY_ANGLES_QI))
-        self.layup_scale: dict[str, float] = _layup_scales(material, layup)
-        _e1, e2, e6 = _membrane_energy_partition(material, layup, 'x')
+        weights: np.ndarray | None = None
+        if stack is not None and not stack.uniform_thickness:
+            # Plies of different thickness: weight each by its thickness.
+            layup = stack_angles(stack, layup)
+            weights = stack.thicknesses
+        self.layup_scale: dict[str, float] = _layup_scales(material, layup,
+                                                           thicknesses=weights)
+        _e1, e2, e6 = _membrane_energy_partition(material, layup, 'x',
+                                                 thicknesses=weights)
         self.matrix_energy_fraction: float = min(max(e2 + e6, 0.0), 1.0)
         # Set while get_all_failure_loads() runs so it warns once, not per mode.
         self._defer_layup_warning = False

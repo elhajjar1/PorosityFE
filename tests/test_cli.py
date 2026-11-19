@@ -1897,3 +1897,79 @@ class TestOpenHoleOption:
                                        '--output-dir', str(tmp_path), *argv])
         assert exc.value.code == 2
         assert message in capsys.readouterr().err
+
+
+class TestPliesOption:
+    """--plies: the FE solve of a hybrid laminate."""
+
+    _SPEC = 'glass_epoxy@0.2,T700_epoxy*2@0.15,glass_epoxy@0.2'
+
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path), *argv])
+
+    def test_fe_on_a_hybrid(self, tmp_path, monkeypatch, capsys):
+        import jsonschema
+        assert self._main(tmp_path, monkeypatch, '--plies', self._SPEC, '--layup',
+                          '[0/90]s', '--fe', 'tension') == 0
+        out = capsys.readouterr().out
+        assert 'Ply stack: 4 plies, 0.7 mm: glass_epoxy@0.2, T700_epoxy*2@0.15, ' \
+               'glass_epoxy@0.2 (layup [0/90]s)' in out
+        assert 'Material:' not in out
+        # FE only: no empirical sweep output.
+        assert not list(tmp_path.glob('porosity_analysis_results_*.json'))
+        doc = _strict_json(tmp_path / 'porosity_fe_tension_uniform_spherical_2pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        block = doc['ply_stack']
+        assert block['material_index'] == [0, 1, 1, 0]
+        assert block['thickness_mm'] == [0.2, 0.15, 0.15, 0.2]
+        assert [m['name'] for m in block['materials']] == ['glass_epoxy', 'T700_epoxy']
+
+    def test_fe_uq_on_a_hybrid(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path, monkeypatch, '--quiet', '--plies', self._SPEC,
+                          '--fe-uq', 'compression', '--fe-uq-samples', '2',
+                          '--porosity-cov', '0.5', '--correlation-length', '5') == 0
+        doc = _strict_json(tmp_path / 'porosity_fe_uq_compression_uniform_spherical_2pct.json')
+        assert doc['fe_uq']['material'].startswith('PlyStack(4 plies')
+
+    def test_a_material_file_by_its_name(self, tmp_path, monkeypatch):
+        import dataclasses
+
+        from porosity_fe import MATERIALS, save_material_to_json
+        path = tmp_path / 'mine.json'
+        save_material_to_json(dataclasses.replace(MATERIALS['T700_epoxy'], E11=1.2e5),
+                              path, name='my carbon')
+        assert self._main(tmp_path / 'out', monkeypatch, '--quiet', '--material-file',
+                          str(path), '--plies', 'glass_epoxy@0.2,my carbon*2,glass_epoxy@0.2',
+                          '--fe', 'compression') == 0
+        doc = _strict_json(tmp_path / 'out' /
+                           'porosity_fe_compression_uniform_spherical_2pct.json')
+        materials = doc['ply_stack']['materials']
+        assert materials[1]['name'] is None and materials[1]['E11'] == 1.2e5
+
+    @pytest.mark.parametrize("argv, message", [
+        (['--plies', _SPEC], '--plies runs the FE path: give --fe'),
+        (['--plies', _SPEC, '--fe', 'tension', '--material', 'T700_epoxy'],
+         '--plies names its materials'),
+        (['--plies', _SPEC, '--fe', 'tension', '--t-ply', '0.2'], 'does not take --t-ply'),
+        (['--plies', _SPEC, '--fe', 'tension', '--uq', '--required-knockdown', '0.9'],
+         'does not take --required-knockdown, --uq'),
+        (['--plies', _SPEC, '--fe', 'tension', '--cycles', '1e6'],
+         'the fatigue and environment options'),
+        (['--plies', 'T700_epoxy*x', '--fe', 'tension'], '--plies: Cannot read the ply block'),
+        (['--plies', 'kevlar*2', '--fe', 'tension'], "--plies: Unknown material 'kevlar'"),
+    ])
+    def test_usage_errors(self, tmp_path, monkeypatch, capsys, argv, message):
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, *argv)
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_a_stack_that_merges_materials(self, tmp_path, monkeypatch, capsys):
+        # 50 plies: the default nz caps at 48 layers, which would merge plies
+        # of different materials; the solve refuses it as a bad input.
+        spec = 'glass_epoxy*1@0.05,T700_epoxy*48@0.05,glass_epoxy*1@0.05'
+        rc = self._main(tmp_path, monkeypatch, '--quiet', '--plies', spec, '--fe', 'tension')
+        assert rc == 2
+        assert 'different materials' in capsys.readouterr().err

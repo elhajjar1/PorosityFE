@@ -1053,3 +1053,63 @@ def open_hole_summary(out: dict, plain_fe=None, *, d0: float | None = None,
         f"converged. The characteristic distance d0 is the material's, fitted to "
         f"notched tests: none ships.")
     return rows, caption
+
+
+def _stack_names(stack) -> list[str]:
+    """The name of each distinct material of a ply stack, as its spec gives it."""
+    from porosity_fe import MATERIALS
+    return [next((name for name, preset in MATERIALS.items() if preset == m), f"material {i}")
+            for i, m in enumerate(stack.materials)]
+
+
+def hybrid_layer_failure(out: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(z_mid, max failure index, material id)`` of every element layer of a
+    hybrid run (:func:`~porosity_app.runners.run_hybrid`), bottom to top."""
+    mesh, fe = out["mesh"], out["fe"]
+    fi = np.asarray(fe.per_element_failure_index, dtype=float).reshape(mesh.nz, -1)
+    z = np.asarray(mesh.nodes, dtype=float)[:mesh.n_structured_nodes, 2]
+    layers = np.unique(np.round(z, 12))
+    ids = np.asarray(mesh.elem_material_ids).reshape(mesh.nz, -1)[:, 0]
+    return 0.5 * (layers[1:] + layers[:-1]), fi.max(axis=1), ids
+
+
+def hybrid_summary(out: dict, plain_fe=None) -> tuple[list, str]:
+    """Metrics and caption of a hybrid laminate run, with the analysis'
+    single-material FE solve ``plain_fe`` to compare."""
+    stack, fe = out["stack"], out["fe"]
+    names = _stack_names(stack)
+    rows = []
+    modulus = fe.effective_modulus
+    if modulus is not None and math.isfinite(modulus):
+        plain = getattr(plain_fe, "effective_modulus", None)
+        rows.append(("Effective modulus", f"{modulus:,.0f} MPa",
+                     "Of the hybrid coupon with its porosity" + (
+                         "" if plain is None else f"; {plain:,.0f} MPa for the analysis' "
+                         "single-material laminate.")))
+    clt = out.get("clt_modulus")
+    if clt is not None:
+        rows.append(("Lamination theory", f"{clt:,.0f} MPa",
+                     "E_x of the same porous stack from lamination theory: the FE value "
+                     "sits a little below it, by the free-edge effect of a finite width."))
+    rows.append(("Stiffness knockdown", f"{fe.knockdown:.4f}",
+                 "Against the same hybrid without voids."))
+    fpf = fe.first_ply_failure_load_factor
+    if fpf is not None and math.isfinite(fpf):
+        plain = getattr(plain_fe, "first_ply_failure_load_factor", None)
+        rows.append(("First-ply failure load factor", f"{fpf:.4g}",
+                     "Each element against its own material's strengths (the "
+                     "uncalibrated FE strength heuristic)" + (
+                         "" if plain is None else f"; {plain:.4g} for the analysis' "
+                         "single-material laminate.")))
+    _, layer_fi, layer_ids = hybrid_layer_failure(out)
+    worst = int(np.argmax(layer_fi))
+    rows.append(("Highest failure index in", names[int(layer_ids[worst])],
+                 f"Element layer {worst + 1} of {len(layer_fi)} from the bottom, "
+                 f"index {layer_fi[worst]:.3g}."))
+    caption = (
+        f"Hybrid laminate of {stack.n_plies} plies, {stack.total_thickness:g} mm: "
+        f"{stack.spec} (bottom to top), with the analysis' layup, porosity, load and "
+        f"in-plane mesh, one element layer per ply. Every element takes its ply's "
+        f"stiffness, porosity micromechanics and strengths. The empirical knockdown "
+        f"laws act on one material's strength, so a hybrid has an FE result only.")
+    return rows, caption

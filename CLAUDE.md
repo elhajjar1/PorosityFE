@@ -200,6 +200,25 @@ needs the grid refuses it (`interlaminar._grid`, `viz._require_grid`,
 laminate-average net-section stress; the Lekhnitskii-Tan reference uses the
 pristine laminate's CLT constants (`homogenization._clt_abd_full`).
 
+### Hybrid laminates
+
+`porosity_fe/ply_stack.py`: a `PlyStack` (per-ply material and thickness,
+bottom to top) stands in for the material of `PorosityField`, `CompositeMesh`
+and `FESolver`; the angles stay `ply_angles=`. Those keep `.material` as the
+stack's `reference` (the first ply's material with the stack's `n_plies` and
+mean `t_ply`) and add `.ply_stack`; read only the ply count and thickness from
+`reference`. Every per-ply property comes from `stack.materials` through
+`mesh.elem_material_ids` (`ply_stack.element_materials`): the batch keys its
+stiffness table on the material too, failure runs each material's elements
+with the others skipped (`failure._material_groups`), the thermal CTE is per
+material, and a mixed interface takes the weaker side (VCCT
+`_stack_load_factors`, onset `_stack_onset`). The node layers follow the
+plies (`CompositeMesh._layer_z`, uniform `linspace` for one material, so a
+plain mesh is unchanged), and an element layer spanning two materials is
+refused. The empirical solver refuses a hybrid and weights a one-material
+stack by thickness. New per-ply readers must go through the stack, never
+`reference`.
+
 ### Material cards
 
 `porosity_fe/material_cards.py` writes the degraded ply for another solver

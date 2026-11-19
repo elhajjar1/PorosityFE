@@ -18,6 +18,7 @@ import numpy as np
 
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from ..toughness import ToughnessKnockdown
 from . import vcct
 from ._load_cases import interior_point_mask
@@ -39,7 +40,7 @@ class FractureOutputs:
 
 
 def fracture_outputs(
-    mesh: CompositeMesh, material: MaterialProperties, ties: Ties | None, *,
+    mesh: CompositeMesh, material: MaterialProperties | PlyStack, ties: Ties | None, *,
     load: tuple[np.ndarray, np.ndarray],
     prestress: tuple[np.ndarray, np.ndarray] | None = None,
     toughness_knockdown: ToughnessKnockdown | None = None,
@@ -51,9 +52,12 @@ def fracture_outputs(
     ----------
     mesh : CompositeMesh
         The delaminated mesh.
-    material : MaterialProperties
+    material : MaterialProperties or PlyStack
         Its toughness (``G_Ic``, ``G_IIc``, ``bk_eta``) gives ``G_c`` and the
-        load factor; without it they are ``None`` (logged once at INFO).
+        load factor; without it they are ``None`` (logged once at INFO). A
+        :class:`~porosity_fe.PlyStack` needs it on every material that meets
+        the front, and the weaker side of a mixed interface governs
+        (:func:`~porosity_fe.fe.vcct.fracture_load_factors`).
     ties : Ties or None
         The ties of the solve (bonded pairs, plus the normal ties of the
         pairs in contact).
@@ -91,7 +95,7 @@ def fracture_outputs(
     if geometry is None:
         return FractureOutputs(None, None, None, forces)
     front = vcct._evaluate(geometry, mesh, u, forces)
-    if not material.has_toughness:
+    if not vcct.front_has_toughness(front, material):
         logger.info(
             "No interlaminar toughness (MaterialProperties.G_Ic, G_IIc, "
             "bk_eta): energy release rates only, no fracture load factor.")
@@ -105,11 +109,13 @@ def fracture_outputs(
                                 vcct._pair_forces(mesh, load[1], ties))
         fixed = vcct._evaluate(geometry, mesh, prestress[0],
                                vcct._pair_forces(mesh, prestress[1], ties))
-        lam = vcct.fracture_load_factors(moving, material, prestress=fixed,
-                                         toughness_knockdown=law).lambda_c
-        G_c = vcct.critical_energy_release_rate(
-            material, front.G_I, front.G_II, front.G_III, Vp=front.Vp,
-            toughness_knockdown=law)
+        combined = vcct.fracture_load_factors(moving, material, prestress=fixed,
+                                              toughness_knockdown=law)
+        lam = combined.lambda_c
+        G_c = (combined.G_c if isinstance(material, PlyStack) else
+               vcct.critical_energy_release_rate(
+                   material, front.G_I, front.G_II, front.G_III, Vp=front.Vp,
+                   toughness_knockdown=law))
         # The two parts stay on the table, so the factor can be
         # re-evaluated for other toughness values without a solve.
         front = dataclasses.replace(front, G_c=G_c, lambda_c=lam,

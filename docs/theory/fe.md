@@ -716,6 +716,80 @@ the end blocks of thin plies are longer than 20 element-layer thicknesses,
 which the mesh-quality check reports; the incompatible-mode bricks are not
 sensitive to it.
 
+## Hybrid laminates
+
+A {class}`~porosity_fe.PlyStack` lists the material and the thickness of every
+ply, bottom to top: carbon with glass face plies, thin plies inside thick ones,
+or one material in plies of several thicknesses. It replaces the single
+{class}`~porosity_fe.MaterialProperties` (one material, one `t_ply`, `n_plies`
+plies) where the FE path takes a material:
+
+```python
+stack = PlyStack([glass, carbon, carbon, carbon, carbon, glass],
+                 thicknesses=[0.2, 0.125, 0.125, 0.125, 0.125, 0.2])
+pf = PorosityField(stack, 0.02)
+mesh = CompositeMesh(pf, stack, nx=30, ny=10, nz=6, ply_angles=[0, 45, -45, -45, 45, 0])
+result = FESolver(mesh, stack, pf).solve('tension')
+```
+
+{func}`~porosity_fe.parse_ply_stack` reads the same stack from text,
+`"glass_epoxy@0.2, T700_epoxy*4@0.125, glass_epoxy@0.2"`, as the command line's
+`--plies` and the app's "Hybrid laminate (FE)" panel do. The angles stay
+`ply_angles=`, tiled to the plies.
+
+**Mesh.** The node layers follow the plies: node layer $k$ sits at
+$k\,n/n_z$ in ply units (as for one material) and is mapped linearly through
+each ply's thickness, so with $n_z$ a multiple of the ply count $n$ every
+interface is a node layer and each ply is cut into $n_z/n$ element layers of
+its own thickness. An element layer that would span plies of two materials is
+refused. `elem_material_ids` gives each element's material.
+
+**What each element takes.** Its own ply's stiffness and porosity
+micromechanics (the Mori-Tanaka degradation of its constituents), its
+strengths (every failure criterion and the first-ply failure load factor),
+and its CTEs for a thermal load; a thermal solve needs the CTEs of every
+material. The porosity field is the laminate's: `Vp` is the average over the
+whole thickness, and the `'interface'` profile puts a Gaussian at each
+interface of the stack with $\sigma = 0.35$ times the thinner of its two
+plies.
+
+**Interfaces between two materials.** The interface traction is continuous,
+so it is checked against both plies: at a crack-front node the VCCT critical
+load factor is evaluated with each side's toughness and the side that reaches
+it first governs (its $G_c$ and $\lambda_c$ are reported), and the
+stress-based onset criteria take the higher index of the two sides' strengths.
+An interface between plies of one material is that material's. A toughness
+measured on the mixed interface itself can be lower than either side's: set
+it on both materials to use it.
+
+**Elsewhere.** {func}`~porosity_fe.compute_degraded_clt_moduli`,
+{func}`~porosity_fe.compute_clt_effective_modulus`,
+{func}`~porosity_fe.compute_degraded_clt_flexural_modulus` and
+{func}`~porosity_fe.obrien_edge_delamination` take a stack (lamination theory
+with every ply's stiffness and thickness), as do the open-hole reference,
+{func}`~porosity_fe.refinement_study` and
+{func}`~porosity_fe.fe_porosity_uncertainty` (its porosity scatters, not its
+materials). The empirical solver takes a stack of one material, weighting
+its plies by thickness in the layup scaling, and refuses a hybrid: its laws
+knock down one material's strength, calibrated on single-material laminates,
+and a hybrid laminate has no such strength. The mode ratio of an MMB lever
+is beam theory of one material: a stack gives `lever_length`. The JSON export
+of a solve on a stack has a `ply_stack` block, and the VTU a `material_id`
+cell field.
+
+**Verification** (`tests/test_hybrid_laminate.py`). A stack of identical plies
+gives the single material's results to round-off (mechanical, thermal,
+failure and fracture). The FE modulus of a unidirectional carbon/glass
+hybrid equals lamination theory to $10^{-6}$, porous or not, and a cross-ply
+of thick and thin plies to $2 \times 10^{-4}$; a hybrid quasi-isotropic
+laminate is 0.7 % below it on a 20 mm wide coupon, the free-edge effect,
+which halves each time the width doubles (0.4 % for one material). The fibre
+stress splits between carbon and glass plies in the ratio of their $E_{11}$
+(iso-strain), the cure residual stress of a glass/carbon/carbon/glass
+laminate matches lamination theory to 0.1 % along the fibres, and at a
+crack between plies of two toughnesses the critical load factor is the weaker
+material's.
+
 ## Linear buckling
 
 {meth}`FESolver.buckling <porosity_fe.FESolver.buckling>` (also

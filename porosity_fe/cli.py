@@ -337,6 +337,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    fe.add_argument(
+        "--plies", default=None, metavar="SPEC",
+        help=(
+            "A hybrid laminate for the FE path: comma-separated blocks "
+            "NAME*COUNT@MM (COUNT and MM optional), bottom ply first, e.g. "
+            "'glass_epoxy@0.2,T700_epoxy*6,glass_epoxy@0.2' (COUNT plies "
+            "of preset NAME, or of the --material-file material by its "
+            "name, each MM thick, default the material's t_ply). --layup "
+            "gives the angles, tiled to the plies. The run is then FE only "
+            "(--fe and/or --fe-uq, no empirical sweep: its laws take one "
+            "material), and the FE JSON gains a ply_stack block."
+        ),
+    )
     hole = parser.add_argument_group(
         "open-hole coupon (FE)",
         "Opt-in: run --fe compression / tension (and --fe-uq) on the open-hole "
@@ -770,6 +783,44 @@ def _run_delamination(options: dict, material, porosity_configs: dict,
         logger.setLevel(level)
 
 
+def _ply_stack_option(args: argparse.Namespace, materials: dict, custom_material,
+                      *, explicit_material: bool, delamination: bool,
+                      durability: bool, fe_uq: bool):
+    """The ``--plies`` :class:`~porosity_fe.PlyStack`, or ``None``.
+
+    The names resolve against the presets and the ``--material-file``
+    material (by its name). The run is FE only: the options of the
+    single-material paths are refused.
+    """
+    if args.plies is None:
+        return None
+    from .ply_stack import parse_ply_stack
+    names = dict(materials)
+    if custom_material is not None:
+        names[args.material] = custom_material
+    if explicit_material:
+        raise ValueError("--plies names its materials: give no --material "
+                         "(a --material-file material is named in the spec).")
+    conflicts = [option for option, given in (
+        ('--t-ply', args.t_ply is not None),
+        ('--required-knockdown', args.required_knockdown is not None),
+        ('--uq', args.uq), ('--plots', args.plots),
+        ('--material-cards', args.material_cards is not None),
+        ('--buckling', args.buckling is not None),
+        ('--delamination', delamination),
+        ('the fatigue and environment options', durability)) if given]
+    if conflicts:
+        raise ValueError(
+            f"--plies runs the FE solve of a hybrid laminate; it does not take "
+            f"{', '.join(conflicts)} (single-material analyses).")
+    if args.fe is None and not fe_uq:
+        raise ValueError("--plies runs the FE path: give --fe and/or --fe-uq.")
+    try:
+        return parse_ply_stack(args.plies, names)
+    except ValueError as exc:
+        raise ValueError(f"--plies: {exc}") from None
+
+
 def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
             Vp: float, out_path: Path, *, porosity_degradation: str,
             quiet_solver: bool = True, open_hole: dict | None = None) -> str:
@@ -810,10 +861,10 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
             from .open_hole import open_hole_analysis
             notch = open_hole_analysis(result, mesh)
             criteria = {} if open_hole.get('d0') is None else {'d0': open_hole['d0']}
-            FESolver.export_results(result, out_path, open_hole=notch,
+            FESolver.export_results(result, out_path, mesh=mesh, open_hole=notch,
                                     open_hole_criteria=criteria)
         else:
-            FESolver.export_results(result, out_path)
+            FESolver.export_results(result, out_path, mesh=mesh)
     finally:
         logger.setLevel(level)
     hole_text = ""
@@ -1320,6 +1371,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         args.applied_stress = _DEFAULT_APPLIED_STRESS
 
+    explicit_material = args.material is not None
     custom_material = None
     if args.material_file is not None:
         if args.material is not None:
@@ -1352,6 +1404,10 @@ def main(argv: list[str] | None = None) -> int:
         durability = _durability_options(args, material)
         fe_uq = _fe_uq_options(args)
         open_hole = _open_hole_options(args)
+        stack = _ply_stack_option(args, materials, custom_material,
+                                  explicit_material=explicit_material,
+                                  delamination=bool(delamination),
+                                  durability=bool(durability), fe_uq=bool(fe_uq))
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
@@ -1426,7 +1482,7 @@ def main(argv: list[str] | None = None) -> int:
     # (Vp, config) pair to one process pool (IMPROVEMENT_PLAN 4.6) instead
     # of draining a fresh pool per level.
     precomputed: dict = {}
-    if _resolve_n_jobs(args.jobs) > 1 and len(set(args.vp)) > 1:
+    if stack is None and _resolve_n_jobs(args.jobs) > 1 and len(set(args.vp)) > 1:
         sweep_fn = _resolve_via_shim('sweep_configurations', sweep_configurations)
         try:
             precomputed = sweep_fn(
@@ -1447,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
 
     all_results = {}
-    for Vp in args.vp:
+    for Vp in (args.vp if stack is None else ()):
         Vp_label = _vp_label(Vp)
         if precomputed:
             results, artifacts = precomputed[float(Vp)]
@@ -1541,7 +1597,8 @@ def main(argv: list[str] | None = None) -> int:
                 out_path = output_dir / f"porosity_fe_{args.fe}_{name}_{Vp_label}.json"
                 try:
                     logger.info("%s", _run_fe(
-                        args.fe, material, ply_angles, name, config, Vp, out_path,
+                        args.fe, material if stack is None else stack, ply_angles,
+                        name, config, Vp, out_path,
                         porosity_degradation=degradation,
                         quiet_solver=not args.verbose,
                         **({'open_hole': open_hole} if open_hole else {})))
@@ -1565,7 +1622,8 @@ def main(argv: list[str] | None = None) -> int:
                             / f"porosity_fe_uq_{fe_uq['loading']}_{name}_{Vp_label}.json")
                 try:
                     logger.info("%s", _run_fe_uq(
-                        fe_uq, material, ply_angles, name, config, Vp, out_path,
+                        fe_uq, material if stack is None else stack, ply_angles,
+                        name, config, Vp, out_path,
                         porosity_degradation=degradation, seed=args.seed,
                         quiet_solver=not args.verbose,
                         **({'open_hole': open_hole} if open_hole else {})))
@@ -1674,8 +1732,12 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("\n%s", _bar)
     logger.info("COMPLETE ANALYSIS FINISHED")
     logger.info("%s", _bar)
-    logger.info("Material: %s", args.material)
-    if laminate:
+    if stack is not None:
+        logger.info("Ply stack: %d plies, %g mm: %s (layup %s)", stack.n_plies,
+                    stack.total_thickness, stack.spec, args.layup or 'QI')
+    else:
+        logger.info("Material: %s", args.material)
+    if stack is None and laminate:
         logger.info("Laminate: %d plies of %g mm, layup %s", material.n_plies,
                     material.t_ply, args.layup or 'QI')
     logger.info("Porosity levels analyzed: %s",

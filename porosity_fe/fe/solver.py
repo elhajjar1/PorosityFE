@@ -42,6 +42,7 @@ from .._types import FEFormulation, FELoadingMode, PorosityDegradation
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, check_mesh_quality
+from ..ply_stack import PlyStack, as_material, element_materials
 from ..porosity_field import PorosityField
 from ..toughness import ToughnessKnockdownSpec, _resolve_toughness_knockdown
 from . import (
@@ -87,6 +88,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("porosity_fe_analysis")
 
 
+def _cte_triple(thermal: _ThermalUnitSolution | None
+                ) -> tuple[float, float, float] | None:
+    """``FieldResults.cte_local``: the lamina CTEs of the thermal solve,
+    ``None`` without one or for a ply stack whose materials' CTEs differ."""
+    if thermal is None:
+        return None
+    alpha = np.atleast_2d(np.asarray(thermal.alpha_local, dtype=float))
+    if not np.all(alpha == alpha[0]):
+        return None
+    return float(alpha[0, 0]), float(alpha[0, 1]), float(alpha[0, 2])
+
+
 class FESolver:
     """Linear static FE solver for porosity-degraded composite laminates.
 
@@ -109,8 +122,13 @@ class FESolver:
     ----------
     mesh : CompositeMesh
         The finite element mesh.
-    material : MaterialProperties
-        Material properties.
+    material : MaterialProperties or PlyStack
+        Material properties. For a mesh built from a
+        :class:`~porosity_fe.PlyStack` (a hybrid laminate), that stack:
+        every element takes its own ply's stiffness, constituents,
+        strengths, CTEs and toughness. :attr:`material` is then the stack's
+        :attr:`~porosity_fe.PlyStack.reference` and :attr:`ply_stack` the
+        stack.
     porosity_field : PorosityField
         Porosity field for stiffness degradation.
     ply_angles : list of float or {'QI', 'UD'}, optional
@@ -245,7 +263,7 @@ class FESolver:
     #: (for validation) and as the documented enumeration.
     SUPPORTED_FAILURE_CRITERIA: tuple[str, ...] = failure.SUPPORTED_FAILURE_CRITERIA
 
-    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties | PlyStack,
                  porosity_field: PorosityField,
                  ply_angles: list[float] | str | None = 'QI',
                  failure_criterion: Literal[
@@ -258,7 +276,11 @@ class FESolver:
         mesh._require_current()
         self.max_memory_gb = _memory.check_max_memory_gb(max_memory_gb)
         self.mesh = mesh
-        self.material = material
+        stack: PlyStack | None = getattr(mesh, 'ply_stack', None)
+        element_materials(mesh, material)  # the stack and the mesh agree
+        self.material: MaterialProperties = (
+            as_material(material)[0] if stack is None else stack.reference)
+        self.ply_stack = stack
         self.porosity_field = porosity_field
         # Resolve the ply_angles sentinel (#44 item 2). The resolved value
         # is stored for introspection; the per-element angles consumed by
@@ -271,7 +293,7 @@ class FESolver:
         # Warn (once per mesh) when the element layers merge plies of
         # different angles, so the solve sees a different laminate.
         mesh._log_layup_warning()
-        self.assembler = GlobalAssembler(mesh, material, porosity_field,
+        self.assembler = GlobalAssembler(mesh, self._laminate, porosity_field,
                                          formulation=formulation,
                                          porosity_degradation=porosity_degradation)
         self.bc_handler = BoundaryHandler(mesh)
@@ -565,7 +587,7 @@ class FESolver:
         thermal_only = loading == 'thermal'
         knockdown_law = _resolve_toughness_knockdown(toughness_knockdown)
         compliance: float | None = None
-        dT = _check_delta_T(loading, delta_T, self.material)
+        dT = _check_delta_T(loading, delta_T, self._laminate)
         if dT is not None:
             _thermal.check_layup_for_thermal(self.mesh, self.material,
                                              self.formulation, allow_unresolved_layup)
@@ -700,7 +722,7 @@ class FESolver:
         # 6. Failure criterion at each GP, first-ply-failure load factors,
         #    and their residual-stress and interior values.
         fm = _postprocess.failure_metrics(
-            self.mesh, self.material, self.porosity_field.void_shape_radii,
+            self.mesh, self._laminate, self.porosity_field.void_shape_radii,
             criterion, stress_local=stress_local, load_stress_local=load_stress,
             prestress_local=prestress_local, residual_local=residual_local,
             interior=interior, thermal_only=thermal_only, delta_T=dT,
@@ -717,12 +739,12 @@ class FESolver:
             if thermal_only:
                 assert thermal_part is not None
                 fracture = _fracture.fracture_outputs(
-                    self.mesh, self.material, ties, load=thermal_part,
+                    self.mesh, self._laminate, ties, load=thermal_part,
                     toughness_knockdown=knockdown_law, interior_margin=interior_margin)
             else:
                 assert u_mech is not None
                 fracture = _fracture.fracture_outputs(
-                    self.mesh, self.material, ties,
+                    self.mesh, self._laminate, ties,
                     load=(u_mech, K @ u_mech - F), prestress=thermal_part,
                     toughness_knockdown=knockdown_law, interior_margin=interior_margin)
 
@@ -756,9 +778,7 @@ class FESolver:
             interior_max_failure_index=fm.interior_max_fi,
             interior_first_ply_failure_load_factor=fm.interior_load_factor,
             load_factor_basis=basis,
-            cte_local=(None if thermal is None else
-                       (float(thermal.alpha_local[0]), float(thermal.alpha_local[1]),
-                        float(thermal.alpha_local[2]))),
+            cte_local=_cte_triple(thermal),
             failure_mode_maxima=fm.mode_maxima,
             per_element_mode_failure_index=fm.per_element_mode_fi,
             crack_front=None if fracture is None else fracture.crack_front,
@@ -1058,10 +1078,12 @@ class FESolver:
         loop passes its own); ``system`` replaces :meth:`_free_dof_system`
         (the contact loop's own cache, which needs no clean-up).
         """
-        alpha_local = self.material.cte_vector()
+        alpha_local = (self.material.cte_vector() if self.ply_stack is None else
+                       np.stack([m.cte_vector() for m in self.ply_stack.materials]))
         tie_set = _mesh_ties(self.mesh) if ties is _MESH_TIES else ties
         assert tie_set is None or isinstance(tie_set, tuple)
-        key = (tuple(alpha_local.tolist()), solver, float(rtol), _ties_token(tie_set))
+        key = (tuple(alpha_local.ravel().tolist()), solver, float(rtol),
+               _ties_token(tie_set))
         cached = self._thermal_cache
         if cached is not None and cached[0] is K and cached[1] == key:
             return cached[2]
@@ -1096,7 +1118,7 @@ class FESolver:
         against :attr:`max_memory_gb` with this solver's, which give way to
         it when they are what puts it over."""
         return _knockdown.pristine_stiffness_measure(
-            loading, self.mesh, self.material, self.porosity_field,
+            loading, self.mesh, self._laminate, self.porosity_field,
             self.formulation, self.bc_handler, solver=solver, rtol=rtol,
             memory_budget=self._memory_budget(), held_bytes=self._held_bytes(),
             evictable=(self._lu_cache, self._contact_lu_cache))
@@ -1104,9 +1126,24 @@ class FESolver:
     #: Empty per-mode failure-index dict (see :mod:`porosity_fe.fe.failure`).
     _EMPTY_MODE_FI: dict[str, float] = failure.EMPTY_MODE_FI
 
+    @property
+    def _laminate(self) -> MaterialProperties | PlyStack:
+        """The mesh's :class:`~porosity_fe.PlyStack`, else :attr:`material`:
+        what the per-ply readers (stiffness, strengths, CTEs, toughness)
+        take."""
+        return self.material if self.ply_stack is None else self.ply_stack
+
+    def _single_material(self, what: str) -> None:
+        if self.ply_stack is not None and self.ply_stack.is_hybrid:
+            raise ValueError(
+                f"{what} reads one material; this solver's mesh is a hybrid "
+                f"PlyStack. Use solve(), whose failure metrics take each "
+                f"element's own material.")
+
     def _degraded_strengths(self, elem_Vp: float
                             ) -> tuple[float, float, float, float, float, float]:
         """Porosity-degraded ply strengths; see :func:`failure.degraded_strengths`."""
+        self._single_material("FESolver._degraded_strengths")
         return failure.degraded_strengths(
             self.material, self.porosity_field.void_shape_radii, elem_Vp,
             porosity_degradation=self.porosity_degradation)
@@ -1117,14 +1154,16 @@ class FESolver:
         """Failure indices for every Gauss point; see :func:`failure.evaluate_failure`."""
         return failure.evaluate_failure(
             stress_local, self.mesh.porosity, self.mesh.elements,
-            self.material, self.porosity_field.void_shape_radii, criterion,
+            self._laminate, self.porosity_field.void_shape_radii, criterion,
             void_elements=self.mesh.void_elements,
-            porosity_degradation=self.porosity_degradation)
+            porosity_degradation=self.porosity_degradation,
+            element_material_ids=self.mesh.elem_material_ids)
 
     def _evaluate_tsai_wu(self, s_all: np.ndarray,
                           strengths: tuple[float, float, float, float, float, float],
                           e: int, elem_Vp: float) -> np.ndarray:
         """Tsai-Wu index for one element; see :func:`failure.evaluate_tsai_wu`."""
+        self._single_material("FESolver._evaluate_tsai_wu")
         return failure.evaluate_tsai_wu(
             s_all, strengths, e, elem_Vp, self.material.tsai_wu_F12)
 

@@ -426,10 +426,15 @@ def _check_common(fe_solver: FESolver, loading: str, max_steps: object,
             or not math.isfinite(float(release_tolerance)) or float(release_tolerance) < 0.0:
         raise ValueError(
             f"release_tolerance must be a finite number >= 0; got {release_tolerance!r}.")
-    if not fe_solver.material.has_toughness:
+    stack = fe_solver.ply_stack
+    delaminated = sorted({d.interface for d in fe_solver.mesh.delaminations})
+    materials = (fe_solver.material,) if stack is None else tuple(
+        m for k in delaminated for m in stack.interface_materials(k))
+    if not all(m.has_toughness for m in materials):
         raise ValueError(
             "Delamination growth needs the interlaminar toughness "
-            "(MaterialProperties.G_Ic, G_IIc and bk_eta).")
+            "(MaterialProperties.G_Ic, G_IIc and bk_eta) of every ply material "
+            "at the delaminated interfaces.")
     if not _knockdown._is_delaminated(fe_solver.mesh):
         raise ValueError(
             "Delamination growth needs a delaminated mesh: build the "
