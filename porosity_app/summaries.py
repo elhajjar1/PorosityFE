@@ -740,3 +740,85 @@ def fe_fracture_test_summary(result: dict) -> tuple[list[tuple[str, str, str]], 
         "them. Linear analysis: Krueger's NASA benchmarks are reproduced within "
         "3 % in onset load (README, Limitations).")
     return rows, " ".join(parts)
+
+
+# ----------------------------------------------------------------------
+# Fatigue and environment (empirical)
+# ----------------------------------------------------------------------
+
+#: The tension-type modes a single tension stress ratio applies to; the
+#: compression mode takes its own (R >= 1).
+_TENSION_TYPE_MODES = ("tension", "shear", "ilss", "transverse_tension")
+
+
+def durability_table(result: dict, *, cycles: float | None = None,
+                     mean_stress: str | None = None, R: float | None = None,
+                     R_compression: float | None = None, porosity_slope: float = 0.0,
+                     T: float | None = None, M: float | None = None,
+                     T_g_dry: float | None = None) -> tuple[list[dict], list[str], dict]:
+    """The fatigue and hygrothermal knockdowns of an analysis.
+
+    Empirical only: :func:`~porosity_fe.reporting.durability_record` of the
+    analysed laminate at its specimen-average void content. ``R`` is the
+    stress ratio of the tension-type modes and ``R_compression`` of the
+    compression one (each ``None`` for the calibration ratio); they apply
+    with ``mean_stress='goodman'`` only. The hygrothermal factor needs a dry
+    glass-transition temperature, ``T_g_dry`` or the material's.
+
+    Returns
+    -------
+    (rows, notes, record)
+        Table rows (mode, law, the porosity, fatigue and environment
+        factors, their product and the strength in MPa), the warnings the
+        models raised, and the record itself.
+
+    Raises
+    ------
+    ValueError
+        For a hygrothermal request without a dry glass-transition
+        temperature, or an input the models refuse.
+    """
+    import dataclasses
+    import warnings
+
+    from porosity_fe import EmpiricalSolver, FatigueModel
+    from porosity_fe.reporting import durability_record
+
+    material = result["material"]
+    if T_g_dry is not None:
+        material = dataclasses.replace(material, T_g_dry=float(T_g_dry))
+    environment = None
+    if T is not None or (M is not None and M > 0.0):
+        if material.T_g_dry is None:
+            raise ValueError(
+                "The hygrothermal factor needs the dry glass-transition "
+                "temperature T_g: enter it (no preset sets one).")
+        environment = {"T": float(material.T_ref) if T is None else float(T),
+                       "M": float(material.M_ref) if M is None else float(M)}
+    ratios: dict[str, float] = {}
+    if mean_stress is not None:
+        if R is not None:
+            ratios.update({mode: float(R) for mode in _TENSION_TYPE_MODES})
+        if R_compression is not None:
+            ratios["compression"] = float(R_compression)
+    fatigue = (FatigueModel(mean_stress=mean_stress, porosity_slope=porosity_slope)
+               if mean_stress is not None or porosity_slope else None)
+    solver = EmpiricalSolver(result["mesh"], material, ply_angles=result["config"]["angles"],
+                             fatigue_model=fatigue)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        record = durability_record(solver, cycles=cycles, R=ratios or None,
+                                   environment=environment)
+    rows = []
+    for mode, models in record["per_mode"].items():
+        for model, entry in models.items():
+            rows.append({
+                "Mode": mode, "Law": model,
+                "Porosity": entry["static_knockdown"],
+                "Fatigue": entry["fatigue_knockdown"],
+                "Environment": entry["environment_knockdown"],
+                "Knockdown": entry["knockdown"],
+                "Strength (MPa)": entry["failure_stress_MPa"],
+            })
+    notes = sorted({str(w.message) for w in caught})
+    return rows, notes, record

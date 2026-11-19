@@ -100,6 +100,7 @@ cohesive zone or buckling.
   - a PNG download per figure and a VTU download
   - a custom material loaded from a JSON file, the plate size as an input,
     and saved scenarios that restore the inputs and compare two runs
+  - a fatigue and environment panel in the Results tab
 
   The app is now the `porosity_app` package; `streamlit run app.py` is
   unchanged.
@@ -108,7 +109,13 @@ cohesive zone or buckling.
   laminate (`--layup`, `--t-ply`), a choice of configurations
   (`--configs`), an FE solve per configuration (`--fe LOADING`), the
   allowable porosity (`--required-knockdown`), solver material cards
-  (`--material-cards`) and a material from a JSON file (`--material-file`).
+  (`--material-cards`), a material from a JSON file (`--material-file`)
+  and the fatigue and hygrothermal knockdowns (`--cycles`,
+  `--service-temperature`, `--moisture`).
+- **Fatigue options** (opt-in): a Goodman mean-stress correction to the
+  stress ratio, which may differ per mode, and a porosity-dependent S-N
+  slope with no shipped coefficient (`FatigueModel(mean_stress=...,
+  porosity_slope=...)`, `EmpiricalSolver(..., fatigue_model=...)`).
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.

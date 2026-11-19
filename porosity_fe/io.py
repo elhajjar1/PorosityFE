@@ -189,11 +189,12 @@ FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
 FORMAT_UQ = "porosity-fe.uq"
 FORMAT_ALLOWABLE = "porosity-fe.allowable-porosity"
+FORMAT_DURABILITY = "porosity-fe.durability"
 #: A material file (save_material_to_json). Not a results format:
 #: load_material_from_json reads it, load_results_from_json does not.
 FORMAT_MATERIAL = "porosity-fe.material"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ,
-                  FORMAT_ALLOWABLE}
+                  FORMAT_ALLOWABLE, FORMAT_DURABILITY}
 
 
 # Per-format units descriptors for the self-documenting ``units`` envelope
@@ -236,6 +237,19 @@ _UNITS_NCR_DELAMINATION = {
 _UNITS_NCR_ALLOWABLE = {
     "allowable_Vp_percent": "%",
     "required_knockdown": "dimensionless fraction in (0, 1]",
+}
+#: Units of a durability export and of the ``conditions`` block of a
+#: fatigue or hygrothermal request.
+_UNITS_DURABILITY = {
+    "static_knockdown, fatigue_knockdown, environment_knockdown, knockdown":
+        "dimensionless fraction in (0, 1]",
+    "failure_stress_MPa": "MPa",
+    "void_volume_fraction": "dimensionless fraction in [0, 1]",
+    "cycles": "load cycles",
+    "R": "dimensionless sigma_min / sigma_max (one value, or one per mode)",
+    "porosity_slope": "per unit void fraction",
+    "T_C, T_g_dry_C": "deg C",
+    "M_wt_pct": "wt %",
 }
 #: Units of a ``laminate`` block (a sweep entry, an allowable-porosity
 #: export), added only when one is written.

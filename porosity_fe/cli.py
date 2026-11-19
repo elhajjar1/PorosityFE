@@ -47,6 +47,11 @@ _DELAM_DEFAULT_CONFIG = 'uniform_spherical'
 _DELAM_DEFAULT_LAW = 'exponential'
 _DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
 
+#: ``--mean-stress`` corrections, and the modes ``--stress-ratio`` applies to
+#: (``--compression-stress-ratio`` sets the compression one).
+_MEAN_STRESS_CHOICES = ('goodman',)
+_TENSION_TYPE_MODES = ('tension', 'shear', 'ilss', 'transverse_tension')
+
 #: ``--material-cards`` formats with their file suffix, and the element
 #: families of ``--card-element`` (the first is the default).
 _CARD_SUFFIX = {'abaqus': '.inp', 'nastran': '.bdf'}
@@ -324,6 +329,51 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    dur = parser.add_argument_group(
+        "fatigue and environment (empirical)",
+        "Opt-in: the knockdown of every strength mode and law after load "
+        "cycles and at a service temperature and moisture, at each porosity "
+        "level, written to porosity_durability_<Vp>.json. With "
+        "--required-knockdown the allowable porosity holds at the same "
+        "conditions. Screening-level models: see the fatigue theory page.")
+    dur.add_argument(
+        "--cycles", type=float, default=None, metavar="N",
+        help="Load cycles of the S-N fatigue factor (log-linear, calibrated "
+             "at R = 0.1).")
+    dur.add_argument(
+        "--mean-stress", choices=_MEAN_STRESS_CHOICES, default=None,
+        help="Mean-stress correction of the S-N curve to the stress ratios "
+             "below: the straight constant-life line through the calibrated "
+             "point and the static strength. Uncalibrated against "
+             "porous-laminate fatigue data. Needs --cycles.")
+    dur.add_argument(
+        "--stress-ratio", type=float, default=None, metavar="R",
+        help="sigma_min / sigma_max of the tension, shear, ILSS and "
+             "transverse-tension modes, 0 <= R <= 1 (the default is the "
+             "calibration ratio, 0.1). Needs --mean-stress.")
+    dur.add_argument(
+        "--compression-stress-ratio", type=float, default=None, metavar="R",
+        help="sigma_min / sigma_max of the compression mode, R >= 1 "
+             "(compression-compression; the default is 10). Needs --mean-stress.")
+    dur.add_argument(
+        "--fatigue-porosity-slope", type=float, default=None, metavar="K",
+        help="Porosity dependence of the S-N slope, b(Vp) = b (1 + K Vp) with "
+             "Vp a fraction, K >= 0. No calibrated value is shipped. Needs "
+             "--cycles.")
+    dur.add_argument(
+        "--service-temperature", type=float, default=None, metavar="T",
+        help="Service temperature in deg C of the hygrothermal factor "
+             "(matrix-dominated modes; the default is the reference, 23). "
+             "Needs a dry glass-transition temperature.")
+    dur.add_argument(
+        "--moisture", type=float, default=None, metavar="M",
+        help="Moisture content in wt %% of the hygrothermal factor (the "
+             "default is the reference, 0). Needs a dry glass-transition "
+             "temperature.")
+    dur.add_argument(
+        "--tg-dry", type=float, default=None, metavar="TG",
+        help="Dry glass-transition temperature in deg C for the hygrothermal "
+             "factor, replacing the material's T_g_dry (no preset sets one).")
     cards = parser.add_argument_group(
         "material cards",
         "Opt-in: the porosity-degraded ply properties of every analysed "
@@ -561,38 +611,151 @@ def _run_material_cards(fmt: str, material, ply_angles, name: str, config: dict,
             f"{100.0 * plies.max():.2f} %\n  Saved: {out_path}")
 
 
-def _run_allowable(required: float, material, material_name: str, ply_angles,
-                   out_path: Path) -> list[str]:
-    """The allowable-porosity table of the laminate (``--required-knockdown``),
-    written to ``out_path``. Returns the lines of its summary."""
-    import warnings
+def _durability_options(args, material) -> dict:
+    """The fatigue and hygrothermal options, resolved; empty when none is
+    given. ``ValueError`` names an option given without what it needs."""
+    from .fatigue import FatigueModel
 
+    def needs(flags: list[str], what: str) -> None:
+        given = [f for f in flags if getattr(args, f.lstrip('-').replace('-', '_')) is not None]
+        if given:
+            raise ValueError(f"{', '.join(given)} need{'s' if len(given) == 1 else ''} {what}.")
+
+    def finite(flag: str, low: float | None = None) -> float | None:
+        value = getattr(args, flag.lstrip('-').replace('-', '_'))
+        if value is not None and not (math.isfinite(value) and (low is None or value >= low)):
+            bound = "" if low is None else f" >= {low:g}"
+            raise ValueError(f"{flag} must be a finite number{bound}; got {value!r}.")
+        return value
+
+    if args.cycles is None:
+        needs(['--mean-stress', '--stress-ratio', '--compression-stress-ratio',
+               '--fatigue-porosity-slope'], '--cycles')
+    if args.mean_stress is None:
+        needs(['--stress-ratio', '--compression-stress-ratio'],
+              '--mean-stress (without a mean-stress correction the S-N curve does '
+              'not depend on R)')
+    if args.service_temperature is None and args.moisture is None:
+        needs(['--tg-dry'], '--service-temperature or --moisture')
+    cycles = finite('--cycles', 1.0)
+    slope = finite('--fatigue-porosity-slope', 0.0)
+    T = finite('--service-temperature')
+    M = finite('--moisture', 0.0)
+    T_g = finite('--tg-dry')
+    finite('--stress-ratio')
+    finite('--compression-stress-ratio')
+    if cycles is None and T is None and M is None:
+        return {}
+
+    R: dict[str, float] = {}
+    if args.stress_ratio is not None:
+        R.update({mode: float(args.stress_ratio) for mode in _TENSION_TYPE_MODES})
+    if args.compression_stress_ratio is not None:
+        R['compression'] = float(args.compression_stress_ratio)
+    fatigue = None
+    if args.mean_stress is not None or slope:
+        fatigue = FatigueModel(mean_stress=args.mean_stress, porosity_slope=slope or 0.0)
+        for mode, ratio in R.items():
+            # A ratio the mode cannot see (e.g. R < 1 for compression).
+            try:
+                fatigue.knockdown_factor(mode, 10.0, ratio, Vp=0.0)
+            except ValueError as exc:
+                flag = '--compression-stress-ratio' if mode == 'compression' \
+                    else '--stress-ratio'
+                raise ValueError(f"{flag}: {exc}") from None
+    environment = None
+    if T is not None or M is not None:
+        if T_g is None and material.T_g_dry is None:
+            raise ValueError(
+                "--service-temperature and --moisture need a dry glass-transition "
+                "temperature: give --tg-dry, or a --material-file that sets "
+                "T_g_dry (no preset does).")
+        environment = {'T': float(material.T_ref) if T is None else float(T),
+                       'M': float(material.M_ref) if M is None else float(M)}
+    return {'cycles': cycles, 'R': R or None, 'fatigue_model': fatigue,
+            'environment': environment, 'T_g_dry': T_g}
+
+
+def _durability_solver(material, ply_angles, Vp: float, options: dict):
+    """The empirical pipeline of the laminate at ``Vp`` with the fatigue
+    model and dry T_g of ``options``: ``(material, mesh, solver)``."""
     from .pipeline import build_empirical_pipeline
-    from .reporting import allowable_porosity_record, write_allowable_json
 
+    if options.get('T_g_dry') is not None:
+        material = dataclasses.replace(material, T_g_dry=float(options['T_g_dry']))
+    fatigue = options.get('fatigue_model')
     level = logger.level
     logger.setLevel(max(level, logging.WARNING))    # no mesh report for a table
     try:
-        _, mesh, solver = build_empirical_pipeline(material, 0.0,
-                                                   ply_angles=ply_angles)
+        _, mesh, solver = build_empirical_pipeline(
+            material, Vp, ply_angles=ply_angles,
+            **({'solver_kwargs': {'fatigue_model': fatigue}} if fatigue else {}))
     finally:
         logger.setLevel(level)
+    return material, mesh, solver
+
+
+def _laminate_block(material, material_name: str, mesh) -> dict:
+    return {'material': material_name,
+            'ply_angles': [float(a) for a in mesh._ply_layup],
+            'n_plies': int(material.n_plies),
+            't_ply_mm': float(material.t_ply)}
+
+
+def _run_durability(options: dict, material, material_name: str, ply_angles,
+                    Vp: float, out_path: Path) -> list[str]:
+    """The fatigue and hygrothermal knockdowns at one porosity level
+    (``--cycles``, ``--service-temperature``), written to ``out_path``.
+    Returns the lines of its summary."""
+    from .reporting import durability_record, write_durability_json
+
+    material, mesh, solver = _durability_solver(material, ply_angles, Vp, options)
+    record = durability_record(solver, cycles=options['cycles'], R=options['R'],
+                               environment=options['environment'])
+    write_durability_json(out_path, record, _laminate_block(material, material_name, mesh),
+                          void_volume_fraction=Vp)
+    lines = []
+    for mode, models in record['per_mode'].items():
+        jw = models['judd_wright']
+        lines.append(f"  {mode:<20} judd_wright {jw['knockdown']:.4f} (porosity "
+                     f"{jw['static_knockdown']:.4f} x fatigue {jw['fatigue_knockdown']:.4f}"
+                     f" x environment {jw['environment_knockdown']:.4f})")
+    gov = record['governing']
+    lines.append(f"  Governing: {gov['mode']} / {gov['model']}, knockdown "
+                 f"{gov['knockdown']:.4f}")
+    lines.append(f"  Saved: {out_path}")
+    return lines
+
+
+def _run_allowable(required: float, material, material_name: str, ply_angles,
+                   out_path: Path, durability: dict | None = None) -> list[str]:
+    """The allowable-porosity table of the laminate (``--required-knockdown``),
+    at the fatigue and hygrothermal conditions of ``durability`` when given,
+    written to ``out_path``. Returns the lines of its summary."""
+    import warnings
+
+    from .reporting import (
+        allowable_porosity_record,
+        fatigue_conditions,
+        write_allowable_json,
+    )
+
+    options = durability or {}
+    material, mesh, solver = _durability_solver(material, ply_angles, 0.0, options)
+    conditions = {'cycles': options.get('cycles'), 'R': options.get('R'),
+                  'environment': options.get('environment')}
     with warnings.catch_warnings():
         # The record flags an extrapolated entry itself.
         warnings.simplefilter("ignore", UserWarning)
-        table = solver.get_all_allowable_porosities(required)
+        table = solver.get_all_allowable_porosities(required, **conditions)
     record = allowable_porosity_record(table)
-    write_allowable_json(out_path, record, {
-        'material': material_name,
-        'ply_angles': [float(a) for a in mesh._ply_layup],
-        'n_plies': int(material.n_plies),
-        't_ply_mm': float(material.t_ply),
-    })
+    write_allowable_json(out_path, record, _laminate_block(material, material_name, mesh),
+                         fatigue_conditions(solver, **conditions) if options else None)
     lines = [f"  {record['statement']}"]
-    # With no fatigue or environment factor every requirement in (0, 1] is
-    # met at zero porosity, so each entry has an allowable.
     for mode, models in record['per_mode'].items():
-        cells = [f"{model} {entry['allowable_Vp_percent']:.2f}%"
+        # A fatigue or environment factor can put a requirement out of reach.
+        cells = [f"{model} " + ("not achievable" if entry['allowable_Vp_percent'] is None
+                                else f"{entry['allowable_Vp_percent']:.2f}%")
                  + (" (extrapolated)" if entry['extrapolated'] else "")
                  for model, entry in models.items()]
         lines.append(f"  {mode:<20} " + ", ".join(cells))
@@ -857,6 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
         ply_angles = _parse_layup_option(args.layup)
         material = _laminate_material(
             custom_material or materials[args.material], ply_angles, args.t_ply)
+        durability = _durability_options(args, material)
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
@@ -1082,13 +1246,32 @@ def main(argv: list[str] | None = None) -> int:
                           f"{exc}", file=sys.stderr)
                     return 3
 
+    if durability:
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nFatigue and environment (empirical): Vp = %.2f%%", Vp * 100)
+            try:
+                for line in _run_durability(
+                        durability, material, args.material, ply_angles, Vp,
+                        output_dir / f"porosity_durability_{Vp_label}.json"):
+                    logger.info("%s", line)
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: fatigue and environment for Vp={Vp}: {exc}",
+                      file=sys.stderr)
+                return 2
+            except Exception as exc:  # noqa: BLE001 - surface as a failure
+                print(f"ERROR: fatigue and environment for Vp={Vp} failed: {exc}",
+                      file=sys.stderr)
+                return 3
+
     if args.required_knockdown is not None:
         logger.info("\nAllowable porosity: %g%% of pristine strength retained",
                     args.required_knockdown * 100)
         try:
             for line in _run_allowable(
                     args.required_knockdown, material, args.material, ply_angles,
-                    output_dir / "porosity_allowable.json"):
+                    output_dir / "porosity_allowable.json",
+                    **({'durability': durability} if durability else {})):
                 logger.info("%s", line)
         except (ValueError, OSError) as exc:
             print(f"ERROR: allowable porosity: {exc}", file=sys.stderr)

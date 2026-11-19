@@ -531,7 +531,8 @@ def allowable_porosity_record(table: dict,
     }
 
 
-def serialise_allowable_json(record: dict, laminate: dict | None = None) -> str:
+def serialise_allowable_json(record: dict, laminate: dict | None = None,
+                             conditions: dict | None = None) -> str:
     """Standard JSON of an allowable-porosity record.
 
     Parameters
@@ -541,12 +542,16 @@ def serialise_allowable_json(record: dict, laminate: dict | None = None) -> str:
     laminate : dict, optional
         What the allowables hold for, written beside them: e.g.
         ``material``, ``ply_angles`` (degrees), ``n_plies``, ``t_ply_mm``.
+    conditions : dict, optional
+        The fatigue and hygrothermal conditions the allowables hold at, as
+        :func:`fatigue_conditions` gives them.
 
     Returns
     -------
     str
         The envelope (``format`` :data:`~porosity_fe.FORMAT_ALLOWABLE`)
-        with ``laminate`` (when given) and ``allowable_porosity``.
+        with ``laminate`` and ``conditions`` (when given) and
+        ``allowable_porosity``.
     """
     from porosity_fe import FORMAT_ALLOWABLE
     from porosity_fe.io import (
@@ -560,13 +565,131 @@ def serialise_allowable_json(record: dict, laminate: dict | None = None) -> str:
     if laminate is not None:
         units.update(_UNITS_LAMINATE)
         payload["laminate"] = dict(laminate)
+    if conditions is not None:
+        from porosity_fe.io import _UNITS_DURABILITY
+        units.update({k: v for k, v in _UNITS_DURABILITY.items()
+                      if k in ("cycles", "R", "porosity_slope", "T_C, T_g_dry_C",
+                               "M_wt_pct")})
+        payload["conditions"] = dict(conditions)
     payload["allowable_porosity"] = record
     return _dumps_json(_wrap_envelope(FORMAT_ALLOWABLE, units, payload))
 
 
-def write_allowable_json(filepath, record: dict, laminate: dict | None = None) -> None:
+# ======================================================================
+# Fatigue and hygrothermal knockdowns of the empirical laws
+# ======================================================================
+
+_DURABILITY_BASIS = (
+    "Empirical laws at the specimen-average void content, times the S-N "
+    "fatigue factor (log-linear, calibrated at R = 0.1) and the Chamis / "
+    "Springer hygrothermal factor (matrix-dominated modes only). Both are "
+    "screening-level models; production allowables come from a test matrix "
+    "(CMH-17 Vol. 2).")
+
+
+def fatigue_conditions(solver, *, cycles=None, R=None, environment=None) -> dict:
+    """The fatigue and hygrothermal conditions of a request, JSON-ready.
+
+    ``cycles``, ``R`` and ``environment`` as
+    :meth:`~porosity_fe.EmpiricalSolver.get_failure_load` takes them; the
+    solver supplies its :attr:`~porosity_fe.EmpiricalSolver.fatigue_model`
+    options and its material's dry glass-transition temperature.
+    """
+    fatigue = solver.fatigue_model
+    env = environment or {}
+    return {
+        "cycles": None if cycles is None else float(cycles),
+        "R": dict(R) if isinstance(R, dict) else (None if R is None else float(R)),
+        "mean_stress": None if fatigue is None else fatigue.mean_stress,
+        "porosity_slope": 0.0 if fatigue is None else float(fatigue.porosity_slope),
+        "T_C": None if env.get("T") is None else float(env["T"]),
+        "M_wt_pct": None if env.get("M") is None else float(env["M"]),
+        "T_g_dry_C": (None if solver.material.T_g_dry is None
+                      else float(solver.material.T_g_dry)),
+    }
+
+
+def durability_record(solver, *, cycles=None, R=None, environment=None) -> dict:
+    """Every strength mode and law, with and without fatigue and environment.
+
+    Parameters
+    ----------
+    solver : EmpiricalSolver
+        The laminate; its specimen-average void content is used.
+    cycles, R, environment : optional
+        As :meth:`~porosity_fe.EmpiricalSolver.get_failure_load` takes them.
+
+    Returns
+    -------
+    dict
+        ``conditions`` (:func:`fatigue_conditions`); ``per_mode``: per mode
+        and law the ``static_knockdown`` (porosity only), the
+        ``fatigue_knockdown`` and ``environment_knockdown`` factors (1 when
+        not requested), their product ``knockdown`` and
+        ``failure_stress_MPa``; ``governing``, the entry with the lowest
+        knockdown; and ``basis``.
+    """
+    with warnings.catch_warnings():
+        # The conditioned table below gives the same layup note once.
+        warnings.simplefilter("ignore", UserWarning)
+        static = solver.get_all_failure_loads()
+    conditioned = solver.get_all_failure_loads(cycles=cycles, environment=environment, R=R)
+    per_mode: dict = {}
+    governing = None
+    for mode, row in conditioned.items():
+        per_mode[mode] = {}
+        for model, result in row.items():
+            entry = {
+                "static_knockdown": float(static[mode][model].knockdown),
+                "fatigue_knockdown": float(result.details.get("fatigue_knockdown", 1.0)),
+                "environment_knockdown": float(
+                    result.details.get("environment_knockdown", 1.0)),
+                "knockdown": float(result.knockdown),
+                "failure_stress_MPa": float(result.failure_stress),
+            }
+            per_mode[mode][model] = entry
+            if governing is None or entry["knockdown"] < governing["knockdown"]:
+                governing = {"mode": mode, "model": model, "knockdown": entry["knockdown"]}
+    return {"conditions": fatigue_conditions(solver, cycles=cycles, R=R,
+                                             environment=environment),
+            "per_mode": per_mode, "governing": governing, "basis": _DURABILITY_BASIS}
+
+
+def serialise_durability_json(record: dict, laminate: dict | None = None,
+                              void_volume_fraction: float | None = None) -> str:
+    """Standard JSON of a :func:`durability_record` (``format``
+    :data:`~porosity_fe.FORMAT_DURABILITY`), with the ``laminate`` and the
+    ``void_volume_fraction`` (a fraction) it holds for."""
+    from porosity_fe.io import (
+        _UNITS_DURABILITY,
+        _UNITS_LAMINATE,
+        FORMAT_DURABILITY,
+        _dumps_json,
+        _wrap_envelope,
+    )
+    units = dict(_UNITS_DURABILITY)
+    payload: dict = {}
+    if laminate is not None:
+        units.update(_UNITS_LAMINATE)
+        payload["laminate"] = dict(laminate)
+    if void_volume_fraction is not None:
+        payload["void_volume_fraction"] = float(void_volume_fraction)
+    payload["durability"] = record
+    return _dumps_json(_wrap_envelope(FORMAT_DURABILITY, units, payload))
+
+
+def write_durability_json(filepath, record: dict, laminate: dict | None = None,
+                          void_volume_fraction: float | None = None) -> None:
+    """Write :func:`serialise_durability_json` to ``filepath``."""
+    text = serialise_durability_json(record, laminate, void_volume_fraction)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def write_allowable_json(filepath, record: dict, laminate: dict | None = None,
+                         conditions: dict | None = None) -> None:
     """Write :func:`serialise_allowable_json` to ``filepath``."""
-    text = serialise_allowable_json(record, laminate)   # raises before the file is opened
+    text = serialise_allowable_json(record, laminate, conditions)  # raises before opening
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(text)
 

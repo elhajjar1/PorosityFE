@@ -18,7 +18,8 @@
         "porosity-fe.fe-fields",
         "porosity-fe.ncr",
         "porosity-fe.uq",
-        "porosity-fe.allowable-porosity"
+        "porosity-fe.allowable-porosity",
+        "porosity-fe.durability"
       ]
     },
     "provenance": {
@@ -318,6 +319,30 @@
     "allowable_porosity": {
       "type": "object",
       "description": "Allowable-porosity export (format porosity-fe.allowable-porosity, schema_version 1.3): the record described under engineering_analysis.allowable_porosity, with measured_Vp_percent and within_allowable null (no measured void content)."
+    },
+    "conditions": {
+      "type": "object",
+      "description": "Durability export (format porosity-fe.durability, added in schema_version 1.3), and an allowable-porosity export with fatigue or hygrothermal conditions (additive): cycles (null: no fatigue), R (sigma_min / sigma_max, one value or one per mode; null: the calibration ratio), mean_stress (null or 'goodman'), porosity_slope (per unit void fraction), T_C and M_wt_pct (service temperature in deg C and moisture in wt %; null: no hygrothermal factor), T_g_dry_C (deg C).",
+      "properties": {
+        "cycles": {"type": ["number", "null"]},
+        "R": {"type": ["number", "object", "null"]},
+        "mean_stress": {"type": ["string", "null"]},
+        "porosity_slope": {"type": "number"},
+        "T_C": {"type": ["number", "null"]},
+        "M_wt_pct": {"type": ["number", "null"]},
+        "T_g_dry_C": {"type": ["number", "null"]}
+      }
+    },
+    "durability": {
+      "type": "object",
+      "description": "Durability export (format porosity-fe.durability, schema_version 1.3): the record of reporting.durability_record. conditions as the top-level block; per_mode, per mode and model: static_knockdown (porosity only), fatigue_knockdown, environment_knockdown, knockdown (their product, all fractions in (0, 1]) and failure_stress_MPa; governing, the entry with the lowest knockdown; basis.",
+      "properties": {
+        "conditions": {"type": "object"},
+        "per_mode": {"type": "object"},
+        "governing": {"type": "object"},
+        "basis": {"type": "string"}
+      },
+      "required": ["conditions", "per_mode", "governing", "basis"]
     },
     "engineering_analysis": {
       "type": "object",

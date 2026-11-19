@@ -22,8 +22,9 @@ from ..convergence import (
 from ..plots import plot_fracture_uq, plot_front, plot_results, plot_uq
 from ..runners import run_uq_cached
 from ..scenario import REFERENCE_KEY, comparison_rows, scenario_summary
-from ..sidebar import _offer_nz_fix
+from ..sidebar import _offer_nz_fix, _seed
 from ..summaries import (
+    durability_table,
     fe_decomposition_summary,
     fe_delamination_summary,
     fe_failure_summary,
@@ -53,8 +54,88 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_thermal_results(result)
     _build_defect_results(result)
     _build_scenario_comparison(result)
+    _build_durability_expander(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
+
+
+def _build_durability_expander(result: dict) -> None:
+    """Fatigue and hygrothermal knockdowns of the analysed laminate (empirical)."""
+    with st.expander("Fatigue and environment (empirical)"):
+        st.caption(
+            "Multiplies each empirical knockdown by an S-N fatigue factor "
+            "(log-linear, calibrated at R = 0.1) and a Chamis / Springer "
+            "hygrothermal factor (matrix-dominated modes only), at the "
+            "specimen-average void content. Screening-level models: "
+            "production allowables come from a test matrix. The FE solve "
+            "does not use them.")
+        material = result["material"]
+        c1, c2 = st.columns(2)
+        with c1:
+            _seed("dur_cycles", None)
+            cycles = st.number_input(
+                "Load cycles N", min_value=1.0, max_value=1e12, step=1000.0,
+                format="%.0f", key="dur_cycles", placeholder="no fatigue")
+            _seed("dur_slope", 0.0)
+            slope = st.number_input(
+                "S-N porosity slope K", min_value=0.0, max_value=1000.0, step=1.0,
+                key="dur_slope",
+                help=("b(Vp) = b (1 + K Vp), Vp a fraction: the curve falls "
+                      "faster in a more porous laminate. 0 keeps the slope "
+                      "independent of porosity. No calibrated value is shipped."))
+            _seed("dur_goodman", False)
+            goodman = st.checkbox(
+                "Goodman mean-stress correction", key="dur_goodman",
+                help=("Moves the S-N curve to the stress ratios below along the "
+                      "straight constant-life line through the calibrated point "
+                      "and the static strength. Uncalibrated against porous-"
+                      "laminate fatigue data."))
+            R = R_c = None
+            if goodman:
+                _seed("dur_R", 0.1)
+                R = st.number_input("R of tension, shear and ILSS (0 to 1)",
+                                    min_value=0.0, max_value=1.0, step=0.05,
+                                    format="%.2f", key="dur_R")
+                _seed("dur_R_c", 10.0)
+                R_c = st.number_input("R of compression (≥ 1)", min_value=1.0,
+                                      max_value=1e6, step=1.0, format="%.1f",
+                                      key="dur_R_c")
+        with c2:
+            _seed("dur_T", None)
+            T = st.number_input("Service temperature (°C)", min_value=-100.0,
+                                max_value=400.0, step=5.0, format="%.1f",
+                                key="dur_T", placeholder="no hygrothermal factor")
+            _seed("dur_M", 0.0)
+            M = st.number_input("Moisture (wt %)", min_value=0.0, max_value=20.0,
+                                step=0.1, format="%.2f", key="dur_M")
+            _seed("dur_Tg", None)
+            T_g = st.number_input(
+                "Dry glass-transition temperature T_g (°C)", min_value=0.0,
+                max_value=600.0, step=5.0, format="%.1f", key="dur_Tg",
+                placeholder=("the material's" if material.T_g_dry is not None
+                             else "required for the hygrothermal factor"))
+        if cycles is None and T is None and not M:
+            st.info("Enter the load cycles, a service temperature or a moisture "
+                    "content.")
+            return
+        try:
+            rows, notes, record = durability_table(
+                result, cycles=cycles, mean_stress="goodman" if goodman else None,
+                R=R, R_compression=R_c, porosity_slope=float(slope), T=T, M=M,
+                T_g_dry=T_g)
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
+        gov = record["governing"]
+        st.metric("Governing knockdown", f"{gov['knockdown']:.3f}",
+                  help=f"{gov['mode']} / {gov['model']}")
+        st.dataframe(
+            [{**r, **{k: f"{r[k]:.4f}" for k in
+                      ("Porosity", "Fatigue", "Environment", "Knockdown")},
+              "Strength (MPa)": f"{r['Strength (MPa)']:.1f}"} for r in rows],
+            hide_index=True, use_container_width=True)
+        for note in notes:
+            st.caption(f"⚠ {note}")
 
 
 def _stop_comparing() -> None:

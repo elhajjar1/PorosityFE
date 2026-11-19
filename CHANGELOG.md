@@ -12,6 +12,41 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Fatigue and environment in the CLI and the app, with two opt-in fatigue
+  options.** Both factors existed in the `EmpiricalSolver` API only; the
+  stress ratio `R` had no effect, and the S-N slope ignored porosity.
+  Additive: without the new options every result is unchanged, and the
+  default `FatigueModel` still warns that it ignores `R`.
+  - `FatigueModel(mean_stress='goodman')`: the maximum stress at `R` lies
+    on the straight constant-life line through the calibrated point at
+    `R = 0.1` and the static strength, so `R = 1` gives no knockdown and,
+    after 10^6 cycles, tension at `R = 0.5` keeps 0.545 of its strength
+    against 0.400 at `R = 0.1`. Same-sign cycling only: `0 <= R <= 1` for
+    the tension-type modes, `R >= 1` for compression (its calibration
+    ratio taken as `R = 10`); reversed loading raises. Not calibrated
+    against porous-laminate fatigue data.
+  - `FatigueModel(porosity_slope=K)`: `b(Vp) = b (1 + K Vp)`. No value is
+    shipped (the database has no fatigue data); the default 0 keeps the
+    slope independent of porosity.
+  - `EmpiricalSolver(..., fatigue_model=...)` uses it; `R=` on
+    `get_failure_load`, `get_all_failure_loads` and the allowable-porosity
+    methods also takes a mapping of mode to `R`. A porosity-dependent
+    slope is taken at the specimen-average `Vp` for the failure load and
+    at each trial `Vp` for the allowable. `details['fatigue_model']`
+    records the options.
+  - `reporting.durability_record(solver, cycles=, R=, environment=)`:
+    every strength mode and law with the porosity knockdown, the fatigue
+    and hygrothermal factors and their product (JSON format
+    `porosity-fe.durability`, `FORMAT_DURABILITY`).
+  - `porosity-analyze --cycles N` and `--service-temperature` /
+    `--moisture` / `--tg-dry` write `porosity_durability_<Vp>.json` per
+    level, and `--required-knockdown` then holds at those conditions (the
+    allowable JSON gains a `conditions` block, and an unachievable entry
+    reads "not achievable"). `--mean-stress goodman`,
+    `--stress-ratio`, `--compression-stress-ratio` and
+    `--fatigue-porosity-slope` set the options. The app's Results tab has
+    a "Fatigue and environment (empirical)" panel, whose inputs a saved
+    scenario restores.
 - **A custom material, the plate size and saved scenarios in the app; a
   material file for the CLI.** The app's material was preset-only and its
   coupon fixed at 50 x 20 mm, and there was no way to save or restore a

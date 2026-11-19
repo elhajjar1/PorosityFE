@@ -875,3 +875,51 @@ class TestCustomMaterialAndScenario:
         assert not at.exception
         assert at.session_state["layup_input"] == "[0/90]s"
         assert at.session_state["_layup_status"][0] == "ok"
+
+
+class TestFatigueAndEnvironment:
+    def _table(self, at):
+        return next(df.value for df in at.dataframe if "Fatigue" in df.value.columns)
+
+    def test_the_panel(self):
+        at = _run_small_analysis(_fresh_app())
+        assert any(i.value.startswith("Enter the load cycles") for i in at.info)
+        at.number_input(key="dur_cycles").set_value(1e6).run()
+        assert not at.exception
+        table = self._table(at)
+        assert len(table) == 15
+        row = table[(table.Mode == "tension") & (table.Law == "judd_wright")].iloc[0]
+        assert row["Fatigue"] == "0.4000" and row["Environment"] == "1.0000"
+        assert any(m.label == "Governing knockdown" for m in at.metric)
+
+        at.checkbox(key="dur_goodman").check().run()
+        at.number_input(key="dur_R").set_value(0.5).run()
+        row = self._table(at)
+        row = row[(row.Mode == "tension") & (row.Law == "judd_wright")].iloc[0]
+        assert row["Fatigue"] == "0.5455"
+
+        at.number_input(key="dur_T").set_value(80.0).run()
+        assert any("needs the dry glass-transition temperature" in w.value for w in at.warning)
+        at.number_input(key="dur_Tg").set_value(180.0).run()
+        table = self._table(at)
+        shear = table[(table.Mode == "shear") & (table.Law == "linear")].iloc[0]
+        assert float(shear["Environment"]) < 1.0
+
+        at.number_input(key="dur_cycles").set_value(1e12).run()
+        assert any(c.value.startswith("⚠ Fatigue knockdown for mode=") for c in at.caption)
+
+    def test_a_scenario_restores_the_panel(self):
+        import json
+        doc = {"format": "porosity-fe.app-scenario", "name": None, "material": None,
+               "summary": None,
+               "inputs": {"dur_cycles": 1e5, "dur_goodman": True, "dur_R": 0.3,
+                          "layup_input": "0/90/90/0", "expert_mode": True,
+                          "mesh_nx": 8, "mesh_ny": 4, "mesh_nz": 4}}
+        at = _fresh_app()
+        at.file_uploader(key="scenario_upload").upload(
+            "s.json", json.dumps(doc).encode(), "application/json").run()
+        _button(at, "Run analysis").click().run()
+        assert not at.exception
+        assert at.number_input(key="dur_cycles").value == 1e5
+        assert at.number_input(key="dur_R").value == 0.3
+        assert len(self._table(at)) == 15

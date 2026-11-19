@@ -131,6 +131,15 @@ SCENARIO_INPUTS: dict[str, _Input] = {
     "frac_mmb_ratio": _number(0.05, 1.0),
     "frac_uq_on": _Input('bool'),
     **{f"frac_uq_{name}": _number(0.0, 1.0) for name in _FRACTURE_UQ_FIELDS},
+    # Results tab, fatigue and environment (empirical).
+    "dur_cycles": _number(1.0, 1e12, optional=True),
+    "dur_slope": _number(0.0, 1000.0),
+    "dur_goodman": _Input('bool'),
+    "dur_R": _number(0.0, 1.0),
+    "dur_R_c": _number(1.0, 1e6),
+    "dur_T": _number(-100.0, 400.0, optional=True),
+    "dur_M": _number(0.0, 20.0),
+    "dur_Tg": _number(0.0, 600.0, optional=True),
 }
 
 

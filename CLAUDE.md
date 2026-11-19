@@ -284,6 +284,11 @@ collection puts `test_cli.py` first.
   default results do not change.
 - **Calibration scope**: empirical coefficients are validated to
   `Vp ≲ 0.05`; flag extrapolations explicitly.
+- **Fatigue**: the default `FatigueModel` ignores `R` (and warns); the
+  opt-in `mean_stress='goodman'` and `porosity_slope=` options reach the
+  solver only through `EmpiricalSolver(fatigue_model=...)`. `R=` may be a
+  mapping of mode to `R` (`empirical.StressRatio`): under Goodman,
+  tension-type modes take `0 <= R <= 1` and compression `R >= 1`.
 
 ## CI matrix
 

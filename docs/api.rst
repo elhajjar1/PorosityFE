@@ -283,6 +283,13 @@ Results I/O
 
    ``format`` tag of an uncertainty-propagation export.
 
+.. py:data:: FORMAT_DURABILITY
+   :type: str
+
+   ``format`` tag of a fatigue and hygrothermal knockdown export
+   (``porosity-analyze --cycles`` / ``--service-temperature``,
+   :func:`~porosity_fe.reporting.durability_record`).
+
 .. py:data:: FORMAT_MATERIAL
    :type: str
 

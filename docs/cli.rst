@@ -47,6 +47,18 @@ The laminate and the scope of a run are options:
   governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
   It is printed and written to ``porosity_allowable.json``. It does not
   depend on ``--vp`` or the configurations.
+- ``--cycles N`` adds the S-N fatigue factor and ``--service-temperature
+  T`` / ``--moisture M`` the hygrothermal one (they need a dry
+  glass-transition temperature: ``--tg-dry``, or a ``--material-file``
+  that sets ``T_g_dry``). Each level writes ``porosity_durability_<Vp>.json``
+  (format ``porosity-fe.durability``): every strength mode and law with the
+  porosity knockdown, the fatigue and environment factors and their
+  product. ``--required-knockdown`` then holds at the same conditions and
+  records them. ``--mean-stress goodman`` corrects the S-N curve to
+  ``--stress-ratio R`` (tension, shear, ILSS and transverse tension,
+  ``0 <= R <= 1``) and ``--compression-stress-ratio R`` (``R >= 1``), and
+  ``--fatigue-porosity-slope K`` makes the slope ``b (1 + K Vp)``; see
+  :doc:`theory/fatigue_environment`.
 - ``--material-cards FORMAT`` (``abaqus`` or ``nastran``) writes the
   porosity-degraded ply properties of every analysed configuration at each
   porosity level as solver material cards
