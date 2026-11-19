@@ -1004,7 +1004,7 @@ class TestDelaminationScreening:
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
         (['--porosity-degradation', 'directional'],
-         '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling'),
+         '--porosity-degradation needs --delamination, --fe, --material-cards, --buckling or --fe-uq'),
         (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
          "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
@@ -1437,7 +1437,7 @@ class TestFESolveOption:
         for argv, message in (
                 (['--fe', 'dcb'], "invalid choice: 'dcb'"),
                 (['--porosity-degradation', 'directional'],
-                 '--porosity-degradation needs --delamination, --fe, --material-cards or --buckling')):
+                 '--porosity-degradation needs --delamination, --fe, --material-cards, --buckling or --fe-uq')):
             with pytest.raises(SystemExit) as exc:
                 porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
                                            '--output-dir', str(tmp_path), *argv])
@@ -1758,3 +1758,93 @@ class TestBucklingOption:
             '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
             '--quiet', '--buckling', 'compression']) == rc
         assert message in capsys.readouterr().err
+
+
+class TestFEUncertaintyOption:
+    def test_writes_the_study(self, small_material, tmp_path, capsys):
+        import jsonschema
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--fe-uq', 'tension', '--fe-uq-samples', '3', '--porosity-cov', '0.6',
+            '--correlation-length', '5', '--seed', '4'])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert 'FE uncertainty (tension, random porosity fields): Vp = 3.00%' in out
+        assert 'tension, uniform_spherical: 3 draws; first-ply-failure load factor' in out
+        doc = _strict_json(tmp_path / 'porosity_fe_uq_tension_uniform_spherical_3pct.json')
+        jsonschema.validate(instance=doc, schema=_results_schema())
+        block = doc['fe_uq']
+        assert doc['format'] == 'porosity-fe.fe-uq' and doc['provenance']['seed'] == 4
+        assert block['n_samples'] == 3 and block['random_field']['cov'] == 0.6
+        assert block['mesh'] == [30, 10, 4]
+
+    @pytest.mark.parametrize("argv, message", [
+        (['--porosity-cov', '0.5'], '--porosity-cov need --fe-uq'),
+        (['--fe-uq', 'tension', '--porosity-cov', '0.5'],
+         '--fe-uq needs --correlation-length'),
+        (['--fe-uq', 'tension'], '--fe-uq needs --porosity-cov and --correlation-length'),
+        (['--fe-uq', 'tension', '--porosity-cov', '0.5', '--correlation-length', '5',
+          '--fe-uq-samples', '1'], 'at least 2'),
+        (['--fe-uq', 'tension', '--porosity-cov', '-0.5', '--correlation-length', '5'],
+         '--porosity-cov must be'),
+        (['--fe-uq', 'tension', '--porosity-cov', '0.5', '--correlation-length', '0'],
+         '--correlation-length must be'),
+        (['--fe-uq', 'ilss', '--porosity-cov', '0.5', '--correlation-length', '5'],
+         "invalid choice: 'ilss'"),
+    ])
+    def test_usage_errors(self, small_material, tmp_path, capsys, argv, message):
+        with pytest.raises(SystemExit) as exc:
+            porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
+                                       '--output-dir', str(tmp_path), *argv])
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (ValueError('no'), 2, 'FE uncertainty for Vp=0.03, uniform_spherical: no'),
+        (RuntimeError('boom'), 3, 'FE uncertainty for Vp=0.03, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, small_material, tmp_path,
+                                                  monkeypatch, capsys, exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_fe_uq', boom)
+        assert porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--quiet', '--fe-uq', 'compression', '--porosity-cov', '0.5',
+            '--correlation-length', '5']) == rc
+        assert message in capsys.readouterr().err
+
+    def test_unrankable_study_has_no_driver_line(self, monkeypatch):
+        """With a single draw pattern that cannot be ranked the line leaves
+        the driver out."""
+        from porosity_fe import cli
+        from porosity_fe import fe_uncertainty
+
+        class Stub:
+            n_samples = 2
+            nominal = {'first_ply_failure_load_factor': None}
+
+            def statistics(self, output):
+                return {'mean': 0.99, 'percentiles': {'p5': None, 'p50': 1.0, 'p95': 1.2}}
+
+            def ranking(self, output):
+                raise ValueError('nothing varies')
+
+        monkeypatch.setattr(fe_uncertainty, 'fe_porosity_uncertainty',
+                            lambda *a, **k: Stub())
+        monkeypatch.setattr(fe_uncertainty, 'save_fe_uncertainty_to_json',
+                            lambda *a, **k: None)
+        line = cli._run_fe_uq({'loading': 'tension', 'cov': 0.5, 'correlation_length': 5.0,
+                               'n_samples': 2}, None, 'QI', 'x', {}, 0.03, Path('x.json'),
+                              porosity_degradation='isotropic', seed=None)
+        assert 'p5/p50/p95 = n/a / 1 / 1.2 (nominal n/a)' in line
+        assert 'driven most' not in line
+
+    def test_uq_line_names_the_driver(self, small_material, tmp_path, capsys):
+        rc = porosity_fe_analysis.main([
+            '--material', small_material, '--vp', '0.03', '--output-dir', str(tmp_path),
+            '--uq', '--uq-samples', '40'])
+        assert rc == 0
+        assert 'failure stress driven most by' in capsys.readouterr().out
+        doc = _strict_json(tmp_path / 'porosity_uq_3pct.json')
+        ranking = doc['uq']['compression']['sensitivity']['failure_stress']['ranking']
+        assert {row['input'] for row in ranking} == {'sigma_1c', 'judd_wright_alpha', 'Vp'}

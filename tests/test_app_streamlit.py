@@ -354,6 +354,29 @@ def test_uq_expander_reports_percentiles():
     assert [m.label for m in uq] == ["Knockdown p5", "Knockdown p50", "Knockdown p95"]
     p5, p50, p95 = (float(m.value) for m in uq)
     assert p5 < p50 < p95
+    table = next(d.value for d in at.dataframe if "Share of the scatter" in d.value.columns)
+    assert len(table) == 3                         # coefficient, porosity, strength
+
+
+class TestFEUncertaintyPanel:
+    def test_needs_the_field_then_runs(self):
+        at = _run_small_analysis(_fresh_app())
+        assert any(i.value.startswith("Enter the in-plane CoV") for i in at.info)
+        assert not any(b.label == "Run FE uncertainty study" for b in at.button)
+        at.number_input(key="feuq_samples").set_value(3).run()
+        at.number_input(key="feuq_cov").set_value(0.5).run()
+        at.number_input(key="feuq_length").set_value(5.0).run()
+        _button(at, "Run FE uncertainty study").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert "First-ply failure p5" in labels
+        assert float(labels["Stiffness knockdown mean"]) > 0.9
+
+    def test_other_loadings_say_why(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("ilss").run()
+        at = _run_small_analysis(at)
+        assert any("compression, tension or shear" in i.value for i in at.info)
 
 
 def test_layup_default_comes_from_session_state_only():

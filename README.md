@@ -23,7 +23,8 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 
 - **Two porosity types**: Distributed microporosity (continuous field) + discrete macrovoids (explicit geometry)
 - **Three distribution models**: Uniform, clustered (midplane/surface/quarter), interface-concentrated
-- **In-plane porosity maps**: a C-scan or CT grid of void content, or a background with local zones, resolved by the FE path (`PorosityMap`, `PorosityField.from_map`)
+- **In-plane porosity maps**: a C-scan or CT grid of void content, or a background with local zones, resolved by the FE path (`PorosityMap`, `PorosityField.from_map`), or a seeded random field of a given CoV and correlation length (`PorosityField.random`)
+- **FE uncertainty and sensitivity ranking**: a Monte Carlo of FE solves over random porosity fields (`fe_porosity_uncertainty`, `--fe-uq`), and a ranking of which scattered inputs drive each output, in both uncertainty studies (`sensitivity_ranking`)
 - **Three void morphologies**: Spherical, cylindrical (prolate), penny-shaped (oblate)
 - **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
@@ -241,14 +242,35 @@ and p5/p50/p95 of the knockdown and failure stress. The sampled inputs are:
 - each mode's pristine strength (`--uq-strength-cov`, default 0.05).
 
 The default CoVs are assumptions; replace them with values from your own
-data. The web app's Results tab has the same analysis in an
-**Uncertainty** expander, with a knockdown histogram. From Python:
+data. Each result also ranks the scattered inputs by their share of the
+scatter (`sensitivity`, Spearman and standardized rank regression), and the
+summary line names the input that drives each mode's failure stress. The
+web app's Results tab has the same analysis in an **Uncertainty** expander,
+with a knockdown histogram and the ranking. From Python:
 
 ```python
 from porosity_fe import propagate_uncertainty
 r = propagate_uncertainty(0.03, 'T800_epoxy', 'compression', coef_cov=0.1,
                           vp_cov=0.1, n_samples=1000, method='lhs', seed=0)
 print(r['knockdown']['percentiles'])   # {'p5': ..., 'p50': ..., 'p95': ...}
+```
+
+The FE path sees where the voids are. `--fe-uq LOADING` solves the coupon
+once per draw of a seeded random in-plane map of void content of the same
+average (lognormal, `--porosity-cov` from point to point,
+`--correlation-length` in mm, both required), and writes
+`porosity_fe_uq_<loading>_<config>_<Vp>.json`: the spread of the stiffness
+knockdown and the first-ply-failure load factor against the uniform field's,
+and which inputs drive them. Rearranging the voids at a fixed average barely
+moves the stiffness, but it spreads the failure load:
+
+```python
+from porosity_fe import PorosityField, fe_porosity_uncertainty
+pf = PorosityField.random(material, 0.03, cov=0.5, correlation_length=5.0, seed=1)
+study = fe_porosity_uncertainty(material, 0.03, 'compression', cov=0.5,
+                                correlation_length=5.0, n_samples=30, seed=1)
+study.statistics('first_ply_failure_load_factor'), study.nominal
+study.ranking('first_ply_failure_load_factor').names
 ```
 
 The delamination load factor λ_c of an FE solve gets its own band from
@@ -598,7 +620,8 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_comparison_*.png` | Model comparison bar charts |
 | `porosity_knockdown_curves.png` | Knockdown vs porosity curves |
 | `porosity_analysis_results_*.json` | Numerical results (JSON) |
-| `porosity_uq_*.json` | Uncertainty percentiles per loading mode (`--uq`) |
+| `porosity_uq_*.json` | Uncertainty percentiles per loading mode, with the ranking of the scattered inputs (`--uq`) |
+| `porosity_fe_uq_<loading>_<config>_*.json` | FE uncertainty over random in-plane porosity fields: statistics, nominal and input ranking (`--fe-uq`) |
 | `porosity_delamination_*.json` | FE delamination screening: fracture results and knockdown decomposition (`--delamination`), and the growth (`--delam-growth`) |
 | `porosity_fe_<loading>_<config>_*.json` | FE solve of one configuration: stiffness knockdown, failure indices, first-ply-failure load factor (`--fe`) |
 | `porosity_allowable.json` | Allowable void content per strength mode and law at a required retained strength (`--required-knockdown`) |

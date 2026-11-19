@@ -20,11 +20,13 @@ from porosity_fe import (
     Delamination,
     EmpiricalSolver,
     FESolver,
+    FEUncertainty,
     GrowthResult,
     ParisLaw,
     ToughnessKnockdown,
     build_empirical_pipeline,
     compute_degraded_clt_flexural_modulus,
+    fe_porosity_uncertainty,
     knockdown_decomposition,
     propagate_uncertainty,
     short_beam_shear,
@@ -750,3 +752,62 @@ def run_growth_cached(cfg_key: tuple, growth_key: tuple, _result: dict) -> Growt
     if kind == "fatigue":
         return run_growth(_result, steps, ParisLaw(C, m, threshold), peak)
     return run_growth(_result, steps)
+
+
+# ----------------------------------------------------------------------
+# FE uncertainty over random porosity fields (on demand, Results tab)
+# ----------------------------------------------------------------------
+
+#: Default and largest number of draws of the FE uncertainty panel.
+FE_UQ_DEFAULT_SAMPLES = 20
+FE_UQ_MAX_SAMPLES = 200
+
+#: Load cases of the panel (the coupon's in-plane ones).
+_FE_UQ_MODES = ("compression", "tension", "shear")
+
+
+def fe_uq_unavailable_reason(result: dict) -> str | None:
+    """Why the FE uncertainty panel cannot study ``result``; ``None`` when it can."""
+    if result.get("fe_field") is None:
+        return "The FE solve of this analysis was skipped, so there is no model to sample."
+    if (result.get("fe_thermal") or {}).get("mode") == "thermal_only":
+        return "The FE uncertainty study needs a mechanical load; the thermal-only solve has none."
+    if result.get("fe_loading") not in _FE_UQ_MODES:
+        return ("The FE uncertainty study takes the coupon under compression, tension "
+                "or shear: select one of them as the loading mode.")
+    return None
+
+
+def run_fe_uq(result: dict, n_samples: int, cov: float, correlation_length: float,
+              seed: int = 0) -> FEUncertainty:
+    """The FE uncertainty study of an analysis: its model with a random
+    in-plane porosity map of the same average in every draw."""
+    cfg = result["config"]
+    mesh, material, pf = result["mesh"], result["material"], result["porosity_field"]
+    config = {"distribution": cfg["distribution"], "void_shape": cfg["void_shape"]}
+    if cfg["distribution"] == "clustered":
+        config["cluster_location"] = cfg["cluster_location"]
+    kwargs: dict = {**_fe_load_kwargs(result["fe_loading"]),
+                    "failure_criterion": cfg.get("failure_criterion", "tsai_wu")}
+    thermal = result.get("fe_thermal") or {}
+    if thermal.get("mode") == "combined":
+        kwargs["delta_T"] = thermal["delta_T"]
+    if mesh.delaminations:
+        kwargs["delaminations"] = list(mesh.delaminations)
+        kwargs["toughness_knockdown"] = _toughness_knockdown_spec(cfg)
+    return fe_porosity_uncertainty(
+        material, pf.Vp, result["fe_loading"], cov=cov,
+        correlation_length=correlation_length, n_samples=n_samples, seed=seed,
+        ply_angles=cfg["angles"], config=config, mesh_res=(mesh.nx, mesh.ny, mesh.nz),
+        length=float(mesh.L_x), width=float(mesh.L_y),
+        porosity_degradation=cfg.get("porosity_degradation",
+                                     _CFG_DEFAULTS["porosity_degradation"]),
+        **kwargs)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_fe_uq_cached(cfg_key: tuple, params: tuple, _result: dict) -> FEUncertainty:
+    """Cached :func:`run_fe_uq`; ``params`` is ``(n_samples, cov,
+    correlation_length)`` and ``_result`` the analysis of ``cfg_key``."""
+    n_samples, cov, correlation_length = params
+    return run_fe_uq(_result, n_samples, cov, correlation_length)

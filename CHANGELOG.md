@@ -12,6 +12,38 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Random porosity fields, FE uncertainty and a sensitivity ranking.**
+  `PorosityMap.random` and `PorosityField.random` draw a seeded lognormal
+  random field of in-plane void content with a point-to-point CoV and a
+  correlation length (squared-exponential or exponential kernel, one length
+  per axis), keeping the specimen average by default. `PorosityField(seed=)`
+  was recorded but drove nothing; it is now the seed of the map. Over 300
+  draws the pointwise mean, CoV and correlation are the requested ones.
+  - `fe_porosity_uncertainty` solves the FE coupon once per draw, each with
+    its own map, and optionally scatters the average and material fields.
+    It returns an `FEUncertainty`: the draws of the knockdown, modulus,
+    first-ply-failure factors and fracture load factor, the nominal
+    (uniform) solve, statistics, `probability_below`, the input ranking and
+    a `porosity-fe.fe-uq` JSON (`save_fe_uncertainty_to_json`,
+    `FORMAT_FE_UQ`). Uncertainty propagation wrapped the empirical solver
+    only, which sees the average alone. At a fixed average the stiffness
+    barely moves, but the first-ply failure load spreads: on an 8-ply QI
+    coupon (CoV 0.5, 5 mm, 30 draws) its interior value falls below the
+    uniform field's in every draw, by 0.6 % on average, while the knockdown
+    spreads by 0.02 %.
+  - `sensitivity_ranking` ranks the inputs of a sampling study by Spearman
+    correlation and standardized rank regression coefficients, with their
+    shares and R^2. `propagate_uncertainty` results now carry it
+    (`sensitivity`) and every draw's inputs (`samples['inputs']`); on
+    `KD = exp(-alpha Vp)` it recovers the first-order shares (0.82 and 0.18
+    against 0.8 and 0.2).
+  - `porosity-analyze --fe-uq LOADING --porosity-cov COV
+    --correlation-length MM [--fe-uq-samples N]` writes the study per
+    configuration and level. The `--uq` line names the input that drives
+    the failure stress. The app's Uncertainty panel shows the ranking, and a
+    new "FE uncertainty (random porosity fields)" panel runs the study on
+    the analysis' model. Additive: no existing result changes. The `--uq`
+    JSON gains the `sensitivity` key, and the FE fingerprint does not move.
 - **Delamination growth by node release.** `FESolver.delamination_growth`
   (and `delamination_growth`) grows an explicit delamination step by step:
   each crack is solved, the front nodes with the smallest critical load

@@ -120,9 +120,9 @@ class PorosityField:
         Explicit ellipsoidal voids superposed on the smooth profile
         (their contribution is taken via ``max``, then clipped at 1.0).
     seed : int, optional
-        Recorded into provenance for a future stochastic placement mode
-        (#55). The current pipeline is RNG-free, so this argument has no
-        effect on the produced field.
+        Recorded into provenance. The constructor is RNG-free, so it has no
+        effect here: :meth:`random` draws the in-plane map from it and
+        records it.
     in_plane_map : PorosityMap, optional
         Keyword-only. In-plane variation of the distributed porosity: at
         ``(x, y)`` the through-thickness profile is multiplied by
@@ -150,7 +150,8 @@ class PorosityField:
         Total laminate thickness (mm), copied from
         ``material.total_thickness``.
     seed : int or None
-        The seed argument, kept for provenance.
+        The seed argument, kept for provenance (the seed of the map of
+        :meth:`random`).
     in_plane_map : PorosityMap or None
         The in-plane map, when one was given.
 
@@ -238,9 +239,8 @@ class PorosityField:
         self.distribution = distribution
         self.cluster_location = cluster_location
         self.discrete_voids = discrete_voids or []
-        # The pipeline is RNG-free today; `seed` is recorded into provenance
-        # so a future stochastic void-placement mode has a determinism
-        # contract to honor (#55).
+        # The constructor is RNG-free; `seed` is recorded into provenance
+        # (#55), and PorosityField.random draws its map from it.
         self.seed = seed
         self.Lz = material.total_thickness
         if in_plane_map is not None:
@@ -308,6 +308,39 @@ class PorosityField:
             raise TypeError(
                 f"porosity_map must be a PorosityMap; got {type(porosity_map).__name__}.")
         return cls(material, porosity_map.mean, in_plane_map=porosity_map, **kwargs)
+
+    @classmethod
+    def random(cls, material: MaterialProperties, Vp: float, *, cov: float,
+               correlation_length: float | tuple[float, float], length: float = 50.0,
+               width: float = 20.0, kernel: str = 'squared_exponential',
+               resolution: float | None = None, seed: int | None = None,
+               preserve_mean: bool = True, **kwargs) -> PorosityField:
+        """A field whose in-plane void content is a seeded random realization.
+
+        Draws a lognormal random map of mean ``Vp`` over the ``length`` x
+        ``width`` plate (:meth:`PorosityMap.random
+        <porosity_fe.PorosityMap.random>`, which documents ``cov``,
+        ``correlation_length``, ``kernel``, ``resolution`` and
+        ``preserve_mean``) and returns :meth:`from_map` of it, with ``seed``
+        recorded: the same seed gives the same field. ``kwargs`` are the
+        other constructor arguments (``distribution``, ``void_shape``,
+        ``cluster_location``, ``discrete_voids``), so the through-thickness
+        profile is the usual one and the map scales it from point to point.
+        Use the plate size of the :class:`~porosity_fe.CompositeMesh` the
+        field is for (default 50 x 20 mm).
+
+        Examples
+        --------
+        >>> from porosity_fe import MATERIALS
+        >>> pf = PorosityField.random(MATERIALS['T800_epoxy'], 0.02, cov=0.4,
+        ...                           correlation_length=5.0, seed=7)
+        >>> round(pf.Vp, 12), pf.seed, pf.in_plane_map.max > 0.02
+        (0.02, 7, True)
+        """
+        porosity_map = PorosityMap.random(
+            length, width, Vp, cov=cov, correlation_length=correlation_length,
+            kernel=kernel, resolution=resolution, seed=seed, preserve_mean=preserve_mean)
+        return cls.from_map(material, porosity_map, seed=seed, **kwargs)
 
     def _distributed(self, x, y, z) -> np.ndarray:
         """The distributed porosity at ``(x, y, z)``: the through-thickness

@@ -175,6 +175,19 @@ map over its mean and equals the profile without one: `CompositeMesh.
 _sample_porosity` and `EmpiricalSolver._local_vp_peak` do. `Vp` is the
 specimen average, the map's area mean with `from_map`.
 
+### Random porosity fields and FE uncertainty
+
+`PorosityMap.random` / `PorosityField.random` draw a seeded lognormal random
+field of in-plane void content, separable (`A_x Z A_y^T`), keeping the average
+by default; `PorosityField(seed=)` is the seed of that map and the constructor
+stays RNG-free. `porosity_fe/fe_uncertainty.py` (`fe_porosity_uncertainty`,
+`FEUncertainty`, format `porosity-fe.fe-uq`) runs one FE solve per draw on the
+coupon's in-plane load cases; the map seeds derive from the study's seed
+(`SeedSequence.spawn`). `porosity_fe/sensitivity.py` (`sensitivity_ranking`)
+ranks inputs by Spearman and SRRC on ranks; `propagate_uncertainty` carries it
+under `sensitivity` with the draws' inputs in `samples['inputs']`. The random
+field's CoV and correlation length have no defaults anywhere.
+
 ### Material cards
 
 `porosity_fe/material_cards.py` writes the degraded ply for another solver

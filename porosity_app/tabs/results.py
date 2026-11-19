@@ -21,6 +21,7 @@ from ..convergence import (
 )
 from ..plots import (
     plot_buckling_mode,
+    plot_fe_uq,
     plot_fracture_uq,
     plot_front,
     plot_growth,
@@ -28,11 +29,15 @@ from ..plots import (
     plot_uq,
 )
 from ..runners import (
+    FE_UQ_DEFAULT_SAMPLES,
+    FE_UQ_MAX_SAMPLES,
     GROWTH_DEFAULT_STEPS,
     GROWTH_MAX_STEPS,
     buckling_unavailable_reason,
+    fe_uq_unavailable_reason,
     growth_unavailable_reason,
     run_buckling_cached,
+    run_fe_uq_cached,
     run_growth_cached,
     run_uq_cached,
 )
@@ -50,8 +55,11 @@ from ..summaries import (
     fe_onset_summary,
     fe_short_beam_summary,
     fe_thermal_summary,
+    fe_uq_summary,
     growth_summary,
     growth_table,
+    sensitivity_caption,
+    sensitivity_rows,
 )
 from ..tabs.common import _metric_row, _placeholder_tab, _show_figure
 
@@ -75,6 +83,7 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_buckling_expander(result)
     _build_growth_expander(result)
     _build_uq_expander(result)
+    _build_fe_uq_expander(result)
     _build_convergence_expander(result)
 
 
@@ -563,3 +572,68 @@ def _build_uq_expander(result: dict):
         m3.metric("Knockdown p95", f"{kd['p95']:.3f}", f"{fs['p95']:.0f} MPa",
                   delta_color="off")
         _show_figure(plot_uq(uq), f"knockdown_uq_{mode}", "dl_png_uq")
+        ranking = uq["sensitivity"]["failure_stress"]
+        st.markdown("**Which inputs drive the failure stress**")
+        rows = sensitivity_rows(ranking)
+        if rows:
+            st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.caption(sensitivity_caption(ranking))
+
+
+def _build_fe_uq_expander(result: dict) -> None:
+    """Opt-in FE Monte Carlo over random in-plane porosity fields."""
+    with st.expander("FE uncertainty (random porosity fields)"):
+        st.caption(
+            "Solves the analysis' FE model once per draw, each with its own "
+            "seeded random map of void content in the plane, of the same "
+            "average: the spread of the first-ply-failure load and the "
+            "stiffness when the voids are arranged differently, and which "
+            "features of the arrangement drive it. One FE solve per draw.")
+        reason = fe_uq_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        c = st.columns(3)
+        n_samples = int(c[0].number_input(
+            "Draws", min_value=2, max_value=FE_UQ_MAX_SAMPLES,
+            value=FE_UQ_DEFAULT_SAMPLES, step=1, key="feuq_samples",
+            help="Each draw is one FE solve."))
+        cov = c[1].number_input(
+            "In-plane CoV of Vp", min_value=0.0, max_value=5.0, value=None, step=0.05,
+            key="feuq_cov", placeholder="from your C-scans or CT",
+            help="Point-to-point coefficient of variation of the void content, a "
+                 "fraction (0.5 = 50 % of the local value). No default: it "
+                 "describes your part.")
+        length = c[2].number_input(
+            "Correlation length (mm)", min_value=0.1, max_value=1000.0, value=None,
+            step=0.5, key="feuq_length", placeholder="from your C-scans or CT",
+            help="Points much closer than this have nearly the same void content.")
+        if cov is None or length is None:
+            st.info("Enter the in-plane CoV and the correlation length of the void "
+                    "content: they describe your part, so there are no defaults.")
+            return
+        key = _config_to_key(result["config"])
+        params = (n_samples, float(cov), float(length))
+        if st.button("Run FE uncertainty study", key="feuq_run"):
+            st.session_state["feuq_params"] = (key, params)
+        if st.session_state.get("feuq_params") != (key, params):
+            return
+        with st.spinner(f"Solving {n_samples} draws..."):
+            try:
+                study = run_fe_uq_cached(key, params, result)
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"The FE uncertainty study did not run: {exc}")
+                return
+        rows, caption = fe_uq_summary(study)
+        _metric_row(rows)
+        st.caption(caption)
+        _show_figure(plot_fe_uq(study), "fe_uncertainty", "dl_png_fe_uq")
+        try:
+            ranking = study.ranking("first_ply_failure_load_factor")
+        except ValueError:
+            ranking = None
+        st.markdown("**Which inputs drive the first-ply failure load**")
+        table = sensitivity_rows(ranking)
+        if table:
+            st.dataframe(table, hide_index=True, use_container_width=True)
+        st.caption(sensitivity_caption(ranking))

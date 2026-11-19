@@ -114,6 +114,9 @@ from .fe import short_beam_shear as short_beam_shear  # noqa: F401, E402
 from .fe import vcct_energy_release_rates as vcct_energy_release_rates  # noqa: F401, E402
 from .fe import write_pvd as write_pvd  # noqa: F401, E402
 from .fe.element import _NODE_COORDS_REF as _NODE_COORDS_REF  # noqa: F401, E402
+from .fe_uncertainty import FEUncertainty as FEUncertainty  # noqa: F401, E402
+from .fe_uncertainty import fe_porosity_uncertainty as fe_porosity_uncertainty  # noqa: F401, E402
+from .fe_uncertainty import save_fe_uncertainty_to_json as save_fe_uncertainty_to_json  # noqa: F401, E402
 from .fitting import KnockdownFit as KnockdownFit  # noqa: F401, E402
 from .fitting import fit_knockdown as fit_knockdown  # noqa: F401, E402
 from .fracture_specimens import ComplianceCalibration as ComplianceCalibration  # noqa: F401, E402
@@ -138,6 +141,7 @@ from .io import FORMAT_ALLOWABLE as FORMAT_ALLOWABLE  # noqa: F401, E402
 from .io import FORMAT_DURABILITY as FORMAT_DURABILITY  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
+from .io import FORMAT_FE_UQ as FORMAT_FE_UQ  # noqa: F401, E402
 from .io import FORMAT_MATERIAL as FORMAT_MATERIAL  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
 from .io import FORMAT_UQ as FORMAT_UQ  # noqa: F401, E402
@@ -173,6 +177,8 @@ from .results import ConfigArtifacts as ConfigArtifacts  # noqa: F401, E402
 from .results import ConfigResult as ConfigResult  # noqa: F401, E402
 from .results import FailureResult as FailureResult  # noqa: F401, E402
 from .results import PorosityAllowable as PorosityAllowable  # noqa: F401, E402
+from .sensitivity import SensitivityRanking as SensitivityRanking  # noqa: F401, E402
+from .sensitivity import sensitivity_ranking as sensitivity_ranking  # noqa: F401, E402
 from .toughness import ToughnessKnockdown as ToughnessKnockdown  # noqa: F401, E402
 from .toughness import toughness_knockdown_factor as toughness_knockdown_factor  # noqa: F401, E402
 from .transforms import rotate_stiffness_3d as rotate_stiffness_3d  # noqa: F401, E402
@@ -233,6 +239,11 @@ __all__ = [
     "fit_knockdown",
     "propagate_uncertainty",
     "save_uq_results_to_json",
+    "fe_porosity_uncertainty",
+    "FEUncertainty",
+    "save_fe_uncertainty_to_json",
+    "sensitivity_ranking",
+    "SensitivityRanking",
     # Coordinate transforms
     "rotation_matrix_3d",
     "rotate_stiffness_3d",
@@ -301,6 +312,7 @@ __all__ = [
     "FORMAT_UQ",
     "FORMAT_ALLOWABLE",
     "FORMAT_DURABILITY",
+    "FORMAT_FE_UQ",
     "FORMAT_MATERIAL",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",

@@ -19,7 +19,8 @@
         "porosity-fe.ncr",
         "porosity-fe.uq",
         "porosity-fe.allowable-porosity",
-        "porosity-fe.durability"
+        "porosity-fe.durability",
+        "porosity-fe.fe-uq"
       ]
     },
     "provenance": {
@@ -387,6 +388,23 @@
         "M_wt_pct": {"type": ["number", "null"]},
         "T_g_dry_C": {"type": ["number", "null"]}
       }
+    },
+    "fe_uq": {
+      "type": "object",
+      "description": "FE uncertainty export (format porosity-fe.fe-uq, schema_version 1.3): FEUncertainty.summary() of fe_porosity_uncertainty, a Monte Carlo of FE solves of the coupon, each with its own seeded random in-plane porosity map (lognormal, point-to-point CoV cov, correlation length correlation_length_mm, kernel, resolution_mm, preserve_mean) and optionally its own specimen-average Vp (vp_cov) and material fields (spec). loading; material; Vp (the nominal specimen average, a fraction); n_samples; seed; method; random_field; vp_cov; spec; mesh [nx, ny, nz]; percentiles; nominal (each output of the solve with a uniform in-plane field, null where infinite); statistics (per output: n_finite, mean, std, min, max, percentiles; null without a finite draw); sensitivity (per output, the SensitivityRanking summary: output, method, n_samples, r2, ranking [{input, spearman, srrc, share}], constant_inputs; null where it cannot rank); inputs (per input: mean, min, max over the draws: Vp, Vp_peak, Vp_spatial_cov and each scattered material field). With include_samples: samples and input_samples, the per-draw values (null for an infinite load factor).",
+      "properties": {
+        "loading": {"type": "string", "enum": ["compression", "tension", "shear"]},
+        "Vp": {"type": "number", "minimum": 0, "maximum": 1},
+        "n_samples": {"type": "integer", "minimum": 2},
+        "random_field": {"type": "object"},
+        "nominal": {"type": "object", "additionalProperties": {"type": ["number", "null"]}},
+        "statistics": {"type": "object"},
+        "sensitivity": {"type": "object"},
+        "inputs": {"type": "object"},
+        "samples": {"type": "object"},
+        "input_samples": {"type": "object"}
+      },
+      "required": ["loading", "Vp", "n_samples", "random_field", "nominal", "statistics", "sensitivity", "inputs"]
     },
     "durability": {
       "type": "object",

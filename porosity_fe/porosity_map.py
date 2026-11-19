@@ -3,8 +3,10 @@
 A :class:`PorosityMap` holds the through-thickness average void content on
 a rectilinear grid, as an ultrasonic C-scan correlation or a CT slice stack
 gives it, or as built from a background and a few :class:`PorosityPatch`
-zones. :class:`~porosity_fe.PorosityField` takes one as its in-plane
-variation (``PorosityField.from_map``, ``in_plane_map=``).
+zones, or drawn as a seeded realization of a random field
+(:meth:`PorosityMap.random`). :class:`~porosity_fe.PorosityField` takes one
+as its in-plane variation (``PorosityField.from_map``, ``in_plane_map=``,
+``PorosityField.random``).
 """
 
 from __future__ import annotations
@@ -21,6 +23,13 @@ import numpy as np
 from ._vp import check_fraction
 
 _PATCH_SHAPES = ('ellipse', 'rectangle')
+
+#: Correlation kernels of :meth:`PorosityMap.random`.
+RANDOM_FIELD_KERNELS = ('squared_exponential', 'exponential')
+
+#: Grid points per axis of a random map at most: the spacing grows past the
+#: requested one rather than exceed it.
+_RANDOM_MAX_POINTS = 401
 
 
 def _pair(name: str, value: Any, *, positive: bool) -> tuple[float, float]:
@@ -75,6 +84,28 @@ class PorosityPatch:
         if self.shape == 'ellipse':
             return u * u + v * v <= 1.0
         return (np.abs(u) <= 1.0) & (np.abs(v) <= 1.0)
+
+
+def _area_mean(x: np.ndarray, y: np.ndarray, v: np.ndarray) -> float:
+    """Area average over the grid of the bilinear interpolant of ``v``."""
+    # Per cell, the mean of its four corners times its area.
+    corners = 0.25 * (v[:-1, :-1] + v[1:, :-1] + v[:-1, 1:] + v[1:, 1:])
+    total = float((corners * np.diff(x)[:, None] * np.diff(y)[None, :]).sum())
+    return total / float((x[-1] - x[0]) * (y[-1] - y[0]))
+
+
+def _correlation_factor(t: np.ndarray, length: float, kernel: str) -> np.ndarray:
+    """``A`` with ``A A^T`` the correlation matrix of the points ``t``.
+
+    From the symmetric eigendecomposition, with the eigenvalues that
+    round-off makes negative set to zero: the squared-exponential matrix of
+    a fine grid is singular to machine precision, where a Cholesky factor
+    fails.
+    """
+    d = np.abs(t[:, None] - t[None, :]) / length
+    corr = np.exp(-0.5 * d * d) if kernel == 'squared_exponential' else np.exp(-d)
+    w, v = np.linalg.eigh(corr)
+    return v * np.sqrt(np.clip(w, 0.0, None))
 
 
 def _axis(name: str, values: Any) -> np.ndarray:
@@ -145,13 +176,7 @@ class PorosityMap:
     @property
     def mean(self) -> float:
         """Area average of the map over its extent (a fraction)."""
-        # The integral of the bilinear interpolant: per cell, the mean of
-        # its four corners times its area.
-        v = self.Vp
-        corners = 0.25 * (v[:-1, :-1] + v[1:, :-1] + v[:-1, 1:] + v[1:, 1:])
-        total = float((corners * np.diff(self.x)[:, None] * np.diff(self.y)[None, :]).sum())
-        x0, x1, y0, y1 = self.extent
-        return total / ((x1 - x0) * (y1 - y0))
+        return _area_mean(self.x, self.y, self.Vp)
 
     @property
     def max(self) -> float:
@@ -204,6 +229,119 @@ class PorosityMap:
                 raise TypeError(
                     f"patches must be PorosityPatch objects; got {type(patch).__name__}.")
             values[patch.contains(gx, gy)] = patch.Vp
+        return cls(x, y, values)
+
+    @classmethod
+    def random(cls, length: float, width: float, mean: float, *, cov: float,
+               correlation_length: float | Sequence[float],
+               kernel: str = 'squared_exponential', resolution: float | None = None,
+               seed: int | np.random.SeedSequence | None = None,
+               preserve_mean: bool = True) -> PorosityMap:
+        """A seeded realization of a lognormal random field of void content.
+
+        A stationary Gaussian field ``g(x, y)`` of zero mean and unit
+        variance, with the correlation ``rho(dx, dy) = rho_x(dx) rho_y(dy)``,
+        is mapped to the void content
+
+        .. math::
+
+            V_p(x, y) = \\bar V_p \\exp(\\sigma g - \\sigma^2 / 2),
+            \\qquad \\sigma^2 = \\ln(1 + \\mathrm{CoV}^2),
+
+        lognormal with mean ``mean`` and coefficient of variation ``cov``
+        point by point, so it stays positive. ``'squared_exponential'`` takes
+        ``rho(d) = exp(-d^2 / (2 l^2))`` (a smooth field) and
+        ``'exponential'`` ``rho(d) = exp(-|d| / l)`` per axis (a rough one).
+        The correlation is a product over the axes, so the field is drawn
+        as ``A_x Z A_y^T`` from a matrix ``Z`` of standard normal variates
+        and the factors of the two axes' correlation matrices: a fine grid
+        costs two small eigendecompositions, not one of the whole grid.
+
+        Parameters
+        ----------
+        length, width : float
+            The plate along ``x`` and ``y``, in mm: the map covers
+            ``[0, length] x [0, width]`` (the size of the
+            :class:`~porosity_fe.CompositeMesh` it is meant for).
+        mean : float
+            The mean void content, a **fraction** in ``[0, 1]``.
+        cov : float
+            Coefficient of variation of the void content from point to point
+            (``>= 0``; 0 gives a uniform map).
+        correlation_length : float or (float, float)
+            The length ``l`` of the kernel, in mm, one for both axes or
+            ``(l_x, l_y)``. Points much closer than it have nearly the same
+            void content; points much farther apart are independent.
+        kernel : {'squared_exponential', 'exponential'}
+            The correlation function (default ``'squared_exponential'``).
+        resolution : float, optional
+            Grid spacing in mm; default a quarter of the shorter correlation
+            length. At most 401 points per axis: a finer spacing is coarsened.
+        seed : int or numpy.random.SeedSequence, optional
+            Seed of the draw: the same seed gives the same map.
+        preserve_mean : bool
+            Scale the realization so its area average (:attr:`mean`) is
+            ``mean`` exactly (default): the specimen keeps its measured void
+            content and the field only redistributes it. ``False`` keeps the
+            raw draw, whose average scatters about ``mean``.
+
+        Returns
+        -------
+        PorosityMap
+            Values above 1 are clipped to 1 (and, with ``preserve_mean``,
+            the rest rescaled until the average is ``mean``).
+
+        Raises
+        ------
+        ValueError
+            For a size, correlation length or spacing that is not positive
+            and finite, a ``cov`` below 0, an unknown ``kernel``, or a
+            ``mean`` the clipped field cannot reach.
+
+        Examples
+        --------
+        >>> m = PorosityMap.random(50.0, 20.0, 0.02, cov=0.4,
+        ...                        correlation_length=5.0, seed=1)
+        >>> round(m.mean, 12), m.max > 0.02
+        (0.02, True)
+        """
+        size = _pair('(length, width)', (length, width), positive=True)
+        ell = correlation_length if isinstance(correlation_length, Sequence) \
+            else (correlation_length, correlation_length)
+        ell = _pair('correlation_length', ell, positive=True)
+        target = float(check_fraction(mean, 'mean'))
+        if isinstance(cov, bool) or not isinstance(cov, (int, float, np.number)) \
+                or not math.isfinite(float(cov)) or float(cov) < 0.0:
+            raise ValueError(f"cov must be a finite number >= 0; got {cov!r}.")
+        if kernel not in RANDOM_FIELD_KERNELS:
+            raise ValueError(
+                f"Unknown kernel {kernel!r}. Use one of {list(RANDOM_FIELD_KERNELS)}.")
+        spacing = 0.25 * min(ell) if resolution is None else resolution
+        if isinstance(spacing, bool) or not isinstance(spacing, (int, float, np.number)) \
+                or not math.isfinite(float(spacing)) or float(spacing) <= 0.0:
+            raise ValueError(f"resolution must be a spacing above 0 in mm; got {resolution!r}.")
+        axes = [np.linspace(0.0, extent, min(_RANDOM_MAX_POINTS,
+                                             max(2, round(extent / float(spacing)) + 1)))
+                for extent in size]
+        x, y = axes
+        rng = np.random.default_rng(seed)
+        if target == 0.0 or float(cov) == 0.0:
+            return cls(x, y, np.full((x.size, y.size), target))
+        g = _correlation_factor(x, ell[0], kernel) @ rng.standard_normal((x.size, y.size)) \
+            @ _correlation_factor(y, ell[1], kernel).T
+        sigma = math.sqrt(math.log1p(float(cov) ** 2))
+        values = target * np.exp(sigma * g - 0.5 * sigma * sigma)
+        if preserve_mean:
+            for _ in range(50):
+                values = np.minimum(values * (target / _area_mean(x, y, values)), 1.0)
+                if abs(_area_mean(x, y, values) - target) <= 1e-12 * target:
+                    break
+            else:
+                raise ValueError(
+                    f"A random map of mean {target:g} with cov {cov:g} cannot keep "
+                    f"its mean below the cap of 1: lower cov or mean.")
+        else:
+            values = np.minimum(values, 1.0)
         return cls(x, y, values)
 
     @classmethod

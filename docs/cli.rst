@@ -135,6 +135,25 @@ each crack. Both need toughness data (see :doc:`theory/delamination`,
    porosity-analyze --vp 0.02 --delamination ellipse:11:25:10:12:8 \
        --toughness 0.212 0.774 2.1
 
+``--fe-uq LOADING`` (``compression``, ``tension`` or ``shear``) adds an FE
+uncertainty study of every configuration at each level: ``--fe-uq-samples``
+FE solves (default 20) of the production coupon, each with its own seeded
+random in-plane map of void content of the same average
+(:func:`~porosity_fe.fe_porosity_uncertainty`). ``--porosity-cov`` sets the
+point-to-point CoV and ``--correlation-length`` the correlation length (mm).
+Both are required, since they describe the part. ``--seed`` seeds the maps.
+Each study writes ``porosity_fe_uq_<loading>_<config>_<Vp>.json`` (format
+``porosity-fe.fe-uq``): the statistics of the stiffness knockdown and the
+first-ply-failure load factors against the uniform field's, and the ranking
+of the inputs that drive them. ``--uq`` results now also rank their scattered
+inputs (``sensitivity``), and the summary line names the input that drives
+each mode's failure stress.
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.03 --fe-uq compression --porosity-cov 0.5 \
+       --correlation-length 5 --fe-uq-samples 30 --seed 1
+
 .. argparse::
    :module: porosity_fe.cli
    :func: _build_arg_parser

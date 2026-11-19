@@ -767,3 +767,34 @@ def plot_growth(growth):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
+
+
+def plot_fe_uq(study, output: str = "first_ply_failure_load_factor"):
+    """Histogram of an FE uncertainty study's draws of ``output`` with its
+    nominal value, beside an example map of the study's random field
+    (:meth:`FEUncertainty.example_map`, seed 0)."""
+    values = study.samples[output]
+    finite = values[np.isfinite(values)]
+    fig, (ax, ax_map) = plt.subplots(1, 2, figsize=(11, 4.0),
+                                     gridspec_kw={"width_ratios": [1.0, 1.3]})
+    if finite.size:
+        ax.hist(finite, bins=max(5, min(30, finite.size // 2)), color="0.7",
+                edgecolor="0.4")
+    nominal = study.nominal.get(output)
+    if nominal is not None and math.isfinite(nominal):
+        ax.axvline(nominal, color="k", linestyle="--", label=f"nominal {nominal:.4g}")
+        ax.legend(loc="best", frameon=False)
+    ax.set_xlabel(output.replace("_", " "))
+    ax.set_ylabel("Draws")
+    _set_titles(ax, "FE uncertainty: random porosity fields",
+                f"{study.n_samples} draws")
+    example = study.example_map()
+    mesh = ax_map.pcolormesh(example.x, example.y, 100.0 * example.Vp.T, cmap="viridis",
+                             shading="gouraud")
+    ax_map.set_aspect("equal")
+    ax_map.set_xlabel(LABEL_X_MM)
+    ax_map.set_ylabel("y (mm)")
+    _set_titles(ax_map, "A draw of the field", "void content, % (an example)")
+    fig.colorbar(mesh, ax=ax_map, fraction=0.04, pad=0.02).set_label(LABEL_POROSITY_PCT)
+    fig.tight_layout()
+    return fig
