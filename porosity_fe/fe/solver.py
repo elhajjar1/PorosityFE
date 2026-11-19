@@ -77,6 +77,7 @@ from .export import export_results as _export_results
 from .results import FieldResults as FieldResults
 
 if TYPE_CHECKING:
+    from ..open_hole import OpenHoleAnalysis
     from ..uq import FractureLoadFactorBand
     from .buckling import BucklingResult
     from .decomposition import KnockdownDecomposition
@@ -1151,6 +1152,8 @@ class FESolver:
                        buckling: BucklingResult | None = None,
                        buckling_reference: BucklingResult | None = None,
                        growth: GrowthResult | None = None,
+                       open_hole: OpenHoleAnalysis | None = None,
+                       open_hole_criteria: dict[str, float] | None = None,
                        ) -> None:
         """Export FE results to a JSON summary or a VTK field file.
 
@@ -1232,6 +1235,18 @@ class FESolver:
             a ``delamination_growth`` block (its
             :meth:`~porosity_fe.GrowthResult.summary`: one entry per
             configuration). ``None`` (default) writes none.
+        open_hole : OpenHoleAnalysis, optional
+            Keyword-only. The notch analysis of an open-hole solve
+            (:func:`~porosity_fe.open_hole_analysis`), written with
+            ``fmt='json'`` as an ``open_hole`` block (its
+            :meth:`~porosity_fe.OpenHoleAnalysis.summary`: the geometry, the
+            far-field stress, the stress concentration against the
+            Lekhnitskii-Tan reference and the net-section profile). ``None``
+            (default) writes none.
+        open_hole_criteria : dict, optional
+            Keyword-only. ``{'d0': mm}`` and / or ``{'a0': mm}``: the
+            ``open_hole`` block adds the point- and average-stress factors at
+            these characteristic distances (``notch_criteria``).
 
         Notes
         -----
@@ -1290,4 +1305,5 @@ class FESolver:
                         knockdown_decomposition=knockdown_decomposition,
                         fracture_uncertainty=fracture_uncertainty,
                         buckling=buckling, buckling_reference=buckling_reference,
-                        growth=growth)
+                        growth=growth, open_hole=open_hole,
+                        open_hole_criteria=open_hole_criteria)

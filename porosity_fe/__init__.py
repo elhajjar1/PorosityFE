@@ -162,6 +162,13 @@ from .materials import MaterialProperties as MaterialProperties  # noqa: F401, E
 from .mesh import CompositeMesh as CompositeMesh  # noqa: F401, E402
 from .mesh import FlexureGeometry as FlexureGeometry  # noqa: F401, E402
 from .mesh import check_mesh_quality as check_mesh_quality  # noqa: F401, E402
+from .open_hole import OpenHoleAnalysis as OpenHoleAnalysis  # noqa: F401, E402
+from .open_hole import OpenHoleGeometry as OpenHoleGeometry  # noqa: F401, E402
+from .open_hole import OpenHoleMesh as OpenHoleMesh  # noqa: F401, E402
+from .open_hole import open_hole_analysis as open_hole_analysis  # noqa: F401, E402
+from .open_hole import (  # noqa: F401, E402
+    orthotropic_stress_concentration as orthotropic_stress_concentration,
+)
 from .pipeline import _analyze_one as _analyze_one  # noqa: F401, E402
 from .pipeline import _build_config_artifacts as _build_config_artifacts  # noqa: F401, E402
 from .pipeline import _build_config_result as _build_config_result  # noqa: F401, E402
@@ -278,6 +285,12 @@ __all__ = [
     "vcct_energy_release_rates",
     "fracture_load_factors",
     "critical_energy_release_rate",
+    # Open-hole coupons and the notch analysis
+    "OpenHoleMesh",
+    "OpenHoleGeometry",
+    "OpenHoleAnalysis",
+    "open_hole_analysis",
+    "orthotropic_stress_concentration",
     # Delamination growth (node release on the VCCT front)
     "GrowthResult",
     "ParisLaw",

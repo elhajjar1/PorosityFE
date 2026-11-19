@@ -28,6 +28,7 @@ from porosity_fe import (
     compute_degraded_clt_flexural_modulus,
     fe_porosity_uncertainty,
     knockdown_decomposition,
+    open_hole_analysis,
     propagate_uncertainty,
     short_beam_shear,
 )
@@ -811,3 +812,54 @@ def run_fe_uq_cached(cfg_key: tuple, params: tuple, _result: dict) -> FEUncertai
     correlation_length)`` and ``_result`` the analysis of ``cfg_key``."""
     n_samples, cov, correlation_length = params
     return run_fe_uq(_result, n_samples, cov, correlation_length)
+
+
+# ----------------------------------------------------------------------
+# Open-hole notch (on demand, Results tab)
+# ----------------------------------------------------------------------
+
+#: The standards' open-hole coupon (ASTM D5766 / D6484), mm.
+OPEN_HOLE_DEFAULT_DIAMETER = 6.0
+OPEN_HOLE_DEFAULT_WIDTH = 36.0
+
+#: Load cases of the panel.
+_OPEN_HOLE_MODES = ("compression", "tension")
+
+
+def open_hole_unavailable_reason(result: dict) -> str | None:
+    """Why the open-hole panel cannot study ``result``; ``None`` when it can."""
+    if result.get("fe_loading") not in _OPEN_HOLE_MODES:
+        return ("The open-hole coupon is loaded in compression or tension: select one "
+                "of them as the loading mode.")
+    return None
+
+
+def run_open_hole(result: dict, hole_diameter: float, width: float) -> dict:
+    """The open-hole coupon of an analysis: its material, layup and porosity
+    on :meth:`CompositeMesh.for_open_hole`, under its load. Returns
+    ``{"analysis": OpenHoleAnalysis, "fe": FieldResults}``."""
+    cfg = result["config"]
+    material = result["material"]
+    pf_kwargs = {"distribution": cfg["distribution"], "void_shape": cfg["void_shape"]}
+    if cfg["distribution"] == "clustered":
+        pf_kwargs["cluster_location"] = cfg["cluster_location"]
+    from porosity_fe import PorosityField
+    pf = PorosityField(material, cfg["Vp"] / 100.0, **pf_kwargs)
+    mesh = CompositeMesh.for_open_hole(pf, material, hole_diameter=hole_diameter,
+                                       width=width, ply_angles=cfg["angles"])
+    kwargs: dict = dict(_fe_load_kwargs(result["fe_loading"]))
+    thermal = result.get("fe_thermal") or {}
+    if thermal.get("mode") == "combined":
+        kwargs["delta_T"] = thermal["delta_T"]
+    solver = FESolver(mesh, material, pf, ply_angles=cfg["angles"],
+                      failure_criterion=cfg.get("failure_criterion", "tsai_wu"),
+                      porosity_degradation=cfg.get(
+                          "porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
+    fe = solver.solve(result["fe_loading"], **kwargs)
+    return {"analysis": open_hole_analysis(fe, mesh), "fe": fe}
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def run_open_hole_cached(cfg_key: tuple, params: tuple, _result: dict) -> dict:
+    """Cached :func:`run_open_hole`; ``params`` is ``(hole_diameter, width)``."""
+    return run_open_hole(_result, *params)

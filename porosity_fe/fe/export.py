@@ -29,6 +29,7 @@ from .element import _DEFAULT_FORMULATION
 from .recovery import NodalAverage, extrapolate_to_nodes
 
 if TYPE_CHECKING:
+    from ..open_hole import OpenHoleAnalysis
     from ..uq import FractureLoadFactorBand
     from .buckling import BucklingResult
     from .decomposition import KnockdownDecomposition
@@ -524,6 +525,8 @@ def export_results(field_results: FieldResults,
                    buckling: BucklingResult | None = None,
                    buckling_reference: BucklingResult | None = None,
                    growth: GrowthResult | None = None,
+                   open_hole: OpenHoleAnalysis | None = None,
+                   open_hole_criteria: dict[str, float] | None = None,
                    ) -> None:
     """Export FE results as JSON, VTK or VTU; see :meth:`FESolver.export_results`."""
     fmt = str(fmt).lower()
@@ -654,6 +657,8 @@ def export_results(field_results: FieldResults,
         results_data['buckling'] = buckling.summary(buckling_reference)
     if growth is not None:
         results_data['delamination_growth'] = growth.summary()
+    if open_hole is not None:
+        results_data['open_hole'] = open_hole.summary(**(open_hole_criteria or {}))
     results_data['solver'] = {
         'formulation': str(getattr(field_results, 'formulation',
                                   _DEFAULT_FORMULATION)),

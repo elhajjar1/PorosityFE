@@ -100,7 +100,7 @@ Growing the crack only changes ties, so K stays the same, and the LU cache alrea
 - Cohesive-zone nonlinear propagation: R-curves and snap-back. (Linear growth by node release now exists, quasi-static with its stable and unstable steps: `delamination_growth`.)
 - Calibrated fatigue delamination growth: the porosity data are thin and conflicting. A Paris law normalized by the toughness at each front node now runs with the user's coefficients (`fatigue_delamination_growth`); none ship.
 - Delamination buckling under compression (sublaminate buckling, compression after impact): a linear eigen-buckling capability now exists (`FESolver.buckling`, with the sublaminate's buckling load and an opening check of each mode); the growth it drives, which needs a geometrically nonlinear analysis, is still deferred.
-- Impact damage.
+- Impact damage. (Open-hole coupons now exist, `CompositeMesh.for_open_hole`, without delaminations.)
 
 ---
 

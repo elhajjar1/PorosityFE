@@ -358,6 +358,28 @@ def test_uq_expander_reports_percentiles():
     assert len(table) == 3                         # coefficient, porosity, strength
 
 
+class TestOpenHolePanel:
+    def test_runs_on_demand(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("tension").run()
+        at = _run_small_analysis(at)
+        assert not any(m.label == "K_T (FE)" for m in at.metric)
+        at.number_input(key="oh_d0").set_value(1.0).run()
+        _button(at, "Run open-hole analysis").click().run()
+        assert not at.exception
+        labels = {m.label: m.value for m in at.metric}
+        assert float(labels["K_T (FE)"]) > 2.0
+        assert "Point-stress factor at 1 mm" in labels
+
+    def test_too_large_a_hole(self):
+        at = _fresh_app()
+        next(sb for sb in at.selectbox if sb.label == "Loading mode").set_value("tension").run()
+        at = _run_small_analysis(at)
+        at.number_input(key="oh_diameter").set_value(30.0).run()
+        assert any("too large for the mapped mesh" in w.value for w in at.warning)
+        assert not any(b.label == "Run open-hole analysis" for b in at.button)
+
+
 class TestFEUncertaintyPanel:
     def test_needs_the_field_then_runs(self):
         at = _run_small_analysis(_fresh_app())

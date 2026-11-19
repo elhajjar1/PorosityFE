@@ -337,6 +337,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    hole = parser.add_argument_group(
+        "open-hole coupon (FE)",
+        "Opt-in: run --fe compression / tension (and --fe-uq) on the open-hole "
+        "coupon (ASTM D5766 / D6484) instead of the plain one, meshed around "
+        "the hole; the FE JSON gains an open_hole block: the stress "
+        "concentration against Lekhnitskii's orthotropic plate with Tan's "
+        "finite-width correction, and the stress along the net section.")
+    hole.add_argument(
+        "--open-hole", type=float, default=None, metavar="DIAMETER",
+        help="Hole diameter in mm (the standards' is 6).")
+    hole.add_argument(
+        "--open-hole-width", type=float, default=None, metavar="MM",
+        help="Coupon width in mm, default 36 (the standards'); the coupon is "
+             "modelled three widths long.")
+    hole.add_argument(
+        "--point-stress-distance", type=float, default=None, metavar="MM",
+        help=("Characteristic distance d0 of the point-stress criterion (Whitney "
+              "and Nuismer), in mm: adds the notched-to-unnotched strength "
+              "ratio at it. It is the material's, fitted to notched tests "
+              "(about 1 mm in their data); there is no default."))
     buck = parser.add_argument_group(
         "linear buckling (FE)",
         "Opt-in: the buckling load of every analysed configuration at each "
@@ -542,6 +562,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _open_hole_options(args) -> dict:
+    """The ``--open-hole`` options (empty without it); ``ValueError`` when one
+    is given without it or does not apply."""
+    given = [flag for flag, value in (('--open-hole-width', args.open_hole_width),
+                                      ('--point-stress-distance',
+                                       args.point_stress_distance))
+             if value is not None]
+    if args.open_hole is None:
+        if given:
+            raise ValueError(f"{', '.join(given)} need --open-hole.")
+        return {}
+    from .open_hole import OPEN_HOLE_LOADINGS
+    if args.fe is None and args.fe_uq is None:
+        raise ValueError(
+            f"--open-hole runs --fe or --fe-uq under {' or '.join(OPEN_HOLE_LOADINGS)}.")
+    if args.fe is not None and args.fe not in OPEN_HOLE_LOADINGS:
+        raise ValueError(f"--open-hole takes --fe {' or '.join(OPEN_HOLE_LOADINGS)}, "
+                         f"got --fe {args.fe}.")
+    if args.fe_uq is not None and args.fe_uq not in OPEN_HOLE_LOADINGS:
+        raise ValueError(f"--open-hole takes --fe-uq {' or '.join(OPEN_HOLE_LOADINGS)}, "
+                         f"got --fe-uq {args.fe_uq}.")
+    for flag, value in (('--open-hole', args.open_hole),
+                        ('--open-hole-width', args.open_hole_width),
+                        ('--point-stress-distance', args.point_stress_distance)):
+        if value is not None and not (math.isfinite(value) and value > 0.0):
+            raise ValueError(f"{flag} must be a positive length in mm, got {value!r}.")
+    return {'hole_diameter': args.open_hole,
+            'width': 36.0 if args.open_hole_width is None else args.open_hole_width,
+            'd0': args.point_stress_distance}
+
+
 def _fe_uq_options(args) -> dict:
     """The ``--fe-uq`` options (empty without it); ``ValueError`` when one
     is given without it, is missing or is invalid."""
@@ -574,7 +625,8 @@ def _fe_uq_options(args) -> dict:
 
 def _run_fe_uq(options: dict, material, ply_angles, name: str, config: dict,
                Vp: float, out_path: Path, *, porosity_degradation: str,
-               seed: int | None, quiet_solver: bool = True) -> str:
+               seed: int | None, quiet_solver: bool = True,
+               open_hole: dict | None = None) -> str:
     """The FE uncertainty study of a configuration (``--fe-uq``), written to
     ``out_path``; returns a one-line summary."""
     from .fe_uncertainty import fe_porosity_uncertainty, save_fe_uncertainty_to_json
@@ -587,7 +639,9 @@ def _run_fe_uq(options: dict, material, ply_angles, name: str, config: dict,
             material, Vp, options['loading'], cov=options['cov'],
             correlation_length=options['correlation_length'],
             n_samples=options['n_samples'], seed=seed, ply_angles=ply_angles,
-            config=config, porosity_degradation=porosity_degradation)
+            config=config, porosity_degradation=porosity_degradation,
+            **({'open_hole': {'hole_diameter': open_hole['hole_diameter']},
+                'width': open_hole['width']} if open_hole else {}))
         save_fe_uncertainty_to_json(study, out_path)
     finally:
         logger.setLevel(level)
@@ -718,7 +772,7 @@ def _run_delamination(options: dict, material, porosity_configs: dict,
 
 def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
             Vp: float, out_path: Path, *, porosity_degradation: str,
-            quiet_solver: bool = True) -> str:
+            quiet_solver: bool = True, open_hole: dict | None = None) -> str:
     """One FE solve of a configuration (``--fe``), written to ``out_path``.
 
     The coupon modes solve the production mesh; ``'ilss'`` and the flexure
@@ -736,7 +790,11 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
         logger.setLevel(max(level, logging.WARNING))
     try:
         pf = PorosityField(material, Vp, **config)
-        if loading == 'ilss':
+        if open_hole:
+            mesh = CompositeMesh.for_open_hole(
+                pf, material, hole_diameter=open_hole['hole_diameter'],
+                width=open_hole['width'], ply_angles=ply_angles)
+        elif loading == 'ilss':
             mesh = CompositeMesh.for_ilss(pf, material, ply_angles=ply_angles)
         elif loading in ('flexure_3pt', 'flexure_4pt'):
             mesh = CompositeMesh.for_flexure(pf, material, ply_angles=ply_angles)
@@ -747,9 +805,25 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
                 ply_angles=ply_angles)
         result = FESolver(mesh, material, pf, ply_angles=ply_angles,
                           porosity_degradation=porosity_degradation).solve(loading)
-        FESolver.export_results(result, out_path)
+        notch = None
+        if open_hole:
+            from .open_hole import open_hole_analysis
+            notch = open_hole_analysis(result, mesh)
+            criteria = {} if open_hole.get('d0') is None else {'d0': open_hole['d0']}
+            FESolver.export_results(result, out_path, open_hole=notch,
+                                    open_hole_criteria=criteria)
+        else:
+            FESolver.export_results(result, out_path)
     finally:
         logger.setLevel(level)
+    hole_text = ""
+    if notch is not None and open_hole:
+        hole_text = (f"; open hole D = {open_hole['hole_diameter']:g} mm, W = "
+                     f"{open_hole['width']:g} mm: K_T {notch.stress_concentration:.3f} "
+                     f"(Lekhnitskii-Tan {notch.reference_stress_concentration:.3f})")
+        if open_hole.get('d0') is not None:
+            hole_text += (f", point-stress factor {notch.point_stress_factor(open_hole['d0']):.4f}"
+                          f" at {open_hole['d0']:g} mm")
     modulus = result.effective_modulus
     return (f"  {loading}, {name}: stiffness knockdown {result.knockdown:.4f}"
             + ("" if modulus is None else f", effective modulus {modulus:.0f} MPa")
@@ -758,6 +832,7 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
               f"{result.first_ply_failure_load_factor:.4g}"
             + ("" if porosity_degradation == _DELAM_DEFAULT_DEGRADATION
                else f"; porosity degradation {porosity_degradation} (uncalibrated)")
+            + hole_text
             + f"\n  Saved: {out_path}")
 
 
@@ -1276,6 +1351,7 @@ def main(argv: list[str] | None = None) -> int:
             custom_material or materials[args.material], ply_angles, args.t_ply)
         durability = _durability_options(args, material)
         fe_uq = _fe_uq_options(args)
+        open_hole = _open_hole_options(args)
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
@@ -1467,7 +1543,8 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("%s", _run_fe(
                         args.fe, material, ply_angles, name, config, Vp, out_path,
                         porosity_degradation=degradation,
-                        quiet_solver=not args.verbose))
+                        quiet_solver=not args.verbose,
+                        **({'open_hole': open_hole} if open_hole else {})))
                 except (ValueError, OSError) as exc:
                     print(f"ERROR: FE solve for Vp={Vp}, {name}: {exc}",
                           file=sys.stderr)
@@ -1490,7 +1567,8 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("%s", _run_fe_uq(
                         fe_uq, material, ply_angles, name, config, Vp, out_path,
                         porosity_degradation=degradation, seed=args.seed,
-                        quiet_solver=not args.verbose))
+                        quiet_solver=not args.verbose,
+                        **({'open_hole': open_hole} if open_hole else {})))
                 except (ValueError, OSError) as exc:
                     print(f"ERROR: FE uncertainty for Vp={Vp}, {name}: {exc}",
                           file=sys.stderr)

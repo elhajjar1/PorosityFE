@@ -154,6 +154,21 @@ each mode's failure stress.
    porosity-analyze --vp 0.03 --fe-uq compression --porosity-cov 0.5 \
        --correlation-length 5 --fe-uq-samples 30 --seed 1
 
+``--open-hole DIAMETER`` runs ``--fe compression`` / ``tension`` (and
+``--fe-uq``) on the open-hole coupon of ASTM D5766 / D6484
+(:meth:`~porosity_fe.CompositeMesh.for_open_hole`; ``--open-hole-width``,
+default 36 mm, three widths long). The FE JSON gains an ``open_hole`` block,
+and the summary line gives the stress concentration against Lekhnitskii's
+orthotropic plate with Tan's finite-width correction. With
+``--point-stress-distance D0`` (mm, the material's, no default) the block and
+the line add the Whitney-Nuismer point-stress factor (see :doc:`theory/fe`,
+"Open-hole coupons").
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.03 --layup "[0/45/-45/90]_s" --fe tension \
+       --open-hole 6 --point-stress-distance 1
+
 .. argparse::
    :module: porosity_fe.cli
    :func: _build_arg_parser

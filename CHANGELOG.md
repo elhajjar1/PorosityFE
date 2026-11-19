@@ -12,6 +12,34 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Open-hole coupons.** `CompositeMesh.for_open_hole` meshes the
+  open-hole tension / compression coupon (ASTM D5766, D6484: 36 mm wide,
+  6 mm hole) as an `OpenHoleMesh`: a ring of elements mapped from the hole
+  to a square of the coupon's width, graded toward the edge, and end blocks,
+  extruded through the plies. The coupon loads, porosity sampling (random
+  maps included) and failure metrics run on it unchanged. Geometry was
+  rectangular plates and beams only.
+  - `open_hole_analysis` reads a solve into an `OpenHoleAnalysis`: the
+    gross and net stress concentration of the laminate-average axial
+    stress, the net-section stress profile, the Whitney-Nuismer point- and
+    average-stress factors and `notched_strength` (characteristic distances
+    are the user's: none ship), and the Lekhnitskii orthotropic reference
+    with Tan's finite-width correction (`orthotropic_stress_concentration`).
+  - Verified: the isotropic plate within 1.6 % of Heywood's 3.094 and an
+    8-ply QI laminate within 0.9 % on the default mesh. A cross-ply
+    converges from below to the Lekhnitskii-Tan 5.49 (5.488 on a 32 x 24
+    ring), and the point-stress factor at 1 mm varies under 1 % with the
+    mesh. A void-rich ring at the hole lowers the peak stress and fails
+    first.
+  - `export_results(..., open_hole=, open_hole_criteria=)` writes an
+    `open_hole` block (schema 1.3, additive). `fe_porosity_uncertainty(...,
+    open_hole={})` runs the random-field study on the coupon with the hole,
+    with `stress_concentration` as an output. `porosity-analyze --fe
+    tension|compression --open-hole D [--open-hole-width W]
+    [--point-stress-distance D0]` and `--fe-uq ... --open-hole D` run it. The
+    app's Results tab has an "Open-hole notch (FE)" panel. Interface
+    tractions and the grid plots refuse the mapped mesh. Additive: the FE
+    fingerprint does not move.
 - **Random porosity fields, FE uncertainty and a sensitivity ranking.**
   `PorosityMap.random` and `PorosityField.random` draw a seeded lognormal
   random field of in-plane void content with a point-to-point CoV and a

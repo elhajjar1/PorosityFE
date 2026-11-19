@@ -757,6 +757,75 @@ class CompositeMesh:
         return mesh
 
     @classmethod
+    def for_open_hole(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+                      hole_diameter: float = 6.0, width: float = 36.0,
+                      length: float | None = None, n_circumferential: int = 12,
+                      n_radial: int = 16, radial_growth: float | None = None,
+                      nz: int | None = None,
+                      ply_angles: list[float] | str | None = 'QI') -> CompositeMesh:
+        """Mesh of an open-hole coupon (ASTM D5766 tension, D6484 compression).
+
+        A ring of elements around the central hole, mapped from the circle to
+        a square of the coupon's width, and rectangular blocks from the square
+        to the ends, extruded through the plies
+        (:class:`~porosity_fe.open_hole.OpenHoleMesh`). The ``'compression'``
+        and ``'tension'`` loads of :class:`~porosity_fe.FESolver` run on it
+        as on the coupon; :func:`~porosity_fe.open_hole_analysis` reads the
+        stress concentration and the notched strength from the solve. The
+        coupon spans ``[0, length] x [0, width]`` with the hole at its
+        centre, so a porosity map of that size
+        (:meth:`PorosityField.random <porosity_fe.PorosityField.random>`)
+        lines up with it.
+
+        Parameters
+        ----------
+        porosity_field : PorosityField
+            Porosity field, sampled at the nodes.
+        material : MaterialProperties
+            Ply material; the thickness is ``material.total_thickness``.
+        hole_diameter, width : float
+            ``D`` and ``W`` in mm, default the standards' 6 and 36
+            (``D / W`` at most 0.6).
+        length : float, optional
+            Modelled length in mm, at least ``width``; default ``3 W``. The
+            ends are gripped (held straight), so model enough length for the
+            hole's field to decay (it does within about ``W`` of the hole).
+        n_circumferential : int
+            Elements per quarter of the hole, even (default 12: 48 around the
+            hole, and ``W / 12`` along the coupon's edges, growing by 1.25 per
+            column in the end blocks up to 18 element-layer thicknesses).
+        n_radial : int
+            Element rings from the hole to the square (default 16).
+        radial_growth : float, optional
+            Ratio of consecutive ring widths; default the one that makes the
+            first ring a quarter as wide as the elements are long around the
+            hole (the peak at the edge is steep). The stress concentration
+            of an orthotropic laminate converges slowly: refine both counts
+            to resolve it (the theory page has a study); the notched-strength
+            factors at a millimetre from the edge converge fast.
+        nz : int, optional
+            Element layers, default the production mesh's (one per ply).
+        ply_angles : list of float or str
+            Layup, default ``'QI'``.
+
+        Returns
+        -------
+        OpenHoleMesh
+
+        Raises
+        ------
+        ValueError
+            For a size that is not positive, ``D / W > 0.6``, a length below
+            the width, an odd or too small element count, a growth below 1,
+            or a delamination (not supported on this mesh).
+        """
+        from .open_hole import build_open_hole_mesh
+        return build_open_hole_mesh(
+            porosity_field, material, hole_diameter=hole_diameter, width=width,
+            length=length, n_circumferential=n_circumferential, n_radial=n_radial,
+            radial_growth=radial_growth, nz=nz, ply_angles=ply_angles)
+
+    @classmethod
     def for_ilss(cls, porosity_field: PorosityField,
                  material: MaterialProperties, *,
                  span_to_thickness: float = _D2344_SPAN_TO_THICKNESS,

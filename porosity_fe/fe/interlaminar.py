@@ -398,6 +398,10 @@ class _Grid:
 
 def _grid(mesh: CompositeMesh) -> _Grid:
     """The structured grid of ``mesh``, checked to be rectilinear."""
+    if getattr(mesh, 'open_hole_geometry', None) is not None:
+        raise ValueError(
+            "The interface tractions need the rectangular grid of a coupon mesh; "
+            "an open-hole mesh is mapped around its hole.")
     nx, ny, nz = int(mesh.nx), int(mesh.ny), int(mesh.nz)
     n0 = (nx + 1) * (ny + 1) * (nz + 1)
     nodes = np.asarray(mesh.nodes, dtype=float)
