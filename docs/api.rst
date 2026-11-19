@@ -254,7 +254,18 @@ Sweeps and uncertainty
    ConfigArtifacts
    propagate_uncertainty
    save_uq_results_to_json
+   fe_porosity_uncertainty
+   FEUncertainty
+   save_fe_uncertainty_to_json
+   sensitivity_ranking
+   SensitivityRanking
    main
+
+:func:`fe_porosity_uncertainty` solves the FE coupon once per draw of a
+seeded random in-plane porosity field (:meth:`PorosityField.random`,
+:meth:`PorosityMap.random`), and :func:`sensitivity_ranking` ranks the
+scattered inputs of a study by their effect on an output (both studies
+carry it); see :doc:`theory/uncertainty`.
 
 ``main`` is the entry point of the ``porosity-analyze`` command; see
 :doc:`cli`.
@@ -323,6 +334,12 @@ Results I/O
    ``format`` tag of a fatigue and hygrothermal knockdown export
    (``porosity-analyze --cycles`` / ``--service-temperature``,
    :func:`~porosity_fe.reporting.durability_record`).
+
+.. py:data:: FORMAT_FE_UQ
+   :type: str
+
+   ``format`` tag of an FE uncertainty study over random porosity fields
+   (:func:`save_fe_uncertainty_to_json`, ``porosity-analyze --fe-uq``).
 
 .. py:data:: FORMAT_MATERIAL
    :type: str

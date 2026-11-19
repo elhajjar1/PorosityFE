@@ -38,6 +38,15 @@ JSON with {func}`~porosity_fe.save_uq_results_to_json`.
 `porosity-analyze --uq` and the web app expose the same calculation for
 the strength modes.
 
+Every result also ranks the scattered inputs by their effect on each output
+(`result['sensitivity']`, see [Which inputs matter](#which-inputs-matter)),
+from their values in every draw (`result['samples']['inputs']`). For the
+knockdown $K_D = e^{-\alpha V_p}$ the variance of $\ln K_D$ is
+$(\alpha\,\sigma_{V_p})^2 + (V_p\,\sigma_\alpha)^2$ to first order, so with CoVs of
+0.2 on $V_p$ and 0.1 on $\alpha$ the shares are 0.8 and 0.2. The ranking gives
+0.82 and 0.18 over 400 draws, and puts a strength's share of the knockdown
+at zero.
+
 The empirical toughness modes `mode_I_toughness` and `mode_II_toughness`
 ({doc}`empirical`, "Toughness modes") go through the same function, with
 the law as `toughness_knockdown=`: `covs={'G_Ic': ...}` (or `'G_IIc'`)
@@ -166,3 +175,104 @@ rise of mode I propagation toughness with voids through fibre bridging
 ({doc}`delamination`, "Porosity and toughness"). The inputs are drawn
 independently, though $G_{Ic}$ and $G_{IIc}$ of one material are likely
 correlated.
+
+## Random porosity fields
+
+The empirical path sees the specimen-average $V_p$ only. A part's voids are
+not spread evenly in the plane: a C-scan or a CT slice stack shows patches
+richer and poorer in voids. {meth}`PorosityMap.random <porosity_fe.PorosityMap.random>`
+draws such a pattern as a seeded realization of a random field, and
+{meth}`PorosityField.random <porosity_fe.PorosityField.random>` returns the
+field with that map in the plane and the usual through-thickness profile
+(`distribution`, `cluster_location`), recording the seed. This is what the
+`seed` of a {class}`~porosity_fe.PorosityField` drives; the constructor stays
+RNG-free.
+
+A stationary Gaussian field $g(x, y)$ of zero mean and unit variance, with the
+correlation $\rho(\Delta x, \Delta y) = \rho_x(\Delta x)\,\rho_y(\Delta y)$, is
+mapped to
+
+$$
+V_p(x, y) = \bar V_p \exp\!\left(\sigma g - \tfrac{1}{2}\sigma^2\right),
+\qquad \sigma^2 = \ln(1 + \mathrm{CoV}^2),
+$$
+
+lognormal with mean $\bar V_p$ and coefficient of variation CoV point by
+point, so it stays positive. The kernels are the squared exponential
+$\rho(d) = e^{-d^2/(2\ell^2)}$, a smooth field, and the exponential
+$\rho(d) = e^{-|d|/\ell}$ per axis, a rough one, with $\ell$ the correlation
+length, one or one per axis. The correlation is a product over the axes, so
+the field is drawn as $A_x Z A_y^\mathsf{T}$ from a matrix $Z$ of standard
+normal variates and the factors of the two axes' correlation matrices (from
+their eigendecompositions, which tolerate the singular squared-exponential
+matrix of a fine grid). The grid spacing is a quarter of the shorter
+correlation length by default, at most 401 points per axis. By default the
+realization is scaled so its area average is $\bar V_p$ exactly
+(`preserve_mean`): the specimen keeps its measured void content and the field
+only rearranges it; values above 1 are clipped and the rest rescaled.
+
+Over 300 draws the pointwise mean and CoV are the requested ones (within 3 %
+and 5 %), and the correlation of $\ln V_p$ at one correlation length is
+$e^{-1/2}$ (squared exponential) or $e^{-1}$ (exponential) within 0.03
+(`tests/test_stochastic_porosity.py`).
+
+## FE uncertainty over random fields
+
+{func}`~porosity_fe.fe_porosity_uncertainty` solves the FE coupon
+(`compression`, `tension` or `shear`) once per draw, each with its own random
+map. The maps' seeds derive from the study's `seed`, so a study repeats. The
+draws can also scatter the specimen average (`vp_cov`) and material fields
+(`covs`, `spec`, as above). The CoV and the correlation length have no
+defaults: they describe the part.
+
+The {class}`~porosity_fe.FEUncertainty` holds every draw of the knockdown,
+effective modulus, first-ply-failure load factors (whole coupon and interior),
+the largest failure index and, with a delamination and toughness data, the
+fracture load factor. It also holds the nominal solve, with the same average
+and no in-plane variation, the statistics and percentiles of each output,
+`probability_below`, the ranking of the inputs, and a JSON export
+({func}`~porosity_fe.save_fe_uncertainty_to_json`, format `porosity-fe.fe-uq`).
+The inputs of a draw are its specimen average `Vp`, its map's peak `Vp_peak`
+and in-plane CoV `Vp_spatial_cov`, and each scattered material field.
+
+At a fixed average the stiffness barely moves when the voids are
+rearranged: on a cross-ply coupon with CoV 0.8 the knockdown of 12 draws
+spreads by less than 0.2 % about the nominal. The first-ply failure load,
+which the weakest point sets, spreads more. On an 8-ply QI coupon in
+compression (CoV 0.5, 5 mm, 30 draws) its interior value falls below the
+uniform field's in every draw, by 0.6 % on average, while the knockdown
+spreads by 0.02 %. The FE strengths rest on the
+uncalibrated $\sqrt{\text{stiffness retention}}$ heuristic
+({doc}`failure`), so read the spread and the ranking, not the level. Each
+draw reassembles and solves the model: about a second on the production mesh
+of an 8-ply laminate.
+
+## Which inputs matter
+
+{func}`~porosity_fe.sensitivity_ranking` ranks the inputs of a sampling
+study by their effect on one output, from the draws alone. It works on ranks,
+so the output need only be monotone in each input, not linear:
+
+- the Spearman rank correlation $\rho_s$ of each input with the output, whose
+  sign is the direction of the effect;
+- the standardized rank regression coefficients (SRRC) of a linear regression
+  of the output's ranks on all the inputs' ranks at once: each input's effect
+  with the others held.
+
+The inputs are listed by $|$SRRC$|$. The share is $\text{SRRC}^2 / \sum
+\text{SRRC}^2$, and the regression's $R^2$ says how much of the output's rank
+scatter they explain together. For independent inputs the squared SRRC are
+the shares of the rank variance and sum to $R^2$ (Saltelli et al., *Global
+Sensitivity Analysis: The Primer*, 2008, section 1.2.5). An $R^2$ well below 1
+means the effect is not monotone in one input at a time, or depends on
+something the inputs do not describe. The first-ply failure load of a random
+field, for instance, depends on the void content where the stress peaks, not
+on the map's peak or spread, so its $R^2$ is low (about 0.1 on the QI
+coupon above): the field's arrangement matters, and its summary statistics
+do not capture it. An input that does not vary (to round-off) is left out
+and listed as constant. A draw with an infinite output is dropped, and the
+ranking needs more finite draws than inputs plus two.
+
+`porosity-analyze --uq` prints the input that drives each mode's failure
+stress, and `--fe-uq` the one that drives the first-ply failure load. The
+app's Uncertainty and FE uncertainty panels show the ranking tables.

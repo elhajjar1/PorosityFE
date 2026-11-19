@@ -50,6 +50,10 @@ _DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
 #: ``--buckling`` load cases (the in-plane ones of the coupon).
 _BUCKLING_LOADINGS = ('compression', 'shear')
 
+#: ``--fe-uq`` load cases (the coupon's in-plane ones) and its default draws.
+_FE_UQ_LOADINGS = ('compression', 'tension', 'shear')
+_FE_UQ_DEFAULT_SAMPLES = 20
+
 #: ``--mean-stress`` corrections, and the modes ``--stress-ratio`` applies to
 #: (``--compression-stress-ratio`` sets the compression one).
 _MEAN_STRESS_CHOICES = ('goodman',)
@@ -269,8 +273,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Seed of the --uq sampling (default 0, as in the app, so repeat "
-            "runs agree), recorded in the JSON provenance. The sweep itself "
-            "is deterministic (RNG-free): the seed does not alter it."
+            "runs agree) and of the --fe-uq random fields, recorded in the "
+            "JSON provenance. The sweep itself is deterministic (RNG-free): "
+            "the seed does not alter it."
         ),
     )
     parser.add_argument(
@@ -413,6 +418,32 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "or a Nastran MAT9. Needs --material-cards."
         ),
     )
+    feuq = parser.add_argument_group(
+        "FE uncertainty over random porosity fields",
+        "Opt-in: a Monte Carlo of FE solves of every analysed configuration "
+        "at each porosity level, each with its own seeded random in-plane "
+        "void map of the same average (lognormal, --porosity-cov from point "
+        "to point, --correlation-length), written to "
+        "porosity_fe_uq_<loading>_<config>_<Vp>.json: the statistics of the "
+        "stiffness knockdown and the first-ply-failure load factor, and which "
+        "inputs drive them. One FE solve per draw.")
+    feuq.add_argument(
+        "--fe-uq", choices=_FE_UQ_LOADINGS, default=None, metavar="LOADING",
+        help=f"FE load case of the study: {', '.join(_FE_UQ_LOADINGS)}.")
+    feuq.add_argument(
+        "--fe-uq-samples", type=int, default=None, metavar="N",
+        help=f"Draws (FE solves) per configuration and level, at least 2 "
+             f"(default {_FE_UQ_DEFAULT_SAMPLES}).")
+    feuq.add_argument(
+        "--porosity-cov", type=float, default=None, metavar="COV",
+        help=("Point-to-point CoV of the void content in the plane, a fraction "
+              "(0.5 = 50 %% of the local value). Required with --fe-uq: it "
+              "describes your part (from C-scans or CT), so there is no "
+              "default."))
+    feuq.add_argument(
+        "--correlation-length", type=float, default=None, metavar="MM",
+        help=("Correlation length of the void field in mm: points much closer "
+              "have nearly the same void content. Required with --fe-uq."))
     uq = parser.add_argument_group(
         "uncertainty quantification",
         "Propagate input scatter through the empirical Judd-Wright knockdown "
@@ -511,6 +542,74 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _fe_uq_options(args) -> dict:
+    """The ``--fe-uq`` options (empty without it); ``ValueError`` when one
+    is given without it, is missing or is invalid."""
+    given = [flag for flag, value in (('--fe-uq-samples', args.fe_uq_samples),
+                                      ('--porosity-cov', args.porosity_cov),
+                                      ('--correlation-length', args.correlation_length))
+             if value is not None]
+    if args.fe_uq is None:
+        if given:
+            raise ValueError(f"{', '.join(given)} need --fe-uq.")
+        return {}
+    missing = [flag for flag, value in (('--porosity-cov', args.porosity_cov),
+                                        ('--correlation-length', args.correlation_length))
+               if value is None]
+    if missing:
+        raise ValueError(f"--fe-uq needs {' and '.join(missing)}: they describe your "
+                         f"part, so there is no default.")
+    samples = _FE_UQ_DEFAULT_SAMPLES if args.fe_uq_samples is None else args.fe_uq_samples
+    if samples < 2:
+        raise ValueError(f"--fe-uq-samples must be at least 2, got {samples}.")
+    if not (math.isfinite(args.porosity_cov) and args.porosity_cov >= 0.0):
+        raise ValueError(f"--porosity-cov must be a finite number >= 0, got "
+                         f"{args.porosity_cov!r}.")
+    if not (math.isfinite(args.correlation_length) and args.correlation_length > 0.0):
+        raise ValueError(f"--correlation-length must be a positive length in mm, got "
+                         f"{args.correlation_length!r}.")
+    return {'loading': args.fe_uq, 'n_samples': samples, 'cov': args.porosity_cov,
+            'correlation_length': args.correlation_length}
+
+
+def _run_fe_uq(options: dict, material, ply_angles, name: str, config: dict,
+               Vp: float, out_path: Path, *, porosity_degradation: str,
+               seed: int | None, quiet_solver: bool = True) -> str:
+    """The FE uncertainty study of a configuration (``--fe-uq``), written to
+    ``out_path``; returns a one-line summary."""
+    from .fe_uncertainty import fe_porosity_uncertainty, save_fe_uncertainty_to_json
+
+    level = logger.level
+    if quiet_solver:
+        logger.setLevel(max(level, logging.WARNING))
+    try:
+        study = fe_porosity_uncertainty(
+            material, Vp, options['loading'], cov=options['cov'],
+            correlation_length=options['correlation_length'],
+            n_samples=options['n_samples'], seed=seed, ply_angles=ply_angles,
+            config=config, porosity_degradation=porosity_degradation)
+        save_fe_uncertainty_to_json(study, out_path)
+    finally:
+        logger.setLevel(level)
+    fpf = study.statistics('first_ply_failure_load_factor')['percentiles']
+    kd = study.statistics('knockdown')
+    try:
+        ranking = study.ranking('first_ply_failure_load_factor')
+        top = f"; first-ply failure driven most by {ranking.names[0]} " \
+              f"({100.0 * ranking.share[0]:.0f} %, R^2 {ranking.r2:.2f})"
+    except ValueError:
+        top = ""
+
+    def pct(value: float | None) -> str:
+        return "n/a" if value is None else f"{value:.4g}"
+
+    return (f"  {options['loading']}, {name}: {study.n_samples} draws; first-ply-failure "
+            f"load factor p5/p50/p95 = {pct(fpf['p5'])} / {pct(fpf['p50'])} / "
+            f"{pct(fpf['p95'])} (nominal "
+            f"{pct(study.nominal['first_ply_failure_load_factor'])}); stiffness "
+            f"knockdown mean {kd['mean']:.4f}{top}")
+
+
 def _delamination_options(args) -> dict:
     """The resolved delamination screening options; ``ValueError`` when one
     is given without ``--delamination`` or is invalid."""
@@ -523,9 +622,10 @@ def _delamination_options(args) -> dict:
             flags = ", ".join("--" + n.replace('_', '-') for n in given)
             raise ValueError(f"{flags} need --delamination.")
         if (args.porosity_degradation is not None and args.fe is None
-                and args.material_cards is None and args.buckling is None):
+                and args.material_cards is None and args.buckling is None
+                and args.fe_uq is None):
             raise ValueError("--porosity-degradation needs --delamination, "
-                             "--fe, --material-cards or --buckling.")
+                             "--fe, --material-cards, --buckling or --fe-uq.")
         return {}
     toughness = args.toughness
     if toughness is not None:
@@ -1004,8 +1104,12 @@ def _run_uq(args, material, Vp: float, out_path: Path, ply_angles=None) -> dict:
             **layup,
         )
         kd = results[mode]['knockdown']['percentiles']
-        logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f",
-                    mode, kd['p5'], kd['p50'], kd['p95'])
+        ranking = results[mode]['sensitivity']['failure_stress']
+        top = "" if ranking is None else (
+            f"; failure stress driven most by {ranking['ranking'][0]['input']} "
+            f"({100.0 * ranking['ranking'][0]['share']:.0f} %)")
+        logger.info("  UQ %-18s knockdown p5/p50/p95 = %.3f / %.3f / %.3f%s",
+                    mode, kd['p5'], kd['p50'], kd['p95'], top)
     save_uq_results_to_json(results, out_path)
     return results
 
@@ -1171,6 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
         material = _laminate_material(
             custom_material or materials[args.material], ply_angles, args.t_ply)
         durability = _durability_options(args, material)
+        fe_uq = _fe_uq_options(args)
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
@@ -1369,6 +1474,29 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
                 except Exception as exc:  # noqa: BLE001 - surface as a failure
                     print(f"ERROR: FE solve for Vp={Vp}, {name} failed: {exc}",
+                          file=sys.stderr)
+                    return 3
+
+    if fe_uq:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nFE uncertainty (%s, random porosity fields): Vp = %.2f%%",
+                        fe_uq['loading'], Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = (output_dir
+                            / f"porosity_fe_uq_{fe_uq['loading']}_{name}_{Vp_label}.json")
+                try:
+                    logger.info("%s", _run_fe_uq(
+                        fe_uq, material, ply_angles, name, config, Vp, out_path,
+                        porosity_degradation=degradation, seed=args.seed,
+                        quiet_solver=not args.verbose))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: FE uncertainty for Vp={Vp}, {name}: {exc}",
+                          file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: FE uncertainty for Vp={Vp}, {name} failed: {exc}",
                           file=sys.stderr)
                     return 3
 

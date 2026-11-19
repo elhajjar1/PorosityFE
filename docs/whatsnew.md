@@ -50,6 +50,13 @@ cohesive zone or R-curve; in the app's Results tab and
   in-plane variation of the field. The FE path resolves it; the empirical
   failure load sees its mean.
 
+**Random porosity fields and FE uncertainty.** `PorosityField.random`
+draws a seeded random in-plane map of void content, of a given CoV and
+correlation length. `fe_porosity_uncertainty` (`porosity-analyze --fe-uq`,
+an app panel) solves the FE coupon once per draw, and both uncertainty
+studies rank which inputs drive each output (`sensitivity_ranking`). See
+{doc}`theory/uncertainty`.
+
 ## Specimens and load cases
 
 - **`'ilss'` is the ASTM D2344 short-beam test** on its own specimen mesh

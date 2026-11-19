@@ -40,6 +40,7 @@ from .empirical import (  # noqa: F401 (EmpiricalSolver used as forward-ref in _
 from .io import _UNITS_UQ, FORMAT_UQ, _finite_or_none, _wrap_envelope, _write_json
 from .materials import MATERIALS, MaterialProperties
 from .pipeline import build_empirical_pipeline
+from .sensitivity import sensitivity_ranking
 from .toughness import (
     _TOUGHNESS_LAWS,
     ToughnessKnockdown,
@@ -187,8 +188,20 @@ def propagate_uncertainty(void_volume_fraction: float,
     dict
         ``{'failure_stress': {'mean','std','min','max','percentiles': {...}},
         'knockdown': {... same ...}, 'nominal': {...},
-        'samples': {'failure_stress': np.ndarray, 'knockdown': np.ndarray},
-        'seed', 'n_samples', 'method', 'mode', 'model', 'spec', 'vp_cov'}``.
+        'samples': {'failure_stress': np.ndarray, 'knockdown': np.ndarray,
+        'inputs': {name: np.ndarray}}, 'sensitivity': {'knockdown': ...,
+        'failure_stress': ...}, 'seed', 'n_samples', 'method', 'mode',
+        'model', 'spec', 'vp_cov'}``. ``samples['inputs']`` holds the value
+        of every scattered input in every draw: each material field, the
+        law's coefficient (by its keyword, e.g. ``'judd_wright_alpha'``, or
+        ``'b_I'`` / ``'b_II'`` for a toughness mode) and ``'Vp'``.
+        ``sensitivity`` ranks them for each output
+        (:meth:`SensitivityRanking.summary
+        <porosity_fe.SensitivityRanking.summary>` of
+        :func:`~porosity_fe.sensitivity_ranking`), or is ``None`` for an
+        output it cannot rank: one that does not vary (the knockdown under
+        material scatter alone), no scattered input, or fewer draws than
+        the inputs plus two.
 
     Notes
     -----
@@ -304,6 +317,15 @@ def propagate_uncertainty(void_volume_fraction: float,
 
     fs_samples = np.empty(int(n_samples), dtype=float)
     kd_samples = np.empty(int(n_samples), dtype=float)
+    # The value of every scattered input in every draw, for the ranking.
+    if sample_coef:
+        coef_name = (('b_I' if toughness_mode == 'I' else 'b_II')
+                     if toughness_mode is not None else _UQ_COEF_TABLES[model][0])
+    input_samples = {name: np.empty(int(n_samples)) for name in field_names}
+    if sample_coef:
+        input_samples[coef_name] = np.empty(int(n_samples))
+    if sample_vp:
+        input_samples['Vp'] = np.empty(int(n_samples))
 
     # Pre-compute per-field column index and the unit-variate mapping.
     col_for_field = {name: i for i, name in enumerate(field_names)}
@@ -361,6 +383,12 @@ def propagate_uncertainty(void_volume_fraction: float,
                 warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
         fs_samples[s] = res['failure_stress']
         kd_samples[s] = res['knockdown']
+        for name in field_names:
+            input_samples[name][s] = float(getattr(sampled_mat, name))
+        if sample_coef:
+            input_samples[coef_name][s] = coef
+        if sample_vp:
+            input_samples['Vp'][s] = vp_value
 
     if n_extrapolated:
         warnings.warn(
@@ -394,6 +422,12 @@ def propagate_uncertainty(void_volume_fraction: float,
         'samples': {
             'failure_stress': fs_samples if absolute else None,
             'knockdown': kd_samples,
+            'inputs': input_samples,
+        },
+        'sensitivity': {
+            'knockdown': _ranking_or_none(input_samples, kd_samples, 'knockdown'),
+            'failure_stress': (_ranking_or_none(input_samples, fs_samples, 'failure_stress')
+                               if absolute else None),
         },
         'seed': seed,
         'n_samples': int(n_samples),
@@ -413,6 +447,17 @@ def propagate_uncertainty(void_volume_fraction: float,
         out['toughness_uncalibrated'] = bool(
             nominal.details['toughness_uncalibrated'])
     return out
+
+
+def _ranking_or_none(inputs: dict[str, np.ndarray], output: np.ndarray,
+                     name: str) -> dict | None:
+    """The :func:`~porosity_fe.sensitivity_ranking` summary of ``output``,
+    or ``None`` where it cannot rank it (nothing scatters, the output does
+    not vary, or too few draws)."""
+    try:
+        return sensitivity_ranking(inputs, output, name=name).summary()
+    except ValueError:
+        return None
 
 
 def save_uq_results_to_json(results: dict[str, dict], filename: str | os.PathLike,

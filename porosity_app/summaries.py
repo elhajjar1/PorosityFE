@@ -929,3 +929,81 @@ def growth_table(growth) -> list[dict]:
         row["Released"] = int(growth.released[k].size)
         rows.append(row)
     return rows
+
+
+# ----------------------------------------------------------------------
+# Sensitivity rankings and the FE uncertainty study
+# ----------------------------------------------------------------------
+
+#: Readable names of the inputs a sensitivity ranking lists.
+SENSITIVITY_INPUT_LABELS = {
+    "Vp": "Specimen-average Vp",
+    "Vp_peak": "Peak local Vp of the map",
+    "Vp_spatial_cov": "In-plane CoV of the map",
+    "judd_wright_alpha": "Judd-Wright coefficient α",
+    "power_law_n": "Power-law exponent n",
+    "linear_beta": "Linear coefficient β",
+    "b_I": "Toughness coefficient b_I",
+    "b_II": "Toughness coefficient b_II",
+}
+
+
+def sensitivity_rows(ranking) -> list[dict]:
+    """Table rows of a ranking: a :class:`SensitivityRanking` or its
+    ``summary()``; empty for ``None``."""
+    if ranking is None:
+        return []
+    if not isinstance(ranking, dict):
+        ranking = ranking.summary()
+    return [{"Input": SENSITIVITY_INPUT_LABELS.get(row["input"], row["input"]),
+             "Share of the scatter": f"{100.0 * row['share']:.0f} %",
+             "Spearman ρ": f"{row['spearman']:+.2f}",
+             "SRRC": f"{row['srrc']:+.2f}"}
+            for row in ranking["ranking"]]
+
+
+def sensitivity_caption(ranking) -> str:
+    """How to read a ranking table, with its R²."""
+    if ranking is None:
+        return ("Nothing to rank: the output does not vary, or too few draws "
+                "scatter it.")
+    if not isinstance(ranking, dict):
+        ranking = ranking.summary()
+    return (f"Ranked by the standardized rank regression coefficient (SRRC) over "
+            f"{ranking['n_samples']} draws; the share is its square over the sum. "
+            f"The sign of ρ is the direction of the effect. R² = {ranking['r2']:.2f}: "
+            f"the share of the output's rank scatter the inputs explain together "
+            f"(well below 1, the effect is not monotone in one input at a time).")
+
+
+def fe_uq_summary(study) -> tuple[list, str]:
+    """Metrics and caption of an FE uncertainty study."""
+    fpf = study.statistics("first_ply_failure_load_factor")
+    kd = study.statistics("knockdown")
+    nominal = study.nominal.get("first_ply_failure_load_factor")
+
+    def pct(value) -> str:
+        return "n/a" if value is None else f"{value:.4g}"
+
+    rows = [
+        ("First-ply failure p5", pct(fpf["percentiles"].get("p5")),
+         "The 5th percentile of the first-ply-failure load factor over the draws."),
+        ("p50", pct(fpf["percentiles"].get("p50")), None),
+        ("p95", pct(fpf["percentiles"].get("p95")), None),
+        ("Nominal (uniform in-plane)", pct(nominal),
+         "The same average void content with no in-plane variation."),
+        ("Stiffness knockdown mean", f"{kd['mean']:.4f}",
+         f"Nominal {study.nominal['knockdown']:.4f}: at a fixed average a stiffness "
+         f"barely moves when the voids are rearranged."),
+    ]
+    field = study.field
+    caption = (
+        f"{study.n_samples} FE solves, each with its own random in-plane map of "
+        f"void content: lognormal, CoV {field['cov']:g} from point to point, "
+        f"correlation length {field['correlation_length_mm']} mm "
+        f"({field['kernel'].replace('_', ' ')} kernel), the specimen average kept at "
+        f"{100.0 * study.Vp:.3g} %. The through-thickness distribution, layup, mesh "
+        f"and load are the analysis'. The FE strength rests on the uncalibrated "
+        f"sqrt(stiffness retention) heuristic, so read the spread, not the level. "
+        f"Seeded: the same inputs give the same draws.")
+    return rows, caption

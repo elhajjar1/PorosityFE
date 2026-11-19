@@ -190,11 +190,14 @@ FORMAT_NCR = "porosity-fe.ncr"
 FORMAT_UQ = "porosity-fe.uq"
 FORMAT_ALLOWABLE = "porosity-fe.allowable-porosity"
 FORMAT_DURABILITY = "porosity-fe.durability"
+#: An FE uncertainty study over random porosity fields
+#: (fe_porosity_uncertainty, save_fe_uncertainty_to_json).
+FORMAT_FE_UQ = "porosity-fe.fe-uq"
 #: A material file (save_material_to_json). Not a results format:
 #: load_material_from_json reads it, load_results_from_json does not.
 FORMAT_MATERIAL = "porosity-fe.material"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ,
-                  FORMAT_ALLOWABLE, FORMAT_DURABILITY}
+                  FORMAT_ALLOWABLE, FORMAT_DURABILITY, FORMAT_FE_UQ}
 
 
 # Per-format units descriptors for the self-documenting ``units`` envelope
@@ -250,6 +253,19 @@ _UNITS_DURABILITY = {
     "porosity_slope": "per unit void fraction",
     "T_C, T_g_dry_C": "deg C",
     "M_wt_pct": "wt %",
+}
+#: Units of an FE uncertainty export.
+_UNITS_FE_UQ = {
+    "knockdown": "dimensionless fraction in (0, 1]",
+    "effective_modulus": "MPa",
+    "first_ply_failure_load_factor, interior_first_ply_failure_load_factor, "
+    "fracture_load_factor": "dimensionless multiple of the applied load",
+    "max_failure_index": "dimensionless",
+    "Vp, Vp_peak": "dimensionless fraction in [0, 1]",
+    "cov, vp_cov, Vp_spatial_cov": "dimensionless coefficient of variation",
+    "correlation_length_mm, resolution_mm": "mm",
+    "percentiles": "keys are percentile levels in % (p5 = 5th); values in the units of their quantity",
+    "spearman, srrc, share, r2": "dimensionless",
 }
 #: Units of a ``laminate`` block (a sweep entry, an allowable-porosity
 #: export), added only when one is written.
