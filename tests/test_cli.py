@@ -1004,7 +1004,7 @@ class TestDelaminationScreening:
         (['--toughness', '0.2', '0.7', '2.0'], '--toughness need --delamination'),
         (['--delam-loading', 'shear'], '--delam-loading need --delamination'),
         (['--porosity-degradation', 'directional'],
-         '--porosity-degradation needs --delamination or --fe'),
+         '--porosity-degradation needs --delamination, --fe or --material-cards'),
         (['--delamination', 'strip:1:0:10', '--porosity-degradation', 'radial'],
          "invalid choice: 'radial'"),
         (['--delamination', 'circle:1:2:3'], 'unknown planform'),
@@ -1371,7 +1371,7 @@ class TestFESolveOption:
         for argv, message in (
                 (['--fe', 'dcb'], "invalid choice: 'dcb'"),
                 (['--porosity-degradation', 'directional'],
-                 '--porosity-degradation needs --delamination or --fe')):
+                 '--porosity-degradation needs --delamination, --fe or --material-cards')):
             with pytest.raises(SystemExit) as exc:
                 porosity_fe_analysis.main(['--material', small_material, '--vp', '0.03',
                                            '--output-dir', str(tmp_path), *argv])
@@ -1456,3 +1456,79 @@ class TestAllowableOption:
     def test_without_the_flag_no_file_is_written(self, tmp_path, monkeypatch):
         assert self._main(tmp_path, monkeypatch, '--quiet') == 0
         assert not (tmp_path / 'porosity_allowable.json').exists()
+
+
+class TestMaterialCardsOption:
+    def _main(self, tmp_path, monkeypatch, *argv, configs=None):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS',
+                            configs or _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '0.04', '--output-dir', str(tmp_path), *argv])
+
+    def test_one_deck_per_configuration_and_level(self, tmp_path, monkeypatch, capsys):
+        from porosity_fe import MATERIALS, material_cards
+        configs = {
+            'uniform_spherical': {'distribution': 'uniform', 'void_shape': 'spherical'},
+            'clustered_midplane': {'distribution': 'clustered',
+                                   'cluster_location': 'midplane'}}
+        assert self._main(tmp_path, monkeypatch, '--material-cards', 'abaqus',
+                          configs=configs) == 0
+        out = capsys.readouterr().out
+        assert 'Material cards (abaqus, shell elements): Vp = 2.00%' in out
+        assert 'uniform_spherical: 1 material, ply void content 2.00 to 2.00 %' in out
+        assert 'clustered_midplane: 12 materials, ply void content 0.' in out
+        decks = sorted(p.name for p in tmp_path.glob('porosity_cards_*'))
+        assert decks == ['porosity_cards_clustered_midplane_2pct.inp',
+                         'porosity_cards_clustered_midplane_4pct.inp',
+                         'porosity_cards_uniform_spherical_2pct.inp',
+                         'porosity_cards_uniform_spherical_4pct.inp']
+        text = (tmp_path / 'porosity_cards_uniform_spherical_4pct.inp').read_text()
+        # The same materials and ply table as the library call; only the
+        # header's description of the porosity differs.
+        def data(deck):
+            return [line for line in deck.splitlines() if not line.startswith('**')]
+        assert data(text) == data(material_cards(MATERIALS['T800_epoxy'], 0.04))
+        assert 'uniform profile, specimen average Vp = 0.04' in text
+
+    def test_nastran_solid_with_the_layup_and_degradation(self, tmp_path, monkeypatch,
+                                                         capsys):
+        configs = {'uniform_penny': {'distribution': 'uniform', 'void_shape': 'penny'}}
+        assert self._main(
+            tmp_path, monkeypatch, '--material-cards', 'nastran',
+            '--card-element', 'solid', '--layup', '[0/90]s', '--t-ply', '0.2',
+            '--porosity-degradation', 'directional', configs=configs) == 0
+        assert 'Material cards (nastran, solid elements)' in capsys.readouterr().out
+        text = (tmp_path / 'porosity_cards_uniform_penny_2pct.bdf').read_text()
+        assert 'MAT9*' in text and 'directional' in text and 'penny' in text
+        table = [line for line in text.splitlines()
+                 if line.startswith('$   ') and line[4].isdigit()]
+        assert table == ['$   1, 1, 0.2, 0.', '$   2, 1, 0.2, 90.',
+                         '$   3, 1, 0.2, 90.', '$   4, 1, 0.2, 0.']
+
+    def test_usage_errors(self, tmp_path, monkeypatch, capsys):
+        for argv, message in (
+                (['--material-cards', 'ansys'], "invalid choice: 'ansys'"),
+                (['--card-element', 'solid'], '--card-element needs --material-cards'),
+                (['--material-cards', 'abaqus', '--card-element', 'beam'],
+                 "invalid choice: 'beam'")):
+            with pytest.raises(SystemExit) as exc:
+                self._main(tmp_path, monkeypatch, *argv)
+            assert exc.value.code == 2
+            assert message in capsys.readouterr().err
+
+    @pytest.mark.parametrize('exc, rc, message', [
+        (OSError('disk'), 2, 'material cards for Vp=0.02, uniform_spherical: disk'),
+        (RuntimeError('boom'), 3,
+         'material cards for Vp=0.02, uniform_spherical failed: boom')])
+    def test_failures_keep_the_exit_code_contract(self, tmp_path, monkeypatch, capsys,
+                                                  exc, rc, message):
+        def boom(*args, **kwargs):
+            raise exc
+        monkeypatch.setattr('porosity_fe.cli._run_material_cards', boom)
+        assert self._main(tmp_path, monkeypatch, '--quiet',
+                          '--material-cards', 'abaqus') == rc
+        assert message in capsys.readouterr().err
+
+    def test_without_the_flag_no_deck_is_written(self, tmp_path, monkeypatch):
+        assert self._main(tmp_path, monkeypatch, '--quiet') == 0
+        assert not list(tmp_path.glob('porosity_cards_*'))

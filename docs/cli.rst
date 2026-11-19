@@ -41,6 +41,17 @@ The laminate and the scope of a run are options:
   governing one (:meth:`~porosity_fe.EmpiricalSolver.allowable_porosity`).
   It is printed and written to ``porosity_allowable.json``. It does not
   depend on ``--vp`` or the configurations.
+- ``--material-cards FORMAT`` (``abaqus`` or ``nastran``) writes the
+  porosity-degraded ply properties of every analysed configuration at each
+  porosity level as solver material cards
+  (:func:`~porosity_fe.material_cards`): one material per distinct ply
+  void content, with the ply table, in
+  ``porosity_cards_<config>_<Vp>.inp`` (Abaqus keywords) or ``.bdf``
+  (Nastran bulk data). ``--card-element solid`` writes them for solid
+  elements (``*ELASTIC, TYPE=ENGINEERING CONSTANTS`` or ``MAT9``) instead
+  of shells (``TYPE=LAMINA`` with ``*FAIL STRESS``, or ``MAT8``), and
+  ``--porosity-degradation`` selects the stiffness mapping. The strengths
+  carry the same uncalibrated heuristic as the FE failure indices.
 
 .. code-block:: bash
 

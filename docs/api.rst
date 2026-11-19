@@ -225,6 +225,26 @@ Sweeps and uncertainty
 ``main`` is the entry point of the ``porosity-analyze`` command; see
 :doc:`cli`.
 
+Material cards
+--------------
+
+The porosity-degraded ply for another solver: :func:`degraded_ply` gives
+the engineering constants and strengths at one void content, and
+:func:`material_cards` writes them for a laminate as Abaqus keywords or
+Nastran bulk data, one material per distinct ply void content
+(:func:`ply_porosities`), with the ply table. See :doc:`cli`
+(``--material-cards``).
+
+.. autosummary::
+   :toctree: api
+   :nosignatures:
+
+   degraded_ply
+   DegradedPly
+   ply_porosities
+   material_cards
+   write_material_cards
+
 Results I/O
 -----------
 

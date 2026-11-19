@@ -73,13 +73,14 @@ class TestAppRender:
         assert result["fe_field"] is not None
         # With a result present the Stress tab renders its component selector.
         assert any(sb.label == "Stress component" for sb in at.selectbox)
-        # Export tab offers the JSON/CSV downloads and the FE field as VTU,
-        # and each of the four figures (profile, mesh, results, stress) a
-        # PNG download.
+        # Export tab offers the JSON/CSV downloads, the FE field as VTU and
+        # the material cards, and each of the four figures (profile, mesh,
+        # results, stress) a PNG download.
         labels = [b.proto.label for b in at.get("download_button")]
         assert labels.count("Download PNG") == 4
         assert "Download FE results (VTU)" in labels
-        assert len(labels) == 7
+        assert "Download material cards" in labels
+        assert len(labels) == 8
 
     def test_ilss_run_shows_the_d2344_specimen(self):
         """ILSS solves the ASTM D2344 short-beam specimen: the sidebar says
@@ -111,10 +112,33 @@ class TestAppRender:
         assert any("disposition" in w.value.lower() for w in at.warning)
         assert any(c.value.startswith("Disposition policy: <= 1 % voids")
                    and "not taken from a cited standard" in c.value for c in at.caption)
-        # ...and all ten download buttons (4 PNG + 3 export + 3 NCR) coexist.
-        assert len(at.get("download_button")) == 10
+        # ...and all eleven download buttons (4 PNG + 4 export + 3 NCR) coexist.
+        assert len(at.get("download_button")) == 11
         # No required retained strength was entered: no allowable is shown.
         assert not any("Allowable void content" in i.value for i in at.info)
+
+    def test_material_cards_download(self, monkeypatch):
+        """The Export tab offers the degraded ply as solver material cards,
+        in either format and element family; a laminate the cards cannot
+        describe gets a warning instead of the button."""
+        def labels(app):
+            return [b.proto.label for b in app.get("download_button")]
+        at = _run_small_analysis(_fresh_app())
+        assert "Download material cards" in labels(at)
+        at.selectbox(key="cards_format").set_value("Nastran (.bdf)")
+        at.selectbox(key="cards_element").set_value("solid")
+        at.run()
+        assert not at.exception
+        assert "Download material cards" in labels(at)
+
+        def refuse(*args, **kwargs):
+            raise ValueError("no ply to describe")
+        monkeypatch.setattr("porosity_app.tabs.export.material_cards", refuse)
+        at.run()
+        assert not at.exception
+        assert "Download material cards" not in labels(at)
+        assert any(w.value == "No material cards for this laminate: no ply to describe"
+                   for w in at.warning)
 
     def test_ncr_required_retained_strength_adds_the_allowable(self):
         """The optional required retained strength (percent in the form, a
@@ -539,7 +563,7 @@ class TestDefectsPanel:
         assert any("no recommended disposition path" in w.value
                    and "fracture margin of safety" in w.value for w in at.warning)
         assert any("does not recommend a disposition" in i.value for i in at.info)
-        assert len(at.get("download_button")) == 11       # 5 PNG + 3 + 3
+        assert len(at.get("download_button")) == 12       # 5 PNG + 4 + 3
         # Combined: the porosity's path, labelled as covering the porosity only.
         at.selectbox(key="ncr_indication").set_value("combined")
         _button(at, "Generate summary").click().run()

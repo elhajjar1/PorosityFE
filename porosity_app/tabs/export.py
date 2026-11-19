@@ -9,6 +9,7 @@ import datetime
 
 import streamlit as st
 
+from porosity_fe.material_cards import material_cards
 from porosity_fe.reporting import (
     INDICATION_TYPES,
     STRUCTURAL_CLASSES,
@@ -24,10 +25,56 @@ from porosity_fe.reporting import (
     serialise_ncr_pdf,
 )
 
-from ..config import _config_to_key
+from ..config import _CFG_DEFAULTS, _config_to_key
 from ..runners import fe_vtu_bytes_cached
 from ..summaries import _load_factor_text, ncr_delamination_available
 from ..tabs.common import _placeholder_tab
+
+#: Solver formats of the material-card download: label -> (format, suffix).
+_CARD_FORMATS = {"Abaqus (.inp)": ("abaqus", ".inp"),
+                 "Nastran (.bdf)": ("nastran", ".bdf")}
+_CARD_ELEMENTS = ("shell", "solid")
+
+
+def _material_cards_download(result: dict, export_stem: str) -> None:
+    """The degraded ply of the analysed laminate as solver material cards."""
+    with st.expander("Material cards for another solver"):
+        st.caption(
+            "The porosity-degraded ply properties as Abaqus keywords or "
+            "Nastran bulk data: one material per distinct ply void content, "
+            "with the ply table. The stiffness is the one the FE solve "
+            "uses; the strengths carry its uncalibrated heuristic, so apply "
+            "your own knockdown for an allowable."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            label = st.selectbox("Solver format", list(_CARD_FORMATS),
+                                 key="cards_format")
+        with c2:
+            element = st.selectbox(
+                "Element family", _CARD_ELEMENTS, key="cards_element",
+                help=("Shell: *ELASTIC, TYPE=LAMINA with *FAIL STRESS, or "
+                      "MAT8. Solid: *ELASTIC, TYPE=ENGINEERING CONSTANTS, or "
+                      "MAT9."))
+        fmt, suffix = _CARD_FORMATS[label]
+        cfg = result["config"]
+        try:
+            text = material_cards(
+                result["material"], result["porosity_field"], fmt,
+                ply_angles=cfg["angles"], element=element,
+                porosity_degradation=cfg.get(
+                    "porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
+        except ValueError as exc:
+            st.warning(f"No material cards for this laminate: {exc}")
+            return
+        st.download_button(
+            "Download material cards",
+            data=text,
+            file_name=f"{export_stem}_cards{suffix}",
+            mime="text/plain",
+            use_container_width=True,
+            key="dl_export_cards",
+        )
 
 
 def _build_export_tab(result: dict | None, layup_for_title: str):
@@ -73,6 +120,7 @@ def _build_export_tab(result: dict | None, layup_for_title: str):
         )
     else:
         st.caption("No FE results to download as VTU: the FE solve was skipped.")
+    _material_cards_download(result, export_stem)
     with st.expander("Preview JSON"):
         st.code(payload_json, language="json")
 

@@ -12,6 +12,41 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **Material cards of the degraded ply for Abaqus and Nastran.**
+  `material_cards(material, porosity, fmt)` writes the porosity-degraded
+  ply properties as solver input, so they can be carried into another
+  model; the exports were VTK and JSON only. Additive: no result changes.
+  - `degraded_ply(material, Vp)` returns a `DegradedPly`: the nine
+    engineering constants read from the stiffness the FE path gives an
+    element at that void content, their retention ratios, and the
+    strengths. At 3 % spherical voids the T800 ply keeps 99.95 % of
+    `E11`, 94.6 % of `E22` and 94.8 % of `G12`.
+  - `porosity` is a void fraction (one material) or a `PorosityField`:
+    each ply then takes the mean of the through-thickness profile over it
+    (`ply_porosities`), and plies with the same void content share a
+    material. A 3 % midplane cluster in an 8-ply laminate gives four
+    materials, from 0.26 % voids in the outer plies to 6.58 % in the
+    middle ones. With an in-plane map, `at=(x, y)` takes the laminate at
+    that point.
+  - `fmt='abaqus'`: `*ELASTIC, TYPE=LAMINA` with `*FAIL STRESS` (shell),
+    or `TYPE=ENGINEERING CONSTANTS` (solid). `fmt='nastran'`: `MAT8`
+    (shell) or `MAT9` (solid, the 6 x 6 stiffness in the ply axes), in
+    large-field format. `section=` adds the layup as a `*SHELL SECTION,
+    COMPOSITE` or a `PCOMP`; without it the ply table is comments.
+    Abaqus gets the compressive limits as negative numbers and the
+    normalized Tsai-Wu coefficient, Nastran positive limits and the
+    dimensional `F12`.
+  - `strengths='degraded'` (default) uses the FE path's
+    `sqrt(stiffness retention)` heuristic and says in the card header that
+    it is not calibrated; `'pristine'` and `'none'` are the alternatives.
+    `density=` is scaled by `1 - Vp`.
+  - `write_material_cards(path, ...)` takes the format from the extension
+    (`.inp`; `.bdf`, `.dat`, `.nas`, `.blk`). `porosity-analyze
+    --material-cards {abaqus,nastran}` writes
+    `porosity_cards_<config>_<Vp>.inp` / `.bdf` per configuration and
+    level (`--card-element solid` for solids; `--porosity-degradation` now
+    also applies here), and the app's Export tab has a "Material cards for
+    another solver" download.
 - **In-plane porosity maps.** `PorosityMap` holds the through-thickness
   average void content on a rectilinear in-plane grid, and
   `PorosityField.from_map(material, porosity_map)` (or

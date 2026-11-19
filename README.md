@@ -28,6 +28,7 @@ Manufacturing defects like porosity are inevitable in composite structures. Engi
 - **Loading modes**: empirical compression, tension, shear, ILSS and transverse tension (plus the mode I and II toughness screening modes); FE compression, tension, shear, ILSS (ASTM D2344), three- and four-point flexure (ASTM D7264), thermal residual stress, and the DCB / ENF / MMB fracture specimens
 - **Three empirical knockdown models**: Judd-Wright (exponential), power-law, linear
 - **Allowable porosity**: the largest void content that still retains a required strength, per mode and law, with the governing one in the NCR summary
+- **Material cards for another solver**: the porosity-degraded ply as Abaqus keywords or Nastran `MAT8` / `MAT9` entries, one material per distinct ply void content, with the ply table (`material_cards`, `--material-cards`)
 - **Two solver tiers**: Empirical correlations (fast) + 3D finite element (detailed)
 - **Nine material presets**: T800/epoxy, T700/epoxy, E-glass/epoxy, IM7/8551, T300/934, CF/PEEK, AS4/3501-6, HTA/EHkF420 and IM7/8552 (or define your own)
 - **Discrete void modeling**: Explicit ellipsoidal voids with elasticity-based (Eshelby cavity solution) stress concentration factors
@@ -191,6 +192,7 @@ porosity-analyze --vp 0.02 --layup "[0/45/-45/90]_2s" --t-ply 0.2 \
 - `--configs` selects among the five named configurations.
 - `--fe LOADING` adds an FE solve per configuration and level (`compression`, `tension`, `shear`, `ilss`, `flexure_3pt`, `flexure_4pt`), written to `porosity_fe_<loading>_<config>_<Vp>.json`.
 - `--required-knockdown R` adds the allowable porosity of the laminate (`porosity_allowable.json`): the largest void content at which each strength mode still retains the fraction `R` of its pristine strength.
+- `--material-cards FORMAT` (`abaqus` or `nastran`) writes the degraded ply properties of each configuration and level as solver material cards (`porosity_cards_<config>_<Vp>.inp` or `.bdf`); `--card-element solid` writes them for solid elements. See [Material cards for another solver](#material-cards-for-another-solver).
 
 An opt-in FE delamination screening of the coupon adds, at each porosity
 level, the fracture results and the knockdown split by defect
@@ -312,6 +314,46 @@ Notes:
   `EmpiricalSolver`, not on `MaterialProperties`. To recalibrate them for
   a non-standard material system, see
   [Calibrating `alpha` / `n` for a custom material](#calibrating-alpha--n-for-a-custom-material).
+
+### Material cards for another solver
+
+`material_cards` writes the porosity-degraded ply for an Abaqus or Nastran
+model, so the knocked-down properties can be used outside PorosityFE:
+
+```python
+from porosity_fe import MATERIALS, PorosityField, material_cards, write_material_cards
+
+material = MATERIALS['T800_epoxy']
+print(material_cards(material, 0.03))                      # Abaqus, every ply at 3 %
+
+pf = PorosityField(material, 0.03, distribution='clustered')
+write_material_cards('plate.bdf', material, pf, section=10)   # Nastran MAT8 + PCOMP
+```
+
+- **Stiffness.** The ply constants are those the FE path gives an element
+  at that void content (Mori-Tanaka voids in the matrix, then
+  rule-of-mixtures and Halpin-Tsai ratios). At 3 % spherical voids the T800
+  ply keeps 99.95 % of `E11`, 94.6 % of `E22` and 94.8 % of `G12`.
+  `degraded_ply(material, Vp)` returns them without writing a card.
+- **One material per distinct ply void content.** A void fraction gives
+  every ply the same material. A `PorosityField` gives each ply the mean
+  of its through-thickness profile (`ply_porosities`): a 3 % midplane
+  cluster in an 8-ply laminate puts 0.26 % in the outer plies and 6.58 % in
+  the two middle ones, four materials in all.
+- **Formats.** `'abaqus'` writes `*ELASTIC, TYPE=LAMINA` with `*FAIL
+  STRESS` for shells, or `TYPE=ENGINEERING CONSTANTS` for solids.
+  `'nastran'` writes `MAT8` for shells, or `MAT9` (the 6 x 6 stiffness in
+  the ply axes) for solids, in large-field format. `section=` adds the
+  layup as a `*SHELL SECTION, COMPOSITE` or a `PCOMP`; without it the ply
+  table is written as comments.
+- **Strengths.** `strengths='degraded'` (the default) scales them by
+  `sqrt(stiffness retention)`, like the FE failure criteria. That heuristic
+  is not calibrated and loses less strength than coupon tests show (see
+  [Validation](#validation)); apply your own knockdown for an allowable, or
+  write `'pristine'` strengths or `'none'`.
+- **Units** are MPa and mm. `density=` (of the void-free ply, in the
+  model's unit) is scaled by `1 - Vp`. The thermal expansion coefficients
+  are written at their pristine values.
 
 ### Documentation
 
@@ -518,8 +560,9 @@ the finite-element theory page, "Short-beam shear (ILSS)".
 | `porosity_delamination_*.json` | FE delamination screening: fracture results and knockdown decomposition (`--delamination`) |
 | `porosity_fe_<loading>_<config>_*.json` | FE solve of one configuration: stiffness knockdown, failure indices, first-ply-failure load factor (`--fe`) |
 | `porosity_allowable.json` | Allowable void content per strength mode and law at a required retained strength (`--required-knockdown`) |
+| `porosity_cards_<config>_*.inp` / `.bdf` | Degraded ply properties as Abaqus or Nastran material cards, with the ply table (`--material-cards`) |
 
-The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView.
+The web app's **Export** tab provides one-click downloads of the active run's empirical knockdown table as either JSON or CSV. CSV files include the analysis configuration as `#`-prefixed comment lines at the top (which pandas, Excel, and MATLAB all ignore by default), followed by a flat `mode,model,failure_stress_MPa,knockdown` table. When the FE solve ran, the tab also offers the FE field as binary VTK XML (`.vtu`, from `FieldResults.to_vtu`) for ParaView. It also offers the material cards of the analysed laminate (Abaqus or Nastran, for shell or solid elements).
 
 Every JSON file is standard JSON: it never holds `NaN` or `Infinity`. A value that is not defined is `null`, for example the Tsai-Wu per-mode failure indices or the knockdown of a thermal-only FE solve. The `FESolver.export_results` docstring and `validation/schemas/porosity_results_schema.json` list what `null` means for each field.
 

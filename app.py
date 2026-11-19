@@ -256,6 +256,7 @@ from porosity_app.tabs.stress import (  # noqa: E402, F401
 )
 from porosity_app.tabs.export import (  # noqa: E402, F401
     _build_export_tab,
+    _material_cards_download,
 )
 from porosity_app.render import (  # noqa: E402, F401
     _render,

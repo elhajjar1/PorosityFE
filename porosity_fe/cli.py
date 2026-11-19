@@ -9,6 +9,8 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from . import __version__
 from .delamination import Delamination
 from .homogenization import _DEFAULT_POROSITY_DEGRADATION, POROSITY_DEGRADATIONS
@@ -40,6 +42,12 @@ _DELAM_DEFAULT_LOADING = 'compression'
 _DELAM_DEFAULT_CONFIG = 'uniform_spherical'
 _DELAM_DEFAULT_LAW = 'exponential'
 _DELAM_DEFAULT_DEGRADATION = _DEFAULT_POROSITY_DEGRADATION
+
+#: ``--material-cards`` formats with their file suffix, and the element
+#: families of ``--card-element`` (the first is the default).
+_CARD_SUFFIX = {'abaqus': '.inp', 'nastran': '.bdf'}
+_CARD_FORMATS = tuple(_CARD_SUFFIX)
+_CARD_ELEMENTS = ('shell', 'solid')
 
 
 def _parse_delamination(spec: str) -> Delamination:
@@ -302,6 +310,30 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "heuristic: take the size of a strength knockdown from the sweep."
         ),
     )
+    cards = parser.add_argument_group(
+        "material cards",
+        "Opt-in: the porosity-degraded ply properties of every analysed "
+        "configuration at each porosity level as solver material cards, "
+        "written to porosity_cards_<config>_<Vp>.inp (Abaqus) or .bdf "
+        "(Nastran), one material per distinct ply void content, with the "
+        "ply table.")
+    cards.add_argument(
+        "--material-cards", choices=_CARD_FORMATS, default=None, metavar="FORMAT",
+        help=(
+            f"Card format: {', '.join(_CARD_FORMATS)}. The stiffness is the "
+            "one the FE path gives a ply at its void content; the strengths "
+            "carry the same uncalibrated heuristic as the FE failure indices."
+        ),
+    )
+    cards.add_argument(
+        "--card-element", choices=_CARD_ELEMENTS, default=None, metavar="ELEMENT",
+        help=(
+            f"Element family the cards are for: {', '.join(_CARD_ELEMENTS)} "
+            "(the default is shell). Shell: an Abaqus lamina with its failure "
+            "stresses, or a Nastran MAT8. Solid: Abaqus engineering constants, "
+            "or a Nastran MAT9. Needs --material-cards."
+        ),
+    )
     uq = parser.add_argument_group(
         "uncertainty quantification",
         "Propagate input scatter through the empirical Judd-Wright knockdown "
@@ -390,8 +422,10 @@ def _delamination_options(args) -> dict:
         if given:
             flags = ", ".join("--" + n.replace('_', '-') for n in given)
             raise ValueError(f"{flags} need --delamination.")
-        if args.porosity_degradation is not None and args.fe is None:
-            raise ValueError("--porosity-degradation needs --delamination or --fe.")
+        if (args.porosity_degradation is not None and args.fe is None
+                and args.material_cards is None):
+            raise ValueError("--porosity-degradation needs --delamination, "
+                             "--fe or --material-cards.")
         return {}
     toughness = args.toughness
     if toughness is not None:
@@ -492,6 +526,25 @@ def _run_fe(loading: str, material, ply_angles, name: str, config: dict,
             + ("" if porosity_degradation == _DELAM_DEFAULT_DEGRADATION
                else f"; porosity degradation {porosity_degradation} (uncalibrated)")
             + f"\n  Saved: {out_path}")
+
+
+def _run_material_cards(fmt: str, material, ply_angles, name: str, config: dict,
+                        Vp: float, out_path: Path, *, element: str,
+                        porosity_degradation: str) -> str:
+    """The material cards of one configuration (``--material-cards``),
+    written to ``out_path``. Returns a one-line summary."""
+    from .material_cards import ply_porosities, write_material_cards
+    from .porosity_field import PorosityField
+
+    pf = PorosityField(material, Vp, **config)
+    write_material_cards(out_path, material, pf, fmt, ply_angles=ply_angles,
+                         element=element,
+                         porosity_degradation=porosity_degradation)
+    plies = ply_porosities(pf)
+    n_materials = len(set(np.round(plies, 9).tolist()))
+    return (f"  {name}: {n_materials} material{'s' if n_materials != 1 else ''}, "
+            f"ply void content {100.0 * plies.min():.2f} to "
+            f"{100.0 * plies.max():.2f} %\n  Saved: {out_path}")
 
 
 def _run_allowable(required: float, material, material_name: str, ply_angles,
@@ -775,6 +828,8 @@ def main(argv: list[str] | None = None) -> int:
         laminate['ply_angles'] = ply_angles
     if args.t_ply is not None:
         laminate['t_ply'] = args.t_ply
+    if args.card_element is not None and args.material_cards is None:
+        parser.error("--card-element needs --material-cards.")
     if args.required_knockdown is not None and not (
             0.0 < args.required_knockdown <= 1.0):  # also rejects NaN
         hint = (f" (a percent? pass {args.required_knockdown / 100.0:g})"
@@ -960,6 +1015,30 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception as exc:  # noqa: BLE001 - surface as a failure
                     print(f"ERROR: FE solve for Vp={Vp}, {name} failed: {exc}",
                           file=sys.stderr)
+                    return 3
+
+    if args.material_cards is not None:
+        degradation = args.porosity_degradation or _DELAM_DEFAULT_DEGRADATION
+        element = args.card_element or _CARD_ELEMENTS[0]
+        suffix = _CARD_SUFFIX[args.material_cards]
+        for Vp in args.vp:
+            Vp_label = _vp_label(Vp)
+            logger.info("\nMaterial cards (%s, %s elements): Vp = %.2f%%",
+                        args.material_cards, element, Vp * 100)
+            for name, config in porosity_configs.items():
+                out_path = output_dir / f"porosity_cards_{name}_{Vp_label}{suffix}"
+                try:
+                    logger.info("%s", _run_material_cards(
+                        args.material_cards, material, ply_angles, name, config,
+                        Vp, out_path, element=element,
+                        porosity_degradation=degradation))
+                except (ValueError, OSError) as exc:
+                    print(f"ERROR: material cards for Vp={Vp}, {name}: {exc}",
+                          file=sys.stderr)
+                    return 2
+                except Exception as exc:  # noqa: BLE001 - surface as a failure
+                    print(f"ERROR: material cards for Vp={Vp}, {name} failed: "
+                          f"{exc}", file=sys.stderr)
                     return 3
 
     if args.required_knockdown is not None:

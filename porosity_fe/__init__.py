@@ -138,6 +138,11 @@ from .io import _build_provenance as _build_provenance  # noqa: F401, E402
 from .io import _json_default as _json_default  # noqa: F401, E402
 from .io import load_results_from_json as load_results_from_json  # noqa: F401, E402
 from .io import save_results_to_json as save_results_to_json  # noqa: F401, E402
+from .material_cards import DegradedPly as DegradedPly  # noqa: F401, E402
+from .material_cards import degraded_ply as degraded_ply  # noqa: F401, E402
+from .material_cards import material_cards as material_cards  # noqa: F401, E402
+from .material_cards import ply_porosities as ply_porosities  # noqa: F401, E402
+from .material_cards import write_material_cards as write_material_cards  # noqa: F401, E402
 from .materials import MATERIALS as MATERIALS  # noqa: F401, E402
 from .materials import MaterialProperties as MaterialProperties  # noqa: F401, E402
 from .mesh import CompositeMesh as CompositeMesh  # noqa: F401, E402
@@ -280,6 +285,12 @@ __all__ = [
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",
+    # Solver material cards of the degraded ply
+    "DegradedPly",
+    "degraded_ply",
+    "ply_porosities",
+    "material_cards",
+    "write_material_cards",
     # Pipeline / CLI
     "build_empirical_pipeline",
     "compare_configurations",

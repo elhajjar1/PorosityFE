@@ -162,6 +162,17 @@ map over its mean and equals the profile without one: `CompositeMesh.
 _sample_porosity` and `EmpiricalSolver._local_vp_peak` do. `Vp` is the
 specimen average, the map's area mean with `from_map`.
 
+### Material cards
+
+`porosity_fe/material_cards.py` writes the degraded ply for another solver
+(`material_cards`, `write_material_cards`; CLI `--material-cards`, the
+app's Export tab). `degraded_ply` reads the constants from
+`_degraded_composite_stiffness` and the strengths from
+`fe.failure.degraded_strengths`, so the cards follow the FE path; a change
+to either moves them. Abaqus takes compressive limits as negative numbers
+and the normalized `f*`; Nastran positive limits and the dimensional `F12`,
+and `MAT9` orders the shears `xy, yz, zx` (`_NASTRAN_VOIGT`).
+
 ### `Vp` is always a fraction, never a percent
 
 `PorosityField.__init__` enforces `Vp ∈ [0, 1]` and emits a percent-vs-fraction
