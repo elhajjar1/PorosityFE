@@ -16,7 +16,6 @@ from pathlib import Path
 import streamlit as st
 
 from porosity_fe import (
-    MATERIALS,
     CompositeMesh,
     Delamination,
     EmpiricalSolver,
@@ -46,7 +45,10 @@ from .config import (
     _FRACTURE_UQ_SAMPLES,
     _THERMAL_OPTIONS,
     _TOUGHNESS_LAW_LABELS,
+    _cfg_material,
+    _cfg_plate,
     _fracture_specimen_mesh,
+    _key_to_config,
     _resolving_nz,
 )
 
@@ -58,10 +60,7 @@ logger = logging.getLogger(__name__)
 @st.cache_data(show_spinner=False, max_entries=16)
 def run_analysis_cached(cfg_key: tuple) -> dict:
     """Cached wrapper around :func:`run_analysis`. ``cfg_key`` must be hashable."""
-    cfg = {}
-    for k, v in cfg_key:
-        cfg[k] = list(v) if isinstance(v, tuple) else v
-    return run_analysis(cfg)
+    return run_analysis(_key_to_config(cfg_key))
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -72,9 +71,9 @@ def run_uq_cached(cfg_key: tuple, mode: str, n_samples: int, coef_cov: float,
     Returns the :func:`propagate_uncertainty` result and any warning
     messages it raised (e.g. draws beyond the calibration bound).
     """
-    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
+    cfg = _key_to_config(cfg_key)
     material = dataclasses.replace(
-        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+        _cfg_material(cfg), t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
     strength_field = EmpiricalSolver.PRISTINE_STRENGTH_KEY[mode]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -190,11 +189,8 @@ def run_analysis(cfg: dict) -> dict:
         ``fracture_uq`` that is not one CoV (finite, ``>= 0``) per
         :data:`_FRACTURE_UQ_FIELDS` entry.
     """
-    if cfg["material_name"] not in MATERIALS:
-        raise ValueError(
-            f"Unknown material {cfg['material_name']!r}. "
-            f"Available presets: {sorted(MATERIALS)}."
-        )
+    material = _cfg_material(cfg)       # refuses an unknown preset
+    plate = _cfg_plate(cfg)
     thermal_mode = cfg.get("thermal_mode", "off")
     delta_T = cfg.get("delta_T")
     if thermal_mode not in _THERMAL_OPTIONS.values():
@@ -212,7 +208,6 @@ def run_analysis(cfg: dict) -> dict:
     fracture_uq_covs = _fracture_uq_covs(cfg)
     porosity_degradation = _check_porosity_degradation(
         cfg.get("porosity_degradation", _CFG_DEFAULTS["porosity_degradation"]))
-    material = MATERIALS[cfg["material_name"]]
     material = dataclasses.replace(
         material, t_ply=cfg["t_ply"], n_plies=cfg["n_plies"],
         **_toughness_fields(cfg),
@@ -236,6 +231,8 @@ def run_analysis(cfg: dict) -> dict:
         ply_angles=cfg["angles"],
         mesh_res=(cfg["nx"], cfg["ny"], cfg["nz"]),
         porosity_config=pf_kwargs,
+        # Only a plate size that was set: the default coupon is built as before.
+        **({"mesh_kwargs": plate} if plate else {}),
     )
     emp_results = empirical.get_all_failure_loads()
 
@@ -271,7 +268,7 @@ def run_analysis(cfg: dict) -> dict:
             # duplicated (the empirical solver keeps the plain one).
             mesh = CompositeMesh(porosity_field, material, nx=cfg["nx"],
                                  ny=cfg["ny"], nz=cfg["nz"],
-                                 ply_angles=cfg["angles"], **defects)
+                                 ply_angles=cfg["angles"], **defects, **plate)
     except ValueError as exc:
         logger.exception("Specimen mesh failed for loading=%s", fe_loading)
         what = (f"the {fe_loading} specimen mesh"

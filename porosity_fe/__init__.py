@@ -131,12 +131,15 @@ from .io import _KNOWN_FORMATS as _KNOWN_FORMATS  # noqa: F401, E402
 from .io import FORMAT_ALLOWABLE as FORMAT_ALLOWABLE  # noqa: F401, E402
 from .io import FORMAT_EMPIRICAL_SWEEP as FORMAT_EMPIRICAL_SWEEP  # noqa: F401, E402
 from .io import FORMAT_FE_FIELDS as FORMAT_FE_FIELDS  # noqa: F401, E402
+from .io import FORMAT_MATERIAL as FORMAT_MATERIAL  # noqa: F401, E402
 from .io import FORMAT_NCR as FORMAT_NCR  # noqa: F401, E402
 from .io import FORMAT_UQ as FORMAT_UQ  # noqa: F401, E402
 from .io import JSON_SCHEMA_VERSION as JSON_SCHEMA_VERSION  # noqa: F401, E402
 from .io import _build_provenance as _build_provenance  # noqa: F401, E402
 from .io import _json_default as _json_default  # noqa: F401, E402
+from .io import load_material_from_json as load_material_from_json  # noqa: F401, E402
 from .io import load_results_from_json as load_results_from_json  # noqa: F401, E402
+from .io import save_material_to_json as save_material_to_json  # noqa: F401, E402
 from .io import save_results_to_json as save_results_to_json  # noqa: F401, E402
 from .material_cards import DegradedPly as DegradedPly  # noqa: F401, E402
 from .material_cards import degraded_ply as degraded_ply  # noqa: F401, E402
@@ -282,9 +285,12 @@ __all__ = [
     "FORMAT_NCR",
     "FORMAT_UQ",
     "FORMAT_ALLOWABLE",
+    "FORMAT_MATERIAL",
     "JSON_SCHEMA_VERSION",
     "load_results_from_json",
     "save_results_to_json",
+    "load_material_from_json",
+    "save_material_to_json",
     # Solver material cards of the degraded ply
     "DegradedPly",
     "degraded_ply",

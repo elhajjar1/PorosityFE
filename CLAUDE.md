@@ -233,8 +233,9 @@ Its full-database numbers are pinned by a test behind
 ### Streamlit app bootstrap
 
 The app lives in the `porosity_app/` package (#224): `config` (sidebar
-keys, defaults, cache key, labels), `runners` (`run_analysis`, the FE solve,
-the cached wrappers), `summaries` (result tables), `convergence`, `plots`,
+keys, defaults, cache key, labels), `scenario` (saved scenarios and the
+custom-material state), `runners` (`run_analysis`, the FE solve, the
+cached wrappers), `summaries` (result tables), `convergence`, `plots`,
 `sidebar`, `tabs/` (one module per tab plus `common`) and `render`
 (`_render`). A module imports only modules of a lower layer, in that
 order (`tests/test_app_package.py`). `app.py` is the entry point
@@ -242,7 +243,14 @@ order (`tests/test_app_package.py`). `app.py` is the entry point
 `sys.path` **before** importing `porosity_fe` and `porosity_app` — this is
 why `pyproject.toml` adds `E402` / `I001` to
 `[tool.ruff.lint.per-file-ignores]` for `app.py`; don't reorder those
-imports. It re-exports every `porosity_app` name, so `app.X` keeps working;
+imports. A sidebar input a scenario restores is keyed and takes its
+default from `_seed(key, default)`, never `value=`, and is listed in
+`scenario.SCENARIO_INPUTS` with its bounds. The material of a config is
+`config._cfg_material(cfg)` (a custom material's fields in
+`cfg["material"]`, else the preset; never index `MATERIALS` with
+`material_name` in the app) and its plate `config._cfg_plate(cfg)`; both
+stay out of the cache key at their defaults, and `_key_to_config` inverts
+the key. `app.py` re-exports every `porosity_app` name, so `app.X` keeps working;
 new code imports from `porosity_app`, and a monkeypatch targets the module
 that looks the name up (`porosity_app.runners.FESolver`, not `app.FESolver`,
 which patches nothing). The app tests skip in the core CI matrix (no

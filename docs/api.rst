@@ -254,6 +254,8 @@ Results I/O
 
    save_results_to_json
    load_results_from_json
+   save_material_to_json
+   load_material_from_json
 
 .. py:data:: JSON_SCHEMA_VERSION
    :type: str
@@ -280,6 +282,11 @@ Results I/O
    :type: str
 
    ``format`` tag of an uncertainty-propagation export.
+
+.. py:data:: FORMAT_MATERIAL
+   :type: str
+
+   ``format`` tag of a material file (:func:`save_material_to_json`).
 
 .. py:data:: FORMAT_ALLOWABLE
    :type: str

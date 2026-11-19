@@ -164,7 +164,9 @@ def build_export_payload(result: dict) -> dict:
     """Flatten an analysis result into the export payload structure.
 
     Shared by the JSON and CSV writers so both formats describe the same
-    fields. ``result`` is the dict produced by ``run_analysis``.
+    fields. ``result`` is the dict produced by ``run_analysis``. A run on a
+    plate other than the 50 x 20 mm coupon adds ``plate_mm``, and a custom
+    material ``material_properties`` (its fields).
     """
     cfg = result["config"]
     emp = result["empirical"]
@@ -180,6 +182,15 @@ def build_export_payload(result: dict) -> dict:
         },
         "empirical": {},
     }
+    # Only what differs from a preset on the default coupon, so the payload
+    # of such a run is unchanged.
+    if cfg.get("length") is not None or cfg.get("width") is not None:
+        length = 50.0 if cfg.get("length") is None else float(cfg["length"])
+        width = 20.0 if cfg.get("width") is None else float(cfg["width"])
+        payload["config"]["plate_mm"] = f"{length:g}x{width:g}"
+    if cfg.get("material") is not None:
+        # A custom material: its values, as MaterialProperties.to_dict gives them.
+        payload["config"]["material_properties"] = dict(cfg["material"])
     for mode in emp:
         payload["empirical"][mode] = {}
         for model in emp[mode]:

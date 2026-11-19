@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 
-from porosity_fe import CompositeMesh
+from porosity_fe import MATERIALS, CompositeMesh, MaterialProperties
 from porosity_fe.empirical import _VP_CALIBRATION_MAX
 from porosity_fe.fracture_specimens import (
     _D5528_CRACK_LENGTH,
@@ -66,6 +66,7 @@ _CFG_OPTIONAL_KEYS = (
     "delamination", "knockdown_split", "G_Ic", "G_IIc", "G_IIIc", "bk_eta",
     "toughness_law", "toughness_b", "onset", "onset_x_avg",
     "crack_length", "mmb_mode_ratio", "fracture_uq", "porosity_degradation",
+    "material", "length", "width",
 )
 
 
@@ -92,7 +93,24 @@ _CFG_DEFAULTS = {"thermal_mode": "off", "delta_T": None,
                  "onset": False, "onset_x_avg": None,
                  "crack_length": None, "mmb_mode_ratio": None,
                  "fracture_uq": None,
-                 "porosity_degradation": _DEFAULT_POROSITY_DEGRADATION}
+                 "porosity_degradation": _DEFAULT_POROSITY_DEGRADATION,
+                 "material": None, "length": None, "width": None}
+
+
+#: In-plane size of the coupon (mm) when ``cfg["length"]`` / ``["width"]``
+#: are ``None``: the default of :class:`CompositeMesh`.
+_PLATE_DEFAULT = (50.0, 20.0)
+
+#: Sidebar label -> (distribution, cluster location) of the porosity field.
+_DISTRIBUTION_OPTIONS = {
+    "uniform": ("uniform", "midplane"),
+    "clustered (midplane)": ("clustered", "midplane"),
+    "clustered (surface)": ("clustered", "surface"),
+    "interface": ("interface", "midplane"),
+}
+
+#: Sidebar void shapes (keys of :data:`porosity_fe.VOID_SHAPES`).
+_VOID_SHAPES = ("spherical", "cylindrical", "penny")
 
 
 #: FE failure criteria offered in the sidebar: key -> label.
@@ -124,15 +142,63 @@ _MODE_LABELS = {
 
 
 def _config_to_key(cfg: dict) -> tuple:
+    def hashable(v):
+        if isinstance(v, dict):         # a custom material's fields
+            return tuple(sorted(v.items()))
+        return tuple(v) if isinstance(v, list) else v
+
     key = []
     for k in _CFG_KEYS:
         v = cfg.get(k, _CFG_DEFAULTS[k]) if k in _CFG_DEFAULTS else cfg[k]
-        key.append((k, tuple(v) if isinstance(v, list) else v))
+        key.append((k, hashable(v)))
     for k in _CFG_OPTIONAL_KEYS:
         v = cfg.get(k, _CFG_DEFAULTS[k])
         if v != _CFG_DEFAULTS[k]:
-            key.append((k, tuple(v) if isinstance(v, list) else v))
+            key.append((k, hashable(v)))
     return tuple(key)
+
+
+def _key_to_config(cfg_key: tuple) -> dict:
+    """The config of a cache key: the inverse of :func:`_config_to_key`
+    (lists for its tuples, a dict for a custom material's fields)."""
+    cfg = {}
+    for k, v in cfg_key:
+        if k == "material" and v is not None:
+            cfg[k] = dict(v)
+        else:
+            cfg[k] = list(v) if isinstance(v, tuple) else v
+    return cfg
+
+
+def _cfg_material(cfg: dict) -> MaterialProperties:
+    """The ply material of a config, before its laminate is applied.
+
+    ``cfg["material"]`` (the fields of a custom material, as
+    :meth:`MaterialProperties.to_dict` gives them) when it is set;
+    otherwise the preset ``cfg["material_name"]``, which is then only a
+    label.
+    """
+    custom = cfg.get("material")
+    if custom is not None:
+        return MaterialProperties.from_dict(custom)
+    name = cfg["material_name"]
+    if name not in MATERIALS:
+        raise ValueError(
+            f"Unknown material {name!r}. "
+            f"Available presets: {sorted(MATERIALS)}."
+        )
+    return MATERIALS[name]
+
+
+def _cfg_plate(cfg: dict) -> dict:
+    """The :class:`CompositeMesh` size arguments of a config: empty for the
+    default coupon, so that its mesh is built exactly as before."""
+    size = {}
+    for key in ("length", "width"):
+        value = cfg.get(key)
+        if value is not None:
+            size[key] = float(value)
+    return size
 
 
 # ----------------------------------------------------------------------

@@ -115,6 +115,7 @@ def build_empirical_pipeline(
     seed: int | None = None,
     solver_kwargs: dict[str, Any] | None = None,
     nz_max: int = _DEFAULT_NZ_MAX,
+    mesh_kwargs: dict[str, Any] | None = None,
 ) -> tuple[PorosityField, CompositeMesh, EmpiricalSolver]:
     """Factory: ``(material, Vp) -> (PorosityField, CompositeMesh, EmpiricalSolver)``.
 
@@ -158,6 +159,10 @@ def build_empirical_pipeline(
         coefficient overrides ``judd_wright_alpha`` / ``power_law_n`` /
         ``linear_beta``, or ``toughness_knockdown``, the law of the toughness
         modes ``'mode_I_toughness'`` / ``'mode_II_toughness'``.
+    mesh_kwargs : dict, optional
+        Extra keyword arguments for :class:`CompositeMesh`, e.g. the plate
+        size ``length`` / ``width`` in mm (default 50 x 20) or
+        ``delaminations``.
 
     Returns
     -------
@@ -172,7 +177,7 @@ def build_empirical_pipeline(
     nx, ny, nz = (_default_mesh_resolution(material.n_plies, ply_angles, nz_max=nz_max)
                   if mesh_res is None else mesh_res)
     mesh = CompositeMesh(pf, material, nx=nx, ny=ny, nz=nz,
-                         ply_angles=ply_angles)
+                         ply_angles=ply_angles, **(mesh_kwargs or {}))
     emp = EmpiricalSolver(mesh, material, ply_angles=ply_angles,
                           **(solver_kwargs or {}))
     return pf, mesh, emp
@@ -203,17 +208,43 @@ def _laminate_material(material: MaterialProperties, ply_angles: LayupSpec = 'QI
 
 
 def _sweep_material(material_name: str, ply_angles: LayupSpec = 'QI',
-                    t_ply: float | None = None) -> MaterialProperties:
-    """:func:`_laminate_material` of a preset."""
-    return _laminate_material(MATERIALS[material_name], ply_angles, t_ply)
+                    t_ply: float | None = None,
+                    material: MaterialProperties | None = None
+                    ) -> MaterialProperties:
+    """:func:`_laminate_material` of a preset, or of ``material`` when one
+    is given (``material_name`` is then only its label)."""
+    return _laminate_material(
+        MATERIALS[material_name] if material is None else material,
+        ply_angles, t_ply)
+
+
+def _check_sweep_material(material_name: str,
+                          material: MaterialProperties | None) -> None:
+    """Refuse an unknown preset, or a ``material`` that is not one."""
+    if material is None:
+        if material_name not in MATERIALS:
+            raise ValueError(
+                f"Unknown material {material_name!r}. "
+                f"Available presets: {sorted(MATERIALS)}."
+            )
+    elif not isinstance(material, MaterialProperties):
+        raise TypeError(
+            f"material must be a MaterialProperties or None; got "
+            f"{type(material).__name__}.")
 
 
 def _laminate_task_args(material_name: str, ply_angles: LayupSpec,
-                        t_ply: float | None) -> tuple:
+                        t_ply: float | None,
+                        material: MaterialProperties | None = None) -> tuple:
     """The laminate arguments a sweep appends to each ``_analyze_one`` task:
-    none for the default laminate, so its tasks are the six-tuples they
-    always were. Raises here, in the parent, for a bad laminate."""
-    _sweep_material(material_name, ply_angles, t_ply)
+    none for the default laminate of a preset, so its tasks are the
+    six-tuples they always were. Raises here, in the parent, for a bad
+    laminate."""
+    _sweep_material(material_name, ply_angles, t_ply, material)
+    if material is not None:
+        # The object travels with the task: a worker process has only the
+        # presets to look a name up in.
+        return (ply_angles, t_ply, material)
     if isinstance(ply_angles, str) and ply_angles == 'QI' and t_ply is None:
         return ()
     return (ply_angles, t_ply)
@@ -226,7 +257,9 @@ def _analyze_one(Vp: float,
                  applied_stress: float,
                  seed: int | None = None,
                  ply_angles: LayupSpec = 'QI',
-                 t_ply: float | None = None) -> tuple[float, str, dict]:
+                 t_ply: float | None = None,
+                 material: MaterialProperties | None = None
+                 ) -> tuple[float, str, dict]:
     """Build PorosityField/CompositeMesh/EmpiricalSolver for one (Vp, config).
 
     Top-level (picklable) helper so this can be dispatched to a
@@ -271,7 +304,7 @@ def _analyze_one(Vp: float,
         Tuple keyed on ``(Vp, name)`` so the caller can deterministically
         re-assemble results even when the worker pool reorders completion.
     """
-    material = _sweep_material(material_name, ply_angles, t_ply)
+    material = _sweep_material(material_name, ply_angles, t_ply, material)
     porosity_field, mesh, empirical = build_empirical_pipeline(
         material, Vp, ply_angles=ply_angles, porosity_config=config, seed=seed,
     )
@@ -457,7 +490,8 @@ def compare_configurations(void_volume_fraction: float,
                            return_artifacts: bool = False,
                            *,
                            ply_angles: LayupSpec = 'QI',
-                           t_ply: float | None = None):
+                           t_ply: float | None = None,
+                           material: MaterialProperties | None = None):
     """Main analysis function — loops through porosity configurations.
 
     Parameters
@@ -465,7 +499,8 @@ def compare_configurations(void_volume_fraction: float,
     void_volume_fraction : float
         Specimen-average void volume fraction in [0, 1].
     material_name : str
-        Material preset name; validated against :data:`MATERIALS`.
+        Material preset name; validated against :data:`MATERIALS`. With
+        ``material=`` it is only the label of that material.
     applied_stress : float
         Reserved for downstream solver hooks; **currently unused**. The
         empirical knockdown sweep does not consume this value, so passing
@@ -504,6 +539,9 @@ def compare_configurations(void_volume_fraction: float,
         degrees, which also sets the ply count.
     t_ply : float, optional
         Keyword-only. Ply thickness in mm, replacing the preset's.
+    material : MaterialProperties, optional
+        Keyword-only. A material to analyse instead of a preset, e.g. one
+        read with :func:`~porosity_fe.load_material_from_json`.
 
     Returns
     -------
@@ -512,11 +550,7 @@ def compare_configurations(void_volume_fraction: float,
     Tuple[Dict[str, ConfigResult], Dict[str, ConfigArtifacts]]
         When ``return_artifacts=True``.
     """
-    if material_name not in MATERIALS:
-        raise ValueError(
-            f"Unknown material {material_name!r}. "
-            f"Available presets: {sorted(MATERIALS)}."
-        )
+    _check_sweep_material(material_name, material)
     # ``None`` means the bundled set; an explicit empty dict runs nothing.
     configs = POROSITY_CONFIGS if configs is None else configs
     workers = _resolve_n_jobs(n_jobs)
@@ -531,7 +565,7 @@ def compare_configurations(void_volume_fraction: float,
     # the original ``configs`` dict so the assembled output preserves the
     # caller's configuration ordering (Python dicts are insertion-ordered)
     # regardless of which worker finishes first.
-    laminate = _laminate_task_args(material_name, ply_angles, t_ply)
+    laminate = _laminate_task_args(material_name, ply_angles, t_ply, material)
     tasks = [
         (void_volume_fraction, name, config, material_name, applied_stress, seed,
          *laminate)
@@ -554,7 +588,8 @@ def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy
                          return_artifacts: bool = False,
                          *,
                          ply_angles: LayupSpec = 'QI',
-                         t_ply: float | None = None) -> dict:
+                         t_ply: float | None = None,
+                         material: MaterialProperties | None = None) -> dict:
     """:func:`compare_configurations` for several porosity levels at once.
 
     Every ``(Vp, config)`` pair goes into one task list, so with
@@ -570,15 +605,11 @@ def sweep_configurations(void_volume_fractions, material_name: str = 'T800_epoxy
         ``return_artifacts=True``, in the order of
         ``void_volume_fractions`` (duplicates collapse).
     """
-    if material_name not in MATERIALS:
-        raise ValueError(
-            f"Unknown material {material_name!r}. "
-            f"Available presets: {sorted(MATERIALS)}."
-        )
+    _check_sweep_material(material_name, material)
     # ``None`` means the bundled set; an explicit empty dict runs nothing.
     configs = POROSITY_CONFIGS if configs is None else configs
     vps = list(dict.fromkeys(float(v) for v in void_volume_fractions))
-    laminate = _laminate_task_args(material_name, ply_angles, t_ply)
+    laminate = _laminate_task_args(material_name, ply_angles, t_ply, material)
     tasks = [
         (Vp, name, config, material_name, applied_stress, seed, *laminate)
         for Vp in vps for name, config in configs.items()

@@ -11,7 +11,6 @@ import math
 import streamlit as st
 
 from porosity_fe import (
-    MATERIALS,
     RefinementStudy,
     refinement_study,
 )
@@ -24,6 +23,9 @@ from .config import (
     _FE_ILSS_LOAD_N,
     _FLEXURE_MODES,
     _FRACTURE_MODES,
+    _cfg_material,
+    _cfg_plate,
+    _key_to_config,
 )
 from .summaries import _fmt_value
 
@@ -33,8 +35,7 @@ from .summaries import _fmt_value
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_convergence_cached(cfg_key: tuple, resolutions: tuple) -> RefinementStudy:
     """Cached :func:`run_convergence_check` of the analysis config ``cfg_key``."""
-    cfg = {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg_key}
-    return run_convergence_check(cfg, resolutions)
+    return run_convergence_check(_key_to_config(cfg_key), resolutions)
 
 
 # ----------------------------------------------------------------------
@@ -73,6 +74,10 @@ def convergence_unavailable_reason(result: dict) -> str | None:
         return ("The convergence check does not cover a delamination or a "
                 "fracture specimen yet: refine nx and ny in Expert mode and "
                 "compare the front's G_T.")
+    if _cfg_plate(result["config"]) and result.get("fe_specimen") is None:
+        return ("The convergence check solves the standard 50 x 20 mm coupon, "
+                "not a plate of another size: refine nx and ny in Expert mode "
+                "and compare the results.")
     return None
 
 
@@ -137,7 +142,7 @@ def run_convergence_check(cfg: dict, resolutions) -> RefinementStudy:
         estimate), or a thermal level whose ``nz`` does not resolve the layup.
     """
     material = dataclasses.replace(
-        MATERIALS[cfg["material_name"]], t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
+        _cfg_material(cfg), t_ply=cfg["t_ply"], n_plies=cfg["n_plies"])
     pf_kwargs = {"distribution": cfg["distribution"], "void_shape": cfg["void_shape"]}
     if cfg["distribution"] == "clustered":
         pf_kwargs["cluster_location"] = cfg["cluster_location"]

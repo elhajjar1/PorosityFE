@@ -12,6 +12,38 @@ constrained FE solver with the incompatible-mode brick by default. Several
 results change on upgrade; the docs page "What's new in 1.3" lists them.
 
 ### Added
+- **A custom material, the plate size and saved scenarios in the app; a
+  material file for the CLI.** The app's material was preset-only and its
+  coupon fixed at 50 x 20 mm, and there was no way to save or restore a
+  run. Additive: a run on a preset and the default coupon gives the same
+  results and the same cache key as before.
+  - `MaterialProperties.to_dict()` / `from_dict()`, and
+    `save_material_to_json` / `load_material_from_json` (format
+    `porosity-fe.material`, with a `units` block; a bare JSON object of
+    the fields is read too). `from_dict` names every missing field and
+    suggests the closest name for a misspelt one; the constructor's checks
+    (a percent for a fraction, ppm/K for a CTE) still apply.
+  - App, *Custom material* panel: download the selected material as a
+    template, load an edited file, which joins the Material list as
+    `Custom: <name>`, or remove it. The thermal and toughness panels follow
+    its own CTEs and toughness.
+  - App, plate length and width (default 50 x 20 mm) for the coupon modes:
+    the FE mesh, a delamination's coupon and the Overview use them; the
+    ASTM specimen modes keep their size, and the mesh-convergence check,
+    which refines the standard coupon, says it does not cover another
+    plate. The export payload records `plate_mm` and a custom material's
+    `material_properties`.
+  - App, *Scenario* panel: save every sidebar input, the custom material
+    in use and the headline numbers of the last run (when the inputs are
+    still its own) to a JSON file (`porosity-fe.app-scenario`), and load
+    one: the inputs come back, each one a widget would refuse is listed and
+    skipped, and the next run's Results tab compares the two runs. The
+    sidebar widgets now take their defaults through the session state so a
+    scenario can set them; their defaults are unchanged.
+  - `porosity-analyze --material-file PATH`, and `material=` on
+    `compare_configurations` / `sweep_configurations` (the material
+    travels with each task to the worker processes), and `mesh_kwargs=` on
+    `build_empirical_pipeline`.
 - **Material cards of the degraded ply for Abaqus and Nastran.**
   `material_cards(material, porosity, fmt)` writes the porosity-degraded
   ply properties as solver input, so they can be carried into another

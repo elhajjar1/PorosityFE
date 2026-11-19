@@ -21,6 +21,7 @@ from ..convergence import (
 )
 from ..plots import plot_fracture_uq, plot_front, plot_results, plot_uq
 from ..runners import run_uq_cached
+from ..scenario import REFERENCE_KEY, comparison_rows, scenario_summary
 from ..sidebar import _offer_nz_fix
 from ..summaries import (
     fe_decomposition_summary,
@@ -51,8 +52,38 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_flexure_results(result)
     _build_thermal_results(result)
     _build_defect_results(result)
+    _build_scenario_comparison(result)
     _build_uq_expander(result)
     _build_convergence_expander(result)
+
+
+def _stop_comparing() -> None:
+    """On-click callback: forget the run of the loaded scenario."""
+    st.session_state.pop(REFERENCE_KEY, None)
+
+
+def _build_scenario_comparison(result: dict) -> None:
+    """This run next to the run a loaded scenario was saved from."""
+    reference = st.session_state.get(REFERENCE_KEY)
+    if not reference:
+        return
+    rows = comparison_rows(reference["summary"], scenario_summary(result))
+    if not rows:
+        return
+    name = reference.get("name")
+    st.subheader("Compared with the loaded scenario" + (f": {name}" if name else ""))
+    st.dataframe(
+        [{"Quantity": r["Quantity"],
+          "Saved run": f"{r['Saved run']:.4g}",
+          "This run": f"{r['This run']:.4g}",
+          "Change (%)": "" if r["Change (%)"] is None else f"{r['Change (%)']:+.2f}"}
+         for r in rows],
+        hide_index=True, use_container_width=True)
+    st.caption(
+        "Saved run: the numbers stored in the scenario file. Change: this run "
+        "relative to the saved one. An FE result is compared only when both "
+        "runs solved the same loading mode.")
+    st.button("Stop comparing", key="scenario_stop_compare", on_click=_stop_comparing)
 
 
 def _build_fe_failure_results(result: dict) -> None:

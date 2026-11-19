@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import logging
 import math
 import sys
@@ -34,6 +35,9 @@ DEFAULT_POROSITY_LEVELS = [0.01, 0.02, 0.03, 0.05, 0.08]
 
 #: Placeholder passed through to compare_configurations, which ignores it.
 _DEFAULT_APPLIED_STRESS = -1500.0
+
+#: Preset of a run that names no material.
+_DEFAULT_MATERIAL = "T800_epoxy"
 
 #: Defaults of the delamination screening options (``--delamination``),
 #: applied only when it is given, so the options can tell "not given".
@@ -156,8 +160,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--material",
-        default="T800_epoxy",
-        help="Material preset name (validated against the built-in presets).",
+        default=None,
+        help=("Material preset name (validated against the built-in presets; "
+              f"the default is {_DEFAULT_MATERIAL})."),
+    )
+    parser.add_argument(
+        "--material-file", default=None, metavar="PATH",
+        help=(
+            "A material JSON file to analyse instead of a preset, as "
+            "save_material_to_json writes it (or a bare JSON object of the "
+            "material's fields, in MPa and mm). Its name, or the file's, "
+            "labels the run. Not with --material."
+        ),
     )
     parser.add_argument(
         "--layup", default=None, metavar="SPEC",
@@ -640,6 +654,20 @@ def _delamination_screening(options: dict, material, porosity_configs: dict,
             + f"\n  Saved: {out_path}")
 
 
+def _load_material_file(path: str):
+    """The material of ``--material-file`` and the label of its run: the
+    name stored in the file, or the file's own."""
+    from .io import _material_from_document
+
+    with open(path, encoding='utf-8') as f:
+        try:
+            document = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path}: not valid JSON ({exc}).") from None
+    material, name = _material_from_document(document, path)
+    return material, name or Path(path).stem
+
+
 def _run_uq(args, material, Vp: float, out_path: Path, ply_angles=None) -> dict:
     """Propagate uncertainty for every loading mode at one porosity level.
 
@@ -800,7 +828,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         args.applied_stress = _DEFAULT_APPLIED_STRESS
 
-    if args.material not in materials:
+    custom_material = None
+    if args.material_file is not None:
+        if args.material is not None:
+            parser.error("--material-file replaces --material: give one of them.")
+        try:
+            custom_material, args.material = _load_material_file(args.material_file)
+        except (ValueError, OSError) as exc:
+            parser.error(f"--material-file: {exc}")
+    elif args.material is None:
+        args.material = _DEFAULT_MATERIAL
+    if custom_material is None and args.material not in materials:
         parser.error(
             f"Unknown material {args.material!r}. "
             f"Available presets: {sorted(materials)}."
@@ -817,13 +855,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         delamination = _delamination_options(args)
         ply_angles = _parse_layup_option(args.layup)
-        material = _laminate_material(materials[args.material], ply_angles,
-                                      args.t_ply)
+        material = _laminate_material(
+            custom_material or materials[args.material], ply_angles, args.t_ply)
     except ValueError as exc:
         parser.error(str(exc))
     # Only what was asked for is passed on, so a default run calls the sweep
     # exactly as before.
     laminate: dict = {}
+    if custom_material is not None:
+        laminate['material'] = custom_material
     if args.layup is not None:
         laminate['ply_angles'] = ply_angles
     if args.t_ply is not None:
@@ -962,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("\nUncertainty propagation: Vp = %.2f%%", Vp * 100)
             try:
                 if laminate:
+                    # The laminate's material; the default layup is 'QI'.
                     _run_uq(args, material, Vp,
                             output_dir / f"porosity_uq_{Vp_label}.json",
                             ply_angles=ply_angles)

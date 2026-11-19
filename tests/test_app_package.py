@@ -25,11 +25,12 @@ PACKAGE = REPO / "porosity_app"
 #: Each module may import only modules of a lower layer.
 LAYERS = {
     "config": 0, "tabs.common": 0,
-    "runners": 1, "summaries": 1, "sidebar": 1,
-    "convergence": 2, "plots": 2,
-    "tabs.overview": 3, "tabs.figures": 3, "tabs.results": 3, "tabs.stress": 3,
-    "tabs.export": 3,
-    "render": 4,
+    "scenario": 1,
+    "runners": 2, "summaries": 2, "sidebar": 2,
+    "convergence": 3, "plots": 3,
+    "tabs.overview": 4, "tabs.figures": 4, "tabs.results": 4, "tabs.stress": 4,
+    "tabs.export": 4,
+    "render": 5,
 }
 
 

@@ -98,6 +98,8 @@ cohesive zone or buckling.
   - the mesh-convergence check
   - uncertainty analysis
   - a PNG download per figure and a VTU download
+  - a custom material loaded from a JSON file, the plate size as an input,
+    and saved scenarios that restore the inputs and compare two runs
 
   The app is now the `porosity_app` package; `streamlit run app.py` is
   unchanged.
@@ -105,8 +107,8 @@ cohesive zone or buckling.
   (uncertainty propagation) and delamination screening. It also takes the
   laminate (`--layup`, `--t-ply`), a choice of configurations
   (`--configs`), an FE solve per configuration (`--fe LOADING`), the
-  allowable porosity (`--required-knockdown`) and solver material cards
-  (`--material-cards`).
+  allowable porosity (`--required-knockdown`), solver material cards
+  (`--material-cards`) and a material from a JSON file (`--material-file`).
 - **The NCR disposition bands are a `DispositionPolicy`.** The defaults
   are labelled illustrative: the released drawing or process
   specification governs.

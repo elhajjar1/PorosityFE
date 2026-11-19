@@ -1532,3 +1532,99 @@ class TestMaterialCardsOption:
     def test_without_the_flag_no_deck_is_written(self, tmp_path, monkeypatch):
         assert self._main(tmp_path, monkeypatch, '--quiet') == 0
         assert not list(tmp_path.glob('porosity_cards_*'))
+
+
+class TestMaterialFileOption:
+    @pytest.fixture
+    def material_file(self, tmp_path):
+        import dataclasses
+
+        from porosity_fe import MATERIALS, save_material_to_json
+        material = dataclasses.replace(MATERIALS['T800_epoxy'], sigma_1c=1200.0, n_plies=8)
+        path = tmp_path / 'my_t800.json'
+        save_material_to_json(material, path, name='T800 low Xc')
+        return path, material
+
+    def _main(self, tmp_path, monkeypatch, *argv):
+        monkeypatch.setattr(porosity_fe_analysis, 'POROSITY_CONFIGS', _TINY_CONFIGS)
+        return porosity_fe_analysis.main(
+            ['--vp', '0.02', '--output-dir', str(tmp_path / 'out'), *argv])
+
+    def test_the_file_replaces_the_preset(self, tmp_path, monkeypatch, capsys,
+                                          material_file):
+        from porosity_fe import build_empirical_pipeline
+        path, material = material_file
+        assert self._main(tmp_path, monkeypatch, '--material-file', str(path)) == 0
+        out = capsys.readouterr().out
+        assert 'Material: T800 low Xc' in out
+        assert 'Laminate: 8 plies of 0.183 mm, layup QI' in out
+        doc = _strict_json(tmp_path / 'out' / 'porosity_analysis_results_2pct.json')
+        entry = doc['uniform_spherical']
+        expected = build_empirical_pipeline(material, 0.02)[2].get_failure_load(
+            'compression', 'judd_wright')
+        assert entry['empirical']['compression']['judd_wright']['failure_stress_MPa'] == \
+            pytest.approx(expected.failure_stress, rel=1e-12)
+        assert entry['laminate']['n_plies'] == 8
+
+    def test_it_reaches_every_option(self, tmp_path, monkeypatch, material_file):
+        """The UQ, the allowable porosity and the material cards use it too,
+        with the laminate options on top."""
+        path, material = material_file
+        assert self._main(tmp_path, monkeypatch, '--quiet', '--material-file', str(path),
+                          '--t-ply', '0.2', '--uq', '--uq-samples', '16',
+                          '--required-knockdown', '0.9',
+                          '--material-cards', 'abaqus') == 0
+        out = tmp_path / 'out'
+        allowable = _strict_json(out / 'porosity_allowable.json')
+        assert allowable['laminate']['material'] == 'T800 low Xc'
+        assert allowable['laminate']['t_ply_mm'] == 0.2
+        cards = (out / 'porosity_cards_uniform_spherical_2pct.inp').read_text()
+        assert 'E11 = 161000' in cards and '0.2, 3, POROUS_PLY, 0., PLY_1' in cards
+        uq = _strict_json(out / 'porosity_uq_2pct.json')
+        assert uq['format'] == 'porosity-fe.uq'
+
+    def test_the_file_name_labels_a_file_without_one(self, tmp_path, monkeypatch, capsys):
+        import json
+
+        from porosity_fe import MATERIALS
+        path = tmp_path / 'bare_t700.json'
+        path.write_text(json.dumps(MATERIALS['T700_epoxy'].to_dict()))
+        assert self._main(tmp_path, monkeypatch, '--material-file', str(path)) == 0
+        assert 'Material: bare_t700' in capsys.readouterr().out
+
+    def test_workers_take_the_material(self, tmp_path, monkeypatch, material_file):
+        path, _ = material_file
+        argv = ['--quiet', '--material-file', str(path), '--vp', '0.02', '0.04']
+        assert self._main(tmp_path / 'a', monkeypatch, *argv) == 0
+        assert self._main(tmp_path / 'b', monkeypatch, *argv, '--jobs', '2') == 0
+        for name in ('porosity_analysis_results_2pct.json',
+                     'porosity_analysis_results_4pct.json'):
+            a = _strict_json(tmp_path / 'a' / 'out' / name)
+            b = _strict_json(tmp_path / 'b' / 'out' / name)
+            assert a['uniform_spherical'] == b['uniform_spherical']
+
+    @pytest.mark.parametrize('argv, message', [
+        (['--material', 'T700_epoxy'], '--material-file replaces --material'),
+        (['--material-file', 'missing.json'], '--material-file: [Errno 2]'),
+    ])
+    def test_usage_errors(self, tmp_path, monkeypatch, capsys, material_file, argv,
+                          message):
+        path, _ = material_file
+        if argv[0] == '--material':
+            argv = ['--material-file', str(path), *argv]
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, *argv)
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_a_bad_file_is_a_usage_error(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / 'bad.json'
+        path.write_text('{"E11": 1}')
+        with pytest.raises(SystemExit) as exc:
+            self._main(tmp_path, monkeypatch, '--material-file', str(path))
+        assert exc.value.code == 2
+        assert 'bad.json: The material is missing E22' in capsys.readouterr().err
+
+    def test_the_default_preset_is_unchanged(self, tmp_path, monkeypatch, capsys):
+        assert self._main(tmp_path, monkeypatch) == 0
+        assert 'Material: T800_epoxy' in capsys.readouterr().out

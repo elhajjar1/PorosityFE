@@ -18,6 +18,12 @@ and writes JSON results; ``--plots`` adds PNG figures and ``--uq`` an
 uncertainty band. Exit code ``0`` on success, ``2`` on invalid input or an
 output that cannot be written, ``3`` on a failed analysis.
 
+``--material-file PATH`` analyses the material of a JSON file instead of a
+preset: one written by :func:`~porosity_fe.save_material_to_json`, or a bare
+JSON object of the :class:`~porosity_fe.MaterialProperties` fields (MPa,
+mm, fractions). The name stored in the file, or the file's own, labels the
+run. It replaces ``--material`` and applies to every option below.
+
 The laminate and the scope of a run are options:
 
 - ``--layup SPEC`` and ``--t-ply MM`` set the laminate: ``'QI'`` (the

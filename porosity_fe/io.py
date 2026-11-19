@@ -13,7 +13,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .results import ConfigArtifacts
 
 from .homogenization import _DEFAULT_POROSITY_DEGRADATION
+from .materials import MaterialProperties
 from .porosity_map import PorosityMap
 from .results import ConfigResult
 
@@ -188,6 +189,9 @@ FORMAT_FE_FIELDS = "porosity-fe.fe-fields"
 FORMAT_NCR = "porosity-fe.ncr"
 FORMAT_UQ = "porosity-fe.uq"
 FORMAT_ALLOWABLE = "porosity-fe.allowable-porosity"
+#: A material file (save_material_to_json). Not a results format:
+#: load_material_from_json reads it, load_results_from_json does not.
+FORMAT_MATERIAL = "porosity-fe.material"
 _KNOWN_FORMATS = {FORMAT_EMPIRICAL_SWEEP, FORMAT_FE_FIELDS, FORMAT_NCR, FORMAT_UQ,
                   FORMAT_ALLOWABLE}
 
@@ -238,6 +242,22 @@ _UNITS_NCR_ALLOWABLE = {
 _UNITS_LAMINATE = {
     "ply_angles": "degrees",
     "t_ply_mm": "mm",
+}
+#: Units of the fields of a ``material`` block (a material file, a saved
+#: app scenario), by group.
+_UNITS_MATERIAL = {
+    "E11, E22, E33, G12, G13, G23": "MPa",
+    "sigma_1c, sigma_1t, sigma_2t, sigma_2c, tau_12, tau_ilss, sigma_3t, tau_13":
+        "MPa",
+    "matrix_modulus, fiber_modulus, fiber_shear_modulus": "MPa",
+    "nu12, nu13, nu23, matrix_poisson, fiber_poisson": "dimensionless",
+    "t_ply": "mm",
+    "fiber_volume_fraction": "dimensionless fraction in (0, 1)",
+    "alpha_1, alpha_2, alpha_3": "1/K",
+    "T_service, T_ref, T_g_dry, T_stress_free": "deg C",
+    "M_service, M_ref": "wt %",
+    "G_Ic, G_IIc, G_IIIc": "N/mm",
+    "tsai_wu_F12, bk_eta": "dimensionless",
 }
 _UNITS_STREAMLIT_EMPIRICAL = {
     "failure_stress": "MPa",
@@ -516,6 +536,97 @@ def _laminate_record(artifacts) -> dict | None:
         'n_plies': int(material.n_plies),
         't_ply_mm': float(material.t_ply),
     }
+
+
+def _material_document(material: MaterialProperties, name: str | None = None) -> dict:
+    """The JSON document of a material file (``format`` FORMAT_MATERIAL)."""
+    if not isinstance(material, MaterialProperties):
+        raise TypeError(
+            f"material must be a MaterialProperties; got {type(material).__name__}.")
+    if name is not None and (not isinstance(name, str) or not name.strip()):
+        raise ValueError(f"name must be a non-empty string or None; got {name!r}.")
+    return _wrap_envelope(FORMAT_MATERIAL, _UNITS_MATERIAL, {
+        'name': None if name is None else name.strip(),
+        'material': material.to_dict(),
+    })
+
+
+def _material_from_document(data, source: str = "The material file"
+                            ) -> tuple[MaterialProperties, str | None]:
+    """The material and its name from a material document.
+
+    A bare mapping of the fields (no envelope) is accepted too, so a file
+    written by hand needs only the material's values.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"{source}: expected a JSON object at the top level.")
+    name = None
+    fields: Any = data
+    if 'material' in data or 'format' in data:
+        fmt = data.get('format')
+        if fmt != FORMAT_MATERIAL:
+            raise ValueError(
+                f"{source}: format {fmt!r} is not a material file "
+                f"({FORMAT_MATERIAL!r}).")
+        fields = data.get('material')
+        name = data.get('name')
+        if name is not None and not isinstance(name, str):
+            raise ValueError(f"{source}: 'name' must be a string, got {name!r}.")
+    try:
+        material = MaterialProperties.from_dict(fields)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from None
+    return material, (name.strip() or None) if isinstance(name, str) else None
+
+
+def save_material_to_json(material: MaterialProperties,
+                          filename: str | os.PathLike, *,
+                          name: str | None = None) -> None:
+    """Write a material to a JSON file that :func:`load_material_from_json`
+    reads.
+
+    Parameters
+    ----------
+    material : MaterialProperties
+        The material; every field is written (``null`` for an unset option).
+    filename : path
+        The file to write.
+    name : str, optional
+        Keyword-only. A label stored with the material, e.g. the preset's
+        key or the material system.
+
+    Notes
+    -----
+    The file is the standard envelope (``format``
+    :data:`~porosity_fe.FORMAT_MATERIAL`, a ``units`` block) with the
+    fields under ``material``. The values are in the units of
+    :class:`~porosity_fe.MaterialProperties`: MPa, mm, fractions, 1/K and
+    N/mm.
+    """
+    _write_json(_material_document(material, name), filename)
+
+
+def load_material_from_json(filename: str | os.PathLike) -> MaterialProperties:
+    """Read a material from a JSON file.
+
+    The file is one written by :func:`save_material_to_json`, or a bare
+    JSON object of the material's fields (the ply constants, strengths,
+    ``t_ply``, ``n_plies`` and the constituents are required; the options
+    may be left out).
+
+    Raises
+    ------
+    ValueError
+        When the file is not a material file, lacks a required field, names
+        an unknown one or holds a value the material refuses.
+    """
+    filename = Path(filename)
+    with open(filename, encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{filename}: not valid JSON ({exc}).") from None
+    return _material_from_document(data, str(filename))[0]
 
 
 def load_results_from_json(filename: str | os.PathLike) -> dict:

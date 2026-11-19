@@ -81,6 +81,20 @@ porosity, loading mode, FE thermal load, delamination and toughness, mesh) and t
 knockdown bar chart, FE stress maps, and result downloads (including the FE
 field as a `.vtu` file for ParaView).
 
+- **Custom material.** The sidebar's *Custom material* panel downloads the
+  selected material as a JSON template and loads an edited one, which joins
+  the Material list as `Custom: <name>` (see
+  [Defining a custom material](#defining-a-custom-material)).
+- **Plate size.** The coupon's length and width are inputs (default 50 x 20
+  mm). The FE solve uses them; the empirical knockdowns do not depend on
+  them, and the ASTM specimen modes keep their own size. The mesh does not
+  follow the plate, so set `nx` and `ny` in Expert mode for a larger one.
+- **Saved scenarios.** The *Scenario* panel saves every sidebar input, the
+  custom material in use and the headline numbers of the last run to a JSON
+  file. Loading it restores the inputs, and the next run's Results tab
+  compares the two runs. An input the file holds but this version does not
+  accept is listed and skipped.
+
 The empirical knockdowns of compression, tension, shear, ILSS and
 transverse tension are always all computed; the loading mode selects the
 FE solve. ILSS runs on the ASTM
@@ -264,6 +278,21 @@ Nine material presets are available in the `MATERIALS` dict (see the
 [Features](#features) list). To analyze a system that isn't in the built-in
 set, construct a `MaterialProperties` instance directly and pass it through
 the analysis pipeline — there is no separate registration step required.
+
+A material can also live in a JSON file, which the app and the CLI read:
+
+```python
+from porosity_fe import MATERIALS, save_material_to_json, load_material_from_json
+
+save_material_to_json(MATERIALS['T700_epoxy'], 'my_system.json', name='My system')
+# ... edit the values in the file (MPa, mm, fractions) ...
+my_material = load_material_from_json('my_system.json')
+```
+
+`porosity-analyze --material-file my_system.json` analyses it instead of a
+preset, and `compare_configurations(..., material=my_material)` does the
+same in Python. `MaterialProperties.to_dict()` / `from_dict()` are the
+dict form; `from_dict` names a missing or misspelt field.
 
 ```python
 from porosity_fe import MaterialProperties, PorosityField, CompositeMesh, EmpiricalSolver
