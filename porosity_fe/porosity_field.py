@@ -8,6 +8,7 @@ import numpy as np
 
 from ._types import ClusterLocation, Distribution
 from .materials import MaterialProperties
+from .ply_stack import PlyStack, as_material
 from .porosity_map import PorosityMap
 from .void_geometry import VOID_SHAPES, VoidGeometry
 
@@ -45,6 +46,26 @@ def _profile_normalization(distribution: str, z0: float, Lz: float,
     """
     z_ref = np.linspace(0, Lz, 1000)
     mean_val = np.mean(_shape_profile(z_ref, distribution, z0, Lz, t_ply, n_plies))
+    return mean_val if mean_val > 0 else 1.0
+
+
+def _stack_interface_profile(z: np.ndarray, centres: tuple[float, ...],
+                             sigmas: tuple[float, ...]) -> np.ndarray:
+    """Un-normalized ``interface`` shape of a :class:`PlyStack`: a Gaussian
+    at each interface, ``sigma = 0.35`` times the thinner of its two plies."""
+    profile = np.zeros_like(z)
+    for z_int, sigma in zip(centres, sigmas, strict=True):
+        profile += np.exp(-0.5 * ((z - z_int) / sigma)**2)
+    return profile
+
+
+@functools.lru_cache(maxsize=128)
+def _stack_interface_normalization(centres: tuple[float, ...], sigmas: tuple[float, ...],
+                                   Lz: float) -> float:
+    """Mean of :func:`_stack_interface_profile` over ``[0, Lz]``, sampled as
+    :func:`_profile_normalization` samples the single-material shape."""
+    z_ref = np.linspace(0, Lz, 1000)
+    mean_val = np.mean(_stack_interface_profile(z_ref, centres, sigmas))
     return mean_val if mean_val > 0 else 1.0
 
 POROSITY_CONFIGS = {
@@ -88,10 +109,12 @@ class PorosityField:
 
     Parameters
     ----------
-    material : MaterialProperties
+    material : MaterialProperties or PlyStack
         Composite material — supplies ``t_ply`` and ``n_plies`` (and
         hence ``Lz = t_ply * n_plies``) used by the through-thickness
-        profile.
+        profile. A :class:`~porosity_fe.PlyStack` (a hybrid laminate)
+        supplies its plies' thicknesses instead: ``Lz`` is their sum and
+        the ``'interface'`` Gaussians sit at its interfaces.
     void_volume_fraction : float
         Mean void volume fraction ``Vp`` over the laminate, as a
         fraction in ``[0, 1]`` (e.g. ``0.02`` for 2 %). Passing a percent
@@ -104,7 +127,9 @@ class PorosityField:
           ``Lz * _CLUSTER_OFFSETS[cluster_location]`` with
           ``sigma = Lz / 6``.
         - ``'interface'`` — sum of Gaussians at each ply interface
-          ``z = k * t_ply`` with ``sigma = 0.35 * t_ply``.
+          ``z = k * t_ply`` with ``sigma = 0.35 * t_ply``; for a
+          :class:`~porosity_fe.PlyStack`, at each of its interfaces with
+          ``sigma = 0.35`` times the thinner of the two plies.
     void_shape : str or tuple of 3 float, optional
         Either a key of :data:`VOID_SHAPES`
         (``'spherical'``, ``'cylindrical'`` or ``'penny'``) or an
@@ -135,7 +160,11 @@ class PorosityField:
     Attributes
     ----------
     material : MaterialProperties
-        Stored reference to the input material.
+        Stored reference to the input material (for a
+        :class:`~porosity_fe.PlyStack`, its
+        :attr:`~porosity_fe.PlyStack.reference`).
+    ply_stack : PlyStack or None
+        The stack the field was built for, ``None`` for a single material.
     Vp : float
         Mean void volume fraction (after the snap-to-1.0 tolerance).
     distribution : str
@@ -148,7 +177,7 @@ class PorosityField:
         Discrete inclusions (empty list if none were supplied).
     Lz : float
         Total laminate thickness (mm), copied from
-        ``material.total_thickness``.
+        ``material.total_thickness`` (the stack's total thickness).
     seed : int or None
         The seed argument, kept for provenance (the seed of the map of
         :meth:`random`).
@@ -187,7 +216,8 @@ class PorosityField:
     _CLUSTER_OFFSETS = {'midplane': 0.5, 'surface': 0.0, 'quarter': 0.25}
     _DISTRIBUTIONS = ('uniform', 'clustered', 'interface')
 
-    def __init__(self, material: MaterialProperties, void_volume_fraction: float,
+    def __init__(self, material: MaterialProperties | PlyStack,
+                 void_volume_fraction: float,
                  distribution: Distribution = 'uniform', void_shape: str | tuple = 'spherical',
                  cluster_location: ClusterLocation = 'midplane',
                  discrete_voids: list[VoidGeometry] | None = None,
@@ -200,6 +230,7 @@ class PorosityField:
                 f"void_volume_fraction must be a numeric type (int, float, or numpy scalar), "
                 f"got {type(void_volume_fraction).__name__}."
             )
+        material, stack = as_material(material)
         Vp = float(void_volume_fraction)
         # Snap to 1.0 for inputs in (1.0, 1.0 + 1e-9] — accommodates upstream
         # numerical noise (e.g. np.mean across an element) without rejecting it.
@@ -235,6 +266,7 @@ class PorosityField:
             )
 
         self.material = material
+        self.ply_stack = stack
         self.Vp = Vp
         self.distribution = distribution
         self.cluster_location = cluster_location
@@ -242,7 +274,7 @@ class PorosityField:
         # The constructor is RNG-free; `seed` is recorded into provenance
         # (#55), and PorosityField.random draws its map from it.
         self.seed = seed
-        self.Lz = material.total_thickness
+        self.Lz = material.total_thickness if stack is None else stack.total_thickness
         if in_plane_map is not None:
             if not isinstance(in_plane_map, PorosityMap):
                 raise TypeError(
@@ -280,6 +312,13 @@ class PorosityField:
         match self.distribution:
             case 'uniform':
                 return np.full_like(z, self.Vp)
+            case 'interface' if self.ply_stack is not None:
+                t = self.ply_stack.thicknesses
+                centres = tuple(self.ply_stack.interface_z.tolist())
+                sigmas = tuple((0.35 * np.minimum(t[:-1], t[1:])).tolist())
+                profile = _stack_interface_profile(z, centres, sigmas)
+                return self.Vp * profile / _stack_interface_normalization(
+                    centres, sigmas, float(self.Lz))
             case 'clustered' | 'interface':
                 z0 = (self.Lz * self._CLUSTER_OFFSETS[self.cluster_location]
                       if self.distribution == 'clustered' else 0.0)

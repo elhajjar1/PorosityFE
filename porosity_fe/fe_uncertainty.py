@@ -36,6 +36,7 @@ from .materials import MATERIALS, MaterialProperties
 from .mesh import CompositeMesh
 from .open_hole import OPEN_HOLE_LOADINGS, OpenHoleMesh, open_hole_analysis
 from .pipeline import _default_mesh_resolution
+from .ply_stack import PlyStack
 from .porosity_field import PorosityField
 from .porosity_map import RANDOM_FIELD_KERNELS, PorosityMap
 from .sensitivity import SensitivityRanking, sensitivity_ranking
@@ -226,7 +227,8 @@ def _outputs(result: Any, mesh: CompositeMesh) -> dict[str, float | None]:
 
 
 def fe_porosity_uncertainty(
-    material: str | MaterialProperties, Vp: float, loading: str = 'compression', *,
+    material: str | MaterialProperties | PlyStack, Vp: float,
+    loading: str = 'compression', *,
     cov: float, correlation_length: float | Sequence[float], n_samples: int = 20,
     kernel: str = 'squared_exponential', resolution: float | None = None,
     preserve_mean: bool = True, vp_cov: float = 0.0,
@@ -251,8 +253,10 @@ def fe_porosity_uncertainty(
 
     Parameters
     ----------
-    material : str or MaterialProperties
-        A preset name or a material.
+    material : str, MaterialProperties or PlyStack
+        A preset name, a material, or a :class:`~porosity_fe.PlyStack` (a
+        hybrid laminate; its porosity scatters, not its materials, so it
+        takes no ``covs`` or ``spec``).
     Vp : float
         Nominal specimen-average void content, a **fraction**.
     loading : {'compression', 'tension', 'shear'}
@@ -339,11 +343,18 @@ def fe_porosity_uncertainty(
     ...                                 correlation_length=5.0, seed=1)  # doctest: +SKIP
     >>> study.statistics('first_ply_failure_load_factor')  # doctest: +SKIP
     """
+    mat: MaterialProperties | PlyStack
     if isinstance(material, str):
         if material not in MATERIALS:
             raise ValueError(
                 f"Unknown material {material!r}. Available presets: {sorted(MATERIALS)}.")
         mat, label = MATERIALS[material], material
+    elif isinstance(material, PlyStack):
+        if covs or spec:
+            raise ValueError(
+                "Material scatter (covs / spec) perturbs one material's fields; "
+                "a PlyStack study scatters the porosity only.")
+        mat, label = material, repr(material)
     else:
         mat, label = material, _material_label(material)
     nominal_vp = float(check_fraction(Vp, 'Vp'))
@@ -368,7 +379,7 @@ def fe_porosity_uncertainty(
                 f"config cannot set {key!r}: the study draws the in-plane map of "
                 f"every solve from its own seed.")
     pcts = tuple(float(p) for p in percentiles)
-    resolved = _normalize_uq_spec(mat, covs, spec)
+    resolved = {} if isinstance(mat, PlyStack) else _normalize_uq_spec(mat, covs, spec)
     names = list(resolved)
     hole: dict[str, Any] | None = None
     if open_hole is not None:
@@ -405,7 +416,7 @@ def fe_porosity_uncertainty(
     }
     defects = {} if not delaminations else {'delaminations': list(delaminations)}
 
-    def solve(material_obj: MaterialProperties, pf: PorosityField):
+    def solve(material_obj: MaterialProperties | PlyStack, pf: PorosityField):
         if hole is not None:
             mesh = CompositeMesh.for_open_hole(pf, material_obj, width=width, length=length,
                                                ply_angles=ply_angles, **hole)
@@ -438,7 +449,8 @@ def fe_porosity_uncertainty(
     for s in range(int(n_samples)):
         draws = {name: float(_unit_to_draw(np.array([unit[s, i]]), resolved[name][0])[0])
                  for i, name in enumerate(names)}
-        drawn = mat.perturb(draws, resolved) if names else mat
+        drawn = mat.perturb(draws, resolved) \
+            if names and isinstance(mat, MaterialProperties) else mat
         vp = nominal_vp
         if sample_vp:
             z = float(_unit_to_draw(np.array([unit[s, len(names)]]), 'lognormal')[0])

@@ -176,6 +176,8 @@ from .pipeline import _resolve_n_jobs as _resolve_n_jobs  # noqa: F401, E402
 from .pipeline import build_empirical_pipeline as build_empirical_pipeline  # noqa: F401, E402
 from .pipeline import compare_configurations as compare_configurations  # noqa: F401, E402
 from .pipeline import sweep_configurations as sweep_configurations  # noqa: F401, E402
+from .ply_stack import PlyStack as PlyStack  # noqa: F401, E402
+from .ply_stack import parse_ply_stack as parse_ply_stack  # noqa: F401, E402
 from .porosity_field import POROSITY_CONFIGS as POROSITY_CONFIGS  # noqa: F401, E402
 from .porosity_field import PorosityField as PorosityField  # noqa: F401, E402
 from .porosity_map import PorosityMap as PorosityMap  # noqa: F401, E402
@@ -285,6 +287,9 @@ __all__ = [
     "vcct_energy_release_rates",
     "fracture_load_factors",
     "critical_energy_release_rate",
+    # Hybrid laminates (per-ply material and thickness)
+    "PlyStack",
+    "parse_ply_stack",
     # Open-hole coupons and the notch analysis
     "OpenHoleMesh",
     "OpenHoleGeometry",

@@ -33,6 +33,7 @@ from .fracture_specimens import (
 )
 from .gauss import gauss_points_hex
 from .materials import MaterialProperties
+from .ply_stack import PlyStack, as_material
 from .porosity_field import PorosityField
 
 logger = logging.getLogger("porosity_fe_analysis")
@@ -56,7 +57,7 @@ _D2344_NOSE_RADIUS = 3.0
 _D2344_ELEMENTS_PER_THICKNESS = 4
 
 
-def _hertz_contact_width(material: MaterialProperties, *,
+def _hertz_contact_width(material: MaterialProperties | PlyStack, *,
                          nose_radius: float = _D2344_NOSE_RADIUS) -> float:
     """Contact width (mm) of a short-beam loading nose at the pristine strength.
 
@@ -69,10 +70,13 @@ def _hertz_contact_width(material: MaterialProperties, *,
     Returns ``2 a``: about 0.77 mm (0.18 h) for the 24-ply T800/epoxy
     preset. An estimate: a laminate is stiffer in plane than ``E33``, which
     narrows the contact, and damage under the nose near failure widens it.
+    For a :class:`~porosity_fe.PlyStack` the ply under the nose, the top
+    one, supplies ``tau_ilss``, ``E33`` and ``nu23``.
     """
     h = float(material.total_thickness)
-    q = 4.0 / 3.0 * float(material.tau_ilss) * h
-    e_star = float(material.E33) / (1.0 - float(material.nu23) ** 2)
+    ply = material.ply_materials[-1] if isinstance(material, PlyStack) else material
+    q = 4.0 / 3.0 * float(ply.tau_ilss) * h
+    e_star = float(ply.E33) / (1.0 - float(ply.nu23) ** 2)
     return 4.0 * math.sqrt(q * float(nose_radius) / (math.pi * e_star))
 
 
@@ -271,7 +275,8 @@ class CompositeMesh:
 
     The in-plane coupon size is ``length`` x ``width`` (default 50 x 20 mm,
     a standard ASTM-style coupon); through-thickness ``L_z`` is taken from
-    ``material.total_thickness`` (``t_ply * n_plies``). Pass the size to
+    ``material.total_thickness`` (``t_ply * n_plies``), or the sum of a
+    :class:`~porosity_fe.PlyStack`'s ply thicknesses. Pass the size to
     the constructor; assigning :attr:`L_x`, :attr:`L_y` or :attr:`x_grid`
     afterwards is deprecated (issue #225): it leaves the generated arrays
     stale, so :class:`~porosity_fe.FESolver` refuses the mesh until
@@ -283,10 +288,17 @@ class CompositeMesh:
         Source of nodal porosity values. Sampled by
         :meth:`generate_mesh` at every node coordinate. It must be built
         for a laminate of the same plies (``n_plies``, ``t_ply``) as
-        ``material``, or ``ValueError`` is raised.
-    material : MaterialProperties
+        ``material`` (the same :class:`~porosity_fe.PlyStack`), or
+        ``ValueError`` is raised.
+    material : MaterialProperties or PlyStack
         Composite material; supplies ``total_thickness`` (``L_z``) and
-        ``n_plies`` for the per-element ply id assignment.
+        ``n_plies`` for the per-element ply id assignment. A
+        :class:`~porosity_fe.PlyStack` (a hybrid laminate) gives every ply
+        its own material and thickness: the node layers follow the ply
+        thicknesses (each ply is cut into ``nz / n_plies`` element layers
+        of its own thickness when ``nz`` is a multiple of ``n_plies``), and
+        an element layer that would span plies of different materials is
+        refused.
     nx, ny, nz : int, optional
         Number of elements along each axis (defaults
         ``nx=50``, ``ny=20``, ``nz=24``). Each must be a positive
@@ -326,7 +338,14 @@ class CompositeMesh:
     porosity_field : PorosityField
         Stored input.
     material : MaterialProperties
-        Stored input.
+        Stored input (for a :class:`~porosity_fe.PlyStack`, its
+        :attr:`~porosity_fe.PlyStack.reference`, the laminate-level
+        material).
+    ply_stack : PlyStack or None
+        The stack the mesh was built from, ``None`` for a single material.
+    elem_material_ids : np.ndarray
+        Shape ``(n_elem,)`` index of each element's material in
+        ``ply_stack.materials`` (all zero for a single material).
     nx, ny, nz : int
         Element counts along each axis.
     L_x, L_y, L_z : float
@@ -453,7 +472,8 @@ class CompositeMesh:
     _MAX_TOTAL_ELEMENTS = 1_000_000
     _FE_BYTES_PER_ELEMENT = 30_000
 
-    def __init__(self, porosity_field: PorosityField, material: MaterialProperties,
+    def __init__(self, porosity_field: PorosityField,
+                 material: MaterialProperties | PlyStack,
                  nx: int = 50, ny: int = 20, nz: int = 24,
                  ply_angles: list[float] | str | None = 'QI', *,
                  delaminations: Iterable[Delamination] | Delamination | None = None,
@@ -482,8 +502,11 @@ class CompositeMesh:
                 f"reduce the resolution or split the analysis."
             )
 
+        material, stack = as_material(material)
         self.porosity_field = porosity_field
         self.material = material
+        self.ply_stack = stack
+        self.elem_material_ids: np.ndarray | None = None
         self.nx = nx
         self.ny = ny
         self.nz = nz
@@ -493,14 +516,14 @@ class CompositeMesh:
         self._x_grid: np.ndarray | None = None if x_grid is None \
             else np.array(x_grid, dtype=float)
         self._stale = False
-        self.L_z = material.total_thickness
+        self.L_z = material.total_thickness if stack is None else stack.total_thickness
 
         self.nodes = None
         self.elements = None
         self.porosity: np.ndarray | None = None
         self.porosity_renormalization = 1.0
         self.stiffness_reduction = None
-        self.ply_ids = None
+        self.ply_ids: np.ndarray | None = None
         self.ply_angles = None  # Per-element ply orientation angles (degrees)
         self.void_elements: np.ndarray | None = None
         self.flexure_geometry: FlexureGeometry | None = None
@@ -536,8 +559,19 @@ class CompositeMesh:
         # The porosity field lays its through-thickness profile over its own
         # material's plies: a field of another laminate would put the
         # clustered band or the interfaces in the wrong place.
+        field_stack = getattr(porosity_field, 'ply_stack', None)
+        if stack is not None or field_stack is not None:
+            if field_stack != stack:
+                raise ValueError(
+                    "CompositeMesh: the porosity field and the mesh must be built "
+                    "from the same PlyStack (the field lays its through-thickness "
+                    "profile over the stack's plies)."
+                    if stack is not None else
+                    "CompositeMesh: the porosity field was built from a PlyStack; "
+                    "build the mesh from the same PlyStack.")
+            self._check_stack_layers(int(nz))
         field_material = getattr(porosity_field, 'material', None)
-        if field_material is not None and (
+        if stack is None and field_material is not None and (
                 int(field_material.n_plies) != int(material.n_plies)
                 or not np.isclose(float(field_material.t_ply), float(material.t_ply),
                                   rtol=1e-9, atol=0.0)):
@@ -551,7 +585,7 @@ class CompositeMesh:
 
     @classmethod
     def for_flexure(cls, porosity_field: PorosityField,
-                    material: MaterialProperties, *,
+                    material: MaterialProperties | PlyStack, *,
                     span_to_thickness: float = 32.0,
                     span: float | None = None,
                     width: float = 13.0,
@@ -757,7 +791,7 @@ class CompositeMesh:
         return mesh
 
     @classmethod
-    def for_open_hole(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+    def for_open_hole(cls, porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                       hole_diameter: float = 6.0, width: float = 36.0,
                       length: float | None = None, n_circumferential: int = 12,
                       n_radial: int = 16, radial_growth: float | None = None,
@@ -827,7 +861,7 @@ class CompositeMesh:
 
     @classmethod
     def for_ilss(cls, porosity_field: PorosityField,
-                 material: MaterialProperties, *,
+                 material: MaterialProperties | PlyStack, *,
                  span_to_thickness: float = _D2344_SPAN_TO_THICKNESS,
                  length_to_thickness: float = _D2344_LENGTH_TO_THICKNESS,
                  width_to_thickness: float = _D2344_WIDTH_TO_THICKNESS,
@@ -1002,7 +1036,7 @@ class CompositeMesh:
     # ------------------------------------------------------------------
 
     @classmethod
-    def for_dcb(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+    def for_dcb(cls, porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                 crack_length: float = _D5528_CRACK_LENGTH,
                 length: float = _D5528_LENGTH,
                 width: float = _D5528_WIDTH,
@@ -1128,7 +1162,7 @@ class CompositeMesh:
             nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
 
     @classmethod
-    def for_enf(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+    def for_enf(cls, porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                 crack_length: float = _D7905_CRACK_LENGTH,
                 span: float = _D7905_SPAN,
                 width: float = _D7905_WIDTH,
@@ -1212,7 +1246,7 @@ class CompositeMesh:
             nx=nx, ny=ny, nz=nz, plane_strain=plane_strain, ply_angles=ply_angles)
 
     @classmethod
-    def for_mmb(cls, porosity_field: PorosityField, material: MaterialProperties, *,
+    def for_mmb(cls, porosity_field: PorosityField, material: MaterialProperties | PlyStack, *,
                 crack_length: float = _D6671_CRACK_LENGTH,
                 span: float = _D6671_SPAN,
                 lever_length: float | None = None,
@@ -1300,6 +1334,11 @@ class CompositeMesh:
         if lever_length is not None and mode_ratio is not None:
             raise ValueError(
                 "CompositeMesh.for_mmb: pass lever_length or mode_ratio, not both.")
+        if lever_length is None and isinstance(material, PlyStack):
+            raise ValueError(
+                "CompositeMesh.for_mmb: the lever length of a mode ratio is "
+                "beam theory of a single material; for a PlyStack give "
+                "lever_length.")
         if lever_length is None:
             c = mmb_lever_length(
                 material, _D6671_MODE_RATIO if mode_ratio is None else mode_ratio,
@@ -1457,10 +1496,79 @@ class CompositeMesh:
                 f"{x.shape}; pass x_grid=None for evenly spaced node lines.")
         return x
 
+    def _check_stack_layers(self, nz: int) -> None:
+        """Refuse element layers that span plies of different materials.
+
+        Element layer ``k`` covers plies ``k n / nz`` to
+        ``(k + 1) n / nz`` (ply units, ``n`` plies); it takes the ply at
+        its centroid, so plies of another material inside it would be lost.
+        """
+        stack = self.ply_stack
+        assert stack is not None
+        n = stack.n_plies
+        ids = stack.ply_material_ids
+        for k in range(nz):
+            first = k * n // nz
+            last = -(-(k + 1) * n // nz) - 1
+            if np.any(ids[first:last + 1] != ids[first]):
+                raise ValueError(
+                    f"CompositeMesh: with nz={nz} element layers for the "
+                    f"{n}-ply stack, element layer {k} spans plies {first} to "
+                    f"{last}, of different materials. Use nz = k * {n} so every "
+                    f"ply has element layers of its own.")
+
+    def _layer_z(self) -> np.ndarray:
+        """``(nz + 1,)`` heights of the node layers (mm).
+
+        Uniform for a single material. For a :class:`~porosity_fe.PlyStack`
+        node layer ``k`` is at ``k n / nz`` in ply units, mapped linearly
+        through each ply's thickness, so with ``nz`` a multiple of ``n`` the
+        interfaces are node layers and each ply is cut into equal layers.
+        """
+        if self.ply_stack is None:
+            return np.linspace(0, self.L_z, self.nz + 1)
+        n = self.ply_stack.n_plies
+        num = np.arange(self.nz + 1) * n
+        ply = _ply_at(num, self.nz, n)
+        frac = (num - ply * self.nz) / self.nz
+        bounds = self.ply_stack.ply_bounds
+        z = bounds[ply] + frac * self.ply_stack.thicknesses[ply]
+        z[0], z[-1] = 0.0, bounds[-1]
+        return z
+
+    def _assign_plies(self, nodes_per_layer: int, elements_per_layer: int) -> None:
+        """Ply id of every node and element, the element angles and materials.
+
+        Ply ids in exact integer arithmetic, so a node or element centroid
+        on a ply interface is not rounded either way by floating-point
+        noise. Node layer k sits at k * n_plies / nz in ply units; each
+        element takes the ply containing its centroid, which for element
+        layer k is at (2k + 1) * n_plies / (2 nz).
+        """
+        n_plies = self.material.n_plies
+        self.ply_ids = np.repeat(
+            _ply_at(np.arange(self.nz + 1) * n_plies, self.nz, n_plies),
+            nodes_per_layer)
+        self.elem_ply_ids = np.repeat(
+            _ply_at((2 * np.arange(self.nz) + 1) * n_plies, 2 * self.nz, n_plies),
+            elements_per_layer)
+
+        if self._input_ply_angles is not None:
+            # A pattern shorter than the laminate repeats to fill all plies.
+            self._ply_layup = _expand_layup(list(self._input_ply_angles), n_plies)
+        else:
+            # Default: all 0-degree plies
+            self._ply_layup = np.zeros(n_plies, dtype=float)
+        self.ply_angles = self._ply_layup[self.elem_ply_ids]
+        self.elem_material_ids = (
+            np.zeros(len(self.elem_ply_ids), dtype=np.intp) if self.ply_stack is None
+            else self.ply_stack.ply_material_ids[self.elem_ply_ids])
+        self._layup_warning_logged = False
+
     def generate_mesh(self):
         x = self._x_node_lines()
         y = np.linspace(0, self.L_y, self.ny + 1)
-        z = np.linspace(0, self.L_z, self.nz + 1)
+        z = self._layer_z()
 
         # Vectorized node construction. Node ordering is z (outer) ->
         # y (middle) -> x (inner), i.e. node_id = k*(ny+1)*(nx+1)
@@ -1507,27 +1615,7 @@ class CompositeMesh:
         # Also create a set for O(1) lookup
         self.void_element_set = set(self.void_elements.tolist())
 
-        # Ply ids in exact integer arithmetic, so a node or element centroid
-        # on a ply interface is not rounded either way by floating-point
-        # noise. Node layer k sits at k * n_plies / nz in ply units; each
-        # element takes the ply containing its centroid, which for element
-        # layer k is at (2k + 1) * n_plies / (2 nz).
-        n_plies = self.material.n_plies
-        self.ply_ids = np.repeat(
-            _ply_at(np.arange(self.nz + 1) * n_plies, self.nz, n_plies),
-            (self.ny + 1) * (self.nx + 1))
-        self.elem_ply_ids = np.repeat(
-            _ply_at((2 * np.arange(self.nz) + 1) * n_plies, 2 * self.nz, n_plies),
-            self.ny * self.nx)
-
-        if self._input_ply_angles is not None:
-            # A pattern shorter than the laminate repeats to fill all plies.
-            self._ply_layup = _expand_layup(list(self._input_ply_angles), n_plies)
-        else:
-            # Default: all 0-degree plies
-            self._ply_layup = np.zeros(n_plies, dtype=float)
-        self.ply_angles = self._ply_layup[self.elem_ply_ids]
-        self._layup_warning_logged = False
+        self._assign_plies((self.ny + 1) * (self.nx + 1), self.ny * self.nx)
 
         # Explicit delaminations: duplicate their interfaces' node planes
         # last, after every per-node array exists.

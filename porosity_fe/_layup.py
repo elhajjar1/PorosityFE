@@ -15,7 +15,9 @@ Conventions match :func:`porosity_fe.homogenization._build_clt_abd`:
 - engineering shear strain, Voigt order ``[11, 22, 12]`` in plane;
 - membrane only: the ``B`` and ``D`` matrices are ignored, so an unsymmetric
   layup gets the partition of its membrane response. Equal ply thicknesses
-  are assumed (``t_ply`` cancels out of the fractions).
+  are assumed (``t_ply`` cancels out of the fractions) unless ply
+  ``thicknesses`` are given (a single-material :class:`~porosity_fe.PlyStack`
+  of plies of different thickness), which weight each ply.
 
 The partition depends only on the A-matrix and the per-ply stiffness, so it
 is invariant to stacking-sequence permutation, continuous in ply angle, and
@@ -25,6 +27,7 @@ the same for every in-plane isotropic layup (``[0/±45/90]_s`` and
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 
 import numpy as np
@@ -52,23 +55,28 @@ def _plane_stress_reduce(C: np.ndarray) -> np.ndarray:
 
 @lru_cache(maxsize=1024)
 def _partition_cached(C_flat: tuple[float, ...], ply_angles: tuple[float, ...],
-                      direction: str) -> tuple[float, float, float]:
+                      direction: str, weights: tuple[float, ...] | None = None
+                      ) -> tuple[float, float, float]:
     C = np.asarray(C_flat, dtype=float).reshape(6, 6)
     q_bars = []
     for angle_deg in ply_angles:
         angle_rad = float(np.radians(angle_deg))
         C_rot = rotate_stiffness_3d(C, angle_rad, axis='z') if abs(angle_rad) > 1e-15 else C
         q_bars.append(_plane_stress_reduce(C_rot))
-    A = np.sum(q_bars, axis=0)  # per unit ply thickness; t_ply cancels
+    if weights is None:
+        A = np.sum(q_bars, axis=0)  # per unit ply thickness; t_ply cancels
+    else:
+        A = np.sum([w * q for w, q in zip(weights, q_bars, strict=True)], axis=0)
     eps0 = np.linalg.solve(A, np.asarray(_LOAD_DIRECTIONS[direction]))
     energy = np.zeros(3)
-    for angle_deg, q_bar in zip(ply_angles, q_bars, strict=True):
+    for k, (angle_deg, q_bar) in enumerate(zip(ply_angles, q_bars, strict=True)):
         angle_rad = float(np.radians(angle_deg))
         T_sig = stress_transformation_3d(angle_rad)[np.ix_(_IN_PLANE, _IN_PLANE)]
         T_eps = strain_transformation_3d(angle_rad)[np.ix_(_IN_PLANE, _IN_PLANE)]
         sig_material = T_sig @ (q_bar @ eps0)
         eps_material = T_eps @ eps0
-        energy += sig_material * eps_material
+        energy += (sig_material * eps_material if weights is None
+                   else weights[k] * sig_material * eps_material)
     total = float(np.sum(energy))
     e1, e2, e6 = (float(v) / total for v in energy)
     return e1, e2, e6
@@ -76,7 +84,9 @@ def _partition_cached(C_flat: tuple[float, ...], ply_angles: tuple[float, ...],
 
 def _membrane_energy_partition(material: MaterialProperties,
                                ply_angles: list[float] | tuple[float, ...],
-                               direction: str = 'x') -> tuple[float, float, float]:
+                               direction: str = 'x', *,
+                               thicknesses: Sequence[float] | None = None,
+                               ) -> tuple[float, float, float]:
     """Fiber / transverse / shear fractions of the pristine CLT membrane energy.
 
     Parameters
@@ -87,6 +97,9 @@ def _membrane_energy_partition(material: MaterialProperties,
         Explicit ply angles in degrees (sentinels already resolved).
     direction : {'x', 'y', 'xy'}
         Laminate direction of the unit membrane resultant.
+    thicknesses : sequence of float, optional
+        Keyword-only ply thicknesses (mm), one per angle, that weight the
+        plies; ``None`` (default) weights them equally.
 
     Returns
     -------
@@ -111,5 +124,10 @@ def _membrane_energy_partition(material: MaterialProperties,
     if len(ply_angles) == 0:
         raise ValueError("ply_angles must contain at least one ply.")
     C = np.asarray(material.get_stiffness_matrix(), dtype=float)
+    if thicknesses is not None and len(thicknesses) != len(ply_angles):
+        raise ValueError(
+            f"thicknesses has {len(thicknesses)} values for {len(ply_angles)} plies.")
     return _partition_cached(tuple(C.ravel().tolist()),
-                             tuple(float(a) for a in ply_angles), direction)
+                             tuple(float(a) for a in ply_angles), direction,
+                             None if thicknesses is None
+                             else tuple(float(t) for t in thicknesses))

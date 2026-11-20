@@ -169,6 +169,24 @@ the line add the Whitney-Nuismer point-stress factor (see :doc:`theory/fe`,
    porosity-analyze --vp 0.03 --layup "[0/45/-45/90]_s" --fe tension \
        --open-hole 6 --point-stress-distance 1
 
+``--plies SPEC`` gives the FE solve a hybrid laminate (a
+:class:`~porosity_fe.PlyStack`): comma-separated blocks
+``NAME[*COUNT][@MM]``, bottom ply first, each ``COUNT`` plies of the preset
+``NAME`` (or of the ``--material-file`` material, by its name) ``MM`` thick
+(default the material's ply thickness). ``--layup`` gives the angles, tiled
+to the plies. The run is FE only, ``--fe`` and/or ``--fe-uq`` (with
+``--open-hole`` if wanted): there is no empirical sweep, whose laws knock
+down one material's strength, and the single-material options
+(``--material``, ``--t-ply``, ``--required-knockdown``, ``--uq``,
+``--plots``, ``--material-cards``, ``--buckling``, ``--delamination``, the
+fatigue and environment options) are refused. The FE JSON gains a
+``ply_stack`` block (see :doc:`theory/fe`, "Hybrid laminates").
+
+.. code-block:: bash
+
+   porosity-analyze --vp 0.02 --plies "glass_epoxy@0.2,T700_epoxy*6,glass_epoxy@0.2" \
+       --layup "[0/45/-45/90]_s" --fe tension
+
 .. argparse::
    :module: porosity_fe.cli
    :func: _build_arg_parser

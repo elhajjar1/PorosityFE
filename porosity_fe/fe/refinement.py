@@ -37,6 +37,7 @@ from ..mesh import (
     CompositeMesh,
 )
 from ..pipeline import _default_mesh_resolution
+from ..ply_stack import PlyStack
 from ..porosity_field import PorosityField
 from . import _memory
 from ._load_cases import _FLEXURE_PROCEDURE, _check_delta_T, _minres_deprecation
@@ -742,14 +743,18 @@ def _peak_factorizations(loading: str, solver: str) -> int:
     return 2 if loading in _FRACTURE_BUILDERS else 1
 
 
-def _resolve_porosity(material: MaterialProperties, porosity: PorosityField | float,
+def _resolve_porosity(material: MaterialProperties | PlyStack,
+                      porosity: PorosityField | float,
                       porosity_config: Mapping[str, Any] | None) -> PorosityField:
     if isinstance(porosity, PorosityField):
         if porosity_config:
             raise ValueError(
                 "porosity_config only applies when porosity is a Vp fraction; "
                 "a PorosityField already carries its configuration.")
-        if porosity.material is not material and porosity.material != material:
+        same = (getattr(porosity, 'ply_stack', None) == material
+                if isinstance(material, PlyStack)
+                else porosity.material is material or porosity.material == material)
+        if not same:
             raise ValueError(
                 "The PorosityField was built for a different MaterialProperties "
                 "than the one passed to refinement_study.")
@@ -761,7 +766,7 @@ def _resolve_porosity(material: MaterialProperties, porosity: PorosityField | fl
     return PorosityField(material, float(porosity), **dict(porosity_config or {}))
 
 
-def _check_layups(material: MaterialProperties, field: PorosityField,
+def _check_layups(material: MaterialProperties | PlyStack, field: PorosityField,
                   nz_values: Sequence[int], ply_angles: list[float] | str,
                   allow_unresolved_layup: bool) -> None:
     """Refuse (or warn about) levels whose element layers do not resolve the layup."""
@@ -785,7 +790,7 @@ def _check_layups(material: MaterialProperties, field: PorosityField,
 # ----------------------------------------------------------------------
 
 def refinement_study(
-    material: MaterialProperties,
+    material: MaterialProperties | PlyStack,
     porosity: PorosityField | float,
     loading: FELoadingMode = 'compression',
     *,
@@ -839,8 +844,9 @@ def refinement_study(
 
     Parameters
     ----------
-    material : MaterialProperties
-        Pristine material.
+    material : MaterialProperties or PlyStack
+        Pristine material, or a :class:`~porosity_fe.PlyStack` (a hybrid
+        laminate, whose element layers are refined within each ply).
     porosity : PorosityField or float
         The porosity field, or the specimen-average void volume fraction
         ``Vp`` (a fraction in ``[0, 1]``) to build one from with

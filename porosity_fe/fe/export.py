@@ -224,6 +224,8 @@ def _cell_fields(results: FieldResults,
         candidates.append(("ply_id", mesh.elem_ply_ids))
     if getattr(mesh, 'ply_angles', None) is not None:
         candidates.append(("ply_angle_deg", mesh.ply_angles))
+    if getattr(mesh, 'ply_stack', None) is not None:
+        candidates.append(("material_id", mesh.elem_material_ids))
     if getattr(mesh, 'void_elements', None) is not None:
         is_void = np.zeros(n_elem, dtype=float)
         void_idx = np.asarray(mesh.void_elements, dtype=np.int64).ravel()
@@ -657,6 +659,10 @@ def export_results(field_results: FieldResults,
         results_data['buckling'] = buckling.summary(buckling_reference)
     if growth is not None:
         results_data['delamination_growth'] = growth.summary()
+    stack = getattr(mesh, 'ply_stack', None)
+    if stack is not None:
+        from ..materials import MATERIALS
+        results_data['ply_stack'] = stack.to_dict(MATERIALS)
     if open_hole is not None:
         results_data['open_hole'] = open_hole.summary(**(open_hole_criteria or {}))
     results_data['solver'] = {

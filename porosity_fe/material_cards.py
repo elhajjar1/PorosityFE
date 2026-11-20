@@ -25,6 +25,7 @@ from ._types import PorosityDegradation
 from ._vp import check_fraction
 from .homogenization import _degraded_composite_stiffness
 from .materials import MaterialProperties
+from .ply_stack import PlyStack
 from .porosity_field import PorosityField
 from .void_geometry import VOID_SHAPES
 
@@ -619,7 +620,9 @@ def material_cards(material: MaterialProperties,
     Parameters
     ----------
     material : MaterialProperties
-        The pristine ply; ``n_plies`` and ``t_ply`` give the laminate.
+        The pristine ply; ``n_plies`` and ``t_ply`` give the laminate. A
+        :class:`~porosity_fe.PlyStack` (or a field built from one) is
+        refused: write each of its materials' cards.
     porosity : float or PorosityField
         A void **fraction** for every ply, or a field: each ply then takes
         the mean of the field's through-thickness profile over it
@@ -684,6 +687,11 @@ def material_cards(material: MaterialProperties,
     >>> '*ELASTIC, TYPE=LAMINA' in text
     True
     """
+    if isinstance(material, PlyStack) or getattr(porosity, 'ply_stack', None) is not None:
+        raise TypeError(
+            "material_cards writes the plies of one material: for a hybrid "
+            "PlyStack, write the cards of each of stack.materials (with its "
+            "own n_plies and t_ply).")
     if fmt not in _FORMATS:
         raise ValueError(f"fmt must be one of {list(_FORMATS)}; got {fmt!r}.")
     if element not in _ELEMENTS:

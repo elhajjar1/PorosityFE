@@ -30,6 +30,7 @@ from .._types import FEFormulation, FELoadingMode, PorosityDegradation
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from ..porosity_field import PorosityField
 from ._knockdown import _is_delaminated
 from .element import _DEFAULT_FORMULATION
@@ -142,7 +143,7 @@ def _without_porosity(mesh: CompositeMesh) -> CompositeMesh:
 
 
 def knockdown_decomposition(
-    mesh: CompositeMesh, material: MaterialProperties,
+    mesh: CompositeMesh, material: MaterialProperties | PlyStack,
     porosity_field: PorosityField, loading: FELoadingMode = 'compression', *,
     applied_strain: float | None = None,
     applied_load: float = -10.0,

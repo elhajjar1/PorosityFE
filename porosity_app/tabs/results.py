@@ -25,6 +25,7 @@ from ..plots import (
     plot_fracture_uq,
     plot_front,
     plot_growth,
+    plot_hybrid,
     plot_open_hole,
     plot_results,
     plot_uq,
@@ -39,10 +40,13 @@ from ..runners import (
     buckling_unavailable_reason,
     fe_uq_unavailable_reason,
     growth_unavailable_reason,
+    hybrid_default_spec,
+    hybrid_unavailable_reason,
     open_hole_unavailable_reason,
     run_buckling_cached,
     run_fe_uq_cached,
     run_growth_cached,
+    run_hybrid_cached,
     run_open_hole_cached,
     run_uq_cached,
 )
@@ -63,6 +67,7 @@ from ..summaries import (
     fe_uq_summary,
     growth_summary,
     growth_table,
+    hybrid_summary,
     open_hole_summary,
     sensitivity_caption,
     sensitivity_rows,
@@ -88,6 +93,7 @@ def _build_results_tab(result: dict | None, layup_for_title: str):
     _build_durability_expander(result)
     _build_buckling_expander(result)
     _build_open_hole_expander(result)
+    _build_hybrid_expander(result)
     _build_growth_expander(result)
     _build_uq_expander(result)
     _build_fe_uq_expander(result)
@@ -202,6 +208,40 @@ def _build_open_hole_expander(result: dict) -> None:
         st.caption(caption)
         _show_figure(plot_open_hole(out["analysis"], None if d0 is None else float(d0)),
                      "open_hole_net_section", "dl_png_open_hole")
+
+
+def _build_hybrid_expander(result: dict) -> None:
+    """Opt-in hybrid laminate: the analysis' coupon with its own ply stack (FE)."""
+    with st.expander("Hybrid laminate (FE)"):
+        st.caption(
+            "Gives every ply its own material and thickness and solves the "
+            "analysis' coupon, layup, porosity and load on it: every element takes "
+            "its ply's stiffness, porosity micromechanics and strengths. Write the "
+            "plies bottom to top as comma-separated blocks `NAME*COUNT@MM` (a preset "
+            "name, or a custom material by its name; `*COUNT` and `@MM` optional, "
+            "the thickness defaulting to the material's ply thickness). The layup "
+            "is tiled to the plies. One FE solve.")
+        reason = hybrid_unavailable_reason(result)
+        if reason is not None:
+            st.info(reason)
+            return
+        spec = st.text_input("Ply stack (bottom to top)", value=hybrid_default_spec(result),
+                             key="hybrid_spec")
+        key = _config_to_key(result["config"])
+        if st.button("Run hybrid laminate", key="hybrid_run"):
+            st.session_state["hybrid_params"] = (key, spec)
+        if st.session_state.get("hybrid_params") != (key, spec):
+            return
+        with st.spinner("Solving the hybrid laminate..."):
+            try:
+                out = run_hybrid_cached(key, spec, result)
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"The hybrid laminate did not run: {exc}")
+                return
+        rows, caption = hybrid_summary(out, result.get("fe_field"))
+        _metric_row(rows)
+        st.caption(caption)
+        _show_figure(plot_hybrid(out), "hybrid_failure_index", "dl_png_hybrid")
 
 
 def _build_growth_expander(result: dict) -> None:

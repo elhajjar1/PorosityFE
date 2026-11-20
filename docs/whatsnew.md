@@ -56,6 +56,13 @@ concentration against Lekhnitskii's orthotropic plate and the Whitney-Nuismer
 notched-strength factors (`porosity-analyze --open-hole`, an app panel; see
 {doc}`theory/fe`).
 
+**Hybrid laminates.** A `PlyStack` gives every ply its own material and
+thickness and stands in for the material of the FE path: each element takes
+its ply's stiffness, porosity micromechanics, strengths and CTEs, and the
+weaker side governs at an interface between two materials
+(`porosity-analyze --plies`, an app panel; see {doc}`theory/fe`). The
+empirical solver takes a stack of one material and refuses a hybrid.
+
 **Random porosity fields and FE uncertainty.** `PorosityField.random`
 draws a seeded random in-plane map of void content, of a given CoV and
 correlation length. `fe_porosity_uncertainty` (`porosity-analyze --fe-uq`,

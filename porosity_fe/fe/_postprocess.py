@@ -21,6 +21,7 @@ from .._types import PorosityDegradation
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack
 from ..transforms import strain_transformation_3d, stress_transformation_3d
 from . import failure
 from ._load_cases import _FLEXURE_PROCEDURE, _FRACTURE_TESTS
@@ -148,7 +149,7 @@ class FailureMetrics:
 
 
 def failure_metrics(
-    mesh: CompositeMesh, material: MaterialProperties,
+    mesh: CompositeMesh, material: MaterialProperties | PlyStack,
     void_shape_radii: tuple, criterion: str, *,
     stress_local: np.ndarray, load_stress_local: np.ndarray,
     prestress_local: np.ndarray | None, residual_local: np.ndarray | None,
@@ -180,7 +181,8 @@ def failure_metrics(
         return failure.evaluate_failure(
             stress, mesh.porosity, mesh.elements, material, void_shape_radii,
             criterion, void_elements=mesh.void_elements, mode_fields=mode_fields,
-            porosity_degradation=porosity_degradation)
+            porosity_degradation=porosity_degradation,
+            element_material_ids=getattr(mesh, 'elem_material_ids', None))
 
     mode_fields: dict[str, np.ndarray] = {}
     max_fi, per_elem_fi, mode_indices = evaluate(stress_local, mode_fields)
@@ -190,7 +192,8 @@ def failure_metrics(
         load_stress_local, mesh.porosity, mesh.elements, material,
         void_shape_radii, criterion, void_elements=mesh.void_elements,
         prestress_local=prestress_local,
-        porosity_degradation=porosity_degradation)
+        porosity_degradation=porosity_degradation,
+        element_material_ids=getattr(mesh, 'elem_material_ids', None))
     load_factor = float(lam_elem.min()) if lam_elem.size else float('inf')
 
     residual_max_fi: float | None = None

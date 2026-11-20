@@ -49,6 +49,7 @@ from ..homogenization import (
 )
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh
+from ..ply_stack import PlyStack, element_materials
 from ..transforms import rotate_stiffness_3d, strain_transformation_3d
 from .element import (
     _DEFAULT_FORMULATION,
@@ -189,7 +190,9 @@ def thermal_stress_moduli(batch: ElementBatch, mesh: CompositeMesh,
     (:func:`global_cte`). The CTE is held at its pristine value: an empty
     void does not change the free thermal expansion of the matrix around
     it (Levin), so porosity enters only through ``C``. ``beta`` is zero
-    in explicit void elements (``mesh.void_elements``).
+    in explicit void elements (``mesh.void_elements``). ``alpha_local`` is
+    one ``(6,)`` vector, or ``(n_materials, 6)`` with a row per material of
+    a :class:`~porosity_fe.PlyStack` mesh (``mesh.elem_material_ids``).
 
     Returns
     -------
@@ -197,9 +200,17 @@ def thermal_stress_moduli(batch: ElementBatch, mesh: CompositeMesh,
         ``(E, G, 6)``; ``beta * dT`` is the stress the thermal strain
         ``alpha dT`` would cause if fully restrained.
     """
-    angles, inverse = np.unique(np.asarray(mesh.ply_angles, dtype=float),
-                                return_inverse=True)
-    table = np.stack([global_cte(alpha_local, float(a)) for a in angles])
+    alpha_local = np.asarray(alpha_local, dtype=float)
+    if alpha_local.ndim == 1:
+        angles, inverse = np.unique(np.asarray(mesh.ply_angles, dtype=float),
+                                    return_inverse=True)
+        table = np.stack([global_cte(alpha_local, float(a)) for a in angles])
+    else:
+        keys, inverse = np.unique(
+            np.column_stack((np.asarray(mesh.ply_angles, dtype=float),
+                             np.asarray(mesh.elem_material_ids, dtype=float))),
+            axis=0, return_inverse=True)
+        table = np.stack([global_cte(alpha_local[int(m)], float(a)) for a, m in keys])
     alpha_e = table[inverse.reshape(-1)]                       # (E, 6)
     beta = np.einsum('egij,ej->egi', batch.C, alpha_e)
     void_idx = np.asarray(mesh.void_elements, dtype=np.intp)
@@ -304,7 +315,7 @@ def _condense_incompatible_modes(B: np.ndarray, C: np.ndarray,
     return B + np.matmul(G, H[:, None]), Kaa
 
 
-def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
+def build_element_batch(mesh: CompositeMesh, material: MaterialProperties | PlyStack,
                         void_shape_radii: tuple, *,
                         formulation: FEFormulation = _DEFAULT_FORMULATION,
                         porosity_degradation: PorosityDegradation =
@@ -315,7 +326,10 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
     Parameters
     ----------
     mesh, material, void_shape_radii
-        Mesh, composite and void shape the stiffness is built from.
+        Mesh, composite and void shape the stiffness is built from. On a
+        mesh built from a :class:`~porosity_fe.PlyStack` each element takes
+        its own ply's material (``material`` is the stack or its
+        reference).
     formulation : {'hex8i', 'hex8'}, optional
         Element formulation (see :class:`Hex8Element`), default
         ``'hex8i'``. For ``'hex8i'`` the incompatible modes are condensed
@@ -365,16 +379,21 @@ def build_element_batch(mesh: CompositeMesh, material: MaterialProperties,
     Vp = np.where(uniform[:, None], p0, node_por @ N.T)       # (E, G)
     Vp = np.clip(Vp, 0.0, VP_STIFFNESS_CLAMP)
 
-    # Evaluate the micromechanics once per distinct (Vp, angle) pair.
+    # Evaluate the micromechanics once per distinct (Vp, angle) pair, and
+    # material of a ply stack.
+    materials, material_ids = element_materials(mesh, material)
     angles = np.broadcast_to(
         np.asarray(mesh.ply_angles, dtype=float)[:, None], Vp.shape)
-    pairs, inverse = np.unique(
-        np.stack([Vp.ravel(), angles.ravel()], axis=1), axis=0,
-        return_inverse=True)
+    columns = [Vp.ravel(), angles.ravel()]
+    if len(materials) > 1:
+        columns.append(np.broadcast_to(
+            material_ids.astype(float)[:, None], Vp.shape).ravel())
+    pairs, inverse = np.unique(np.stack(columns, axis=1), axis=0, return_inverse=True)
     table = np.empty((len(pairs), 6, 6))
-    for k, (vp, angle) in enumerate(pairs):
+    for k, row in enumerate(pairs):
+        vp, angle = row[0], row[1]
         C_k = _degraded_composite_stiffness(
-            float(vp), void_shape_radii, material,
+            float(vp), void_shape_radii, materials[int(row[2]) if len(row) > 2 else 0],
             porosity_degradation=porosity_degradation)
         ply_rad = np.radians(angle)
         if abs(ply_rad) > 1e-15:

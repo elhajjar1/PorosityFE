@@ -7,7 +7,7 @@ import logging
 import math
 import warnings
 from collections.abc import Sequence
-from dataclasses import astuple, dataclass, field
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -18,6 +18,7 @@ from ..fracture_specimens import FractureSpecimenGeometry
 from ..homogenization import _DEFAULT_POROSITY_DEGRADATION, _check_porosity_degradation
 from ..materials import MaterialProperties
 from ..mesh import CompositeMesh, FlexureGeometry
+from ..ply_stack import PlyStack, element_materials, material_key
 from ..porosity_field import PorosityField
 from .batch import ElementBatch, build_element_batch, element_dofs
 from .element import _DEFAULT_FORMULATION, Hex8Element, _check_formulation
@@ -38,8 +39,10 @@ class GlobalAssembler:
     ----------
     mesh : CompositeMesh
         The finite element mesh.
-    material : MaterialProperties
-        Material properties.
+    material : MaterialProperties or PlyStack
+        Material properties; on a mesh built from a
+        :class:`~porosity_fe.PlyStack`, that stack (or its reference), and
+        each element takes its own ply's material.
     porosity_field : PorosityField
         Porosity field for degradation.
     formulation : {'hex8i', 'hex8'}, optional
@@ -52,7 +55,7 @@ class GlobalAssembler:
         default ``'isotropic'``. Also part of the cache key.
     """
 
-    def __init__(self, mesh: CompositeMesh, material: MaterialProperties,
+    def __init__(self, mesh: CompositeMesh, material: MaterialProperties | PlyStack,
                  porosity_field: PorosityField, *,
                  formulation: FEFormulation = _DEFAULT_FORMULATION,
                  porosity_degradation: PorosityDegradation =
@@ -64,9 +67,7 @@ class GlobalAssembler:
         self.formulation: FEFormulation = formulation
         _check_porosity_degradation(porosity_degradation)
         self.porosity_degradation: PorosityDegradation = porosity_degradation
-        self._C_base = material.get_stiffness_matrix()
-        self._C_m = material.get_isotropic_matrix_stiffness()
-        self._nu_m = material.matrix_poisson
+        self._materials, _ = element_materials(mesh, material)
         self._void_shape = porosity_field.void_shape_radii
         # Assembly results, valid while _state_key() still returns _key.
         self._key: tuple | None = None
@@ -85,16 +86,18 @@ class GlobalAssembler:
         ply_angle = float(self.mesh.ply_angles[elem_idx])
         node_porosities = self.mesh.porosity[node_ids]
         is_void = elem_idx in self.mesh.void_element_set
+        ids = getattr(self.mesh, 'elem_material_ids', None)
+        material = self._materials[0 if ids is None else int(ids[elem_idx])]
         return Hex8Element(
             node_coords=node_coords,
-            C_base=self._C_base,
+            C_base=material.get_stiffness_matrix(),
             ply_angle_deg=ply_angle,
             node_porosities=node_porosities,
             void_shape_radii=self._void_shape,
-            nu_m=self._nu_m,
-            C_m=self._C_m,
+            nu_m=material.matrix_poisson,
+            C_m=material.get_isotropic_matrix_stiffness(),
             is_void=is_void,
-            material=self.material,
+            material=material,
             formulation=self.formulation,
             porosity_degradation=self.porosity_degradation,
         )
@@ -107,17 +110,21 @@ class GlobalAssembler:
         """Fingerprint of every input the stiffness depends on.
 
         Hashes the mesh arrays by content (so in-place edits are seen) and
-        the material (every field, not its abbreviated ``repr``), void
-        shape, element formulation and porosity degradation by value.
+        the material (every field, not its abbreviated ``repr``; every
+        material and the element materials of a ply stack), void shape,
+        element formulation and porosity degradation by value.
         """
         h = hashlib.blake2b(digest_size=16)
         mesh = self.mesh
-        for arr in (mesh.nodes, mesh.elements, mesh.porosity,
-                    mesh.ply_angles, mesh.void_elements):
+        arrays = [mesh.nodes, mesh.elements, mesh.porosity, mesh.ply_angles,
+                  mesh.void_elements]
+        if getattr(mesh, 'ply_stack', None) is not None:
+            arrays.append(mesh.elem_material_ids)
+        for arr in arrays:
             a = np.ascontiguousarray(arr)
             h.update(f"{a.dtype}{a.shape}".encode())
             h.update(a.tobytes())
-        return (h.hexdigest(), astuple(self.material),
+        return (h.hexdigest(), material_key(self.material),
                 tuple(self.porosity_field.void_shape_radii),
                 self.formulation, self.porosity_degradation)
 

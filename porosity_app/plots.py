@@ -820,3 +820,33 @@ def plot_open_hole(analysis, d0: float | None = None):
                 f"D = {g.hole_diameter:g} mm, W = {g.width:g} mm; K_T {analysis.stress_concentration:.3f}")
     fig.tight_layout()
     return fig
+
+
+def plot_hybrid(out: dict):
+    """Largest failure index of every element layer of a hybrid laminate,
+    through the thickness, coloured by the layer's material."""
+    from .summaries import _stack_names, hybrid_layer_failure
+    z, fi, ids = hybrid_layer_failure(out)
+    stack = out["stack"]
+    names = _stack_names(stack)
+    fig, ax = plt.subplots(figsize=(9, 4.0))
+    bounds = stack.ply_bounds
+    heights = np.diff(np.unique(np.round(np.asarray(out["mesh"].nodes)[
+        :out["mesh"].n_structured_nodes, 2], 12)))
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i, name in enumerate(names):
+        sel = ids == i
+        ax.barh(z[sel], fi[sel], height=0.9 * heights[sel], color=colors[i % len(colors)],
+                label=name)
+    for b in bounds[1:-1]:
+        ax.axhline(b, color="0.85", linewidth=0.8, zorder=0)
+    ax.set_xlabel("Largest failure index in the layer")
+    ax.set_ylabel("z (mm)")
+    ax.set_ylim(bounds[0], bounds[-1])
+    ax.legend(loc="lower right", frameon=False)
+    ax.grid(True, axis="x", alpha=0.3)
+    _set_titles(ax, "Hybrid laminate: failure index through the thickness",
+                f"{stack.n_plies} plies, {stack.total_thickness:g} mm; under the "
+                f"analysis' load")
+    fig.tight_layout()
+    return fig
